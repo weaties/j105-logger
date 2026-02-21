@@ -1,0 +1,44 @@
+{
+  "name": "j105-logger Dev Container",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bullseye",
+
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "lts"
+    }
+  },
+
+  "onCreateCommand": "pip install uv --break-system-packages && uv sync",
+
+  "postCreateCommand": "npm install -g @anthropic/claude-code",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml",
+        "github.copilot"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/j105-logger/.venv/bin/python",
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "ruff.enable": true
+      }
+    }
+  },
+
+  "forwardPorts": [],
+
+  "remoteEnv": {
+    "UV_PROJECT_ENVIRONMENT": "/workspaces/j105-logger/.venv"
+  },
+
+  "remoteUser": "vscode"
+}
