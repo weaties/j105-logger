@@ -11,7 +11,7 @@
 
   "onCreateCommand": "pip install uv --break-system-packages && uv sync",
 
-  "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && echo 'export PATH=\"$HOME/.claude/bin:$HOME/.local/bin:$PATH\"' >> ~/.bashrc"
+  "postCreateCommand": "curl -fsSL https://claude.ai/install.sh | bash && echo 'export PATH=\"$HOME/.claude/bin:$HOME/.local/bin:$PATH\"' >> ~/.bashrc",
 
   "customizations": {
     "vscode": {
