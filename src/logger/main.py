@@ -42,9 +42,44 @@ def _setup_logging() -> None:
 # ---------------------------------------------------------------------------
 
 
+async def _weather_loop(storage: object, fetcher: object) -> None:
+    """Background task: fetch weather from Open-Meteo every hour and persist it.
+
+    Best-effort — logs a warning and continues if the fetch fails or if no
+    position data is available yet.
+    """
+    from logger.external import ExternalFetcher
+    from logger.storage import Storage
+
+    assert isinstance(storage, Storage)
+    assert isinstance(fetcher, ExternalFetcher)
+
+    while True:
+        try:
+            pos = await storage.latest_position()
+            if pos is not None:
+                now = datetime.now(UTC)
+                reading = await fetcher.fetch_weather(
+                    float(pos["latitude_deg"]),
+                    float(pos["longitude_deg"]),
+                    now,
+                )
+                if reading is not None:
+                    await storage.write_weather(reading)
+            else:
+                logger.debug("No position data yet; skipping weather fetch")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Weather loop error (will retry next hour): {}", exc)
+
+        await asyncio.sleep(3600)
+
+
 async def _run() -> None:
     """Main async loop: read CAN frames, decode, persist."""
     from logger.can_reader import CANReader, CANReaderConfig, extract_pgn
+    from logger.external import ExternalFetcher
     from logger.nmea2000 import decode
     from logger.storage import Storage, StorageConfig
 
@@ -67,18 +102,22 @@ async def _run() -> None:
     )
 
     reader = CANReader(reader_config)
-    try:
-        async for frame in reader:
-            pgn = extract_pgn(frame.arbitration_id)
-            src = frame.arbitration_id & 0xFF
-            record = decode(pgn, frame.data, src, frame.timestamp)
-            if record is not None:
-                await storage.write(record)
-    except asyncio.CancelledError:
-        logger.info("Shutdown signal received — flushing and stopping")
-    finally:
-        await storage.close()
-        logger.info("Logger stopped")
+    async with ExternalFetcher() as fetcher:
+        weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
+        try:
+            async for frame in reader:
+                pgn = extract_pgn(frame.arbitration_id)
+                src = frame.arbitration_id & 0xFF
+                record = decode(pgn, frame.data, src, frame.timestamp)
+                if record is not None:
+                    await storage.write(record)
+        except asyncio.CancelledError:
+            logger.info("Shutdown signal received — flushing and stopping")
+        finally:
+            weather_task.cancel()
+            await asyncio.gather(weather_task, return_exceptions=True)
+            await storage.close()
+            logger.info("Logger stopped")
 
 
 # ---------------------------------------------------------------------------

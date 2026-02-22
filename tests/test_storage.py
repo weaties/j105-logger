@@ -51,6 +51,8 @@ class TestMigration:
             "cogsog",
             "winds",
             "environmental",
+            "video_sessions",
+            "weather",
         }:
             assert expected in names, f"Table {expected!r} not found"
 

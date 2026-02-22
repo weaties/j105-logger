@@ -18,6 +18,8 @@ from loguru import logger
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from logger.external import WeatherReading
+
 from logger.nmea2000 import (
     COGSOGRecord,
     DepthRecord,
@@ -46,15 +48,15 @@ class StorageConfig:
 # Tuning
 # ---------------------------------------------------------------------------
 
-_FLUSH_INTERVAL_S: float = 1.0   # commit to disk at most once per second
-_FLUSH_BATCH_SIZE: int = 200      # also flush if this many records are buffered
+_FLUSH_INTERVAL_S: float = 1.0  # commit to disk at most once per second
+_FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 
 
 # ---------------------------------------------------------------------------
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 3
+_CURRENT_VERSION: int = 4
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -139,6 +141,19 @@ _MIGRATIONS: dict[int, str] = {
             created_at    TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_video_sessions_sync_utc ON video_sessions(sync_utc);
+    """,
+    4: """
+        CREATE TABLE IF NOT EXISTS weather (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT    NOT NULL,
+            lat             REAL    NOT NULL,
+            lon             REAL    NOT NULL,
+            wind_speed_kts  REAL    NOT NULL,
+            wind_dir_deg    REAL    NOT NULL,
+            air_temp_c      REAL    NOT NULL,
+            pressure_hpa    REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_weather_ts ON weather(ts);
     """,
 }
 
@@ -232,10 +247,7 @@ class Storage:
     async def _auto_flush(self) -> None:
         """Commit if the batch size or time interval threshold is reached."""
         now = time.monotonic()
-        if (
-            self._pending >= _FLUSH_BATCH_SIZE
-            or now - self._last_flush >= _FLUSH_INTERVAL_S
-        ):
+        if self._pending >= _FLUSH_BATCH_SIZE or now - self._last_flush >= _FLUSH_INTERVAL_S:
             await self._flush()
 
     async def _flush(self) -> None:
@@ -411,6 +423,55 @@ class Storage:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Weather
+    # ------------------------------------------------------------------
+
+    async def write_weather(self, reading: WeatherReading) -> None:
+        """Persist a WeatherReading to the weather table."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO weather"
+            " (ts, lat, lon, wind_speed_kts, wind_dir_deg, air_temp_c, pressure_hpa)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                _ts(reading.timestamp),
+                reading.lat,
+                reading.lon,
+                reading.wind_speed_kts,
+                reading.wind_direction_deg,
+                reading.air_temp_c,
+                reading.pressure_hpa,
+            ),
+        )
+        await db.commit()
+        logger.debug("Weather reading stored: ts={}", _ts(reading.timestamp))
+
+    async def query_weather_range(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Return all weather rows in [start, end] ordered by ts."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT * FROM weather WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (_ts(start), _ts(end)),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def latest_position(self) -> dict[str, Any] | None:
+        """Return the most recent row from the positions table, or None."""
+        db = self._conn()
+        cur = await db.execute("SELECT * FROM positions ORDER BY ts DESC LIMIT 1")
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

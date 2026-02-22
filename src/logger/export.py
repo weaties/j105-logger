@@ -38,19 +38,23 @@ class ExportConfig:
 # Standard sailing column names used in output CSV
 _COLUMNS = [
     "timestamp",
-    "HDG",       # heading (degrees true)
-    "BSP",       # boatspeed through water (knots)
-    "DEPTH",     # water depth (metres)
-    "LAT",       # latitude (degrees)
-    "LON",       # longitude (degrees)
-    "COG",       # course over ground (degrees true)
-    "SOG",       # speed over ground (knots)
-    "TWS",       # true wind speed (knots) — reference=0 in PGN 130306
-    "TWA",       # true wind angle (degrees) — reference=0
-    "AWA",       # apparent wind angle (degrees) — reference=2
-    "AWS",       # apparent wind speed (knots) — reference=2
-    "WTEMP",     # water temperature (Celsius)
-    "video_url", # YouTube deep-link for this second (empty if no video linked)
+    "HDG",  # heading (degrees true)
+    "BSP",  # boatspeed through water (knots)
+    "DEPTH",  # water depth (metres)
+    "LAT",  # latitude (degrees)
+    "LON",  # longitude (degrees)
+    "COG",  # course over ground (degrees true)
+    "SOG",  # speed over ground (knots)
+    "TWS",  # true wind speed (knots) — reference=0 in PGN 130306
+    "TWA",  # true wind angle (degrees) — reference=0
+    "AWA",  # apparent wind angle (degrees) — reference=2
+    "AWS",  # apparent wind speed (knots) — reference=2
+    "WTEMP",  # water temperature (Celsius)
+    "video_url",  # YouTube deep-link for this second (empty if no video linked)
+    "WX_TWS",  # weather wind speed (knots) from Open-Meteo
+    "WX_TWD",  # weather wind direction (degrees true) from Open-Meteo
+    "AIR_TEMP",  # air temperature (°C) from Open-Meteo
+    "PRESSURE",  # surface pressure (hPa) from Open-Meteo
 ]
 
 # Wind reference codes from PGN 130306
@@ -91,6 +95,7 @@ async def export_csv(
     logger.info("Loading data for export: {} → {}", start.isoformat(), end.isoformat())
 
     video_sessions = await storage.list_video_sessions()
+    weather_rows = await storage.query_weather_range(start, end)
     headings = await storage.query_range("headings", start, end)
     speeds = await storage.query_range("speeds", start, end)
     depths = await storage.query_range("depths", start, end)
@@ -109,6 +114,7 @@ async def export_csv(
     true_wind_idx = _index_by_second([r for r in winds if r.get("reference") == _WIND_REF_TRUE])
     app_wind_idx = _index_by_second([r for r in winds if r.get("reference") == _WIND_REF_APPARENT])
     env_idx = _index_by_second(environmental)
+    wx_idx = _index_by_hour(weather_rows)
 
     rows_written = 0
     with output_path.open("w", newline="", encoding="utf-8") as fh:
@@ -176,6 +182,18 @@ async def export_csv(
                     row["video_url"] = link
                     break
 
+            # Weather: hourly resolution — match by hour bucket
+            if (wx := wx_idx.get(_hour_key(current))) is not None:
+                row["WX_TWS"] = _fmt(wx.get("wind_speed_kts"))
+                row["WX_TWD"] = _fmt(wx.get("wind_dir_deg"))
+                row["AIR_TEMP"] = _fmt(wx.get("air_temp_c"))
+                row["PRESSURE"] = _fmt(wx.get("pressure_hpa"))
+            else:
+                row["WX_TWS"] = ""
+                row["WX_TWD"] = ""
+                row["AIR_TEMP"] = ""
+                row["PRESSURE"] = ""
+
             writer.writerow(row)
             rows_written += 1
             current += timedelta(seconds=1)
@@ -212,6 +230,23 @@ def _index_by_second(
         ts_str: str = row["ts"]
         # Truncate to second for the bucket key
         bucket = ts_str[:19]  # "YYYY-MM-DDTHH:MM:SS"
+        idx[bucket] = row
+    return idx
+
+
+def _hour_key(dt: datetime) -> str:
+    """Return a string key for the hour bucket (YYYY-MM-DDTHH:00:00)."""
+    return dt.isoformat()[:13] + ":00:00"  # "YYYY-MM-DDTHH:00:00"
+
+
+def _index_by_hour(
+    rows: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Build a dict mapping hour-keys to the last row within that hour."""
+    idx: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        ts_str: str = row["ts"]
+        bucket = ts_str[:13] + ":00:00"
         idx[bucket] = row
     return idx
 

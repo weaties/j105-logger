@@ -48,6 +48,10 @@ _EXPECTED_COLS = {
     "AWS",
     "WTEMP",
     "video_url",
+    "WX_TWS",
+    "WX_TWD",
+    "AIR_TEMP",
+    "PRESSURE",
 }
 
 
