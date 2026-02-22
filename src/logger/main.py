@@ -76,6 +76,44 @@ async def _weather_loop(storage: object, fetcher: object) -> None:
         await asyncio.sleep(3600)
 
 
+async def _tide_loop(storage: object, fetcher: object) -> None:
+    """Background task: fetch NOAA tide predictions daily and persist them.
+
+    Fetches today's and tomorrow's hourly predictions at startup, then every
+    24 hours. Using two days ensures full coverage when logging spans midnight.
+    INSERT OR IGNORE makes re-fetching idempotent.
+    """
+    from datetime import UTC, timedelta
+    from datetime import datetime as _datetime
+
+    from logger.external import ExternalFetcher
+    from logger.storage import Storage
+
+    assert isinstance(storage, Storage)
+    assert isinstance(fetcher, ExternalFetcher)
+
+    while True:
+        try:
+            pos = await storage.latest_position()
+            if pos is not None:
+                lat = float(pos["latitude_deg"])
+                lon = float(pos["longitude_deg"])
+                now = _datetime.now(UTC)
+                for delta in (0, 1):  # today and tomorrow
+                    target_date = (now + timedelta(days=delta)).date()
+                    readings = await fetcher.fetch_tide_predictions(lat, lon, target_date)
+                    for reading in readings:
+                        await storage.write_tide(reading)
+            else:
+                logger.debug("No position data yet; skipping tide fetch")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Tide loop error (will retry in 24h): {}", exc)
+
+        await asyncio.sleep(86400)  # re-fetch once per day
+
+
 async def _run() -> None:
     """Main async loop: read CAN frames, decode, persist."""
     from logger.can_reader import CANReader, CANReaderConfig, extract_pgn
@@ -104,6 +142,7 @@ async def _run() -> None:
     reader = CANReader(reader_config)
     async with ExternalFetcher() as fetcher:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
+        tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
         try:
             async for frame in reader:
                 pgn = extract_pgn(frame.arbitration_id)
@@ -115,7 +154,8 @@ async def _run() -> None:
             logger.info("Shutdown signal received — flushing and stopping")
         finally:
             weather_task.cancel()
-            await asyncio.gather(weather_task, return_exceptions=True)
+            tide_task.cancel()
+            await asyncio.gather(weather_task, tide_task, return_exceptions=True)
             await storage.close()
             logger.info("Logger stopped")
 

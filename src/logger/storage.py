@@ -18,7 +18,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from logger.external import WeatherReading
+    from logger.external import TideReading, WeatherReading
 
 from logger.nmea2000 import (
     COGSOGRecord,
@@ -56,7 +56,7 @@ _FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 4
+_CURRENT_VERSION: int = 5
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -154,6 +154,18 @@ _MIGRATIONS: dict[int, str] = {
             pressure_hpa    REAL    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_weather_ts ON weather(ts);
+    """,
+    5: """
+        CREATE TABLE IF NOT EXISTS tides (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts           TEXT    NOT NULL,
+            station_id   TEXT    NOT NULL,
+            station_name TEXT    NOT NULL,
+            height_m     REAL    NOT NULL,
+            type         TEXT    NOT NULL,
+            UNIQUE(ts, station_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_tides_ts ON tides(ts);
     """,
 }
 
@@ -457,6 +469,44 @@ class Storage:
         db = self._conn()
         cur = await db.execute(
             "SELECT * FROM weather WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (_ts(start), _ts(end)),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Tides
+    # ------------------------------------------------------------------
+
+    async def write_tide(self, reading: TideReading) -> None:
+        """Persist a TideReading to the tides table.
+
+        Uses INSERT OR IGNORE so re-fetching the same predictions is safe.
+        """
+        db = self._conn()
+        await db.execute(
+            "INSERT OR IGNORE INTO tides"
+            " (ts, station_id, station_name, height_m, type)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                _ts(reading.timestamp),
+                reading.station_id,
+                reading.station_name,
+                reading.height_m,
+                reading.type,
+            ),
+        )
+        await db.commit()
+
+    async def query_tide_range(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Return all tide rows in [start, end] ordered by ts."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT * FROM tides WHERE ts >= ? AND ts <= ? ORDER BY ts",
             (_ts(start), _ts(end)),
         )
         rows = await cur.fetchall()

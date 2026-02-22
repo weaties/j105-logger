@@ -52,6 +52,7 @@ _EXPECTED_COLS = {
     "WX_TWD",
     "AIR_TEMP",
     "PRESSURE",
+    "TIDE_HT",
 }
 
 

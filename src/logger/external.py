@@ -13,7 +13,7 @@ import httpx
 from loguru import logger
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import date, datetime
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -22,11 +22,13 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class TideReading:
-    """A single tide height observation or prediction."""
+    """A single hourly tide height prediction from NOAA CO-OPS."""
 
-    timestamp: datetime
-    height_m: float  # metres above chart datum
+    timestamp: datetime  # UTC time of the reading (truncated to hour)
+    height_m: float  # metres above MLLW chart datum
     type: str  # "prediction" | "observation"
+    station_id: str  # NOAA station ID, e.g. "8461490"
+    station_name: str  # Human-readable station name
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ class WeatherReading:
 # ---------------------------------------------------------------------------
 
 _OPEN_METEO_URL = "https://api.open-meteo.com/v1/forecast"
+_NOAA_STATIONS_URL = "https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json"
+_NOAA_PREDICTIONS_URL = "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter"
 
 # ---------------------------------------------------------------------------
 # Fetcher
@@ -58,6 +62,8 @@ class ExternalFetcher:
 
     def __init__(self) -> None:
         self._client: httpx.AsyncClient | None = None
+        # NOAA tide station list — fetched once and reused for the session
+        self._stations_cache: list[dict[str, Any]] | None = None
 
     async def __aenter__(self) -> ExternalFetcher:
         self._client = httpx.AsyncClient(timeout=10.0)
@@ -73,18 +79,147 @@ class ExternalFetcher:
             raise RuntimeError("ExternalFetcher must be used as an async context manager")
         return self._client
 
+    # ------------------------------------------------------------------
+    # Tides — NOAA CO-OPS
+    # ------------------------------------------------------------------
+
+    async def _get_tide_stations(self) -> list[dict[str, Any]]:
+        """Fetch (and cache for the session) the NOAA tide prediction station list."""
+        if self._stations_cache is not None:
+            return self._stations_cache
+
+        try:
+            resp = await self._http().get(_NOAA_STATIONS_URL, params={"type": "tidepredictions"})
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+            self._stations_cache = data["stations"]
+            logger.debug("Fetched {} NOAA tide stations", len(self._stations_cache))
+        except (httpx.HTTPError, KeyError, ValueError) as exc:
+            logger.warning("Failed to fetch NOAA tide station list: {}", exc)
+            self._stations_cache = []
+
+        return self._stations_cache or []
+
+    @staticmethod
+    def _nearest_station(
+        stations: list[dict[str, Any]], lat: float, lon: float
+    ) -> dict[str, Any] | None:
+        """Return the nearest station by Euclidean distance in degrees."""
+        if not stations:
+            return None
+        return min(
+            stations,
+            key=lambda s: (float(s["lat"]) - lat) ** 2 + (float(s["lng"]) - lon) ** 2,
+        )
+
+    async def fetch_tide_predictions(
+        self,
+        lat: float,
+        lon: float,
+        for_date: date,
+    ) -> list[TideReading]:
+        """Fetch all hourly tide predictions for a given UTC date from NOAA CO-OPS.
+
+        Finds the nearest tide prediction station to (lat, lon) and requests
+        hourly predictions in GMT for the whole day. Heights are in metres
+        above MLLW datum.
+
+        This covers US coastal waters. Returns an empty list if the fetch
+        fails or no station data is available.
+
+        Args:
+            lat:      Latitude in decimal degrees.
+            lon:      Longitude in decimal degrees.
+            for_date: The UTC date to fetch predictions for.
+
+        Returns:
+            A list of TideReadings (up to 24), or an empty list on failure.
+        """
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        stations = await self._get_tide_stations()
+        station = self._nearest_station(stations, lat, lon)
+        if station is None:
+            logger.warning("No NOAA tide stations available")
+            return []
+
+        station_id: str = str(station["id"])
+        station_name: str = str(station["name"])
+        date_str = for_date.strftime("%Y%m%d")
+
+        logger.debug(
+            "Fetching tide predictions: station={!r} ({}) date={}",
+            station_name,
+            station_id,
+            date_str,
+        )
+
+        try:
+            resp = await self._http().get(
+                _NOAA_PREDICTIONS_URL,
+                params={
+                    "product": "predictions",
+                    "application": "j105-logger",
+                    "begin_date": date_str,
+                    "end_date": date_str,
+                    "datum": "MLLW",
+                    "station": station_id,
+                    "time_zone": "gmt",
+                    "interval": "h",
+                    "units": "metric",
+                    "format": "json",
+                },
+            )
+            resp.raise_for_status()
+            data: dict[str, Any] = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning("Tide predictions fetch failed: {}", exc)
+            return []
+
+        if "error" in data:
+            logger.warning(
+                "NOAA API error for station {}: {}",
+                station_id,
+                data["error"].get("message", "unknown"),
+            )
+            return []
+
+        readings: list[TideReading] = []
+        try:
+            for p in data["predictions"]:
+                ts = _datetime.fromisoformat(p["t"].replace(" ", "T")).replace(tzinfo=_UTC)
+                readings.append(
+                    TideReading(
+                        timestamp=ts,
+                        height_m=float(p["v"]),
+                        type="prediction",
+                        station_id=station_id,
+                        station_name=station_name,
+                    )
+                )
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("Tide prediction parse error: {}", exc)
+            return []
+
+        logger.info(
+            "Tide predictions: {} hourly readings from {!r} ({})",
+            len(readings),
+            station_name,
+            station_id,
+        )
+        return readings
+
     async def fetch_tides(
         self,
         lat: float,
         lon: float,
         dt: datetime,
     ) -> TideReading | None:
-        """Fetch tide height for the given location and time.
+        """Return the tide prediction for the given UTC datetime (hour precision).
 
-        TODO: Integrate with a real tide API, e.g.:
-            - NOAA CO-OPS (tidesandcurrents.noaa.gov/api/)
-            - UK NTSLF (ntslf.org)
-            - WorldTides (worldtides.info/api)
+        Fetches the full day of predictions and returns the one matching the
+        hour of dt. Returns None if the fetch fails or no matching hour is found.
 
         Args:
             lat: Latitude in decimal degrees.
@@ -92,11 +227,17 @@ class ExternalFetcher:
             dt:  UTC datetime for the tide reading.
 
         Returns:
-            A TideReading, or None if the request fails.
+            A TideReading for the matching hour, or None.
         """
-        logger.debug("fetch_tides: lat={} lon={} dt={} (stub)", lat, lon, dt)
-        # TODO: replace with real API call
+        readings = await self.fetch_tide_predictions(lat, lon, dt.date())
+        for r in readings:
+            if r.timestamp.hour == dt.hour:
+                return r
         return None
+
+    # ------------------------------------------------------------------
+    # Weather — Open-Meteo
+    # ------------------------------------------------------------------
 
     async def fetch_weather(
         self,

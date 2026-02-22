@@ -55,6 +55,7 @@ _COLUMNS = [
     "WX_TWD",  # weather wind direction (degrees true) from Open-Meteo
     "AIR_TEMP",  # air temperature (°C) from Open-Meteo
     "PRESSURE",  # surface pressure (hPa) from Open-Meteo
+    "TIDE_HT",  # tide height (metres above MLLW) from NOAA CO-OPS
 ]
 
 # Wind reference codes from PGN 130306
@@ -96,6 +97,7 @@ async def export_csv(
 
     video_sessions = await storage.list_video_sessions()
     weather_rows = await storage.query_weather_range(start, end)
+    tide_rows = await storage.query_tide_range(start, end)
     headings = await storage.query_range("headings", start, end)
     speeds = await storage.query_range("speeds", start, end)
     depths = await storage.query_range("depths", start, end)
@@ -115,6 +117,7 @@ async def export_csv(
     app_wind_idx = _index_by_second([r for r in winds if r.get("reference") == _WIND_REF_APPARENT])
     env_idx = _index_by_second(environmental)
     wx_idx = _index_by_hour(weather_rows)
+    tide_idx = _index_by_hour(tide_rows)
 
     rows_written = 0
     with output_path.open("w", newline="", encoding="utf-8") as fh:
@@ -193,6 +196,12 @@ async def export_csv(
                 row["WX_TWD"] = ""
                 row["AIR_TEMP"] = ""
                 row["PRESSURE"] = ""
+
+            # Tides: hourly resolution — match by hour bucket
+            if (tide := tide_idx.get(_hour_key(current))) is not None:
+                row["TIDE_HT"] = _fmt(tide.get("height_m"))
+            else:
+                row["TIDE_HT"] = ""
 
             writer.writerow(row)
             rows_written += 1
