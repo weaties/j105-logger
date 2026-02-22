@@ -6,6 +6,7 @@ All other modules receive decoded data structures, not raw frames.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -126,12 +127,17 @@ class CANReader:
             logger.info("CAN bus closed")
 
     async def __aiter__(self) -> AsyncIterator[CANFrame]:
-        """Yield CANFrames from the bus until closed or interrupted."""
+        """Yield CANFrames from the bus until cancelled or interrupted.
+
+        Uses asyncio.to_thread for the blocking recv() so the event loop
+        remains responsive and task cancellation (SIGTERM/SIGINT) works cleanly.
+        """
         self._open_bus()
         assert self._bus is not None
+        bus = self._bus
         try:
             while True:
-                msg: can.Message | None = self._bus.recv(timeout=1.0)
+                msg: can.Message | None = await asyncio.to_thread(bus.recv, 1.0)
                 if msg is None:
                     continue  # timeout — loop and try again
                 if not msg.is_extended_id:
@@ -142,6 +148,8 @@ class CANReader:
                     data=bytes(msg.data),
                     timestamp=msg.timestamp,
                 )
+        except asyncio.CancelledError:
+            raise  # let cancellation propagate for clean shutdown
         except Exception as exc:
             logger.warning("CAN read error: {}", exc)
             raise

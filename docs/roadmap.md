@@ -6,19 +6,17 @@ Checked items are complete. Work through these roughly in order.
 
 ## Blocking — needed before first real logging session
 
-- [ ] **CAN HAT hardware setup** — add the correct `dtoverlay` to `/boot/firmware/config.txt`,
-      reboot, and verify traffic with `candump can0`. See `docs/pgn-notes.md` for HAT-specific notes.
+- [x] **CAN HAT hardware setup** — MCP2515 HAT configured via `dtoverlay`, `can0` is UP at
+      250000 bps. Verified in loopback mode (`ip link set can0 type can loopback on`) with
+      all 7 supported PGNs decoded and persisted end-to-end.
 
-- [ ] **CLI subcommands** — `main.py` currently only runs the logger loop. Need:
-  - `j105-logger run` — start logging (current behaviour)
-  - `j105-logger export --start <ISO> --end <ISO> --out <file.csv>` — export a time range to CSV
-  - `j105-logger status` — show DB row counts and last-seen timestamps per PGN
+- [x] **CLI subcommands** — `j105-logger run / export / status` all implemented and working.
 
-- [ ] **Batch SQLite writes** — each record is currently a separate `INSERT + COMMIT`.
-      At NMEA 2000 frame rates this will be too slow. Buffer records and flush every ~1 s.
+- [x] **Batch SQLite writes** — buffered with 1 s / 200-record flush threshold in `Storage`.
+      Non-blocking via `asyncio.to_thread` in the CAN reader. Graceful SIGTERM shutdown
+      flushes remaining records before exit.
 
-- [ ] **Timestamp indexes** — add `CREATE INDEX idx_ts ON <table>(ts)` for all 7 data tables
-      in a schema migration v2. Export queries currently do full table scans.
+- [x] **Timestamp indexes** — schema migration v2 adds `idx_<table>_ts` on all 7 tables.
 
 ---
 
@@ -74,3 +72,9 @@ Checked items are complete. Work through these roughly in order.
 - [x] Raspberry Pi setup script (`scripts/setup.sh`) — installs deps, CAN service, systemd logger service
 - [x] Full test suite (56 tests — nmea2000, storage, export)
 - [x] ruff + mypy clean
+- [x] CAN HAT hardware setup & loopback testing on Pi (all 7 PGNs verified)
+- [x] CLI subcommands: `run`, `export --start/--end/--out`, `status`
+- [x] Batch SQLite writes (flush every 1 s / 200 records)
+- [x] Timestamp indexes (schema migration v2)
+- [x] Non-blocking CAN recv via `asyncio.to_thread`
+- [x] Graceful SIGTERM/SIGINT shutdown with buffer flush

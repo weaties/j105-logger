@@ -55,21 +55,25 @@ class TestMigration:
             assert expected in names, f"Table {expected!r} not found"
 
     async def test_migration_version_recorded(self, storage: Storage) -> None:
+        from logger.storage import _CURRENT_VERSION
+
         db = storage._conn()
-        cur = await db.execute("SELECT version FROM schema_version")
+        cur = await db.execute("SELECT MAX(version) FROM schema_version")
         row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 1
+        assert row[0] == _CURRENT_VERSION
 
     async def test_migration_idempotent(self, storage: Storage) -> None:
-        """Running migrate() a second time must not error."""
+        """Running migrate() a second time must not error or add duplicate rows."""
+        from logger.storage import _MIGRATIONS
+
         await storage.migrate()
         await storage.migrate()
         db = storage._conn()
         cur = await db.execute("SELECT COUNT(*) FROM schema_version")
         row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 1  # only one version row
+        assert row[0] == len(_MIGRATIONS)  # one row per migration version
 
 
 # ---------------------------------------------------------------------------
