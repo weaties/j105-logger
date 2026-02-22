@@ -167,7 +167,7 @@ async def _run() -> None:
 
 async def _export(start_iso: str, end_iso: str, out: str) -> None:
     """Export a time range from the DB to CSV."""
-    from logger.export import export_csv
+    from logger.export import export_to_file
     from logger.storage import Storage, StorageConfig
 
     try:
@@ -184,7 +184,7 @@ async def _export(start_iso: str, end_iso: str, out: str) -> None:
     storage = Storage(StorageConfig())
     await storage.connect()
     try:
-        rows = await export_csv(storage, start, end, out)
+        rows = await export_to_file(storage, start, end, out)
         logger.info("Wrote {} rows to {}", rows, out)
     finally:
         await storage.close()
@@ -290,7 +290,12 @@ def _build_parser() -> argparse.ArgumentParser:
     exp = sub.add_parser("export", help="Export a time range to CSV")
     exp.add_argument("--start", required=True, metavar="ISO", help="Start time (UTC ISO 8601)")
     exp.add_argument("--end", required=True, metavar="ISO", help="End time (UTC ISO 8601)")
-    exp.add_argument("--out", default="data/export.csv", metavar="FILE", help="Output CSV path")
+    exp.add_argument(
+        "--out",
+        default="data/export.csv",
+        metavar="FILE",
+        help="Output file path; format inferred from extension (.csv, .gpx, .json)",
+    )
 
     sub.add_parser("status", help="Show DB row counts and last-seen timestamps")
 

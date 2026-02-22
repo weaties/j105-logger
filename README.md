@@ -45,13 +45,31 @@ j105-logger run
 
 Press `Ctrl-C` to stop. All buffered data is flushed before exit.
 
-### Export to CSV
+### Export to CSV, GPX, or JSON
 
 ```bash
 j105-logger export \
   --start "2025-08-10T13:00:00" \
   --end   "2025-08-10T15:30:00" \
   --out   data/race1.csv
+```
+
+The format is inferred from the file extension:
+
+| Extension | Format | Best for |
+|---|---|---|
+| `.csv` | Comma-separated values | Spreadsheets, Sailmon, custom analysis |
+| `.gpx` | GPX 1.1 XML track | Navigation apps, course replay tools |
+| `.json` | Structured JSON | Custom scripts, programmatic analysis |
+
+```bash
+# GPX — only seconds with GPS position produce a <trkpt>
+j105-logger export --start "2025-08-10T13:00:00" --end "2025-08-10T15:30:00" \
+  --out data/race1.gpx
+
+# JSON — numeric values are typed (null instead of empty string for missing data)
+j105-logger export --start "2025-08-10T13:00:00" --end "2025-08-10T15:30:00" \
+  --out data/race1.json
 ```
 
 Timestamps are UTC ISO 8601. The output CSV has one row per second with columns:
