@@ -38,18 +38,19 @@ class ExportConfig:
 # Standard sailing column names used in output CSV
 _COLUMNS = [
     "timestamp",
-    "HDG",  # heading (degrees true)
-    "BSP",  # boatspeed through water (knots)
-    "DEPTH",  # water depth (metres)
-    "LAT",  # latitude (degrees)
-    "LON",  # longitude (degrees)
-    "COG",  # course over ground (degrees true)
-    "SOG",  # speed over ground (knots)
-    "TWS",  # true wind speed (knots) — reference=0 in PGN 130306
-    "TWA",  # true wind angle (degrees) — reference=0
-    "AWA",  # apparent wind angle (degrees) — reference=2
-    "AWS",  # apparent wind speed (knots) — reference=2
-    "WTEMP",  # water temperature (Celsius)
+    "HDG",       # heading (degrees true)
+    "BSP",       # boatspeed through water (knots)
+    "DEPTH",     # water depth (metres)
+    "LAT",       # latitude (degrees)
+    "LON",       # longitude (degrees)
+    "COG",       # course over ground (degrees true)
+    "SOG",       # speed over ground (knots)
+    "TWS",       # true wind speed (knots) — reference=0 in PGN 130306
+    "TWA",       # true wind angle (degrees) — reference=0
+    "AWA",       # apparent wind angle (degrees) — reference=2
+    "AWS",       # apparent wind speed (knots) — reference=2
+    "WTEMP",     # water temperature (Celsius)
+    "video_url", # YouTube deep-link for this second (empty if no video linked)
 ]
 
 # Wind reference codes from PGN 130306
@@ -89,6 +90,7 @@ async def export_csv(
     # Load all tables at once to avoid per-second queries
     logger.info("Loading data for export: {} → {}", start.isoformat(), end.isoformat())
 
+    video_sessions = await storage.list_video_sessions()
     headings = await storage.query_range("headings", start, end)
     speeds = await storage.query_range("speeds", start, end)
     depths = await storage.query_range("depths", start, end)
@@ -165,6 +167,14 @@ async def export_csv(
                 row["WTEMP"] = _fmt(e.get("water_temp_c"))
             else:
                 row["WTEMP"] = ""
+
+            # YouTube deep-link: use the first session that covers this second
+            row["video_url"] = ""
+            for session in video_sessions:
+                link = session.url_at(current)
+                if link is not None:
+                    row["video_url"] = link
+                    break
 
             writer.writerow(row)
             rows_written += 1

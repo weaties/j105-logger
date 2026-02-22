@@ -1,62 +1,127 @@
 """YouTube video timestamping — correlate recorded video with logged data.
 
-Uses yt-dlp to fetch video metadata (title, upload date, duration).
+A VideoSession stores a sync point: a (UTC wall-clock time, video offset)
+pair that anchors the video timeline to real time.  Given any UTC timestamp,
+video_offset_at() returns the corresponding seconds into the video and
+url_at() returns the YouTube deep-link URL with ?t=<seconds>.
 """
 
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, TypedDict
 
 from loguru import logger
 
+if TYPE_CHECKING:
+    from datetime import datetime
+
 # ---------------------------------------------------------------------------
-# Data types
+# Data type
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class VideoMetadata:
-    """Metadata for a YouTube video used during a logging session."""
+class VideoSession:
+    """A YouTube video linked to logged instrument data via a time sync point.
 
-    url: str
+    The sync point is a (sync_utc, sync_offset_s) pair that says:
+        "at UTC time sync_utc, the video playback position was sync_offset_s seconds."
+
+    This lets you link the video even when you don't know the exact start time —
+    just pick any identifiable moment (e.g. the starting gun) and note both
+    the UTC time from the instrument log and where it appears in the video.
+    """
+
+    url: str            # original YouTube URL
+    video_id: str       # extracted video ID, e.g. "dQw4w9WgXcQ"
     title: str
-    start_time: datetime  # UTC start of the video recording
-    duration_seconds: float
+    duration_s: float   # total video duration in seconds
+
+    sync_utc: datetime      # UTC wall-clock time at the sync point
+    sync_offset_s: float    # seconds into the video at sync_utc
+
+    def video_offset_at(self, utc: datetime) -> float:
+        """Return the video playback position (seconds) at the given UTC time."""
+        return self.sync_offset_s + (utc - self.sync_utc).total_seconds()
+
+    def covers(self, utc: datetime) -> bool:
+        """True if the given UTC time falls within the video's duration."""
+        offset = self.video_offset_at(utc)
+        return 0.0 <= offset <= self.duration_s
+
+    def url_at(self, utc: datetime) -> str | None:
+        """Return a YouTube deep-link URL with ?t= for the given UTC time.
+
+        Returns None if the timestamp falls outside the video.
+        """
+        offset = self.video_offset_at(utc)
+        if offset < 0 or offset > self.duration_s:
+            return None
+        return f"https://youtu.be/{self.video_id}?t={int(offset)}"
 
 
 # ---------------------------------------------------------------------------
-# VideoLogger
+# Internal types
 # ---------------------------------------------------------------------------
 
 
-class VideoLogger:
-    """Fetch and correlate YouTube video metadata with logged sailing data."""
+class _VideoInfo(TypedDict):
+    video_id: str
+    title: str
+    duration_s: float
 
-    async def fetch_metadata(self, url: str) -> VideoMetadata:
-        """Fetch video metadata from YouTube via yt-dlp.
 
-        Runs yt-dlp in a subprocess to avoid blocking the event loop.
+# ---------------------------------------------------------------------------
+# VideoLinker
+# ---------------------------------------------------------------------------
+
+
+class VideoLinker:
+    """Fetch YouTube metadata and create VideoSessions."""
+
+    async def create_session(
+        self,
+        url: str,
+        sync_utc: datetime,
+        sync_offset_s: float,
+    ) -> VideoSession:
+        """Fetch metadata from YouTube and return a VideoSession.
 
         Args:
-            url: A YouTube video URL.
+            url:            YouTube video URL.
+            sync_utc:       UTC wall-clock time at the sync point.
+            sync_offset_s:  Seconds into the video at sync_utc.
 
         Returns:
-            A VideoMetadata instance.
+            A VideoSession ready to be stored.
 
         Raises:
             RuntimeError: If yt-dlp cannot retrieve the metadata.
         """
         logger.info("Fetching video metadata for: {}", url)
+        info = await asyncio.to_thread(self._fetch_sync, url)
 
-        # Run yt-dlp in a thread to avoid blocking
-        loop = asyncio.get_event_loop()
-        metadata = await loop.run_in_executor(None, self._fetch_sync, url)
-        return metadata
+        session = VideoSession(
+            url=url,
+            video_id=info["video_id"],
+            title=info["title"],
+            duration_s=info["duration_s"],
+            sync_utc=sync_utc,
+            sync_offset_s=sync_offset_s,
+        )
+        logger.info(
+            "Video: {!r} ({:.0f}s) — sync: UTC {} ↔ video t={:.0f}s",
+            session.title,
+            session.duration_s,
+            sync_utc.isoformat(),
+            sync_offset_s,
+        )
+        return session
 
-    def _fetch_sync(self, url: str) -> VideoMetadata:
-        """Synchronous yt-dlp metadata fetch (called from executor)."""
+    def _fetch_sync(self, url: str) -> _VideoInfo:
+        """Synchronous yt-dlp metadata fetch (runs in a thread)."""
         try:
             import yt_dlp  # type: ignore[import-untyped]
         except ImportError as exc:  # pragma: no cover
@@ -74,42 +139,8 @@ class VideoLogger:
         if info is None:
             raise RuntimeError(f"yt-dlp returned no info for {url!r}")
 
-        title: str = str(info.get("title", ""))
-        duration: float = float(info.get("duration", 0.0))
-
-        # yt-dlp provides upload_date as YYYYMMDD; we use it as a best-effort
-        # start time. For live streams, 'release_timestamp' may be available.
-        release_ts: int | None = info.get("release_timestamp")
-        upload_date: str | None = info.get("upload_date")
-
-        if release_ts is not None:
-            start_time = datetime.fromtimestamp(release_ts, tz=UTC)
-        elif upload_date is not None:
-            start_time = datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=UTC)
-        else:
-            logger.warning("Video {!r}: no release timestamp or upload_date found", url)
-            start_time = datetime.now(tz=UTC)
-
-        logger.info(
-            "Video metadata: title={!r} duration={}s start_time={}",
-            title,
-            duration,
-            start_time,
-        )
-        return VideoMetadata(url=url, title=title, start_time=start_time, duration_seconds=duration)
-
-    def correlate_timestamp(
-        self,
-        video_meta: VideoMetadata,
-        elapsed_seconds: float,
-    ) -> datetime:
-        """Convert an elapsed video time to a UTC wall-clock timestamp.
-
-        Args:
-            video_meta:      Metadata for the video, including its UTC start time.
-            elapsed_seconds: Seconds from the start of the video.
-
-        Returns:
-            The corresponding UTC datetime.
-        """
-        return video_meta.start_time + timedelta(seconds=elapsed_seconds)
+        return {
+            "video_id": str(info.get("id", "")),
+            "title": str(info.get("title", "")),
+            "duration_s": float(info.get("duration", 0.0)),
+        }

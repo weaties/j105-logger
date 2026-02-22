@@ -28,6 +28,7 @@ from logger.nmea2000 import (
     SpeedRecord,
     WindRecord,
 )
+from logger.video import VideoSession
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -53,7 +54,7 @@ _FLUSH_BATCH_SIZE: int = 200      # also flush if this many records are buffered
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 2
+_CURRENT_VERSION: int = 3
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -125,6 +126,19 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_cogsog_ts       ON cogsog(ts);
         CREATE INDEX IF NOT EXISTS idx_winds_ts        ON winds(ts);
         CREATE INDEX IF NOT EXISTS idx_environmental_ts ON environmental(ts);
+    """,
+    3: """
+        CREATE TABLE IF NOT EXISTS video_sessions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            url           TEXT    NOT NULL,
+            video_id      TEXT    NOT NULL,
+            title         TEXT    NOT NULL,
+            duration_s    REAL    NOT NULL,
+            sync_utc      TEXT    NOT NULL,
+            sync_offset_s REAL    NOT NULL,
+            created_at    TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_video_sessions_sync_utc ON video_sessions(sync_utc);
     """,
 }
 
@@ -348,6 +362,55 @@ class Storage:
                 "last_seen": row[1] if (row and row[1]) else "never",
             }
         return result
+
+    # ------------------------------------------------------------------
+    # Video sessions
+    # ------------------------------------------------------------------
+
+    async def write_video_session(self, session: VideoSession) -> None:
+        """Persist a VideoSession to the video_sessions table."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO video_sessions"
+            " (url, video_id, title, duration_s, sync_utc, sync_offset_s, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                session.url,
+                session.video_id,
+                session.title,
+                session.duration_s,
+                session.sync_utc.isoformat(),
+                session.sync_offset_s,
+                _datetime.now(UTC).isoformat(),
+            ),
+        )
+        await db.commit()
+        logger.info("Video session stored: {!r}", session.title)
+
+    async def list_video_sessions(self) -> list[VideoSession]:
+        """Return all stored VideoSessions ordered by sync_utc."""
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT url, video_id, title, duration_s, sync_utc, sync_offset_s"
+            " FROM video_sessions ORDER BY sync_utc"
+        )
+        rows = await cur.fetchall()
+        return [
+            VideoSession(
+                url=row["url"],
+                video_id=row["video_id"],
+                title=row["title"],
+                duration_s=row["duration_s"],
+                sync_utc=_datetime.fromisoformat(row["sync_utc"]),
+                sync_offset_s=row["sync_offset_s"],
+            )
+            for row in rows
+        ]
 
 
 # ---------------------------------------------------------------------------

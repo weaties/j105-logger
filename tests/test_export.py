@@ -47,6 +47,7 @@ _EXPECTED_COLS = {
     "AWA",
     "AWS",
     "WTEMP",
+    "video_url",
 }
 
 
