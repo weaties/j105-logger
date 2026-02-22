@@ -10,8 +10,9 @@ exports to CSV for analysis in regatta tools.
 ## Table of Contents
 
 1. [Daily use](#daily-use)
-2. [Fresh SD card setup](#fresh-sd-card-setup)
-3. [Updating](#updating)
+2. [Linking YouTube videos](#linking-youtube-videos)
+3. [Fresh SD card setup](#fresh-sd-card-setup)
+4. [Updating](#updating)
 
 ---
 
@@ -84,6 +85,86 @@ candump can0
 # Interface details (state should be ERROR-ACTIVE when bus is healthy)
 ip -details link show can0
 ```
+
+---
+
+## Linking YouTube videos
+
+If you record a race on video and upload it to YouTube, you can link it to
+your instrument data. Once linked, every row in the exported CSV gets a
+`video_url` column with a deep-link (`?t=<seconds>`) that jumps straight to
+that moment in the video.
+
+### How to find your sync point
+
+You need one moment where you know both the **UTC time from the instrument
+log** and **where that moment appears in the video** (seconds from the start).
+
+A good sync point is the starting gun — it's visible on video and you can
+find it in the log by looking for a sudden change in boatspeed or heading.
+
+### Option A — you know when you pressed Record
+
+If you noted the time when you started the camera, use `--start`:
+
+```bash
+j105-logger link-video \
+  --url "https://youtu.be/YOUR_VIDEO_ID" \
+  --start "2025-08-10T13:45:00"
+```
+
+This tells the system the video playback position at `T=0s` corresponds to
+UTC `13:45:00`.
+
+### Option B — sync on a known event (recommended)
+
+This is more accurate. Pick any identifiable moment — the starting gun works
+well — and note:
+
+1. **Where it is in the video** — scrub to the moment in YouTube and read
+   the time off the progress bar (e.g. `5:30` = 330 seconds)
+2. **What UTC time it was** — look at your exported CSV for that event, or
+   check `j105-logger status` to see timestamps and cross-reference with the
+   log
+
+```bash
+j105-logger link-video \
+  --url "https://youtu.be/YOUR_VIDEO_ID" \
+  --sync-utc  "2025-08-10T14:05:30" \
+  --sync-offset 330
+```
+
+The command fetches the video title and duration from YouTube and stores the
+sync point. It prints a verification URL at the sync moment so you can
+confirm the alignment is correct.
+
+### List linked videos
+
+```bash
+j105-logger list-videos
+```
+
+```
+Title                                      Duration  Sync UTC
+--------------------------------------------------------------------------------
+J105 Race — August 2025                      2:03:14  2025-08-10T14:05:30+00:00
+  https://youtu.be/YOUR_VIDEO_ID
+```
+
+### Video links in the CSV export
+
+Once a video is linked, run `export` as normal:
+
+```bash
+j105-logger export \
+  --start "2025-08-10T13:00:00" \
+  --end   "2025-08-10T15:30:00" \
+  --out   data/race1.csv
+```
+
+The `video_url` column in the output will contain a clickable link for every
+second that falls within the video's duration, and will be empty outside that
+range. In Excel or Numbers, click the cell to jump directly to that moment.
 
 ---
 
