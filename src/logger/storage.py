@@ -8,6 +8,7 @@ all logged data.
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -41,10 +42,18 @@ class StorageConfig:
 
 
 # ---------------------------------------------------------------------------
+# Tuning
+# ---------------------------------------------------------------------------
+
+_FLUSH_INTERVAL_S: float = 1.0   # commit to disk at most once per second
+_FLUSH_BATCH_SIZE: int = 200      # also flush if this many records are buffered
+
+
+# ---------------------------------------------------------------------------
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 1
+_CURRENT_VERSION: int = 2
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -108,6 +117,15 @@ _MIGRATIONS: dict[int, str] = {
             water_temp_c  REAL    NOT NULL
         );
     """,
+    2: """
+        CREATE INDEX IF NOT EXISTS idx_headings_ts     ON headings(ts);
+        CREATE INDEX IF NOT EXISTS idx_speeds_ts       ON speeds(ts);
+        CREATE INDEX IF NOT EXISTS idx_depths_ts       ON depths(ts);
+        CREATE INDEX IF NOT EXISTS idx_positions_ts    ON positions(ts);
+        CREATE INDEX IF NOT EXISTS idx_cogsog_ts       ON cogsog(ts);
+        CREATE INDEX IF NOT EXISTS idx_winds_ts        ON winds(ts);
+        CREATE INDEX IF NOT EXISTS idx_environmental_ts ON environmental(ts);
+    """,
 }
 
 # ---------------------------------------------------------------------------
@@ -121,17 +139,21 @@ class Storage:
     def __init__(self, config: StorageConfig) -> None:
         self._config = config
         self._db: aiosqlite.Connection | None = None
+        self._pending: int = 0
+        self._last_flush: float = 0.0
 
     async def connect(self) -> None:
         """Open the database connection."""
         self._db = await aiosqlite.connect(self._config.db_path)
         self._db.row_factory = aiosqlite.Row
+        self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
 
     async def close(self) -> None:
-        """Close the database connection."""
+        """Flush any buffered writes and close the database connection."""
         if self._db is not None:
+            await self._flush()
             await self._db.close()
             self._db = None
             logger.info("Storage closed")
@@ -170,11 +192,11 @@ class Storage:
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
     # ------------------------------------------------------------------
-    # Write
+    # Write (batched)
     # ------------------------------------------------------------------
 
     async def write(self, record: PGNRecord) -> None:
-        """Persist a decoded PGN record to the appropriate table."""
+        """Buffer a decoded PGN record; flushes to disk periodically."""
         match record:
             case HeadingRecord():
                 await self._write_heading(record)
@@ -190,6 +212,27 @@ class Storage:
                 await self._write_wind(record)
             case EnvironmentalRecord():
                 await self._write_environmental(record)
+        self._pending += 1
+        await self._auto_flush()
+
+    async def _auto_flush(self) -> None:
+        """Commit if the batch size or time interval threshold is reached."""
+        now = time.monotonic()
+        if (
+            self._pending >= _FLUSH_BATCH_SIZE
+            or now - self._last_flush >= _FLUSH_INTERVAL_S
+        ):
+            await self._flush()
+
+    async def _flush(self) -> None:
+        """Commit all pending writes to disk."""
+        if self._pending == 0:
+            return
+        db = self._conn()
+        await db.commit()
+        logger.debug("Flushed {} records to SQLite", self._pending)
+        self._pending = 0
+        self._last_flush = time.monotonic()
 
     async def _write_heading(self, r: HeadingRecord) -> None:
         db = self._conn()
@@ -198,7 +241,6 @@ class Storage:
             " VALUES (?, ?, ?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.heading_deg, r.deviation_deg, r.variation_deg),
         )
-        await db.commit()
 
     async def _write_speed(self, r: SpeedRecord) -> None:
         db = self._conn()
@@ -206,7 +248,6 @@ class Storage:
             "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.speed_kts),
         )
-        await db.commit()
 
     async def _write_depth(self, r: DepthRecord) -> None:
         db = self._conn()
@@ -214,7 +255,6 @@ class Storage:
             "INSERT INTO depths (ts, source_addr, depth_m, offset_m) VALUES (?, ?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.depth_m, r.offset_m),
         )
-        await db.commit()
 
     async def _write_position(self, r: PositionRecord) -> None:
         db = self._conn()
@@ -223,7 +263,6 @@ class Storage:
             " VALUES (?, ?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.latitude_deg, r.longitude_deg),
         )
-        await db.commit()
 
     async def _write_cogsog(self, r: COGSOGRecord) -> None:
         db = self._conn()
@@ -231,7 +270,6 @@ class Storage:
             "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.cog_deg, r.sog_kts),
         )
-        await db.commit()
 
     async def _write_wind(self, r: WindRecord) -> None:
         db = self._conn()
@@ -246,7 +284,6 @@ class Storage:
                 r.reference,
             ),
         )
-        await db.commit()
 
     async def _write_environmental(self, r: EnvironmentalRecord) -> None:
         db = self._conn()
@@ -254,7 +291,6 @@ class Storage:
             "INSERT INTO environmental (ts, source_addr, water_temp_c) VALUES (?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.water_temp_c),
         )
-        await db.commit()
 
     # ------------------------------------------------------------------
     # Query
@@ -290,6 +326,28 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    async def status_summary(self) -> dict[str, dict[str, Any]]:
+        """Return row counts and last-seen timestamps for each data table."""
+        _TABLES = [
+            "headings",
+            "speeds",
+            "depths",
+            "positions",
+            "cogsog",
+            "winds",
+            "environmental",
+        ]
+        db = self._conn()
+        result: dict[str, dict[str, Any]] = {}
+        for table in _TABLES:
+            cur = await db.execute(f"SELECT COUNT(*), MAX(ts) FROM {table}")  # noqa: S608
+            row = await cur.fetchone()
+            result[table] = {
+                "count": row[0] if row else 0,
+                "last_seen": row[1] if (row and row[1]) else "never",
+            }
+        return result
 
 
 # ---------------------------------------------------------------------------
