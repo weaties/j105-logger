@@ -134,6 +134,67 @@ async def _status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# link-video
+# ---------------------------------------------------------------------------
+
+
+async def _link_video(url: str, sync_utc_iso: str, sync_offset_s: float) -> None:
+    """Fetch YouTube metadata and store a VideoSession sync point."""
+    from logger.storage import Storage, StorageConfig
+    from logger.video import VideoLinker
+
+    try:
+        sync_utc = datetime.fromisoformat(sync_utc_iso).replace(tzinfo=UTC)
+    except ValueError as exc:
+        logger.error("Invalid datetime: {}", exc)
+        sys.exit(1)
+
+    linker = VideoLinker()
+    session = await linker.create_session(url, sync_utc, sync_offset_s)
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        await storage.write_video_session(session)
+    finally:
+        await storage.close()
+
+    # Print a quick sanity-check URL at the sync point itself
+    check = session.url_at(sync_utc)
+    logger.info("Linked. Verify sync point: {}", check)
+
+
+# ---------------------------------------------------------------------------
+# list-videos
+# ---------------------------------------------------------------------------
+
+
+async def _list_videos() -> None:
+    """Print all linked YouTube video sessions."""
+    from logger.storage import Storage, StorageConfig
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        sessions = await storage.list_video_sessions()
+    finally:
+        await storage.close()
+
+    if not sessions:
+        print("No videos linked.")
+        return
+
+    print(f"{'Title':<42} {'Duration':>8}  {'Sync UTC'}")
+    print("-" * 80)
+    for s in sessions:
+        h, rem = divmod(int(s.duration_s), 3600)
+        m, sec = divmod(rem, 60)
+        dur = f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+        print(f"{s.title[:42]:<42} {dur:>8}  {s.sync_utc.isoformat()}")
+        print(f"  {s.url}")
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
 
@@ -153,6 +214,41 @@ def _build_parser() -> argparse.ArgumentParser:
     exp.add_argument("--out", default="data/export.csv", metavar="FILE", help="Output CSV path")
 
     sub.add_parser("status", help="Show DB row counts and last-seen timestamps")
+
+    lv = sub.add_parser(
+        "link-video",
+        help="Link a YouTube video to logged data via a time sync point",
+        description=(
+            "Associates a YouTube video with your instrument log by providing a sync point.\n\n"
+            "Option A — you know when you pressed Record:\n"
+            "  j105-logger link-video --url URL --start 2025-08-10T13:45:00\n\n"
+            "Option B — you know a specific moment in both the video and the log\n"
+            "  (e.g. starting gun at video t=5:30, UTC 14:05:30):\n"
+            "  j105-logger link-video --url URL --sync-utc 2025-08-10T14:05:30 --sync-offset 330"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    lv.add_argument("--url", required=True, metavar="URL", help="YouTube video URL")
+    lv_sync = lv.add_mutually_exclusive_group(required=True)
+    lv_sync.add_argument(
+        "--start",
+        metavar="ISO",
+        help="UTC time when you pressed Record (sets sync offset to 0)",
+    )
+    lv_sync.add_argument(
+        "--sync-utc",
+        metavar="ISO",
+        help="UTC time of a known sync point (pair with --sync-offset)",
+    )
+    lv.add_argument(
+        "--sync-offset",
+        type=float,
+        default=0.0,
+        metavar="SECONDS",
+        help="Seconds into the video at --sync-utc (default: 0)",
+    )
+
+    sub.add_parser("list-videos", help="List linked YouTube videos")
 
     return parser
 
@@ -174,6 +270,12 @@ def main() -> None:
                 asyncio.run(_export(args.start, args.end, args.out))
             case "status":
                 asyncio.run(_status())
+            case "link-video":
+                sync_utc_iso = args.start if args.start else args.sync_utc
+                sync_offset = 0.0 if args.start else args.sync_offset
+                asyncio.run(_link_video(args.url, sync_utc_iso, sync_offset))
+            case "list-videos":
+                asyncio.run(_list_videos())
     except KeyboardInterrupt:
         logger.info("Interrupted by user — shutting down")
     except Exception as exc:
