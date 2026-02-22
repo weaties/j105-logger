@@ -11,8 +11,9 @@ exports to CSV for analysis in regatta tools.
 
 1. [Daily use](#daily-use)
 2. [Linking YouTube videos](#linking-youtube-videos)
-3. [Fresh SD card setup](#fresh-sd-card-setup)
-4. [Updating](#updating)
+3. [External data — weather and tides](#external-data--weather-and-tides)
+4. [Fresh SD card setup](#fresh-sd-card-setup)
+5. [Updating](#updating)
 
 ---
 
@@ -54,7 +55,27 @@ j105-logger export \
 ```
 
 Timestamps are UTC ISO 8601. The output CSV has one row per second with columns:
-`timestamp, HDG, BSP, DEPTH, LAT, LON, COG, SOG, TWS, TWA, AWA, AWS, WTEMP`
+
+| Column | Description |
+|---|---|
+| `timestamp` | UTC ISO 8601 |
+| `HDG` | Heading (degrees true) |
+| `BSP` | Boatspeed through water (knots) |
+| `DEPTH` | Water depth (metres) |
+| `LAT` / `LON` | GPS position (decimal degrees) |
+| `COG` / `SOG` | Course and speed over ground |
+| `TWS` / `TWA` | True wind speed (kts) and angle (°) |
+| `AWA` / `AWS` | Apparent wind angle (°) and speed (kts) |
+| `WTEMP` | Water temperature (°C) |
+| `video_url` | YouTube deep-link for that second (empty if no video linked) |
+| `WX_TWS` / `WX_TWD` | Synoptic wind speed (kts) and direction (°) from Open-Meteo |
+| `AIR_TEMP` | Air temperature (°C) from Open-Meteo |
+| `PRESSURE` | Surface pressure (hPa) from Open-Meteo |
+| `TIDE_HT` | Tide height above MLLW (metres) from NOAA CO-OPS |
+
+Weather and tide columns are hourly resolution — all seconds within the same
+hour share the same value. They are empty if the Pi had no internet or GPS
+lock when the session was logged.
 
 ### Manage the background service
 
@@ -165,6 +186,32 @@ j105-logger export \
 The `video_url` column in the output will contain a clickable link for every
 second that falls within the video's duration, and will be empty outside that
 range. In Excel or Numbers, click the cell to jump directly to that moment.
+
+---
+
+## External data — weather and tides
+
+When `j105-logger run` is active, two background tasks automatically fetch
+external data and store it in the same SQLite database:
+
+| Source | Data | Coverage |
+|---|---|---|
+| [Open-Meteo](https://open-meteo.com/) | Wind speed, wind direction, air temperature, pressure | Global, free, no API key |
+| [NOAA CO-OPS](https://tidesandcurrents.noaa.gov/) | Hourly tide height predictions (MLLW datum) | US coastal waters, free, no API key |
+
+Both tasks start as soon as the Pi has a GPS lock and internet access:
+
+- **Weather** is fetched once per hour for the current position.
+- **Tides** are fetched once per day — today's and tomorrow's full 24-hour
+  prediction set — from the nearest NOAA station to the boat's position.
+  Re-fetching is idempotent, so restarting the logger never creates duplicates.
+
+The data appears automatically as extra columns in the CSV export (`WX_TWS`,
+`WX_TWD`, `AIR_TEMP`, `PRESSURE`, `TIDE_HT`). No configuration is needed.
+
+> **Offline use**: If the Pi has no internet (e.g. at anchor without Wi-Fi),
+> the external fetches fail silently. The logger continues normally and those
+> CSV columns will be empty for that session.
 
 ---
 
