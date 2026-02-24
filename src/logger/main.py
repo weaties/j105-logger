@@ -115,10 +115,15 @@ async def _tide_loop(storage: object, fetcher: object) -> None:
 
 
 async def _run() -> None:
-    """Main async loop: read CAN frames, decode, persist."""
-    from logger.can_reader import CANReader, CANReaderConfig, extract_pgn
+    """Main async loop: read instrument data, decode, persist.
+
+    Data source is selected by the DATA_SOURCE environment variable:
+      signalk (default) — consume the Signal K WebSocket feed (SK owns can0)
+      can               — read raw CAN frames directly (legacy mode)
+    """
+    import os
+
     from logger.external import ExternalFetcher
-    from logger.nmea2000 import decode
     from logger.storage import Storage, StorageConfig
 
     # Cancel this task on SIGTERM so finally blocks run and storage is flushed.
@@ -127,29 +132,43 @@ async def _run() -> None:
     assert current is not None
     loop.add_signal_handler(signal.SIGTERM, current.cancel)
 
-    reader_config = CANReaderConfig()
+    data_source = os.environ.get("DATA_SOURCE", "signalk").lower()
     storage_config = StorageConfig()
-
     storage = Storage(storage_config)
     await storage.connect()
 
-    logger.info(
-        "Logger starting: interface={} db={}",
-        reader_config.interface,
-        storage_config.db_path,
-    )
-
-    reader = CANReader(reader_config)
     async with ExternalFetcher() as fetcher:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
         tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
         try:
-            async for frame in reader:
-                pgn = extract_pgn(frame.arbitration_id)
-                src = frame.arbitration_id & 0xFF
-                record = decode(pgn, frame.data, src, frame.timestamp)
-                if record is not None:
+            if data_source == "signalk":
+                from logger.sk_reader import SKReader, SKReaderConfig
+
+                sk_config = SKReaderConfig()
+                logger.info(
+                    "Logger starting: source=signalk host={}:{} db={}",
+                    sk_config.host,
+                    sk_config.port,
+                    storage_config.db_path,
+                )
+                async for record in SKReader(sk_config):
                     await storage.write(record)
+            else:
+                from logger.can_reader import CANReader, CANReaderConfig, extract_pgn
+                from logger.nmea2000 import decode
+
+                can_config = CANReaderConfig()
+                logger.info(
+                    "Logger starting: source=can interface={} db={}",
+                    can_config.interface,
+                    storage_config.db_path,
+                )
+                async for frame in CANReader(can_config):
+                    pgn = extract_pgn(frame.arbitration_id)
+                    src = frame.arbitration_id & 0xFF
+                    decoded = decode(pgn, frame.data, src, frame.timestamp)
+                    if decoded is not None:
+                        await storage.write(decoded)
         except asyncio.CancelledError:
             logger.info("Shutdown signal received — flushing and stopping")
         finally:
