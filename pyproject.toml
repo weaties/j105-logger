@@ -18,6 +18,8 @@ dependencies = [
     # Environment / config
     "python-dotenv>=1.0.1",
     "aiosqlite>=0.22.1",
+    # Signal K WebSocket client
+    "websockets>=14.0",
 ]
 
 [project.scripts]
@@ -60,10 +62,7 @@ select = [
     "SIM", # flake8-simplify
     "TCH", # flake8-type-checking
 ]
-ignore = [
-    "ANN101", # missing type annotation for `self`
-    "ANN102", # missing type annotation for `cls`
-]
+ignore = []
 
 [tool.ruff.lint.isort]
 known-first-party = ["logger"]

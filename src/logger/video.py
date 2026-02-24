@@ -34,13 +34,13 @@ class VideoSession:
     the UTC time from the instrument log and where it appears in the video.
     """
 
-    url: str            # original YouTube URL
-    video_id: str       # extracted video ID, e.g. "dQw4w9WgXcQ"
+    url: str  # original YouTube URL
+    video_id: str  # extracted video ID, e.g. "dQw4w9WgXcQ"
     title: str
-    duration_s: float   # total video duration in seconds
+    duration_s: float  # total video duration in seconds
 
-    sync_utc: datetime      # UTC wall-clock time at the sync point
-    sync_offset_s: float    # seconds into the video at sync_utc
+    sync_utc: datetime  # UTC wall-clock time at the sync point
+    sync_offset_s: float  # seconds into the video at sync_utc
 
     def video_offset_at(self, utc: datetime) -> float:
         """Return the video playback position (seconds) at the given UTC time."""

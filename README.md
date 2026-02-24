@@ -1,19 +1,52 @@
 # J105 Logger
 
 NMEA 2000 data logger for J105 sailboat racing performance analysis. Runs on a
-Raspberry Pi with a CAN bus HAT connected to the B&G instrument network. Logs
-boatspeed, wind, heading, depth, position, and water temperature to SQLite, then
-exports to CSV for analysis in regatta tools.
+Raspberry Pi with a CAN bus HAT connected to the B&G instrument network. Signal K
+Server decodes the NMEA 2000 bus and feeds both InfluxDB → Grafana (real-time
+dashboards) and j105-logger (SQLite → CSV/GPX/JSON for regatta analysis tools).
+
+---
+
+## Architecture
+
+```
+CAN Bus (can0)
+    │
+    ▼
+Signal K Server          ← owns can0, decodes NMEA 2000 via canboatjs
+    ├──► InfluxDB 2.7.11 ← via signalk-to-influxdb2 plugin
+    │        └──► Grafana  ← real-time dashboards, port 3001
+    └──► WebSocket ws://localhost:3000/signalk/v1/stream
+              │
+              ▼
+         j105-logger (sk_reader.py)
+              │
+              ▼
+         SQLite (storage.py)
+              │
+              ▼
+         export.py  →  CSV / GPX / JSON  →  Sailmon, regatta tools
+```
+
+Service dependency chain:
+```
+can-interface.service  →  signalk.service  →  j105-logger.service
+influxd.service        (independent, starts at boot)
+grafana-server.service (independent, starts at boot)
+```
 
 ---
 
 ## Table of Contents
 
 1. [Daily use](#daily-use)
-2. [Linking YouTube videos](#linking-youtube-videos)
-3. [External data — weather and tides](#external-data--weather-and-tides)
-4. [Fresh SD card setup](#fresh-sd-card-setup)
-5. [Updating](#updating)
+2. [Web interfaces](#web-interfaces)
+3. [Linking YouTube videos](#linking-youtube-videos)
+4. [External data — weather and tides](#external-data--weather-and-tides)
+5. [Fresh SD card setup](#fresh-sd-card-setup)
+6. [Updating](#updating)
+7. [Configuration](#configuration)
+8. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -112,8 +145,8 @@ sudo systemctl start   j105-logger
 sudo systemctl restart j105-logger
 ```
 
-The service depends on `can-interface.service`, which brings up `can0` at boot.
-Both services start automatically when the Pi is powered on.
+The service depends on `signalk.service`, which in turn depends on
+`can-interface.service`. All three start automatically at boot.
 
 ### CAN bus health check
 
@@ -124,6 +157,21 @@ candump can0
 # Interface details (state should be ERROR-ACTIVE when bus is healthy)
 ip -details link show can0
 ```
+
+---
+
+## Web interfaces
+
+All three are available from any machine on your Tailscale network:
+
+| Interface | URL | Purpose |
+|---|---|---|
+| Signal K | `http://corvopi:3000` | NMEA 2000 data explorer, plugin management |
+| Grafana | `http://corvopi:3001` | Real-time sailing dashboards |
+| InfluxDB | `http://corvopi:8086` | Time-series data explorer, query UI |
+
+Grafana is pre-provisioned with an InfluxDB datasource. The default credentials
+are `admin` / `changeme123` — change these after first login.
 
 ---
 
@@ -235,7 +283,7 @@ The data appears automatically as extra columns in the CSV export (`WX_TWS`,
 
 ## Fresh SD card setup
 
-This covers everything from a blank SD card to a fully running logger.
+This covers everything from a blank SD card to a fully running stack.
 
 ### 1. Flash the OS
 
@@ -272,7 +320,6 @@ If `.local` doesn't resolve, check your router's DHCP table for the IP.
 
 ```bash
 sudo apt-get update && sudo apt-get upgrade -y
-sudo apt-get install -y git can-utils
 ```
 
 ### 4. Add to Tailscale
@@ -350,16 +397,9 @@ ip link show can0
 ### 6. Clone the repository
 
 ```bash
-# From your home directory
 cd ~
 git clone https://github.com/weaties/j105-logger.git
 cd j105-logger
-```
-
-If you prefer SSH (and have a deploy key or personal key on the Pi):
-
-```bash
-git clone git@github.com:weaties/j105-logger.git
 ```
 
 ### 7. Run the setup script
@@ -368,21 +408,26 @@ git clone git@github.com:weaties/j105-logger.git
 ./scripts/setup.sh
 ```
 
-This script is idempotent — safe to re-run after updates. It:
+This script is fully idempotent — safe to re-run after updates. It installs and
+configures:
 
-1. Installs `uv` (Python package manager) to `~/.local/bin/`
-2. Creates a Python 3.12 virtual environment and installs all dependencies
-3. Creates a `.env` config file from the template
-4. Creates the `data/` directory for the SQLite database
-5. Adds your user to the `netdev` group (required for non-root CAN bus access)
-6. Installs and enables `can-interface.service` (brings up `can0` at boot)
-7. Installs and enables `j105-logger.service` (starts the logger automatically)
+1. Node.js 24 LTS (via NodeSource)
+2. Signal K Server + signalk-to-influxdb2 plugin
+3. InfluxDB 2.7.11 (pinned; `apt-mark hold` prevents v3 auto-upgrade)
+4. Grafana OSS (pre-provisioned InfluxDB datasource, port 3001)
+5. `uv` and all Python dependencies
+6. `.env` config file from the template
+7. `data/` directory for the SQLite database
+8. `netdev` group membership for non-root CAN bus access
+9. `can-interface.service` — brings up `can0` at boot
+10. `signalk.service` — starts Signal K after CAN is up
+11. `j105-logger.service` — starts logger after Signal K is up
 
-After the script completes, **reboot once** to activate the `netdev` group
-membership (or run `newgrp netdev` in your current shell):
+The InfluxDB admin token is saved to `~/influx-token.txt` (permissions 600).
+If you ever lose it, retrieve it with:
 
 ```bash
-sudo reboot
+influx auth list
 ```
 
 ### 8. Add `uv` to your PATH
@@ -394,40 +439,40 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 9. Verify everything works
+### 9. Reboot and verify
 
 ```bash
-# CAN interface should be ERROR-ACTIVE (no bus) or ERROR-ACTIVE with frames
-ip -details link show can0
-
-# Logger service should be active (it will wait for the boat's NMEA bus)
-sudo systemctl status j105-logger
-
-# Run the status command — should show 0 rows until the boat's bus is connected
-j105-logger status
+sudo reboot
 ```
 
-On the boat, once the NMEA 2000 bus is powered up:
+After rebooting:
 
 ```bash
-# You should see a stream of CAN frames
-candump can0
+# All five should be active
+sudo systemctl status can-interface signalk influxd grafana-server j105-logger
 
-# Logger logs (confirm PGNs are being decoded)
-sudo journalctl -fu j105-logger
+# Logger rows accumulating
+j105-logger status
+
+# Signal K dashboard
+# Open http://corvopi:3000 in a browser
+
+# Grafana dashboards
+# Open http://corvopi:3001 in a browser (admin/changeme123)
 ```
 
 ---
 
 ## Updating
 
-After a `git pull`, re-run setup to pick up any dependency or service changes:
+After a `git pull`, re-run setup to pick up dependency or service changes:
 
 ```bash
 cd ~/j105-logger
 git pull
 ./scripts/setup.sh
-sudo systemctl restart j105-logger
+sudo npm update -g signalk-server
+sudo systemctl restart signalk j105-logger
 ```
 
 ---
@@ -441,6 +486,9 @@ CAN_INTERFACE=can0      # SocketCAN interface name
 CAN_BITRATE=250000      # NMEA 2000 standard bitrate
 DB_PATH=data/logger.db  # SQLite database path (relative to project root)
 LOG_LEVEL=INFO          # loguru log level: DEBUG, INFO, WARNING, ERROR
+DATA_SOURCE=signalk     # signalk (default) or can (legacy direct CAN mode)
+SK_HOST=localhost        # Signal K server hostname
+SK_PORT=3000             # Signal K WebSocket port
 ```
 
 Edit with `nano ~/j105-logger/.env`. Changes take effect on the next
@@ -461,6 +509,49 @@ export PATH="$HOME/.local/bin:$PATH"   # temporary
 Or use the full invocation:
 ```bash
 ~/.local/bin/uv run --project ~/j105-logger j105-logger status
+```
+
+### j105-logger can't connect to Signal K
+
+The logger connects to Signal K's WebSocket at `ws://${SK_HOST}:${SK_PORT}/signalk/v1/stream`.
+
+```bash
+# Check Signal K is running
+sudo systemctl status signalk
+
+# Check Signal K logs
+sudo journalctl -u signalk --no-pager -n 50
+
+# Verify the WebSocket endpoint is up
+curl -s http://localhost:3000/signalk/v1/api/ | python3 -m json.tool
+```
+
+If Signal K is running but the logger can't connect, check `SK_HOST` and
+`SK_PORT` in `.env` match the Signal K server configuration.
+
+### Signal K reports "socketcan stopped" (can-interface.service not running)
+
+```bash
+sudo systemctl status can-interface
+sudo systemctl restart can-interface
+sudo systemctl restart signalk
+```
+
+If `can-interface` fails, the CAN HAT likely isn't configured — see step 5
+in the fresh SD card setup above.
+
+### InfluxDB token lost
+
+The token was saved at setup time to `~/influx-token.txt`:
+
+```bash
+cat ~/influx-token.txt
+```
+
+Or list all tokens via the CLI:
+
+```bash
+influx auth list
 ```
 
 ### `can0` interface missing after reboot
@@ -490,14 +581,12 @@ sudo journalctl -u j105-logger --no-pager
 ```
 
 Common causes:
-- `can0` not up yet (check `can-interface.service` status)
+- Signal K not running yet (check `signalk.service` status)
 - `.env` file missing (re-run `./scripts/setup.sh`)
 - `netdev` group not applied (reboot required after first setup)
 
 ### Permission denied on `can0`
 
-Your user isn't in the `netdev` group, or the group change hasn't taken effect.
-Reboot the Pi. Confirm with:
-```bash
-groups weaties   # should include 'netdev'
-```
+Signal K owns the CAN bus — j105-logger never touches it directly (it reads
+from the Signal K WebSocket). If you see this error, check that `DATA_SOURCE`
+in `.env` is set to `signalk` (the default), not `can`.
