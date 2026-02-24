@@ -246,6 +246,24 @@ info "uv: $UV_BIN ($("$UV_BIN" --version))"
 step "Syncing Python dependencies..."
 "$UV_BIN" sync --project "$PROJECT_DIR"
 
+# Install j105-logger wrapper script so the command works directly in the shell
+# (uv console scripts live in the venv, not in ~/.local/bin)
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/j105-logger" << WRAPPER
+#!/usr/bin/env bash
+exec "${UV_BIN}" run --project "${PROJECT_DIR}" j105-logger "\$@"
+WRAPPER
+chmod +x "$HOME/.local/bin/j105-logger"
+info "j105-logger wrapper installed to ~/.local/bin/j105-logger"
+
+# Ensure ~/.local/bin is in PATH permanently
+if ! grep -q 'local/bin' "$HOME/.bashrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+    info "Added ~/.local/bin to PATH in ~/.bashrc"
+else
+    info "~/.local/bin already in ~/.bashrc PATH"
+fi
+
 # ---------------------------------------------------------------------------
 # h) .env file and data directory
 # ---------------------------------------------------------------------------
