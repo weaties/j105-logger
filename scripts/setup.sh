@@ -130,7 +130,7 @@ if ! influx version 2>/dev/null | grep -q "${INFLUX_VERSION}"; then
     wget -q "https://dl.influxdata.com/influxdb/releases/${INFLUX_DEB}"
     sudo dpkg -i "${INFLUX_DEB}"
     rm "${INFLUX_DEB}"
-    sudo systemctl enable --now influxd
+    sudo systemctl enable --now influxdb
     sudo apt-mark hold influxdb2
     # Wait for influxd to be ready
     info "Waiting for influxd to start..."
@@ -298,7 +298,7 @@ BindsTo=sys-subsystem-net-devices-${CAN_INTERFACE}.device
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/sbin/ip link set ${CAN_INTERFACE} down 2>/dev/null || true
+ExecStartPre=-/sbin/ip link set ${CAN_INTERFACE} down
 ExecStart=/sbin/ip link set ${CAN_INTERFACE} up type can bitrate ${CAN_BITRATE}
 ExecStop=/sbin/ip link set ${CAN_INTERFACE} down
 
