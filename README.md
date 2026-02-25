@@ -556,8 +556,25 @@ influx auth list
 
 ### `can0` interface missing after reboot
 
-The `dtoverlay` line in `/boot/firmware/config.txt` is missing or malformed.
-Check:
+**Check 1 — `can-interface.service` not installed:**
+
+If the setup script was never run (or failed partway through), the service that
+brings up `can0` won't exist:
+
+```bash
+sudo systemctl status can-interface
+```
+
+If it shows "Unit can-interface.service could not be found", re-run setup:
+
+```bash
+./scripts/setup.sh
+```
+
+**Check 2 — `dtoverlay` line missing or malformed:**
+
+The `dtoverlay` line in `/boot/firmware/config.txt` may be missing:
+
 ```bash
 grep -n "mcp2515\|spi" /boot/firmware/config.txt
 ```

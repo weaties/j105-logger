@@ -38,7 +38,7 @@ step "Installing system prerequisites..."
 sudo apt-get update -qq
 sudo apt-get install -y \
     git can-utils curl gnupg2 apt-transport-https \
-    software-properties-common ca-certificates lsb-release jq
+    ca-certificates lsb-release jq
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -125,11 +125,14 @@ info "signalk.service installed and enabled."
 
 step "Checking InfluxDB..."
 if ! influx version 2>/dev/null | grep -q "${INFLUX_VERSION}"; then
-    info "Installing InfluxDB ${INFLUX_VERSION}..."
-    INFLUX_DEB="influxdb2_${INFLUX_VERSION}_arm64.deb"
-    wget -q "https://dl.influxdata.com/influxdb/releases/${INFLUX_DEB}"
-    sudo dpkg -i "${INFLUX_DEB}"
-    rm "${INFLUX_DEB}"
+    info "Installing InfluxDB ${INFLUX_VERSION} via apt repo..."
+    # Add InfluxData apt repo (arm64 debs are only available via their repo, not direct download)
+    curl -fsSL https://repos.influxdata.com/influxdata-archive.key | \
+        gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/influxdata-archive.gpg > /dev/null
+    echo "deb [signed-by=/etc/apt/trusted.gpg.d/influxdata-archive.gpg] https://repos.influxdata.com/debian stable main" | \
+        sudo tee /etc/apt/sources.list.d/influxdata.list > /dev/null
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "influxdb2=${INFLUX_VERSION}-1"
     sudo systemctl enable --now influxdb
     sudo apt-mark hold influxdb2
     # Wait for influxd to be ready
