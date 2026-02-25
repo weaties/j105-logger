@@ -75,7 +75,7 @@ if [[ ! -f "$HOME/.signalk/settings.json" ]]; then
   "pipedProviders": [{
     "id": "n2k-canbus",
     "pipeElements": [
-      { "type": "providers/rawsocketcan", "options": { "interface": "can0" } },
+      { "type": "providers/canbus", "options": { "canDevice": "can0" } },
       { "type": "providers/canboatjs", "options": {} }
     ],
     "enabled": true
@@ -216,11 +216,15 @@ mkdir -p "$HOME/.signalk/plugin-config-data"
 cat > "$HOME/.signalk/plugin-config-data/signalk-to-influxdb2.json" << EOF
 {
   "configuration": {
-    "url": "http://localhost:8086",
-    "token": "${INFLUX_TOKEN}",
-    "org": "j105",
-    "bucket": "signalk",
-    "enabled": true
+    "influxes": [
+      {
+        "url": "http://localhost:8086",
+        "token": "${INFLUX_TOKEN}",
+        "org": "j105",
+        "bucket": "signalk",
+        "onlySelf": true
+      }
+    ]
   },
   "enabled": true
 }
