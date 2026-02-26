@@ -76,6 +76,12 @@ color:#fff;font-weight:700;cursor:pointer;font-size:1rem}
 .btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
 background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none}
 .hidden{display:none}
+.instruments-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:8px}
+.inst-item{display:flex;flex-direction:column}
+.inst-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:#8892a4}
+.inst-value{font-size:1.3rem;font-weight:700;color:#7eb8f7;font-variant-numeric:tabular-nums}
+.inst-unit{font-size:.75rem;color:#8892a4;margin-left:2px}
+.inst-time{font-size:1rem;font-weight:600;color:#e8eaf0;font-variant-numeric:tabular-nums;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -96,6 +102,31 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <div class="race-meta" id="cur-meta">—</div>
   <div class="label" style="margin-top:12px">Duration</div>
   <div class="duration" id="cur-duration">—</div>
+</div>
+
+<div class="card" id="instruments-card">
+  <div class="label">Instruments</div>
+  <div class="inst-time" id="inst-time">--:--:-- UTC</div>
+  <div class="instruments-grid">
+    <div class="inst-item"><span class="inst-label">SOG</span>
+      <span><span class="inst-value" id="iv-sog">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">COG</span>
+      <span><span class="inst-value" id="iv-cog">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">HDG</span>
+      <span><span class="inst-value" id="iv-hdg">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">BSP</span>
+      <span><span class="inst-value" id="iv-bsp">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">AWS</span>
+      <span><span class="inst-value" id="iv-aws">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">AWA</span>
+      <span><span class="inst-value" id="iv-awa">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">TWS</span>
+      <span><span class="inst-value" id="iv-tws">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">TWA</span>
+      <span><span class="inst-value" id="iv-twa">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">TWD</span>
+      <span><span class="inst-value" id="iv-twd">—</span><span class="inst-unit">°</span></span></div>
+  </div>
 </div>
 
 <div id="controls">
@@ -195,9 +226,32 @@ function render(s) {
 }
 
 function tick() {
+  const now = new Date();
+  document.getElementById('inst-time').textContent =
+    now.toISOString().substring(11,19) + ' UTC';
   if(!curRaceStartMs) return;
   const elapsed = Math.floor((Date.now() - curRaceStartMs) / 1000);
   document.getElementById('cur-duration').textContent = fmt(elapsed);
+}
+
+async function loadInstruments() {
+  try {
+    const r = await fetch('/api/instruments');
+    const d = await r.json();
+    const set = (id, val, decimals=1) => {
+      const el = document.getElementById(id);
+      el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
+    };
+    set('iv-sog', d.sog_kts, 1);
+    set('iv-cog', d.cog_deg, 0);
+    set('iv-hdg', d.heading_deg, 0);
+    set('iv-bsp', d.bsp_kts, 1);
+    set('iv-aws', d.aws_kts, 1);
+    set('iv-awa', d.awa_deg, 0);
+    set('iv-tws', d.tws_kts, 1);
+    set('iv-twa', d.twa_deg, 0);
+    set('iv-twd', d.twd_deg, 0);
+  } catch(e) { console.error('instruments error', e); }
 }
 
 async function startRace() {
@@ -227,6 +281,8 @@ async function saveEvent() {
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
+loadInstruments();
+setInterval(loadInstruments, 2000);
 </script>
 </body>
 </html>
@@ -329,6 +385,15 @@ def create_app(
                 "today_races": [_race_dict(r) for r in today_races],
             }
         )
+
+    # ------------------------------------------------------------------
+    # /api/instruments
+    # ------------------------------------------------------------------
+
+    @app.get("/api/instruments")
+    async def api_instruments() -> JSONResponse:
+        data = await storage.latest_instruments()
+        return JSONResponse(data)
 
     # ------------------------------------------------------------------
     # /api/event
