@@ -247,3 +247,71 @@ def test_resolve_device_by_name_substring() -> None:
 
     assert idx == 1
     assert "Gordik" in name
+
+
+# ---------------------------------------------------------------------------
+# test_is_recording
+# ---------------------------------------------------------------------------
+
+
+def test_is_recording_false_before_start() -> None:
+    """is_recording is False on a fresh recorder."""
+    recorder = AudioRecorder()
+    assert recorder.is_recording is False
+
+
+def test_is_recording_true_after_start(tmp_path: Path) -> None:
+    """is_recording is True after start() and False after stop()."""
+    import asyncio
+
+    mock_stream = MagicMock()
+    mock_sf = MagicMock()
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_DEVICES),
+        patch("sounddevice.InputStream", return_value=mock_stream),
+        patch("soundfile.SoundFile", return_value=mock_sf),
+    ):
+        config = AudioConfig(
+            device=None,
+            sample_rate=48000,
+            channels=1,
+            output_dir=str(tmp_path),
+        )
+        recorder = AudioRecorder()
+
+        asyncio.run(recorder.start(config))
+        assert recorder.is_recording is True
+
+        asyncio.run(recorder.stop())
+        assert recorder.is_recording is False
+
+
+# ---------------------------------------------------------------------------
+# test_start_with_custom_name
+# ---------------------------------------------------------------------------
+
+
+def test_start_with_custom_name(tmp_path: Path) -> None:
+    """start(config, name=...) saves the WAV as {name}.wav."""
+    import asyncio
+
+    mock_stream = MagicMock()
+    mock_sf = MagicMock()
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_DEVICES),
+        patch("sounddevice.InputStream", return_value=mock_stream),
+        patch("soundfile.SoundFile", return_value=mock_sf),
+    ):
+        config = AudioConfig(
+            device=None,
+            sample_rate=48000,
+            channels=1,
+            output_dir=str(tmp_path),
+        )
+        recorder = AudioRecorder()
+        session = asyncio.run(recorder.start(config, name="20260226-BallardCup-1"))
+
+    assert session.file_path.endswith("20260226-BallardCup-1.wav")
+    assert "audio_" not in session.file_path

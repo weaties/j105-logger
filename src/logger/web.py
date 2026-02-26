@@ -24,9 +24,11 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from loguru import logger
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from logger.audio import AudioConfig, AudioRecorder
     from logger.storage import Storage
 
 # ---------------------------------------------------------------------------
@@ -245,9 +247,18 @@ class EventRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_app(storage: Storage) -> FastAPI:
-    """Create and return the FastAPI application bound to the given Storage."""
+def create_app(
+    storage: Storage,
+    recorder: AudioRecorder | None = None,
+    audio_config: AudioConfig | None = None,
+) -> FastAPI:
+    """Create and return the FastAPI application bound to the given Storage.
+
+    If *recorder* and *audio_config* are provided, recording starts when a race
+    starts and stops when the race ends.
+    """
     app = FastAPI(title="J105 Logger", docs_url=None, redoc_url=None)
+    _audio_session_id: int | None = None
 
     # ------------------------------------------------------------------
     # HTML UI
@@ -337,6 +348,7 @@ def create_app(storage: Storage) -> FastAPI:
 
     @app.post("/api/races/start", status_code=201)
     async def api_start_race() -> JSONResponse:
+        nonlocal _audio_session_id
         from logger.races import build_race_name, default_event_for_date
 
         now = datetime.now(UTC)
@@ -357,6 +369,17 @@ def create_app(storage: Storage) -> FastAPI:
         name = build_race_name(event, today, race_num)
 
         race = await storage.start_race(event, now, date_str, race_num, name)
+
+        if recorder is not None and audio_config is not None:
+            from logger.audio import AudioDeviceNotFoundError
+
+            try:
+                session = await recorder.start(audio_config, name=race.name)
+                _audio_session_id = await storage.write_audio_session(session)
+                logger.info("Audio recording started: {}", session.file_path)
+            except AudioDeviceNotFoundError as exc:
+                logger.warning("Audio unavailable for race {}: {}", race.name, exc)
+
         return JSONResponse(
             {
                 "id": race.id,
@@ -374,8 +397,16 @@ def create_app(storage: Storage) -> FastAPI:
 
     @app.post("/api/races/{race_id}/end", status_code=204)
     async def api_end_race(race_id: int) -> None:
+        nonlocal _audio_session_id
         now = datetime.now(UTC)
         await storage.end_race(race_id, now)
+
+        if recorder is not None and _audio_session_id is not None:
+            completed = await recorder.stop()
+            assert completed.end_utc is not None
+            await storage.update_audio_session_end(_audio_session_id, completed.end_utc)
+            logger.info("Audio recording saved: {}", completed.file_path)
+            _audio_session_id = None
 
     # ------------------------------------------------------------------
     # /api/races/{id}/export.{fmt}

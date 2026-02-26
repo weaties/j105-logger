@@ -132,8 +132,16 @@ class AudioRecorder:
     # Start / stop
     # ------------------------------------------------------------------
 
-    async def start(self, config: AudioConfig) -> AudioSession:
+    @property
+    def is_recording(self) -> bool:
+        """True if a recording is currently in progress."""
+        return self._session is not None
+
+    async def start(self, config: AudioConfig, name: str | None = None) -> AudioSession:
         """Open the audio stream and start recording to a WAV file.
+
+        If *name* is provided the file is saved as ``{output_dir}/{name}.wav``.
+        Otherwise the filename defaults to ``audio_YYYYMMDD_HHMMSS.wav``.
 
         Returns an AudioSession with start_utc set (end_utc is None until
         stop() is called).
@@ -148,9 +156,12 @@ class AudioRecorder:
         # Ensure output directory exists
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
-        # Build filename from UTC timestamp
+        # Build filename — use provided name or fall back to UTC timestamp
         start_utc = datetime.now(UTC)
-        filename = f"audio_{start_utc.strftime('%Y%m%d_%H%M%S')}.wav"
+        if name is not None:
+            filename = f"{name}.wav"
+        else:
+            filename = f"audio_{start_utc.strftime('%Y%m%d_%H%M%S')}.wav"
         file_path = str(Path(config.output_dir) / filename)
 
         # Open the sound file (writer thread will use this)
@@ -231,7 +242,9 @@ class AudioRecorder:
 
         self._session.end_utc = datetime.now(UTC)
         logger.debug("Audio stream closed: file={}", self._session.file_path)
-        return self._session
+        completed = self._session
+        self._session = None
+        return completed
 
     # ------------------------------------------------------------------
     # Internal
