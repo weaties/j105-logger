@@ -41,13 +41,14 @@ grafana-server.service (independent, starts at boot)
 
 1. [Daily use](#daily-use)
 2. [Web interfaces](#web-interfaces)
-3. [Linking YouTube videos](#linking-youtube-videos)
-4. [External data — weather and tides](#external-data--weather-and-tides)
-5. [Recording audio commentary](#recording-audio-commentary)
-6. [Fresh SD card setup](#fresh-sd-card-setup)
-7. [Updating](#updating)
-8. [Configuration](#configuration)
-9. [Troubleshooting](#troubleshooting)
+3. [Race marking](#race-marking)
+4. [Linking YouTube videos](#linking-youtube-videos)
+5. [External data — weather and tides](#external-data--weather-and-tides)
+6. [Recording audio commentary](#recording-audio-commentary)
+7. [Fresh SD card setup](#fresh-sd-card-setup)
+8. [Updating](#updating)
+9. [Configuration](#configuration)
+10. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -163,16 +164,67 @@ ip -details link show can0
 
 ## Web interfaces
 
-All three are available from any machine on your Tailscale network:
+All four are available from any device on your Tailscale network:
 
 | Interface | URL | Purpose |
 |---|---|---|
 | Signal K | `http://corvopi:3000` | NMEA 2000 data explorer, plugin management |
 | Grafana | `http://corvopi:3001` | Real-time sailing dashboards |
+| j105-logger | `http://corvopi:3002` | Race marker (mobile-optimised) |
 | InfluxDB | `http://corvopi:8086` | Time-series data explorer, query UI |
 
 Grafana is pre-provisioned with an InfluxDB datasource. The default credentials
 are `admin` / `changeme123` — change these after first login.
+
+---
+
+## Race marking
+
+The race-marker web page at `http://corvopi:3002` gives any crew device on
+Tailscale a one-tap way to mark the start and end of each race. Race names tie
+together instrument data, audio, and video for that window so exports can be
+scoped to a specific race rather than a hand-entered time range.
+
+### Opening the page
+
+On any phone or tablet joined to your Tailscale network:
+open `http://corvopi:3002` in a browser. Bookmark it for quick access at the
+start line.
+
+### Race naming
+
+Race names follow the format `YYYYMMDD-{Event}-{N}` where N is the race number
+for that UTC day (starting at 1).
+
+| Day | Auto event |
+|---|---|
+| Monday | `BallardCup` |
+| Wednesday | `CYC` |
+| Any other | You are prompted to type an event name; it is saved and persists across logger restarts |
+
+On Monday and Wednesday the event name is set automatically. On other days an
+event name input appears above the race controls — type the event name and tap
+**Save** before starting your first race.
+
+### Starting and ending races
+
+- **START RACE N** — opens a new race, auto-closes the previous one if it was
+  still in progress, and begins the duration counter.
+- **END RACE N** — closes the current race. The next Start will use N+1.
+
+The page polls for updates every 10 seconds and ticks the duration counter
+every second.
+
+### Downloading race exports from the phone
+
+Completed races in the "Today's races" list show **↓ CSV** and **↓ GPX**
+buttons. Tapping either downloads that race's data directly to the phone.
+
+### Security
+
+Tailscale is the security boundary — all crew devices on the tailnet are
+trusted. No login is required. An optional `WEB_PIN` env var is reserved for
+future PIN-based access control (not yet implemented).
 
 ---
 
@@ -572,6 +624,10 @@ SK_PORT=3000             # Signal K WebSocket port
 AUDIO_DIR=data/audio    # directory for WAV files
 AUDIO_SAMPLE_RATE=48000
 AUDIO_CHANNELS=1
+# Web interface (race marker)
+WEB_HOST=0.0.0.0        # bind address
+WEB_PORT=3002           # http://corvopi:3002 on Tailscale
+# WEB_PIN=             # optional PIN (reserved, not yet implemented)
 ```
 
 Edit with `nano ~/j105-logger/.env`. Changes take effect on the next

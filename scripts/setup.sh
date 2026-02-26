@@ -390,6 +390,7 @@ echo ""
 echo "  Signal K:  http://corvopi:3000"
 echo "  Grafana:   http://corvopi:3001"
 echo "  InfluxDB:  http://corvopi:8086"
+echo "  Race marker: http://corvopi:3002"
 echo ""
 if [[ -f "$INFLUX_TOKEN_FILE" ]]; then
     echo "  InfluxDB token saved to: $INFLUX_TOKEN_FILE"
