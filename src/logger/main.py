@@ -114,19 +114,30 @@ async def _tide_loop(storage: object, fetcher: object) -> None:
         await asyncio.sleep(86400)  # re-fetch once per day
 
 
-async def _web_loop(storage: object) -> None:
-    """Background task: serve the race-marking web interface on WEB_PORT (default 3002)."""
+async def _web_loop(
+    storage: object,
+    recorder: object | None = None,
+    audio_config: object | None = None,
+) -> None:
+    """Background task: serve the race-marking web interface on WEB_PORT (default 3002).
+
+    If *recorder* and *audio_config* are provided, audio recording is tied to
+    race start/end events via the web interface.
+    """
     import uvicorn
 
+    from logger.audio import AudioConfig, AudioRecorder
     from logger.races import RaceConfig
     from logger.storage import Storage
     from logger.web import create_app
 
     assert isinstance(storage, Storage)
+    _recorder = recorder if isinstance(recorder, AudioRecorder) else None
+    _audio_config = audio_config if isinstance(audio_config, AudioConfig) else None
     cfg = RaceConfig()
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(storage),
+            create_app(storage, _recorder, _audio_config),
             host=cfg.web_host,
             port=cfg.web_port,
             log_level="warning",
@@ -139,36 +150,6 @@ async def _web_loop(storage: object) -> None:
         await server.serve()
     except asyncio.CancelledError:
         server.should_exit = True
-        raise
-
-
-async def _audio_loop(storage: object) -> None:
-    """Background task: record audio for the duration of the session.
-
-    Gracefully handles the case where no audio input device is available
-    (logs a warning and returns without failing the run).
-    """
-    from logger.audio import AudioConfig, AudioDeviceNotFoundError, AudioRecorder
-    from logger.storage import Storage
-
-    assert isinstance(storage, Storage)
-
-    config = AudioConfig()
-    recorder = AudioRecorder()
-    session_id: int | None = None
-    try:
-        session = await recorder.start(config)
-        session_id = await storage.write_audio_session(session)
-        logger.info("Audio recording started: {}", session.file_path)
-        await asyncio.Event().wait()  # wait until cancelled
-    except AudioDeviceNotFoundError as exc:
-        logger.warning("No audio input device found — audio recording disabled: {}", exc)
-    except asyncio.CancelledError:
-        if session_id is not None:
-            completed = await recorder.stop()
-            assert completed.end_utc is not None
-            await storage.update_audio_session_end(session_id, completed.end_utc)
-            logger.info("Audio recording saved: {}", completed.file_path)
         raise
 
 
@@ -195,11 +176,15 @@ async def _run() -> None:
     storage = Storage(storage_config)
     await storage.connect()
 
+    from logger.audio import AudioConfig, AudioRecorder
+
+    audio_config = AudioConfig()
+    recorder = AudioRecorder()
+
     async with ExternalFetcher() as fetcher:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
         tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
-        audio_task = asyncio.create_task(_audio_loop(storage))
-        web_task = asyncio.create_task(_web_loop(storage))
+        web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
         try:
             if data_source == "signalk":
                 from logger.sk_reader import SKReader, SKReaderConfig
@@ -234,10 +219,9 @@ async def _run() -> None:
         finally:
             weather_task.cancel()
             tide_task.cancel()
-            audio_task.cancel()
             web_task.cancel()
             await asyncio.gather(
-                weather_task, tide_task, audio_task, web_task, return_exceptions=True
+                weather_task, tide_task, web_task, return_exceptions=True
             )
             await storage.close()
             logger.info("Logger stopped")
