@@ -92,10 +92,26 @@ def _try_cogsog(buf: dict[str, float], ts: datetime) -> COGSOGRecord | None:
 
 def _try_true_wind(buf: dict[str, float], ts: datetime) -> WindRecord | None:
     spd = buf.get("environment.wind.speedTrue")
-    ang = buf.get("environment.wind.angleTrue")
-    if spd is None or ang is None:
+    if spd is None:
         return None
-    return WindRecord(PGN_WIND_DATA, SK_SOURCE_ADDR, ts, spd * _MPS_TO_KTS, ang * _RAD_TO_DEG, 0)
+    # Prefer boat-referenced angle (TWA, reference=0); try all Signal K variants
+    for ang_key in (
+        "environment.wind.angleTrue",
+        "environment.wind.angleTrueWater",
+        "environment.wind.angleTrueGround",
+    ):
+        ang = buf.get(ang_key)
+        if ang is not None:
+            return WindRecord(
+                PGN_WIND_DATA, SK_SOURCE_ADDR, ts, spd * _MPS_TO_KTS, ang * _RAD_TO_DEG, 0
+            )
+    # Fall back to north-referenced direction (TWD, reference=4) — common on B&G
+    direction = buf.get("environment.wind.directionTrue")
+    if direction is not None:
+        return WindRecord(
+            PGN_WIND_DATA, SK_SOURCE_ADDR, ts, spd * _MPS_TO_KTS, direction * _RAD_TO_DEG, 4
+        )
+    return None
 
 
 def _try_app_wind(buf: dict[str, float], ts: datetime) -> WindRecord | None:
@@ -122,6 +138,9 @@ _PAIR: dict[str, Callable[[dict[str, float], datetime], PGNRecord | None]] = {
     "navigation.speedOverGround": _try_cogsog,
     "environment.wind.speedTrue": _try_true_wind,
     "environment.wind.angleTrue": _try_true_wind,
+    "environment.wind.angleTrueWater": _try_true_wind,
+    "environment.wind.angleTrueGround": _try_true_wind,
+    "environment.wind.directionTrue": _try_true_wind,
     "environment.wind.speedApparent": _try_app_wind,
     "environment.wind.angleApparent": _try_app_wind,
 }
