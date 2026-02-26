@@ -551,6 +551,38 @@ class Storage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def latest_instruments(self) -> dict[str, float | None]:
+        """Return the most recent reading from each instrument table."""
+        conn = self._conn()
+
+        async def _q(table: str, cols: str, where: str = "") -> Any:  # noqa: ANN401
+            cur = await conn.execute(
+                f"SELECT {cols} FROM {table} {where} ORDER BY ts DESC LIMIT 1"  # noqa: S608
+            )
+            return await cur.fetchone()
+
+        hdg = await _q("headings", "heading_deg")
+        spd = await _q("speeds", "speed_kts")
+        cs = await _q("cogsog", "cog_deg, sog_kts")
+        tw = await _q("winds", "wind_speed_kts, wind_angle_deg", "WHERE reference=0")
+        aw = await _q("winds", "wind_speed_kts, wind_angle_deg", "WHERE reference=2")
+
+        heading = hdg["heading_deg"] if hdg else None
+        twa = tw["wind_angle_deg"] if tw else None
+        twd = round((heading + twa) % 360, 1) if (heading is not None and twa is not None) else None
+
+        return {
+            "heading_deg": round(heading, 1) if heading is not None else None,
+            "bsp_kts": round(spd["speed_kts"], 2) if spd else None,
+            "cog_deg": round(cs["cog_deg"], 1) if cs else None,
+            "sog_kts": round(cs["sog_kts"], 2) if cs else None,
+            "tws_kts": round(tw["wind_speed_kts"], 1) if tw else None,
+            "twa_deg": round(twa, 1) if twa is not None else None,
+            "twd_deg": twd,
+            "aws_kts": round(aw["wind_speed_kts"], 1) if aw else None,
+            "awa_deg": round(aw["wind_angle_deg"], 1) if aw else None,
+        }
+
     # ------------------------------------------------------------------
     # Audio sessions
     # ------------------------------------------------------------------

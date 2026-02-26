@@ -68,6 +68,9 @@ select = [
 ]
 ignore = []
 
+[tool.ruff.lint.per-file-ignores]
+"src/logger/web.py" = ["E501"]  # HTML strings contain long lines that can't be wrapped
+
 [tool.ruff.lint.isort]
 known-first-party = ["logger"]
 
