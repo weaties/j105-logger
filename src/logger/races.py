@@ -21,15 +21,16 @@ if TYPE_CHECKING:
 
 @dataclass
 class Race:
-    """A single race window."""
+    """A single race or practice session window."""
 
     id: int
-    name: str  # e.g. "20250810-BallardCup-2"
+    name: str  # e.g. "20250810-BallardCup-2" or "20250810-BallardCup-P1"
     event: str  # e.g. "BallardCup"
     race_num: int
     date: str  # UTC date "YYYY-MM-DD"
     start_utc: datetime
     end_utc: datetime | None
+    session_type: str = "race"  # "race" | "practice"
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +66,13 @@ def default_event_for_date(d: date) -> str | None:
     return _WEEKDAY_EVENTS.get(d.weekday())
 
 
-def build_race_name(event: str, d: date, race_num: int) -> str:
+def build_race_name(event: str, d: date, race_num: int, session_type: str = "race") -> str:
     """Build a race identifier string.
 
     Example: build_race_name("BallardCup", date(2025, 8, 10), 2)
              → "20250810-BallardCup-2"
+             build_race_name("BallardCup", date(2025, 8, 10), 1, "practice")
+             → "20250810-BallardCup-P1"
     """
-    return f"{d.strftime('%Y%m%d')}-{event}-{race_num}"
+    num_str = f"P{race_num}" if session_type == "practice" else str(race_num)
+    return f"{d.strftime('%Y%m%d')}-{event}-{num_str}"
