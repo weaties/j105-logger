@@ -236,3 +236,36 @@ class TestWriteQuery:
                 _TS,
                 _TS + timedelta(seconds=1),
             )
+
+
+# ---------------------------------------------------------------------------
+# Session gate flag tests
+# ---------------------------------------------------------------------------
+
+_DATE = "2025-08-10"
+_START1 = datetime(2025, 8, 10, 13, 45, 0, tzinfo=UTC)
+_START2 = datetime(2025, 8, 10, 14, 5, 30, tzinfo=UTC)
+_END1 = datetime(2025, 8, 10, 14, 5, 0, tzinfo=UTC)
+
+
+class TestSessionGate:
+    async def test_session_active_false_initially(self, storage: Storage) -> None:
+        assert storage.session_active is False
+
+    async def test_session_active_true_after_start_race(self, storage: Storage) -> None:
+        await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1")
+        assert storage.session_active is True
+
+    async def test_session_active_false_after_end_race(self, storage: Storage) -> None:
+        race = await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1")
+        await storage.end_race(race.id, _END1)
+        assert storage.session_active is False
+
+    async def test_count_sessions_for_date(self, storage: Storage) -> None:
+        await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1", "race")
+        await storage.start_race(
+            "BallardCup", _START2, _DATE, 1, "20250810-BallardCup-P1", "practice"
+        )
+        assert await storage.count_sessions_for_date(_DATE, "race") == 1
+        assert await storage.count_sessions_for_date(_DATE, "practice") == 1
+        assert await storage.count_sessions_for_date("2025-08-11", "race") == 0

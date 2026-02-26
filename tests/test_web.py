@@ -214,23 +214,40 @@ async def test_instruments_returns_latest_values(storage: Storage) -> None:
     """GET /api/instruments returns correctly rounded values from each table."""
     ts = datetime(2026, 2, 26, 15, 0, 0, tzinfo=UTC)
     await storage.write(
-        HeadingRecord(pgn=PGN_VESSEL_HEADING, source_addr=5, timestamp=ts,
-                      heading_deg=270.0, deviation_deg=None, variation_deg=None)
+        HeadingRecord(
+            pgn=PGN_VESSEL_HEADING,
+            source_addr=5,
+            timestamp=ts,
+            heading_deg=270.0,
+            deviation_deg=None,
+            variation_deg=None,
+        )
     )
     await storage.write(
         SpeedRecord(pgn=PGN_SPEED_THROUGH_WATER, source_addr=5, timestamp=ts, speed_kts=6.5)
     )
     await storage.write(
-        COGSOGRecord(pgn=PGN_COG_SOG_RAPID, source_addr=5, timestamp=ts,
-                     cog_deg=265.0, sog_kts=5.8)
+        COGSOGRecord(pgn=PGN_COG_SOG_RAPID, source_addr=5, timestamp=ts, cog_deg=265.0, sog_kts=5.8)
     )
     await storage.write(
-        WindRecord(pgn=PGN_WIND_DATA, source_addr=5, timestamp=ts,
-                   wind_speed_kts=12.0, wind_angle_deg=45.0, reference=0)
+        WindRecord(
+            pgn=PGN_WIND_DATA,
+            source_addr=5,
+            timestamp=ts,
+            wind_speed_kts=12.0,
+            wind_angle_deg=45.0,
+            reference=0,
+        )
     )
     await storage.write(
-        WindRecord(pgn=PGN_WIND_DATA, source_addr=5, timestamp=ts,
-                   wind_speed_kts=14.5, wind_angle_deg=35.0, reference=2)
+        WindRecord(
+            pgn=PGN_WIND_DATA,
+            source_addr=5,
+            timestamp=ts,
+            wind_speed_kts=14.5,
+            wind_angle_deg=35.0,
+            reference=2,
+        )
     )
 
     app = create_app(storage)
@@ -253,15 +270,63 @@ async def test_instruments_returns_latest_values(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_practice_creates_practice_session(storage: Storage) -> None:
+    """POST /api/races/start?session_type=practice creates a practice session with P prefix."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        resp = await client.post("/api/races/start?session_type=practice")
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "P1" in data["name"]
+    assert data["session_type"] == "practice"
+
+
+@pytest.mark.asyncio
+async def test_state_includes_next_practice_num(storage: Storage) -> None:
+    """GET /api/state includes next_practice_num."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/state")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "next_practice_num" in data
+    assert data["next_practice_num"] == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_session_type_returns_422(storage: Storage) -> None:
+    """POST /api/races/start with invalid session_type returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        resp = await client.post("/api/races/start?session_type=invalid")
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_end_race_no_active_recording_is_noop(storage: Storage, tmp_path: Path) -> None:
     """POST /api/races/{id}/end does not call recorder.stop() if no recording started."""
     # Start a race without a recorder (so _audio_session_id stays None), then
     # end it with a recorder attached — stop() should NOT be called.
     recorder = _make_recorder()
     no_recorder_app = create_app(storage)
-    recorder_app = create_app(storage, recorder=recorder,
-                               audio_config=AudioConfig(device=None, sample_rate=48000,
-                                                        channels=1, output_dir=str(tmp_path)))
+    recorder_app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
 
     # Use the no-recorder app to start a race
     async with httpx.AsyncClient(

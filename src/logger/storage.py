@@ -58,7 +58,7 @@ _FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 7
+_CURRENT_VERSION: int = 8
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -199,6 +199,9 @@ _MIGRATIONS: dict[int, str] = {
             event_name  TEXT    NOT NULL
         );
     """,
+    8: """
+        ALTER TABLE races ADD COLUMN session_type TEXT NOT NULL DEFAULT 'race';
+    """,
 }
 
 # ---------------------------------------------------------------------------
@@ -214,6 +217,12 @@ class Storage:
         self._db: aiosqlite.Connection | None = None
         self._pending: int = 0
         self._last_flush: float = 0.0
+        self._session_active: bool = False
+
+    @property
+    def session_active(self) -> bool:
+        """True when a race or practice session is currently in progress."""
+        return self._session_active
 
     async def connect(self) -> None:
         """Open the database connection."""
@@ -222,6 +231,8 @@ class Storage:
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
+        current = await self.get_current_race()
+        self._session_active = current is not None
 
     async def close(self) -> None:
         """Flush any buffered writes and close the database connection."""
@@ -657,6 +668,7 @@ class Storage:
         date_str: str,
         race_num: int,
         name: str,
+        session_type: str = "race",
     ) -> Race:
         """Auto-close any open race for the day, insert a new race row, and return it."""
         from logger.races import Race as _Race
@@ -676,13 +688,14 @@ class Storage:
             )
 
         cur = await db.execute(
-            "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
-            " VALUES (?, ?, ?, ?, ?, NULL)",
-            (name, event, race_num, date_str, start_utc.isoformat()),
+            "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type)"
+            " VALUES (?, ?, ?, ?, ?, NULL, ?)",
+            (name, event, race_num, date_str, start_utc.isoformat(), session_type),
         )
         await db.commit()
         assert cur.lastrowid is not None
-        logger.info("Race started: {} (id={})", name, cur.lastrowid)
+        logger.info("Race started: {} (id={}) type={}", name, cur.lastrowid, session_type)
+        self._session_active = True
         return _Race(
             id=cur.lastrowid,
             name=name,
@@ -691,6 +704,7 @@ class Storage:
             date=date_str,
             start_utc=start_utc,
             end_utc=None,
+            session_type=session_type,
         )
 
     async def end_race(self, race_id: int, end_utc: datetime) -> None:
@@ -701,6 +715,7 @@ class Storage:
             (end_utc.isoformat(), race_id),
         )
         await db.commit()
+        self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
     async def get_current_race(self) -> Race | None:
@@ -711,7 +726,7 @@ class Storage:
 
         db = self._conn()
         cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc"
+            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
         )
         row = await cur.fetchone()
@@ -725,6 +740,7 @@ class Storage:
             date=row["date"],
             start_utc=_datetime.fromisoformat(row["start_utc"]),
             end_utc=None,
+            session_type=row["session_type"],
         )
 
     async def list_races_for_date(self, date_str: str) -> list[Race]:
@@ -735,7 +751,7 @@ class Storage:
 
         db = self._conn()
         cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc"
+            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races WHERE date = ? ORDER BY start_utc ASC",
             (date_str,),
         )
@@ -749,9 +765,20 @@ class Storage:
                 date=row["date"],
                 start_utc=_datetime.fromisoformat(row["start_utc"]),
                 end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+                session_type=row["session_type"],
             )
             for row in rows
         ]
+
+    async def count_sessions_for_date(self, date_str: str, session_type: str) -> int:
+        """Return the count of sessions of the given type for a UTC date string."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM races WHERE date = ? AND session_type = ?",
+            (date_str, session_type),
+        )
+        row = await cur.fetchone()
+        return int(row[0]) if row else 0
 
     async def get_daily_event(self, date_str: str) -> str | None:
         """Look up a stored custom event name for the given UTC date."""

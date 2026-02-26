@@ -38,6 +38,11 @@ def test_build_race_name_single_digit() -> None:
     assert build_race_name("CYC", date(2025, 8, 13), 1) == "20250813-CYC-1"
 
 
+def test_build_race_name_practice() -> None:
+    name = build_race_name("BallardCup", date(2025, 8, 10), 1, "practice")
+    assert name == "20250810-BallardCup-P1"
+
+
 # ---------------------------------------------------------------------------
 # Storage race method tests (use in-memory DB via conftest `storage` fixture)
 # ---------------------------------------------------------------------------

@@ -197,7 +197,8 @@ async def _run() -> None:
                     storage_config.db_path,
                 )
                 async for record in SKReader(sk_config):
-                    await storage.write(record)
+                    if storage.session_active:
+                        await storage.write(record)
             else:
                 from logger.can_reader import CANReader, CANReaderConfig, extract_pgn
                 from logger.nmea2000 import decode
@@ -212,7 +213,7 @@ async def _run() -> None:
                     pgn = extract_pgn(frame.arbitration_id)
                     src = frame.arbitration_id & 0xFF
                     decoded = decode(pgn, frame.data, src, frame.timestamp)
-                    if decoded is not None:
+                    if decoded is not None and storage.session_active:
                         await storage.write(decoded)
         except asyncio.CancelledError:
             logger.info("Shutdown signal received — flushing and stopping")
@@ -220,9 +221,7 @@ async def _run() -> None:
             weather_task.cancel()
             tide_task.cancel()
             web_task.cancel()
-            await asyncio.gather(
-                weather_task, tide_task, web_task, return_exceptions=True
-            )
+            await asyncio.gather(weather_task, tide_task, web_task, return_exceptions=True)
             await storage.close()
             logger.info("Logger stopped")
 

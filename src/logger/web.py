@@ -22,7 +22,7 @@ import tempfile
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -62,6 +62,11 @@ background:#22c55e;margin-right:6px;animation:pulse 1.4s infinite}
 .btn-secondary{background:#1e3a5f;color:#7eb8f7;border:1px solid #2563eb}
 .btn-secondary:active{background:#163252}
 .btn-danger{background:#7f1d1d;color:#fca5a5;border:1px solid #dc2626}
+.btn-practice{background:#1a3a2a;color:#4ade80;border:1px solid #16a34a}
+.btn-practice:active{background:#14532d}
+.badge{font-size:.7rem;padding:1px 6px;border-radius:3px;margin-left:4px;vertical-align:middle}
+.badge-race{background:#1e3a5f;color:#7eb8f7}
+.badge-practice{background:#14532d;color:#4ade80}
 .event-row{display:flex;gap:8px;margin-bottom:16px}
 .event-input{flex:1;background:#0a1628;border:1px solid #2563eb;
 border-radius:8px;padding:12px;color:#e8eaf0;font-size:1rem}
@@ -130,7 +135,8 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </div>
 
 <div id="controls">
-  <button class="btn btn-primary" id="btn-start" onclick="startRace()">▶ START RACE</button>
+  <button class="btn btn-primary"  id="btn-start-race"     onclick="startSession('race')">▶ START RACE 1</button>
+  <button class="btn btn-practice" id="btn-start-practice" onclick="startSession('practice')">▶ START PRACTICE</button>
   <button class="btn btn-secondary hidden" id="btn-end" onclick="endRace()">■ END RACE</button>
 </div>
 
@@ -180,11 +186,14 @@ function render(s) {
   const cur = s.current_race;
   const curCard = document.getElementById('current-card');
   const btnEnd = document.getElementById('btn-end');
-  const btnStart = document.getElementById('btn-start');
+  const btnStartRace = document.getElementById('btn-start-race');
+  const btnStartPractice = document.getElementById('btn-start-practice');
 
   if(cur) {
     curCard.classList.remove('hidden');
     btnEnd.classList.remove('hidden');
+    btnStartRace.classList.add('hidden');
+    btnStartPractice.classList.add('hidden');
     document.getElementById('cur-name').textContent = cur.name;
     document.getElementById('cur-meta').textContent =
       'Started ' + fmtTime(cur.start_utc);
@@ -193,11 +202,13 @@ function render(s) {
   } else {
     curCard.classList.add('hidden');
     btnEnd.classList.add('hidden');
+    btnStartRace.classList.remove('hidden');
+    btnStartPractice.classList.remove('hidden');
     curRaceStartMs = null;
     clearInterval(tickInterval);
   }
 
-  btnStart.textContent = `▶ START RACE ${s.next_race_num}`;
+  btnStartRace.textContent = `▶ START RACE ${s.next_race_num}`;
 
   const hist = document.getElementById('history-card');
   const list = document.getElementById('race-list');
@@ -208,6 +219,9 @@ function render(s) {
       const end = r.end_utc ? fmtTime(r.end_utc) : 'in progress';
       const dur = (r.end_utc && r.duration_s != null)
         ? ` (${fmt(Math.round(r.duration_s))})` : '';
+      const badge = r.session_type === 'practice'
+        ? '<span class="badge badge-practice">PRACTICE</span>'
+        : '<span class="badge badge-race">RACE</span>';
       const exports = r.end_utc
         ? `<div class="race-exports">
              <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
@@ -215,7 +229,7 @@ function render(s) {
            </div>`
         : '';
       return `<div class="race-item">
-        <div class="race-item-name">${r.name}</div>
+        <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
         ${exports}
       </div>`;
@@ -254,8 +268,8 @@ async function loadInstruments() {
   } catch(e) { console.error('instruments error', e); }
 }
 
-async function startRace() {
-  await fetch('/api/races/start', {method:'POST'});
+async function startSession(type) {
+  await fetch(`/api/races/start?session_type=${type}`, {method:'POST'});
   await loadState();
   clearInterval(tickInterval);
   if(curRaceStartMs) tickInterval = setInterval(tick, 1000);
@@ -354,7 +368,8 @@ def create_app(
         current = await storage.get_current_race()
         today_races = await storage.list_races_for_date(date_str)
 
-        next_race_num = len(today_races) + 1
+        next_race_num = await storage.count_sessions_for_date(date_str, "race") + 1
+        next_practice_num = await storage.count_sessions_for_date(date_str, "practice") + 1
 
         def _race_dict(r: _Race) -> dict[str, Any]:
             duration_s: float | None = None
@@ -372,6 +387,7 @@ def create_app(
                 "start_utc": r.start_utc.isoformat(),
                 "end_utc": r.end_utc.isoformat() if r.end_utc else None,
                 "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                "session_type": r.session_type,
             }
 
         return JSONResponse(
@@ -382,6 +398,7 @@ def create_app(
                 "event_is_default": event_is_default,
                 "current_race": _race_dict(current) if current else None,
                 "next_race_num": next_race_num,
+                "next_practice_num": next_practice_num,
                 "today_races": [_race_dict(r) for r in today_races],
             }
         )
@@ -412,9 +429,17 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/races/start", status_code=201)
-    async def api_start_race() -> JSONResponse:
+    async def api_start_race(
+        session_type: str = Query(default="race"),
+    ) -> JSONResponse:
         nonlocal _audio_session_id
         from logger.races import build_race_name, default_event_for_date
+
+        if session_type not in ("race", "practice"):
+            raise HTTPException(
+                status_code=422,
+                detail="session_type must be 'race' or 'practice'",
+            )
 
         now = datetime.now(UTC)
         today = now.date()
@@ -429,11 +454,10 @@ def create_app(
                 detail="No event set for today. POST /api/event first.",
             )
 
-        today_races = await storage.list_races_for_date(date_str)
-        race_num = len(today_races) + 1
-        name = build_race_name(event, today, race_num)
+        race_num = await storage.count_sessions_for_date(date_str, session_type) + 1
+        name = build_race_name(event, today, race_num, session_type)
 
-        race = await storage.start_race(event, now, date_str, race_num, name)
+        race = await storage.start_race(event, now, date_str, race_num, name, session_type)
 
         if recorder is not None and audio_config is not None:
             from logger.audio import AudioDeviceNotFoundError
@@ -452,6 +476,7 @@ def create_app(
                 "event": race.event,
                 "race_num": race.race_num,
                 "start_utc": race.start_utc.isoformat(),
+                "session_type": race.session_type,
             },
             status_code=201,
         )
@@ -493,7 +518,7 @@ def create_app(
         if race is None:
             # Fallback: search all races (no date filter)
             cur = await storage._conn().execute(
-                "SELECT id, name, event, race_num, date, start_utc, end_utc"
+                "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
                 " FROM races WHERE id = ?",
                 (race_id,),
             )
@@ -512,6 +537,7 @@ def create_app(
                 date=row["date"],
                 start_utc=_dt.fromisoformat(row["start_utc"]),
                 end_utc=_dt.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+                session_type=row["session_type"],
             )
 
         if race.end_utc is None:
