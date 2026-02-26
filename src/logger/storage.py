@@ -575,20 +575,35 @@ class Storage:
         hdg = await _q("headings", "heading_deg")
         spd = await _q("speeds", "speed_kts")
         cs = await _q("cogsog", "cog_deg, sog_kts")
-        tw = await _q("winds", "wind_speed_kts, wind_angle_deg", "WHERE reference=0")
+        tw = await _q(
+            "winds", "wind_speed_kts, wind_angle_deg, reference", "WHERE reference IN (0, 4)"
+        )
         aw = await _q("winds", "wind_speed_kts, wind_angle_deg", "WHERE reference=2")
 
         heading = hdg["heading_deg"] if hdg else None
-        twa = tw["wind_angle_deg"] if tw else None
-        twd = round((heading + twa) % 360, 1) if (heading is not None and twa is not None) else None
+        twa: float | None = None
+        twd: float | None = None
+        tws: float | None = None
+
+        if tw:
+            tws = round(tw["wind_speed_kts"], 1)
+            tw_ang = tw["wind_angle_deg"]
+            if tw["reference"] == 0:
+                # Boat-referenced angle (TWA); compute TWD from heading
+                twa = round(tw_ang, 1)
+                twd = round((heading + twa) % 360, 1) if heading is not None else None
+            else:
+                # reference=4: north-referenced direction (TWD); compute TWA from heading
+                twd = round(tw_ang % 360, 1)
+                twa = round((tw_ang - heading + 360) % 360, 1) if heading is not None else None
 
         return {
             "heading_deg": round(heading, 1) if heading is not None else None,
             "bsp_kts": round(spd["speed_kts"], 2) if spd else None,
             "cog_deg": round(cs["cog_deg"], 1) if cs else None,
             "sog_kts": round(cs["sog_kts"], 2) if cs else None,
-            "tws_kts": round(tw["wind_speed_kts"], 1) if tw else None,
-            "twa_deg": round(twa, 1) if twa is not None else None,
+            "tws_kts": tws,
+            "twa_deg": twa,
             "twd_deg": twd,
             "aws_kts": round(aw["wind_speed_kts"], 1) if aw else None,
             "awa_deg": round(aw["wind_angle_deg"], 1) if aw else None,
