@@ -114,6 +114,36 @@ async def _tide_loop(storage: object, fetcher: object) -> None:
         await asyncio.sleep(86400)  # re-fetch once per day
 
 
+async def _audio_loop(storage: object) -> None:
+    """Background task: record audio for the duration of the session.
+
+    Gracefully handles the case where no audio input device is available
+    (logs a warning and returns without failing the run).
+    """
+    from logger.audio import AudioConfig, AudioDeviceNotFoundError, AudioRecorder
+    from logger.storage import Storage
+
+    assert isinstance(storage, Storage)
+
+    config = AudioConfig()
+    recorder = AudioRecorder()
+    session_id: int | None = None
+    try:
+        session = await recorder.start(config)
+        session_id = await storage.write_audio_session(session)
+        logger.info("Audio recording started: {}", session.file_path)
+        await asyncio.Event().wait()  # wait until cancelled
+    except AudioDeviceNotFoundError as exc:
+        logger.warning("No audio input device found — audio recording disabled: {}", exc)
+    except asyncio.CancelledError:
+        if session_id is not None:
+            completed = await recorder.stop()
+            assert completed.end_utc is not None
+            await storage.update_audio_session_end(session_id, completed.end_utc)
+            logger.info("Audio recording saved: {}", completed.file_path)
+        raise
+
+
 async def _run() -> None:
     """Main async loop: read instrument data, decode, persist.
 
@@ -140,6 +170,7 @@ async def _run() -> None:
     async with ExternalFetcher() as fetcher:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
         tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
+        audio_task = asyncio.create_task(_audio_loop(storage))
         try:
             if data_source == "signalk":
                 from logger.sk_reader import SKReader, SKReaderConfig
@@ -174,7 +205,8 @@ async def _run() -> None:
         finally:
             weather_task.cancel()
             tide_task.cancel()
-            await asyncio.gather(weather_task, tide_task, return_exceptions=True)
+            audio_task.cancel()
+            await asyncio.gather(weather_task, tide_task, audio_task, return_exceptions=True)
             await storage.close()
             logger.info("Logger stopped")
 
@@ -293,6 +325,63 @@ async def _list_videos() -> None:
 
 
 # ---------------------------------------------------------------------------
+# list-audio
+# ---------------------------------------------------------------------------
+
+
+async def _list_audio() -> None:
+    """Print all recorded audio sessions."""
+    from logger.storage import Storage, StorageConfig
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        sessions = await storage.list_audio_sessions()
+    finally:
+        await storage.close()
+
+    if not sessions:
+        print("No audio sessions recorded.")
+        return
+
+    print(f"{'File':<45} {'Duration':>9}  {'Start UTC'}")
+    print("-" * 80)
+    for s in sessions:
+        if s.end_utc is not None:
+            dur_s = int((s.end_utc - s.start_utc).total_seconds())
+            h, rem = divmod(dur_s, 3600)
+            m, sec = divmod(rem, 60)
+            dur = f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+        else:
+            dur = "in progress"
+        short_path = s.file_path[-45:] if len(s.file_path) > 45 else s.file_path
+        print(f"{short_path:<45} {dur:>9}  {s.start_utc.isoformat()}")
+
+
+# ---------------------------------------------------------------------------
+# list-devices
+# ---------------------------------------------------------------------------
+
+
+async def _list_devices() -> None:
+    """Print available audio input devices."""
+    from logger.audio import AudioRecorder
+
+    devices = AudioRecorder.list_devices()
+    if not devices:
+        print("No audio input devices found.")
+        return
+
+    print(f"{'Idx':>3}  {'Name':<40}  {'Ch':>3}  {'Default rate':>12}")
+    print("-" * 65)
+    for dev in devices:
+        print(
+            f"{dev['index']:>3}  {str(dev['name']):<40}  "
+            f"{dev['max_input_channels']:>3}  {dev['default_samplerate']:>12.0f}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring
 # ---------------------------------------------------------------------------
 
@@ -353,6 +442,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list-videos", help="List linked YouTube videos")
 
+    sub.add_parser("list-audio", help="List recorded audio sessions")
+    sub.add_parser("list-devices", help="List available audio input devices")
+
     return parser
 
 
@@ -379,6 +471,10 @@ def main() -> None:
                 asyncio.run(_link_video(args.url, sync_utc_iso, sync_offset))
             case "list-videos":
                 asyncio.run(_list_videos())
+            case "list-audio":
+                asyncio.run(_list_audio())
+            case "list-devices":
+                asyncio.run(_list_devices())
     except KeyboardInterrupt:
         logger.info("Interrupted by user — shutting down")
     except Exception as exc:

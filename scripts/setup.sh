@@ -38,7 +38,8 @@ step "Installing system prerequisites..."
 sudo apt-get update -qq
 sudo apt-get install -y \
     git can-utils curl gnupg2 apt-transport-https \
-    ca-certificates lsb-release jq
+    ca-certificates lsb-release jq \
+    libportaudio2 libsndfile1
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -293,9 +294,11 @@ set +a
 CAN_INTERFACE="${CAN_INTERFACE:-can0}"
 CAN_BITRATE="${CAN_BITRATE:-250000}"
 
-step "Ensuring data directory exists..."
+step "Ensuring data directories exist..."
 mkdir -p "$PROJECT_DIR/data"
-info "$PROJECT_DIR/data"
+mkdir -p "$PROJECT_DIR/data/audio"
+info "$PROJECT_DIR/data (SQLite DB)"
+info "$PROJECT_DIR/data/audio (WAV recordings)"
 
 # ---------------------------------------------------------------------------
 # i) netdev group (allows non-root SocketCAN access)
@@ -401,6 +404,10 @@ echo "    sudo systemctl status can-interface signalk influxd grafana-server j10
 echo ""
 echo "  View logger output:"
 echo "    sudo journalctl -fu j105-logger"
+echo ""
+echo "  To list available audio input devices (e.g. Gordik USB receiver):"
+echo "    j105-logger list-devices"
+echo "  Then set AUDIO_DEVICE in .env to match the device name or index."
 echo ""
 echo "  To update after a git pull:"
 echo "    git pull && ./scripts/setup.sh"
