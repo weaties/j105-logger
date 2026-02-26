@@ -18,6 +18,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from datetime import datetime
 
+    from logger.audio import AudioSession
     from logger.external import TideReading, WeatherReading
 
 from logger.nmea2000 import (
@@ -56,7 +57,7 @@ _FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 5
+_CURRENT_VERSION: int = 6
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -166,6 +167,18 @@ _MIGRATIONS: dict[int, str] = {
             UNIQUE(ts, station_id)
         );
         CREATE INDEX IF NOT EXISTS idx_tides_ts ON tides(ts);
+    """,
+    6: """
+        CREATE TABLE IF NOT EXISTS audio_sessions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path    TEXT    NOT NULL,
+            device_name  TEXT    NOT NULL,
+            start_utc    TEXT    NOT NULL,
+            end_utc      TEXT,
+            sample_rate  INTEGER NOT NULL,
+            channels     INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_audio_sessions_start_utc ON audio_sessions(start_utc);
     """,
 }
 
@@ -518,6 +531,69 @@ class Storage:
         cur = await db.execute("SELECT * FROM positions ORDER BY ts DESC LIMIT 1")
         row = await cur.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Audio sessions
+    # ------------------------------------------------------------------
+
+    async def write_audio_session(self, session: AudioSession) -> int:
+        """Insert an audio session row and return the new row id."""
+        from logger.audio import AudioSession as _AudioSession
+
+        assert isinstance(session, _AudioSession)
+
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO audio_sessions"
+            " (file_path, device_name, start_utc, end_utc, sample_rate, channels)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                session.file_path,
+                session.device_name,
+                session.start_utc.isoformat(),
+                session.end_utc.isoformat() if session.end_utc else None,
+                session.sample_rate,
+                session.channels,
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.debug("Audio session stored: id={} file={}", cur.lastrowid, session.file_path)
+        return cur.lastrowid
+
+    async def update_audio_session_end(self, session_id: int, end_utc: datetime) -> None:
+        """Set the end_utc for an existing audio session row."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE audio_sessions SET end_utc = ? WHERE id = ?",
+            (end_utc.isoformat(), session_id),
+        )
+        await db.commit()
+        logger.debug("Audio session {} end_utc updated", session_id)
+
+    async def list_audio_sessions(self) -> list[AudioSession]:
+        """Return all audio sessions ordered by start_utc descending."""
+        from datetime import datetime as _datetime
+
+        from logger.audio import AudioSession as _AudioSession
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels"
+            " FROM audio_sessions ORDER BY start_utc DESC"
+        )
+        rows = await cur.fetchall()
+        return [
+            _AudioSession(
+                file_path=row["file_path"],
+                device_name=row["device_name"],
+                start_utc=_datetime.fromisoformat(row["start_utc"]),
+                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+                sample_rate=row["sample_rate"],
+                channels=row["channels"],
+            )
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------
     # Helpers

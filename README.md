@@ -43,10 +43,11 @@ grafana-server.service (independent, starts at boot)
 2. [Web interfaces](#web-interfaces)
 3. [Linking YouTube videos](#linking-youtube-videos)
 4. [External data — weather and tides](#external-data--weather-and-tides)
-5. [Fresh SD card setup](#fresh-sd-card-setup)
-6. [Updating](#updating)
-7. [Configuration](#configuration)
-8. [Troubleshooting](#troubleshooting)
+5. [Recording audio commentary](#recording-audio-commentary)
+6. [Fresh SD card setup](#fresh-sd-card-setup)
+7. [Updating](#updating)
+8. [Configuration](#configuration)
+9. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -281,6 +282,82 @@ The data appears automatically as extra columns in the CSV export (`WX_TWS`,
 
 ---
 
+## Recording audio commentary
+
+When `j105-logger run` is active, it automatically records audio from the
+first available USB input device (or the one matching `AUDIO_DEVICE` in `.env`).
+This is designed for the **Gordik 2T1R** wireless lavalier system, whose USB
+receiver appears as a standard UAC device — no drivers needed.
+
+Audio is saved as a WAV file per session in `data/audio/`, named with the UTC
+start timestamp so it lines up directly with the instrument log.
+
+### Initial setup
+
+1. Plug the Gordik USB receiver into any USB port on the Pi.
+2. Find its device name:
+
+   ```bash
+   j105-logger list-devices
+   ```
+
+   ```
+   Idx  Name                                      Ch    Default rate
+   -----------------------------------------------------------------
+     0  Built-in Microphone                        2           44100
+     1  Gordik 2T1R USB Audio                      1           48000
+   ```
+
+3. Set `AUDIO_DEVICE` in `.env` to a substring of the name (case-insensitive):
+
+   ```bash
+   # In ~/j105-logger/.env:
+   AUDIO_DEVICE=Gordik
+   ```
+
+   Or use the integer index (`AUDIO_DEVICE=1`). If `AUDIO_DEVICE` is not set,
+   the first available input device is used automatically.
+
+4. Restart the logger service:
+
+   ```bash
+   sudo systemctl restart j105-logger
+   ```
+
+   Confirm with:
+   ```bash
+   sudo journalctl -fu j105-logger | grep -i audio
+   # Audio recording started: data/audio/audio_20250810_140530.wav
+   ```
+
+### List recorded audio sessions
+
+```bash
+j105-logger list-audio
+```
+
+```
+File                                          Duration  Start UTC
+--------------------------------------------------------------------------------
+data/audio/audio_20250810_140530.wav             1:23:45  2025-08-10T14:05:30+00:00
+```
+
+### WAV file naming
+
+Files are named `audio_YYYYMMDD_HHMMSS.wav` using the UTC start time, so they
+can be matched to the instrument log by timestamp.
+
+### Graceful degradation
+
+If no audio device is found at startup (e.g. Gordik receiver not plugged in),
+the logger logs a warning and continues running normally — instrument data is
+never interrupted by a missing audio device.
+
+See `docs/audio-setup.md` for full details, including system dependency notes
+and troubleshooting.
+
+---
+
 ## Fresh SD card setup
 
 This covers everything from a blank SD card to a fully running stack.
@@ -416,12 +493,13 @@ configures:
 3. InfluxDB 2.7.11 (pinned; `apt-mark hold` prevents v3 auto-upgrade)
 4. Grafana OSS (pre-provisioned InfluxDB datasource, port 3001)
 5. `uv` and all Python dependencies
-6. `.env` config file from the template
-7. `data/` directory for the SQLite database
-8. `netdev` group membership for non-root CAN bus access
-9. `can-interface.service` — brings up `can0` at boot
-10. `signalk.service` — starts Signal K after CAN is up
-11. `j105-logger.service` — starts logger after Signal K is up
+6. System audio libraries (`libportaudio2`, `libsndfile1`) for USB audio recording
+7. `.env` config file from the template
+8. `data/` directory for the SQLite database; `data/audio/` for WAV recordings
+9. `netdev` group membership for non-root CAN bus access
+10. `can-interface.service` — brings up `can0` at boot
+11. `signalk.service` — starts Signal K after CAN is up
+12. `j105-logger.service` — starts logger after Signal K is up
 
 The InfluxDB admin token is saved to `~/influx-token.txt` (permissions 600).
 If you ever lose it, retrieve it with:
@@ -489,6 +567,11 @@ LOG_LEVEL=INFO          # loguru log level: DEBUG, INFO, WARNING, ERROR
 DATA_SOURCE=signalk     # signalk (default) or can (legacy direct CAN mode)
 SK_HOST=localhost        # Signal K server hostname
 SK_PORT=3000             # Signal K WebSocket port
+# Audio recording (Gordik 2T1R or any USB Audio Class device)
+# AUDIO_DEVICE=Gordik   # name substring or integer index; omit to auto-detect
+AUDIO_DIR=data/audio    # directory for WAV files
+AUDIO_SAMPLE_RATE=48000
+AUDIO_CHANNELS=1
 ```
 
 Edit with `nano ~/j105-logger/.env`. Changes take effect on the next

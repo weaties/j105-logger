@@ -148,6 +148,10 @@ CAN_INTERFACE=can0          # CAN bus interface name
 CAN_BITRATE=250000          # NMEA 2000 standard bitrate
 DB_PATH=data/logger.db      # SQLite database path
 LOG_LEVEL=INFO              # loguru log level
+AUDIO_DEVICE=Gordik         # name substring to match (or integer index); omit to auto-detect
+AUDIO_DIR=data/audio        # where WAV files are saved
+AUDIO_SAMPLE_RATE=48000     # sample rate in Hz
+AUDIO_CHANNELS=1            # 1=mono, 2=stereo
 ```
 
 ---

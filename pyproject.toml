@@ -20,6 +20,8 @@ dependencies = [
     "aiosqlite>=0.22.1",
     # Signal K WebSocket client
     "websockets>=14.0",
+    "sounddevice>=0.5.5",
+    "soundfile>=0.13.1",
 ]
 
 [project.scripts]
@@ -76,6 +78,10 @@ strict = true
 warn_return_any = true
 warn_unused_configs = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["sounddevice", "soundfile"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # Pytest
