@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from logger.audio import AudioSession
     from logger.external import TideReading, WeatherReading
+    from logger.races import Race
 
 from logger.nmea2000 import (
     COGSOGRecord,
@@ -57,7 +58,7 @@ _FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 6
+_CURRENT_VERSION: int = 7
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -179,6 +180,24 @@ _MIGRATIONS: dict[int, str] = {
             channels     INTEGER NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_audio_sessions_start_utc ON audio_sessions(start_utc);
+    """,
+    7: """
+        CREATE TABLE IF NOT EXISTS races (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL UNIQUE,
+            event       TEXT    NOT NULL,
+            race_num    INTEGER NOT NULL,
+            date        TEXT    NOT NULL,
+            start_utc   TEXT    NOT NULL,
+            end_utc     TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_races_date      ON races(date);
+        CREATE INDEX IF NOT EXISTS idx_races_start_utc ON races(start_utc);
+
+        CREATE TABLE IF NOT EXISTS daily_events (
+            date        TEXT    PRIMARY KEY,
+            event_name  TEXT    NOT NULL
+        );
     """,
 }
 
@@ -594,6 +613,131 @@ class Storage:
             )
             for row in rows
         ]
+
+    # ------------------------------------------------------------------
+    # Races
+    # ------------------------------------------------------------------
+
+    async def start_race(
+        self,
+        event: str,
+        start_utc: datetime,
+        date_str: str,
+        race_num: int,
+        name: str,
+    ) -> Race:
+        """Auto-close any open race for the day, insert a new race row, and return it."""
+        from logger.races import Race as _Race
+
+        db = self._conn()
+
+        # Close any open race for this UTC date
+        open_cur = await db.execute(
+            "SELECT id FROM races WHERE date = ? AND end_utc IS NULL",
+            (date_str,),
+        )
+        open_row = await open_cur.fetchone()
+        if open_row is not None:
+            await db.execute(
+                "UPDATE races SET end_utc = ? WHERE id = ?",
+                (start_utc.isoformat(), open_row["id"]),
+            )
+
+        cur = await db.execute(
+            "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+            " VALUES (?, ?, ?, ?, ?, NULL)",
+            (name, event, race_num, date_str, start_utc.isoformat()),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("Race started: {} (id={})", name, cur.lastrowid)
+        return _Race(
+            id=cur.lastrowid,
+            name=name,
+            event=event,
+            race_num=race_num,
+            date=date_str,
+            start_utc=start_utc,
+            end_utc=None,
+        )
+
+    async def end_race(self, race_id: int, end_utc: datetime) -> None:
+        """Set end_utc on the given race row."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE races SET end_utc = ? WHERE id = ?",
+            (end_utc.isoformat(), race_id),
+        )
+        await db.commit()
+        logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
+
+    async def get_current_race(self) -> Race | None:
+        """Return the most recent race with no end_utc, or None."""
+        from datetime import datetime as _datetime
+
+        from logger.races import Race as _Race
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, event, race_num, date, start_utc, end_utc"
+            " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _Race(
+            id=row["id"],
+            name=row["name"],
+            event=row["event"],
+            race_num=row["race_num"],
+            date=row["date"],
+            start_utc=_datetime.fromisoformat(row["start_utc"]),
+            end_utc=None,
+        )
+
+    async def list_races_for_date(self, date_str: str) -> list[Race]:
+        """Return all races for a UTC date string, ordered by start_utc ASC."""
+        from datetime import datetime as _datetime
+
+        from logger.races import Race as _Race
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, event, race_num, date, start_utc, end_utc"
+            " FROM races WHERE date = ? ORDER BY start_utc ASC",
+            (date_str,),
+        )
+        rows = await cur.fetchall()
+        return [
+            _Race(
+                id=row["id"],
+                name=row["name"],
+                event=row["event"],
+                race_num=row["race_num"],
+                date=row["date"],
+                start_utc=_datetime.fromisoformat(row["start_utc"]),
+                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+            )
+            for row in rows
+        ]
+
+    async def get_daily_event(self, date_str: str) -> str | None:
+        """Look up a stored custom event name for the given UTC date."""
+        db = self._conn()
+        cur = await db.execute("SELECT event_name FROM daily_events WHERE date = ?", (date_str,))
+        row = await cur.fetchone()
+        return row["event_name"] if row else None
+
+    async def set_daily_event(self, date_str: str, event_name: str) -> None:
+        """Upsert a custom event name for the given UTC date."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO daily_events (date, event_name) VALUES (?, ?)"
+            " ON CONFLICT(date) DO UPDATE SET event_name = excluded.event_name",
+            (date_str, event_name),
+        )
+        await db.commit()
+        logger.debug("Daily event set: {} → {}", date_str, event_name)
 
     # ------------------------------------------------------------------
     # Helpers

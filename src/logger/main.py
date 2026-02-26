@@ -114,6 +114,34 @@ async def _tide_loop(storage: object, fetcher: object) -> None:
         await asyncio.sleep(86400)  # re-fetch once per day
 
 
+async def _web_loop(storage: object) -> None:
+    """Background task: serve the race-marking web interface on WEB_PORT (default 3002)."""
+    import uvicorn
+
+    from logger.races import RaceConfig
+    from logger.storage import Storage
+    from logger.web import create_app
+
+    assert isinstance(storage, Storage)
+    cfg = RaceConfig()
+    server = uvicorn.Server(
+        uvicorn.Config(
+            create_app(storage),
+            host=cfg.web_host,
+            port=cfg.web_port,
+            log_level="warning",
+            access_log=False,
+        )
+    )
+    server.install_signal_handlers = False  # type: ignore[attr-defined]
+    logger.info("Web interface: http://{}:{}", cfg.web_host, cfg.web_port)
+    try:
+        await server.serve()
+    except asyncio.CancelledError:
+        server.should_exit = True
+        raise
+
+
 async def _audio_loop(storage: object) -> None:
     """Background task: record audio for the duration of the session.
 
@@ -171,6 +199,7 @@ async def _run() -> None:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
         tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
         audio_task = asyncio.create_task(_audio_loop(storage))
+        web_task = asyncio.create_task(_web_loop(storage))
         try:
             if data_source == "signalk":
                 from logger.sk_reader import SKReader, SKReaderConfig
@@ -206,7 +235,10 @@ async def _run() -> None:
             weather_task.cancel()
             tide_task.cancel()
             audio_task.cancel()
-            await asyncio.gather(weather_task, tide_task, audio_task, return_exceptions=True)
+            web_task.cancel()
+            await asyncio.gather(
+                weather_task, tide_task, audio_task, web_task, return_exceptions=True
+            )
             await storage.close()
             logger.info("Logger stopped")
 
