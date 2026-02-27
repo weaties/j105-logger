@@ -402,8 +402,8 @@ async def test_debrief_stop_ends_audio(storage: Storage, tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
-async def test_debrief_requires_completed_race(storage: Storage, tmp_path: Path) -> None:
-    """POST /api/races/{id}/debrief/start on an in-progress race returns 409."""
+async def test_debrief_on_open_race_auto_ends_it(storage: Storage, tmp_path: Path) -> None:
+    """POST /api/races/{id}/debrief/start on an in-progress race auto-ends the race first."""
     recorder = _make_recorder()
     config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
     app = create_app(storage, recorder=recorder, audio_config=config)
@@ -414,10 +414,10 @@ async def test_debrief_requires_completed_race(storage: Storage, tmp_path: Path)
         await _set_event(client)
         start_resp = await client.post("/api/races/start")
         race_id = start_resp.json()["id"]
-        # Race is still in progress — debrief should fail
+        # Race is still in progress — debrief auto-ends it
         debrief_resp = await client.post(f"/api/races/{race_id}/debrief/start")
 
-    assert debrief_resp.status_code == 409
+    assert debrief_resp.status_code == 201
 
 
 @pytest.mark.asyncio
@@ -962,6 +962,36 @@ async def test_debrief_end_utc_written_when_race_starts(storage: Storage, tmp_pa
     cur = await db.execute(
         "SELECT end_utc FROM audio_sessions WHERE session_type = 'debrief' ORDER BY id DESC LIMIT 1"
     )
+    row = await cur.fetchone()
+    assert row is not None
+    assert row["end_utc"] is not None
+
+
+@pytest.mark.asyncio
+async def test_debrief_auto_ends_open_race(storage: Storage, tmp_path: Path) -> None:
+    """Starting a debrief on an in-progress race auto-ends the race first (defensive AC #2)."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        race_id = r["id"]
+
+        # Start debrief without ending the race first
+        debrief_resp = await client.post(f"/api/races/{race_id}/debrief/start")
+        assert debrief_resp.status_code == 201
+
+    # Race recording should have been stopped (once for the auto-end)
+    # Debrief recording starts after, so recorder.start called twice total
+    assert recorder.start.await_count == 2
+
+    # The race row should now have end_utc set
+    db = storage._conn()
+    cur = await db.execute("SELECT end_utc FROM races WHERE id = ?", (race_id,))
     row = await cur.fetchone()
     assert row is not None
     assert row["end_utc"] is not None
