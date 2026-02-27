@@ -70,7 +70,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 8
+_CURRENT_VERSION: int = 9
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -213,6 +213,11 @@ _MIGRATIONS: dict[int, str] = {
     """,
     8: """
         ALTER TABLE races ADD COLUMN session_type TEXT NOT NULL DEFAULT 'race';
+    """,
+    9: """
+        ALTER TABLE audio_sessions ADD COLUMN race_id INTEGER REFERENCES races(id);
+        ALTER TABLE audio_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'race';
+        ALTER TABLE audio_sessions ADD COLUMN name TEXT;
     """,
 }
 
@@ -677,8 +682,20 @@ class Storage:
     # Audio sessions
     # ------------------------------------------------------------------
 
-    async def write_audio_session(self, session: AudioSession) -> int:
-        """Insert an audio session row and return the new row id."""
+    async def write_audio_session(
+        self,
+        session: AudioSession,
+        *,
+        race_id: int | None = None,
+        session_type: str = "race",
+        name: str | None = None,
+    ) -> int:
+        """Insert an audio session row and return the new row id.
+
+        *race_id* links this recording to a race/practice row.
+        *session_type* is ``"race"``, ``"practice"``, or ``"debrief"``.
+        *name* is a human-readable label (e.g. the race name or debrief name).
+        """
         from logger.audio import AudioSession as _AudioSession
 
         assert isinstance(session, _AudioSession)
@@ -686,8 +703,9 @@ class Storage:
         db = self._conn()
         cur = await db.execute(
             "INSERT INTO audio_sessions"
-            " (file_path, device_name, start_utc, end_utc, sample_rate, channels)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
+            "  race_id, session_type, name)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.file_path,
                 session.device_name,
@@ -695,6 +713,9 @@ class Storage:
                 session.end_utc.isoformat() if session.end_utc else None,
                 session.sample_rate,
                 session.channels,
+                race_id,
+                session_type,
+                name,
             ),
         )
         await db.commit()
@@ -858,6 +879,135 @@ class Storage:
         )
         row = await cur.fetchone()
         return int(row[0]) if row else 0
+
+    async def list_sessions(
+        self,
+        q: str | None = None,
+        session_type: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Return (total_count, sessions) for the history browser.
+
+        Sessions include races and practices (from the ``races`` table) and
+        debriefs (from ``audio_sessions`` where ``session_type='debrief'``).
+        Results are sorted newest-first.
+
+        *session_type* may be ``"race"``, ``"practice"``, ``"debrief"``, or
+        ``None`` for all types.
+        """
+        db = self._conn()
+
+        include_races = session_type in (None, "race", "practice")
+        include_debriefs = session_type in (None, "debrief")
+
+        parts: list[str] = []
+        params: list[Any] = []
+
+        if include_races:
+            race_where: list[str] = []
+            race_params: list[Any] = []
+            if session_type in ("race", "practice"):
+                race_where.append("r.session_type = ?")
+                race_params.append(session_type)
+            else:
+                race_where.append("r.session_type IN ('race', 'practice')")
+            if q:
+                race_where.append("(r.name LIKE ? OR r.event LIKE ?)")
+                like = f"%{q}%"
+                race_params.extend([like, like])
+            if from_date:
+                race_where.append("r.date >= ?")
+                race_params.append(from_date)
+            if to_date:
+                race_where.append("r.date <= ?")
+                race_params.append(to_date)
+            where = "WHERE " + " AND ".join(race_where)
+            parts.append(
+                f"SELECT r.id AS id, r.session_type AS type, r.name AS name,"
+                f" r.event AS event, r.race_num AS race_num, r.date AS date,"
+                f" r.start_utc AS start_utc, r.end_utc AS end_utc,"
+                f" CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS has_audio,"
+                f" a.id AS audio_session_id,"
+                f" NULL AS parent_race_id, NULL AS parent_race_name"
+                f" FROM races r"
+                f" LEFT JOIN audio_sessions a"
+                f"   ON a.race_id = r.id AND a.session_type IN ('race', 'practice')"
+                f" {where}"
+            )
+            params.extend(race_params)
+
+        if include_debriefs:
+            deb_where: list[str] = ["a.session_type = 'debrief'"]
+            deb_params: list[Any] = []
+            if q:
+                deb_where.append("(a.name LIKE ? OR r.event LIKE ?)")
+                like = f"%{q}%"
+                deb_params.extend([like, like])
+            if from_date:
+                deb_where.append("substr(a.start_utc, 1, 10) >= ?")
+                deb_params.append(from_date)
+            if to_date:
+                deb_where.append("substr(a.start_utc, 1, 10) <= ?")
+                deb_params.append(to_date)
+            where = "WHERE " + " AND ".join(deb_where)
+            parts.append(
+                f"SELECT a.id AS id, 'debrief' AS type,"
+                f" COALESCE(a.name, a.file_path) AS name,"
+                f" COALESCE(r.event, '') AS event,"
+                f" r.race_num AS race_num,"
+                f" COALESCE(r.date, substr(a.start_utc, 1, 10)) AS date,"
+                f" a.start_utc AS start_utc, a.end_utc AS end_utc,"
+                f" 1 AS has_audio, a.id AS audio_session_id,"
+                f" r.id AS parent_race_id, r.name AS parent_race_name"
+                f" FROM audio_sessions a"
+                f" LEFT JOIN races r ON r.id = a.race_id"
+                f" {where}"
+            )
+            params.extend(deb_params)
+
+        if not parts:
+            return (0, [])
+
+        union = " UNION ALL ".join(parts)
+
+        count_cur = await db.execute(f"SELECT COUNT(*) FROM ({union})", params)
+        count_row = await count_cur.fetchone()
+        total = int(count_row[0]) if count_row else 0
+
+        data_cur = await db.execute(
+            f"SELECT * FROM ({union}) ORDER BY start_utc DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await data_cur.fetchall()
+
+        from datetime import datetime as _datetime
+
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            start_utc = _datetime.fromisoformat(row["start_utc"])
+            end_utc = _datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None
+            duration_s = (end_utc - start_utc).total_seconds() if end_utc else None
+            result.append(
+                {
+                    "id": row["id"],
+                    "type": row["type"],
+                    "name": row["name"],
+                    "event": row["event"],
+                    "race_num": row["race_num"],
+                    "date": row["date"],
+                    "start_utc": start_utc.isoformat(),
+                    "end_utc": end_utc.isoformat() if end_utc else None,
+                    "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                    "has_audio": bool(row["has_audio"]),
+                    "audio_session_id": row["audio_session_id"],
+                    "parent_race_id": row["parent_race_id"],
+                    "parent_race_name": row["parent_race_name"],
+                }
+            )
+        return (total, result)
 
     async def get_daily_event(self, date_str: str) -> str | None:
         """Look up a stored custom event name for the given UTC date."""
