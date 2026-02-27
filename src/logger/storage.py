@@ -237,7 +237,7 @@ _MIGRATIONS: dict[int, str] = {
 }
 
 # Canonical order for the 5 J105 positions
-_POSITIONS: tuple[str, ...] = ("helm", "main", "jib", "spin", "tactician")
+_POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
 
 # ---------------------------------------------------------------------------
 # Storage class

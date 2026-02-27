@@ -90,9 +90,12 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 .inst-value{font-size:1.3rem;font-weight:700;color:#7eb8f7;font-variant-numeric:tabular-nums}
 .inst-unit{font-size:.75rem;color:#8892a4;margin-left:2px}
 .inst-time{font-size:1rem;font-weight:600;color:#e8eaf0;font-variant-numeric:tabular-nums;margin-bottom:8px}
+.crew-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;-webkit-user-select:none;user-select:none}
 .crew-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .crew-pos{min-width:48px;font-size:.8rem;color:#8892a4;text-transform:uppercase;letter-spacing:.06em}
 .crew-input{flex:1;background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem}
+.sailor-chip{padding:6px 12px;border:1px solid #2563eb;border-radius:16px;background:#0a1628;color:#7eb8f7;font-size:.82rem;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+.sailor-chip:active{background:#1e3a5f}
 .race-item-crew{font-size:.75rem;color:#8892a4;margin-top:2px}
 </style>
 </head>
@@ -158,14 +161,20 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </div>
 
 <div class="card" id="crew-card">
-  <div class="label">Crew</div>
-  <div class="crew-row"><span class="crew-pos">Helm</span><input class="crew-input" id="crew-helm" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
-  <div class="crew-row"><span class="crew-pos">Main</span><input class="crew-input" id="crew-main" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
-  <div class="crew-row"><span class="crew-pos">Jib</span><input class="crew-input" id="crew-jib" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
-  <div class="crew-row"><span class="crew-pos">Spin</span><input class="crew-input" id="crew-spin" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
-  <div class="crew-row"><span class="crew-pos">Tac</span><input class="crew-input" id="crew-tac" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
-  <datalist id="recent-sailors"></datalist>
-  <button class="btn btn-secondary" style="margin-top:10px;font-size:.9rem;padding:12px" onclick="saveCrew()">Save Crew</button>
+  <div class="crew-header" onclick="toggleCrew()">
+    <span class="label" style="margin-bottom:0">Crew</span>
+    <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">▼</span>
+  </div>
+  <div id="crew-body" style="display:none;margin-top:10px">
+    <div class="crew-row"><span class="crew-pos">Helm</span><input class="crew-input" id="crew-helm" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Main</span><input class="crew-input" id="crew-main" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Pit</span><input class="crew-input" id="crew-pit" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Bow</span><input class="crew-input" id="crew-bow" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Tac</span><input class="crew-input" id="crew-tac" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <datalist id="recent-sailors"></datalist>
+    <div id="sailor-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px"></div>
+    <button class="btn btn-secondary" style="margin-top:6px;font-size:.9rem;padding:12px" onclick="saveCrew()">Save Crew</button>
+  </div>
 </div>
 
 <div id="controls">
@@ -234,13 +243,17 @@ function render(s) {
       'Started ' + fmtTime(cur.start_utc);
     curRaceStartMs = new Date(cur.start_utc).getTime();
     btnEnd.textContent = '■ END ' + cur.name;
-    if(cur.crew) setCrewInputs(cur.crew);
+    if(cur.id !== _crewLoadedForRaceId) {
+      setCrewInputs(cur.crew || []);
+      _crewLoadedForRaceId = cur.id;
+    }
   } else {
     curCard.classList.add('hidden');
     btnEnd.classList.add('hidden');
     btnStartRace.classList.remove('hidden');
     btnStartPractice.classList.remove('hidden');
     curRaceStartMs = null;
+    _crewLoadedForRaceId = null;
     clearInterval(tickInterval);
   }
 
@@ -333,10 +346,19 @@ async function loadInstruments() {
 }
 
 let pendingCrew = null;
+let crewExpanded = false;
+let focusedCrewInput = null;
+let _crewLoadedForRaceId = null;
+
+function toggleCrew() {
+  crewExpanded = !crewExpanded;
+  document.getElementById('crew-body').style.display = crewExpanded ? '' : 'none';
+  document.getElementById('crew-chevron').textContent = crewExpanded ? '▲' : '▼';
+}
 
 function getCrewFromInputs() {
-  const positions = ['helm','main','jib','spin','tactician'];
-  const ids = ['crew-helm','crew-main','crew-jib','crew-spin','crew-tac'];
+  const positions = ['helm','main','pit','bow','tactician'];
+  const ids = ['crew-helm','crew-main','crew-pit','crew-bow','crew-tac'];
   const crew = [];
   positions.forEach((pos, i) => {
     const val = document.getElementById(ids[i]).value.trim();
@@ -346,12 +368,26 @@ function getCrewFromInputs() {
 }
 
 function setCrewInputs(crew) {
-  const posToId = {helm:'crew-helm',main:'crew-main',jib:'crew-jib',spin:'crew-spin',tactician:'crew-tac'};
+  const posToId = {helm:'crew-helm',main:'crew-main',pit:'crew-pit',bow:'crew-bow',tactician:'crew-tac'};
   Object.values(posToId).forEach(id => { document.getElementById(id).value = ''; });
   if(crew) crew.forEach(c => {
     const id = posToId[c.position];
     if(id) document.getElementById(id).value = c.sailor;
   });
+}
+
+function tapSailor(name) {
+  let target = focusedCrewInput;
+  if(!target) {
+    const inputs = [...document.querySelectorAll('.crew-input')];
+    target = inputs.find(i => !i.value.trim()) || inputs[0];
+  }
+  if(!target) return;
+  target.value = name;
+  const inputs = [...document.querySelectorAll('.crew-input')];
+  const idx = inputs.indexOf(target);
+  const nextEmpty = inputs.slice(idx + 1).find(i => !i.value.trim());
+  if(nextEmpty) { nextEmpty.focus(); focusedCrewInput = nextEmpty; }
 }
 
 async function loadRecentSailors() {
@@ -360,6 +396,12 @@ async function loadRecentSailors() {
     const d = await r.json();
     const dl = document.getElementById('recent-sailors');
     dl.innerHTML = d.sailors.map(s => '<option value="' + s.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '">').join('');
+    const chips = document.getElementById('sailor-chips');
+    chips.innerHTML = d.sailors.map(s => {
+      const display = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const attr = s.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      return '<button class="sailor-chip" onpointerdown="event.preventDefault()" onclick="tapSailor(this.dataset.name)" data-name="' + attr + '">' + display + '</button>';
+    }).join('');
   } catch(e) { console.error('sailors error', e); }
 }
 
@@ -430,6 +472,9 @@ setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
 loadRecentSailors();
+document.querySelectorAll('.crew-input').forEach(inp => {
+  inp.addEventListener('focus', () => { focusedCrewInput = inp; });
+});
 </script>
 </body>
 </html>
@@ -631,7 +676,7 @@ load();
 # ---------------------------------------------------------------------------
 
 
-POSITIONS: tuple[str, ...] = ("helm", "main", "jib", "spin", "tactician")
+POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
 
 
 class EventRequest(BaseModel):

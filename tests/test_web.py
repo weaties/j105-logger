@@ -888,7 +888,7 @@ async def test_post_crew_ignores_blank_sailors(storage: Storage) -> None:
             json=[
                 {"position": "helm", "sailor": "Mark"},
                 {"position": "main", "sailor": ""},
-                {"position": "jib", "sailor": "  "},
+                {"position": "pit", "sailor": "  "},
             ],
         )
 
@@ -897,4 +897,4 @@ async def test_post_crew_ignores_blank_sailors(storage: Storage) -> None:
     positions = [c["position"] for c in crew]
     assert "helm" in positions
     assert "main" not in positions
-    assert "jib" not in positions
+    assert "pit" not in positions

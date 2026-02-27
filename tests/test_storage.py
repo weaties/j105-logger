@@ -443,14 +443,14 @@ class TestCrewStorage:
         crew_in = [
             {"position": "tactician", "sailor": "Bill"},
             {"position": "helm", "sailor": "Mark"},
-            {"position": "jib", "sailor": "Sarah"},
+            {"position": "pit", "sailor": "Sarah"},
             {"position": "main", "sailor": "Dave"},
-            {"position": "spin", "sailor": "Tom"},
+            {"position": "bow", "sailor": "Tom"},
         ]
         await storage.set_race_crew(race_id, crew_in)
         crew_out = await storage.get_race_crew(race_id)
         positions = [c["position"] for c in crew_out]
-        assert positions == ["helm", "main", "jib", "spin", "tactician"]
+        assert positions == ["helm", "main", "pit", "bow", "tactician"]
         sailors = {c["position"]: c["sailor"] for c in crew_out}
         assert sailors["helm"] == "Mark"
         assert sailors["tactician"] == "Bill"
@@ -473,15 +473,15 @@ class TestCrewStorage:
             race_id,
             [{"position": "helm", "sailor": "Mark"}, {"position": "main", "sailor": "Dave"}],
         )
-        # Second write: replace helm, drop main, add jib
+        # Second write: replace helm, drop main, add pit
         await storage.set_race_crew(
             race_id,
-            [{"position": "helm", "sailor": "New"}, {"position": "jib", "sailor": "Pat"}],
+            [{"position": "helm", "sailor": "New"}, {"position": "pit", "sailor": "Pat"}],
         )
         crew = await storage.get_race_crew(race_id)
         pos_map = {c["position"]: c["sailor"] for c in crew}
         assert pos_map.get("helm") == "New"
-        assert pos_map.get("jib") == "Pat"
+        assert pos_map.get("pit") == "Pat"
         assert "main" not in pos_map
 
     async def test_get_crew_empty_race(self, storage: Storage) -> None:
