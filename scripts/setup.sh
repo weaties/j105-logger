@@ -77,7 +77,8 @@ if [[ ! -f "$HOME/.signalk/settings.json" ]]; then
     "id": "n2k-canbus",
     "pipeElements": [
       { "type": "providers/canbus", "options": { "canDevice": "can0" } },
-      { "type": "providers/canboatjs", "options": {} }
+      { "type": "providers/canboatjs", "options": {} },
+      { "type": "providers/n2k-signalk", "options": {} }
     ],
     "enabled": true
   }],
@@ -88,13 +89,16 @@ else
     info "~/.signalk/settings.json already exists — skipping."
 fi
 
-# Install signalk-to-influxdb2 plugin
-info "Installing signalk-to-influxdb2 plugin..."
+# Install Signal K plugins
+info "Installing Signal K plugins..."
 cat > "$HOME/.signalk/package.json" << 'EOF'
 {
   "name": "signalk-server-config",
   "version": "1.0.0",
-  "dependencies": { "signalk-to-influxdb2": "*" }
+  "dependencies": {
+    "signalk-to-influxdb2": "*",
+    "@signalk/derived-data": "*"
+  }
 }
 EOF
 (cd "$HOME/.signalk" && npm install --silent)

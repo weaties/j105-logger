@@ -80,6 +80,7 @@ color:#fff;font-weight:700;cursor:pointer;font-size:1rem}
 .race-exports{margin-top:6px;display:flex;gap:8px}
 .btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
 background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none}
+.btn-grafana{border-color:#b45309;color:#fbbf24}
 .hidden{display:none}
 .instruments-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:8px}
 .inst-item{display:flex;flex-direction:column}
@@ -90,7 +91,10 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </style>
 </head>
 <body>
-<h1>J105 Logger</h1>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
+  <h1>J105 Logger</h1>
+  <a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data" target="_blank" style="margin-top:2px">📊 Grafana</a>
+</div>
 <div class="sub" id="header-sub">Loading…</div>
 
 <div id="event-section" class="hidden">
@@ -222,12 +226,16 @@ function render(s) {
       const badge = r.session_type === 'practice'
         ? '<span class="badge badge-practice">PRACTICE</span>'
         : '<span class="badge badge-race">RACE</span>';
+      const from = new Date(r.start_utc).getTime();
+      const to   = r.end_utc ? new Date(r.end_utc).getTime() : 'now';
+      const grafanaBtn = `<a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?from=${from}&to=${to}&orgId=1" target="_blank">📊 ${r.end_utc ? 'Grafana' : 'Live'}</a>`;
       const exports = r.end_utc
         ? `<div class="race-exports">
              <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
              <a class="btn-export" href="/api/races/${r.id}/export.gpx">↓ GPX</a>
+             ${grafanaBtn}
            </div>`
-        : '';
+        : `<div class="race-exports">${grafanaBtn}</div>`;
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
@@ -330,13 +338,18 @@ def create_app(
     app = FastAPI(title="J105 Logger", docs_url=None, redoc_url=None)
     _audio_session_id: int | None = None
 
+    from logger.races import RaceConfig
+
+    cfg = RaceConfig()
+    _page = _HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace("__GRAFANA_UID__", cfg.grafana_uid)
+
     # ------------------------------------------------------------------
     # HTML UI
     # ------------------------------------------------------------------
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> HTMLResponse:
-        return HTMLResponse(_HTML)
+        return HTMLResponse(_page)
 
     # ------------------------------------------------------------------
     # /api/state

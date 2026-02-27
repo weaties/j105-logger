@@ -44,6 +44,12 @@ class RaceConfig:
 
     web_host: str = field(default_factory=lambda: os.environ.get("WEB_HOST", "0.0.0.0"))
     web_port: int = field(default_factory=lambda: int(os.environ.get("WEB_PORT", "3002")))
+    grafana_url: str = field(
+        default_factory=lambda: os.environ.get("GRAFANA_URL", "http://corvopi:3001")
+    )
+    grafana_uid: str = field(
+        default_factory=lambda: os.environ.get("GRAFANA_DASHBOARD_UID", "j105-sailing")
+    )
 
 
 # ---------------------------------------------------------------------------

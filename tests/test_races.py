@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from logger.races import build_race_name, default_event_for_date
+from logger.races import RaceConfig, build_race_name, default_event_for_date
 
 if TYPE_CHECKING:
     from logger.storage import Storage
@@ -16,6 +16,22 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Pure function tests (no DB needed)
 # ---------------------------------------------------------------------------
+
+
+def test_race_config_grafana_defaults() -> None:
+    """RaceConfig has sensible defaults for Grafana fields."""
+    cfg = RaceConfig()
+    assert cfg.grafana_url == "http://corvopi:3001"
+    assert cfg.grafana_uid == "j105-sailing"
+
+
+def test_race_config_grafana_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """RaceConfig reads Grafana fields from environment variables."""
+    monkeypatch.setenv("GRAFANA_URL", "http://myhost:3001")
+    monkeypatch.setenv("GRAFANA_DASHBOARD_UID", "custom-uid")
+    cfg = RaceConfig()
+    assert cfg.grafana_url == "http://myhost:3001"
+    assert cfg.grafana_uid == "custom-uid"
 
 
 def test_default_event_monday() -> None:

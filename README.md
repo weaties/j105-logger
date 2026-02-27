@@ -5,6 +5,10 @@ Raspberry Pi with a CAN bus HAT connected to the B&G instrument network. Signal 
 Server decodes the NMEA 2000 bus and feeds both InfluxDB → Grafana (real-time
 dashboards) and j105-logger (SQLite → CSV/GPX/JSON for regatta analysis tools).
 
+Two Signal K plugins are required:
+- **signalk-to-influxdb2** — forwards all SK data to InfluxDB for Grafana dashboards
+- **@signalk/derived-data** — computes true wind (TWS/TWA/TWD) from apparent wind + boatspeed + heading; without this, true wind fields will be empty in the logger and exports
+
 ---
 
 ## Architecture
@@ -541,7 +545,7 @@ This script is fully idempotent — safe to re-run after updates. It installs an
 configures:
 
 1. Node.js 24 LTS (via NodeSource)
-2. Signal K Server + signalk-to-influxdb2 plugin
+2. Signal K Server + plugins (`signalk-to-influxdb2`, `@signalk/derived-data`)
 3. InfluxDB 2.7.11 (pinned; `apt-mark hold` prevents v3 auto-upgrade)
 4. Grafana OSS (pre-provisioned InfluxDB datasource, port 3001)
 5. `uv` and all Python dependencies
