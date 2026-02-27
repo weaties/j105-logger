@@ -314,6 +314,43 @@ async def test_invalid_session_type_returns_422(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_index_substitutes_grafana_url(storage: Storage) -> None:
+    """GET / returns HTML with Grafana placeholders replaced by the configured URL/UID."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+
+    assert resp.status_code == 200
+    html = resp.text
+    assert "__GRAFANA_URL__" not in html
+    assert "__GRAFANA_UID__" not in html
+    # Default values are present
+    assert "http://corvopi:3001" in html
+    assert "j105-sailing" in html
+
+
+@pytest.mark.asyncio
+async def test_index_uses_env_grafana_url(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET / uses GRAFANA_URL / GRAFANA_DASHBOARD_UID env vars when set."""
+    monkeypatch.setenv("GRAFANA_URL", "http://myhost:3001")
+    monkeypatch.setenv("GRAFANA_DASHBOARD_UID", "custom-uid")
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+
+    html = resp.text
+    assert "http://myhost:3001" in html
+    assert "custom-uid" in html
+    assert "__GRAFANA_URL__" not in html
+
+
+@pytest.mark.asyncio
 async def test_end_race_no_active_recording_is_noop(storage: Storage, tmp_path: Path) -> None:
     """POST /api/races/{id}/end does not call recorder.stop() if no recording started."""
     # Start a race without a recorder (so _audio_session_id stays None), then
