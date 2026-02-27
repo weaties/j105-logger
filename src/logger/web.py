@@ -66,6 +66,8 @@ background:#22c55e;margin-right:6px;animation:pulse 1.4s infinite}
 .btn-practice:active{background:#14532d}
 .btn-debrief{background:#2d1b4e;color:#c084fc;border:1px solid #7c3aed}
 .btn-debrief:active{background:#1e1236}
+.btn-note{background:#1a3a4e;color:#7eb8f7;border:1px solid #2563eb}
+.btn-note:active{background:#163252}
 .badge{font-size:.7rem;padding:1px 6px;border-radius:3px;margin-left:4px;vertical-align:middle}
 .badge-race{background:#1e3a5f;color:#7eb8f7}
 .badge-practice{background:#14532d;color:#4ade80}
@@ -142,6 +144,15 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <div class="race-meta" id="cur-meta">—</div>
   <div class="label" style="margin-top:12px">Duration</div>
   <div class="duration" id="cur-duration">—</div>
+  <button class="btn btn-note" id="btn-note" onclick="toggleNotePanel()" style="margin-top:10px;display:none">+ Note</button>
+  <div id="note-panel" style="display:none;margin-top:8px">
+    <textarea id="note-body" rows="3"
+      style="width:100%;background:#0a1628;border:1px solid #2563eb;border-radius:6px;
+             padding:8px;color:#e8eaf0;font-size:.9rem;resize:vertical"
+      placeholder="Race observation…"></textarea>
+    <button class="btn btn-primary" style="margin-top:8px;font-size:.9rem;padding:10px;width:100%"
+      onclick="saveNote()">Save Note</button>
+  </div>
 </div>
 
 <div id="debrief-card" class="card hidden">
@@ -274,6 +285,7 @@ function render(s) {
       setCrewInputs(cur.crew || []);
       _crewLoadedForRaceId = cur.id;
     }
+    document.getElementById('btn-note').style.display = '';
   } else {
     curCard.classList.add('hidden');
     btnEnd.classList.add('hidden');
@@ -282,6 +294,8 @@ function render(s) {
     curRaceStartMs = null;
     _crewLoadedForRaceId = null;
     clearInterval(tickInterval);
+    document.getElementById('btn-note').style.display = 'none';
+    document.getElementById('note-panel').style.display = 'none';
   }
 
   const debriefCard = document.getElementById('debrief-card');
@@ -328,11 +342,19 @@ function render(s) {
         : '';
       const crewHtml = crewLine ? `<div class="race-item-crew">${crewLine}</div>` : '';
       const resultsHtml = renderResultsSection(r);
+      const notesHtml = r.end_utc
+        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
+          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
+          + 'onclick="toggleNotes(' + r.id + ')">Notes ▶</span>'
+          + '<div id="notes-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
+          + '</div>'
+        : '';
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
         ${crewHtml}
         ${resultsHtml}
+        ${notesHtml}
         ${exports}
       </div>`;
     }).join('');
@@ -667,6 +689,65 @@ async function refreshResults(raceId) {
   if (sumEl) sumEl.textContent = summary;
 }
 
+// ---- Notes ----
+
+function toggleNotePanel() {
+  const panel = document.getElementById('note-panel');
+  panel.style.display = panel.style.display === 'none' ? '' : 'none';
+  if (panel.style.display !== 'none') {
+    document.getElementById('note-body').focus();
+  }
+}
+
+async function saveNote() {
+  if (!state || !state.current_race) return;
+  const body = document.getElementById('note-body').value.trim();
+  if (!body) return;
+  await fetch('/api/sessions/' + state.current_race.id + '/notes', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({body, note_type: 'text'})
+  });
+  document.getElementById('note-body').value = '';
+  document.getElementById('note-panel').style.display = 'none';
+  const listEl = document.getElementById('notes-list-' + state.current_race.id);
+  if (listEl && listEl.style.display !== 'none') {
+    await refreshNotes(state.current_race.id);
+  }
+}
+
+function renderNote(n) {
+  const t = new Date(n.ts).toISOString().substring(11, 19) + ' UTC';
+  const body = (n.body || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem">'
+    + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
+    + body + '</div>';
+}
+
+async function refreshNotes(sessionId) {
+  const el = document.getElementById('notes-list-' + sessionId);
+  if (!el) return;
+  const r = await fetch('/api/sessions/' + sessionId + '/notes');
+  const notes = await r.json();
+  el.innerHTML = notes.length
+    ? notes.map(n => renderNote(n)).join('')
+    : '<div style="color:#8892a4;font-size:.8rem">No notes yet</div>';
+}
+
+async function toggleNotes(sessionId) {
+  const el = document.getElementById('notes-list-' + sessionId);
+  if (!el) return;
+  const span = el.previousElementSibling;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (span) span.textContent = 'Notes ▶';
+    return;
+  }
+  el.style.display = '';
+  if (span) span.textContent = 'Notes ▼';
+  await refreshNotes(sessionId);
+}
+
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
@@ -833,6 +914,7 @@ function render(data) {
     }
     if (s.type !== 'debrief') {
       exports += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
+      exports += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
     }
     if (s.has_audio && s.audio_session_id) {
       exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
@@ -841,10 +923,13 @@ function render(data) {
     const resultsPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-results-' + s.id + '" style="display:none"></div>'
       : '';
+    const notesPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
+      : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + resultsPanel + '</div>';
+      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + '</div>';
   }).join('');
 
   const total = data.total;
@@ -887,6 +972,31 @@ async function toggleHistoryResults(sessionId) {
   }
   el.style.display = '';
   if (btn) btn.textContent = 'Results ▼';
+}
+
+async function toggleHistoryNotes(sessionId) {
+  const el = document.getElementById('hist-notes-' + sessionId);
+  const btn = document.getElementById('hist-notes-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = 'Notes ▶';
+    return;
+  }
+  const r = await fetch('/api/sessions/' + sessionId + '/notes');
+  const notes = await r.json();
+  if (!notes.length) {
+    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No notes</span>';
+  } else {
+    el.innerHTML = notes.map(n => {
+      const t = new Date(n.ts).toISOString().substring(11,19) + ' UTC';
+      const body = (n.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      return '<div style="font-size:.8rem;padding:3px 0;border-bottom:1px solid #0d1a2e">'
+        + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>' + body + '</div>';
+    }).join('');
+  }
+  el.style.display = '';
+  if (btn) btn.textContent = 'Notes ▼';
 }
 
 // Default: last 30 days
@@ -1081,6 +1191,12 @@ class RaceResultEntry(BaseModel):
     dnf: bool = False
     dns: bool = False
     notes: str | None = None
+
+
+class NoteCreate(BaseModel):
+    body: str | None = None
+    note_type: str = "text"
+    ts: str | None = None  # UTC ISO 8601; defaults to server time if absent
 
 
 # ---------------------------------------------------------------------------
@@ -1667,5 +1783,81 @@ def create_app(
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Result not found")
         await storage.delete_race_result(result_id)
+
+    # ------------------------------------------------------------------
+    # /api/sessions/{session_id}/notes  &  /api/notes/{note_id}
+    # ------------------------------------------------------------------
+
+    async def _resolve_session(session_id: int) -> tuple[int | None, int | None]:
+        """Return (race_id, audio_session_id) for the given session_id, or raise 404."""
+        cur = await storage._conn().execute(
+            "SELECT id FROM races WHERE id = ?", (session_id,)
+        )
+        if await cur.fetchone() is not None:
+            return session_id, None
+        cur2 = await storage._conn().execute(
+            "SELECT id FROM audio_sessions WHERE id = ?", (session_id,)
+        )
+        if await cur2.fetchone() is not None:
+            return None, session_id
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    @app.post("/api/sessions/{session_id}/notes", status_code=201)
+    async def api_create_note(session_id: int, body: NoteCreate) -> JSONResponse:
+        if body.note_type not in ("text",):
+            raise HTTPException(status_code=422, detail="note_type must be 'text'")
+        if not body.body or not body.body.strip():
+            raise HTTPException(status_code=422, detail="body must not be blank for text notes")
+        race_id, audio_session_id = await _resolve_session(session_id)
+        ts = body.ts if body.ts else datetime.now(UTC).isoformat()
+        note_id = await storage.create_note(
+            ts,
+            body.body,
+            race_id=race_id,
+            audio_session_id=audio_session_id,
+            note_type=body.note_type,
+        )
+        return JSONResponse({"id": note_id, "ts": ts}, status_code=201)
+
+    @app.get("/api/sessions/{session_id}/notes")
+    async def api_list_notes(session_id: int) -> JSONResponse:
+        race_id, audio_session_id = await _resolve_session(session_id)
+        notes = await storage.list_notes(race_id=race_id, audio_session_id=audio_session_id)
+        return JSONResponse(notes)
+
+    @app.delete("/api/notes/{note_id}", status_code=204)
+    async def api_delete_note(note_id: int) -> None:
+        found = await storage.delete_note(note_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Note not found")
+
+    # ------------------------------------------------------------------
+    # /api/grafana/annotations
+    # ------------------------------------------------------------------
+
+    @app.get("/api/grafana/annotations")
+    async def api_grafana_annotations(
+        from_: int | None = Query(default=None, alias="from"),
+        to: int | None = None,
+    ) -> JSONResponse:
+        """Grafana SimpleJSON annotation feed.
+
+        Grafana passes epoch milliseconds as ``from`` and ``to``.
+        """
+        if from_ is None or to is None:
+            return JSONResponse([])
+        start = datetime.fromtimestamp(from_ / 1000.0, tz=UTC)
+        end = datetime.fromtimestamp(to / 1000.0, tz=UTC)
+        notes = await storage.list_notes_range(start, end)
+        result = [
+            {
+                "time": int(datetime.fromisoformat(n["ts"]).timestamp() * 1000),
+                "title": "Note",
+                "text": n["body"] or "",
+                "tags": [n["note_type"]],
+            }
+            for n in notes
+        ]
+        return JSONResponse(result)
 
     return app

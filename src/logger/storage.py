@@ -70,7 +70,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 11
+_CURRENT_VERSION: int = 12
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -257,6 +257,22 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_race_results_race_id ON race_results(race_id);
     """,
+    12: """
+        CREATE TABLE IF NOT EXISTS session_notes (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id            INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            audio_session_id   INTEGER REFERENCES audio_sessions(id) ON DELETE CASCADE,
+            ts                 TEXT NOT NULL,
+            note_type          TEXT NOT NULL DEFAULT 'text',
+            body               TEXT,
+            photo_path         TEXT,
+            created_at         TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_notes_race_id
+            ON session_notes(race_id);
+        CREATE INDEX IF NOT EXISTS idx_session_notes_ts
+            ON session_notes(ts);
+    """,
 }
 
 # Canonical order for the 5 J105 positions
@@ -330,6 +346,7 @@ class Storage:
         """Open the database connection."""
         self._db = await aiosqlite.connect(self._config.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self._db.execute("PRAGMA foreign_keys = ON")
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
@@ -1338,6 +1355,96 @@ class Storage:
         await db.execute("DELETE FROM race_results WHERE id = ?", (result_id,))
         await db.commit()
         logger.debug("Race result {} deleted", result_id)
+
+    # ------------------------------------------------------------------
+    # Session notes
+    # ------------------------------------------------------------------
+
+    async def create_note(
+        self,
+        ts: str,
+        body: str | None,
+        *,
+        race_id: int | None = None,
+        audio_session_id: int | None = None,
+        note_type: str = "text",
+        photo_path: str | None = None,
+    ) -> int:
+        """Insert a new note and return its id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now_str = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO session_notes"
+            " (race_id, audio_session_id, ts, note_type, body, photo_path, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (race_id, audio_session_id, ts, note_type, body, photo_path, now_str),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.debug(
+            "Note created: id={} race_id={} type={}", cur.lastrowid, race_id, note_type
+        )
+        return cur.lastrowid
+
+    async def list_notes(
+        self,
+        race_id: int | None = None,
+        audio_session_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return notes for a session ordered by ts ASC.
+
+        Exactly one of *race_id* or *audio_session_id* must be supplied.
+        """
+        if race_id is None and audio_session_id is None:
+            raise ValueError("Either race_id or audio_session_id must be supplied")
+        db = self._conn()
+        if race_id is not None:
+            cur = await db.execute(
+                "SELECT id, race_id, audio_session_id, ts, note_type, body,"
+                " photo_path, created_at"
+                " FROM session_notes WHERE race_id = ? ORDER BY ts ASC",
+                (race_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT id, race_id, audio_session_id, ts, note_type, body,"
+                " photo_path, created_at"
+                " FROM session_notes WHERE audio_session_id = ? ORDER BY ts ASC",
+                (audio_session_id,),
+            )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def delete_note(self, note_id: int) -> bool:
+        """Delete a note by id.  Returns True if deleted, False if not found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM session_notes WHERE id = ?", (note_id,))
+        await db.commit()
+        deleted = (cur.rowcount or 0) > 0
+        logger.debug("Note {} {}", note_id, "deleted" if deleted else "not found")
+        return deleted
+
+    async def list_notes_range(
+        self,
+        start: datetime,
+        end: datetime,
+    ) -> list[dict[str, Any]]:
+        """Return notes whose ts falls in [start, end], ordered by ts ASC.
+
+        Used by the Grafana annotations endpoint.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, race_id, audio_session_id, ts, note_type, body,"
+            " photo_path, created_at"
+            " FROM session_notes WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
+            (start.isoformat(), end.isoformat()),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Helpers

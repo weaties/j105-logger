@@ -54,6 +54,7 @@ class TestMigration:
             "video_sessions",
             "weather",
             "tides",
+            "session_notes",
         }:
             assert expected in names, f"Table {expected!r} not found"
 
@@ -665,3 +666,88 @@ class TestRaceResults:
         results = await storage.list_race_results(race_id)
         assert results[0]["sail_number"] == "USA 0070"
         assert results[0]["boat_name"] == "Jubilee"
+
+
+# ---------------------------------------------------------------------------
+# Session notes
+# ---------------------------------------------------------------------------
+
+_NOTE_DATE = "2026-02-27"
+_NOTE_START = datetime(2026, 2, 27, 14, 0, 0, tzinfo=UTC)
+
+
+class TestSessionNotes:
+    async def _make_race(self, storage: Storage) -> int:
+        race = await storage.start_race(
+            "Regatta", _NOTE_START, _NOTE_DATE, 1, "20260227-Regatta-1"
+        )
+        assert race.id is not None
+        return race.id
+
+    async def test_create_note_returns_id(self, storage: Storage) -> None:
+        """create_note returns a positive integer id."""
+        race_id = await self._make_race(storage)
+        note_id = await storage.create_note(
+            _NOTE_START.isoformat(), "Test note", race_id=race_id
+        )
+        assert isinstance(note_id, int)
+        assert note_id > 0
+
+    async def test_list_notes_by_race(self, storage: Storage) -> None:
+        """list_notes returns notes in ts-ascending order for a race."""
+        race_id = await self._make_race(storage)
+        ts1 = _NOTE_START.isoformat()
+        ts2 = (_NOTE_START + timedelta(seconds=60)).isoformat()
+        await storage.create_note(ts2, "Second", race_id=race_id)
+        await storage.create_note(ts1, "First", race_id=race_id)
+        notes = await storage.list_notes(race_id=race_id)
+        assert len(notes) == 2
+        assert notes[0]["body"] == "First"
+        assert notes[1]["body"] == "Second"
+
+    async def test_list_notes_empty_for_new_race(self, storage: Storage) -> None:
+        """list_notes returns [] when no notes exist."""
+        race_id = await self._make_race(storage)
+        assert await storage.list_notes(race_id=race_id) == []
+
+    async def test_delete_note_returns_true(self, storage: Storage) -> None:
+        """delete_note returns True when the note is found and deleted."""
+        race_id = await self._make_race(storage)
+        note_id = await storage.create_note(
+            _NOTE_START.isoformat(), "Gone", race_id=race_id
+        )
+        assert await storage.delete_note(note_id) is True
+        assert await storage.list_notes(race_id=race_id) == []
+
+    async def test_delete_note_returns_false_when_missing(self, storage: Storage) -> None:
+        """delete_note returns False for a non-existent id."""
+        assert await storage.delete_note(99999) is False
+
+    async def test_list_notes_range(self, storage: Storage) -> None:
+        """list_notes_range returns only notes within the time window."""
+        race_id = await self._make_race(storage)
+        ts_in = _NOTE_START + timedelta(seconds=30)
+        ts_out = _NOTE_START + timedelta(seconds=90)
+        await storage.create_note(ts_in.isoformat(), "In range", race_id=race_id)
+        await storage.create_note(ts_out.isoformat(), "Out of range", race_id=race_id)
+        notes = await storage.list_notes_range(
+            _NOTE_START, _NOTE_START + timedelta(seconds=60)
+        )
+        assert len(notes) == 1
+        assert notes[0]["body"] == "In range"
+
+    async def test_note_cascade_delete_with_race(self, storage: Storage) -> None:
+        """Notes are deleted when their parent race is deleted (CASCADE)."""
+        race_id = await self._make_race(storage)
+        await storage.create_note(
+            _NOTE_START.isoformat(), "Will be gone", race_id=race_id
+        )
+        db = storage._conn()
+        await db.execute("DELETE FROM races WHERE id = ?", (race_id,))
+        await db.commit()
+        assert await storage.list_notes(race_id=race_id) == []
+
+    async def test_list_notes_requires_session_arg(self, storage: Storage) -> None:
+        """list_notes raises ValueError when called with no session argument."""
+        with pytest.raises(ValueError, match="Either race_id or audio_session_id"):
+            await storage.list_notes()

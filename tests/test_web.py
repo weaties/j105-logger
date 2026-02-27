@@ -1029,3 +1029,138 @@ async def test_start_race_carries_forward_crew(storage: Storage) -> None:
     pos_map = {c["position"]: c["sailor"] for c in crew}
     assert pos_map.get("helm") == "Alice"
     assert pos_map.get("main") == "Bob"
+
+
+# ---------------------------------------------------------------------------
+# Session notes API
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_note_returns_201(storage: Storage) -> None:
+    """POST /api/sessions/{id}/notes creates a note and returns 201."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/sessions/{race_id}/notes",
+            json={"body": "Upwind leg, 15kts TWS", "note_type": "text"},
+        )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "id" in data
+    assert "ts" in data
+
+
+@pytest.mark.asyncio
+async def test_create_note_blank_body_returns_422(storage: Storage) -> None:
+    """POST /api/sessions/{id}/notes with a blank body returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/sessions/{race_id}/notes",
+            json={"body": "   ", "note_type": "text"},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_note_unknown_session_returns_404(storage: Storage) -> None:
+    """POST /api/sessions/{id}/notes for a non-existent session returns 404."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/sessions/9999/notes",
+            json={"body": "note", "note_type": "text"},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_notes_returns_notes(storage: Storage) -> None:
+    """GET /api/sessions/{id}/notes returns notes for the session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/sessions/{race_id}/notes", json={"body": "Note one"}
+        )
+        await client.post(
+            f"/api/sessions/{race_id}/notes", json={"body": "Note two"}
+        )
+        resp = await client.get(f"/api/sessions/{race_id}/notes")
+    assert resp.status_code == 200
+    notes = resp.json()
+    assert len(notes) == 2
+    bodies = [n["body"] for n in notes]
+    assert "Note one" in bodies
+    assert "Note two" in bodies
+
+
+@pytest.mark.asyncio
+async def test_delete_note_returns_204(storage: Storage) -> None:
+    """DELETE /api/notes/{id} returns 204 and the note is gone."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        create_resp = await client.post(
+            f"/api/sessions/{race_id}/notes", json={"body": "To delete"}
+        )
+        note_id = create_resp.json()["id"]
+        del_resp = await client.delete(f"/api/notes/{note_id}")
+        list_resp = await client.get(f"/api/sessions/{race_id}/notes")
+    assert del_resp.status_code == 204
+    assert list_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_note_not_found_returns_404(storage: Storage) -> None:
+    """DELETE /api/notes/{id} for a missing note returns 404."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete("/api/notes/99999")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_returns_list(storage: Storage) -> None:
+    """GET /api/grafana/annotations returns annotation objects."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"}
+        )
+        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
+        resp = await client.get(
+            f"/api/grafana/annotations?from={from_ms}&to={to_ms}"
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    assert "time" in data[0]
+    assert "text" in data[0]
+    assert "tags" in data[0]
+    assert data[0]["text"] == "Tack at mark"
