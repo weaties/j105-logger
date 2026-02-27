@@ -499,7 +499,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "10s",
+  "refresh": "",
   "schemaVersion": 41,
   "tags": [
     "sailing",
