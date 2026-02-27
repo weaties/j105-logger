@@ -197,6 +197,7 @@ async def _run() -> None:
                     storage_config.db_path,
                 )
                 async for record in SKReader(sk_config):
+                    storage.update_live(record)
                     if storage.session_active:
                         await storage.write(record)
             else:
@@ -213,8 +214,10 @@ async def _run() -> None:
                     pgn = extract_pgn(frame.arbitration_id)
                     src = frame.arbitration_id & 0xFF
                     decoded = decode(pgn, frame.data, src, frame.timestamp)
-                    if decoded is not None and storage.session_active:
-                        await storage.write(decoded)
+                    if decoded is not None:
+                        storage.update_live(decoded)
+                        if storage.session_active:
+                            await storage.write(decoded)
         except asyncio.CancelledError:
             logger.info("Shutdown signal received — flushing and stopping")
         finally:
