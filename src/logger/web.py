@@ -292,7 +292,7 @@ function render(s) {
         : '<span class="badge badge-race">RACE</span>';
       const from = new Date(r.start_utc).getTime();
       const to   = r.end_utc ? new Date(r.end_utc).getTime() : 'now';
-      const grafanaBtn = `<a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?from=${from}&to=${to}&orgId=1" target="_blank">📊 ${r.end_utc ? 'Grafana' : 'Live'}</a>`;
+      const grafanaBtn = `<a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?from=${from}&to=${to}&orgId=1${r.end_utc ? '&refresh=' : '&refresh=10s'}" target="_blank">📊 ${r.end_utc ? 'Grafana' : 'Live'}</a>`;
       const debriefBtn = (r.end_utc && s.has_recorder && !s.current_debrief && !s.current_race)
         ? `<button class="btn-export btn-debrief" onclick="startDebrief(${r.id})">🎙 Debrief</button>`
         : '';
@@ -652,7 +652,7 @@ function render(data) {
       const to = new Date(s.end_utc).getTime();
       exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.csv">&#8595; CSV</a>';
       exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.gpx">&#8595; GPX</a>';
-      exports += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1" target="_blank">&#128202; Grafana</a>';
+      exports += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1&refresh=" target="_blank">&#128202; Grafana</a>';
     }
     if (s.has_audio && s.audio_session_id) {
       exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
