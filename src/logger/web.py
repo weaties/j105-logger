@@ -84,7 +84,8 @@ color:#fff;font-weight:700;cursor:pointer;font-size:1rem}
 background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none}
 .btn-grafana{border-color:#b45309;color:#fbbf24}
 .hidden{display:none}
-.instruments-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 12px;margin-top:8px}
+.instruments-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 8px;margin-top:6px}
+.inst-stale .inst-value{color:#4a5568}
 .inst-item{display:flex;flex-direction:column}
 .inst-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:#8892a4}
 .inst-value{font-size:1.3rem;font-weight:700;color:#7eb8f7;font-variant-numeric:tabular-nums}
@@ -136,34 +137,41 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </div>
 
 <div class="card" id="instruments-card">
-  <div class="label">Instruments</div>
-  <div class="inst-time" id="inst-time">--:--:-- UTC</div>
-  <div class="instruments-grid">
-    <div class="inst-item"><span class="inst-label">SOG</span>
-      <span><span class="inst-value" id="iv-sog">—</span><span class="inst-unit">kts</span></span></div>
-    <div class="inst-item"><span class="inst-label">COG</span>
-      <span><span class="inst-value" id="iv-cog">—</span><span class="inst-unit">°</span></span></div>
-    <div class="inst-item"><span class="inst-label">HDG</span>
-      <span><span class="inst-value" id="iv-hdg">—</span><span class="inst-unit">°</span></span></div>
+  <div class="crew-header" onclick="toggleInstruments()">
+    <span class="label" style="margin-bottom:0">Instruments</span>
+    <span style="display:flex;align-items:center;gap:8px">
+      <span class="inst-time" id="inst-time" style="margin-bottom:0">--:--:-- UTC</span>
+      <span id="inst-chevron" style="color:#8892a4;font-size:.85rem">▶</span>
+    </span>
+  </div>
+  <div id="inst-body" style="display:none">
+  <div class="instruments-grid" id="inst-grid">
     <div class="inst-item"><span class="inst-label">BSP</span>
       <span><span class="inst-value" id="iv-bsp">—</span><span class="inst-unit">kts</span></span></div>
-    <div class="inst-item"><span class="inst-label">AWS</span>
-      <span><span class="inst-value" id="iv-aws">—</span><span class="inst-unit">kts</span></span></div>
-    <div class="inst-item"><span class="inst-label">AWA</span>
-      <span><span class="inst-value" id="iv-awa">—</span><span class="inst-unit">°</span></span></div>
     <div class="inst-item"><span class="inst-label">TWS</span>
       <span><span class="inst-value" id="iv-tws">—</span><span class="inst-unit">kts</span></span></div>
     <div class="inst-item"><span class="inst-label">TWA</span>
       <span><span class="inst-value" id="iv-twa">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">HDG</span>
+      <span><span class="inst-value" id="iv-hdg">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">COG</span>
+      <span><span class="inst-value" id="iv-cog">—</span><span class="inst-unit">°</span></span></div>
+    <div class="inst-item"><span class="inst-label">SOG</span>
+      <span><span class="inst-value" id="iv-sog">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">AWS</span>
+      <span><span class="inst-value" id="iv-aws">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">AWA</span>
+      <span><span class="inst-value" id="iv-awa">—</span><span class="inst-unit">°</span></span></div>
     <div class="inst-item"><span class="inst-label">TWD</span>
       <span><span class="inst-value" id="iv-twd">—</span><span class="inst-unit">°</span></span></div>
+  </div>
   </div>
 </div>
 
 <div class="card" id="crew-card">
   <div class="crew-header" onclick="toggleCrew()">
     <span class="label" style="margin-bottom:0">Crew</span>
-    <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">▼</span>
+    <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">▶</span>
   </div>
   <div id="crew-body" style="display:none;margin-top:10px">
     <div class="crew-row"><span class="crew-pos">Helm</span><input class="crew-input" id="crew-helm" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
@@ -193,6 +201,7 @@ let state = null;
 let tickInterval = null;
 let curRaceStartMs = null;
 let debriefStartMs = null;
+let lastInstrumentDataMs = 0;
 
 async function loadState() {
   try {
@@ -323,6 +332,11 @@ function tick() {
     const elapsed = Math.floor((Date.now() - debriefStartMs) / 1000);
     document.getElementById('debrief-duration').textContent = fmt(elapsed);
   }
+  const grid = document.getElementById('inst-grid');
+  if (grid) {
+    grid.classList.toggle('inst-stale',
+      lastInstrumentDataMs > 0 && Date.now() - lastInstrumentDataMs > 5000);
+  }
 }
 
 async function loadInstruments() {
@@ -342,6 +356,9 @@ async function loadInstruments() {
     set('iv-tws', d.tws_kts, 1);
     set('iv-twa', d.twa_deg, 0);
     set('iv-twd', d.twd_deg, 0);
+    if (Object.values(d).some(v => v != null)) {
+      lastInstrumentDataMs = Date.now();
+    }
   } catch(e) { console.error('instruments error', e); }
 }
 
@@ -350,10 +367,18 @@ let crewExpanded = false;
 let focusedCrewInput = null;
 let _crewLoadedForRaceId = null;
 
+let instExpanded = false;
+
+function toggleInstruments() {
+  instExpanded = !instExpanded;
+  document.getElementById('inst-body').style.display = instExpanded ? '' : 'none';
+  document.getElementById('inst-chevron').textContent = instExpanded ? '▼' : '▶';
+}
+
 function toggleCrew() {
   crewExpanded = !crewExpanded;
   document.getElementById('crew-body').style.display = crewExpanded ? '' : 'none';
-  document.getElementById('crew-chevron').textContent = crewExpanded ? '▲' : '▼';
+  document.getElementById('crew-chevron').textContent = crewExpanded ? '▼' : '▶';
 }
 
 function getCrewFromInputs() {
