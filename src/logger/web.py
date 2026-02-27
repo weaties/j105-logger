@@ -64,6 +64,8 @@ background:#22c55e;margin-right:6px;animation:pulse 1.4s infinite}
 .btn-danger{background:#7f1d1d;color:#fca5a5;border:1px solid #dc2626}
 .btn-practice{background:#1a3a2a;color:#4ade80;border:1px solid #16a34a}
 .btn-practice:active{background:#14532d}
+.btn-debrief{background:#2d1b4e;color:#c084fc;border:1px solid #7c3aed}
+.btn-debrief:active{background:#1e1236}
 .badge{font-size:.7rem;padding:1px 6px;border-radius:3px;margin-left:4px;vertical-align:middle}
 .badge-race{background:#1e3a5f;color:#7eb8f7}
 .badge-practice{background:#14532d;color:#4ade80}
@@ -93,7 +95,10 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 <body>
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
   <h1>J105 Logger</h1>
-  <a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data" target="_blank" style="margin-top:2px">📊 Grafana</a>
+  <div style="display:flex;gap:6px;margin-top:2px">
+    <a class="btn-export" href="/history">📋 History</a>
+    <a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data" target="_blank">📊 Grafana</a>
+  </div>
 </div>
 <div class="sub" id="header-sub">Loading…</div>
 
@@ -111,6 +116,16 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <div class="race-meta" id="cur-meta">—</div>
   <div class="label" style="margin-top:12px">Duration</div>
   <div class="duration" id="cur-duration">—</div>
+</div>
+
+<div id="debrief-card" class="card hidden">
+  <div class="label">
+    <span class="status-dot" style="background:#c084fc"></span>Debrief in progress
+  </div>
+  <div class="race-name" id="debrief-name">—</div>
+  <div class="label" style="margin-top:12px">Duration</div>
+  <div class="duration" id="debrief-duration" style="color:#c084fc">—</div>
+  <button class="btn btn-danger" style="margin-top:12px" onclick="stopDebrief()">⏹ STOP DEBRIEF</button>
 </div>
 
 <div class="card" id="instruments-card">
@@ -153,6 +168,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 let state = null;
 let tickInterval = null;
 let curRaceStartMs = null;
+let debriefStartMs = null;
 
 async function loadState() {
   try {
@@ -212,6 +228,16 @@ function render(s) {
     clearInterval(tickInterval);
   }
 
+  const debriefCard = document.getElementById('debrief-card');
+  if(s.current_debrief) {
+    debriefCard.classList.remove('hidden');
+    document.getElementById('debrief-name').textContent = s.current_debrief.race_name + ' — debrief';
+    debriefStartMs = new Date(s.current_debrief.start_utc).getTime();
+  } else {
+    debriefCard.classList.add('hidden');
+    debriefStartMs = null;
+  }
+
   btnStartRace.textContent = `▶ START RACE ${s.next_race_num}`;
 
   const hist = document.getElementById('history-card');
@@ -229,11 +255,15 @@ function render(s) {
       const from = new Date(r.start_utc).getTime();
       const to   = r.end_utc ? new Date(r.end_utc).getTime() : 'now';
       const grafanaBtn = `<a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?from=${from}&to=${to}&orgId=1" target="_blank">📊 ${r.end_utc ? 'Grafana' : 'Live'}</a>`;
+      const debriefBtn = (r.end_utc && s.has_recorder && !s.current_debrief && !s.current_race)
+        ? `<button class="btn-export btn-debrief" onclick="startDebrief(${r.id})">🎙 Debrief</button>`
+        : '';
       const exports = r.end_utc
         ? `<div class="race-exports">
              <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
              <a class="btn-export" href="/api/races/${r.id}/export.gpx">↓ GPX</a>
              ${grafanaBtn}
+             ${debriefBtn}
            </div>`
         : `<div class="race-exports">${grafanaBtn}</div>`;
       return `<div class="race-item">
@@ -251,9 +281,14 @@ function tick() {
   const now = new Date();
   document.getElementById('inst-time').textContent =
     now.toISOString().substring(11,19) + ' UTC';
-  if(!curRaceStartMs) return;
-  const elapsed = Math.floor((Date.now() - curRaceStartMs) / 1000);
-  document.getElementById('cur-duration').textContent = fmt(elapsed);
+  if(curRaceStartMs) {
+    const elapsed = Math.floor((Date.now() - curRaceStartMs) / 1000);
+    document.getElementById('cur-duration').textContent = fmt(elapsed);
+  }
+  if(debriefStartMs) {
+    const elapsed = Math.floor((Date.now() - debriefStartMs) / 1000);
+    document.getElementById('debrief-duration').textContent = fmt(elapsed);
+  }
 }
 
 async function loadInstruments() {
@@ -289,6 +324,16 @@ async function endRace() {
   await loadState();
 }
 
+async function startDebrief(raceId) {
+  await fetch(`/api/races/${raceId}/debrief/start`, {method: 'POST'});
+  await loadState();
+}
+
+async function stopDebrief() {
+  await fetch('/api/debrief/stop', {method: 'POST'});
+  await loadState();
+}
+
 async function saveEvent() {
   const name = document.getElementById('event-input').value.trim();
   if(!name) return;
@@ -305,6 +350,190 @@ setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# History page HTML
+# ---------------------------------------------------------------------------
+
+_HISTORY_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Session History — J105 Logger</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
+padding:16px;max-width:600px;margin:0 auto}
+h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
+.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:6px}
+.btn{display:inline-block;padding:10px 18px;border:none;border-radius:8px;
+font-size:.95rem;font-weight:700;cursor:pointer;letter-spacing:.02em}
+.btn-secondary{background:#1e3a5f;color:#7eb8f7;border:1px solid #2563eb}
+.btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
+background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-block}
+.btn-grafana{border-color:#b45309;color:#fbbf24}
+.event-input{background:#0a1628;border:1px solid #2563eb;border-radius:8px;
+padding:10px 12px;color:#e8eaf0;font-size:.95rem;width:100%}
+.filter-btn{padding:7px 14px;border:1px solid #2563eb;border-radius:20px;
+background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
+.filter-btn.active{background:#2563eb;color:#fff}
+.badge{font-size:.7rem;padding:1px 6px;border-radius:3px;margin-left:4px;vertical-align:middle}
+.badge-race{background:#1e3a5f;color:#7eb8f7}
+.badge-practice{background:#14532d;color:#4ade80}
+.badge-debrief{background:#2d1b4e;color:#c084fc}
+.session-name{font-weight:600;font-size:.95rem;margin-bottom:3px}
+.session-meta{font-size:.8rem;color:#8892a4}
+.session-exports{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.empty{color:#8892a4;text-align:center;padding:24px 0}
+.pager{display:flex;gap:8px;justify-content:center;align-items:center;margin-top:8px}
+.pager-info{color:#8892a4;font-size:.85rem}
+</style>
+</head>
+<body>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+  <a href="/" class="btn-export" style="padding:7px 14px">← Back</a>
+  <h1>Session History</h1>
+</div>
+
+<div class="card">
+  <input id="q" class="event-input" placeholder="Search by name or event…"
+    oninput="scheduleLoad()" style="margin-bottom:10px"/>
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+    <button class="filter-btn active" onclick="setType(this,'')">All</button>
+    <button class="filter-btn" onclick="setType(this,'race')">Race</button>
+    <button class="filter-btn" onclick="setType(this,'practice')">Practice</button>
+    <button class="filter-btn" onclick="setType(this,'debrief')">Debrief</button>
+  </div>
+  <div style="display:flex;gap:8px">
+    <div style="flex:1">
+      <div class="label">From</div>
+      <input id="from-date" type="date" class="event-input" onchange="load()"/>
+    </div>
+    <div style="flex:1">
+      <div class="label">To</div>
+      <input id="to-date" type="date" class="event-input" onchange="load()"/>
+    </div>
+  </div>
+</div>
+
+<div id="results"></div>
+<div id="pager" class="pager"></div>
+
+<script>
+const GRAFANA_URL = '__GRAFANA_URL__';
+const GRAFANA_UID = '__GRAFANA_UID__';
+let currentType = '';
+let currentOffset = 0;
+const LIMIT = 25;
+let loadTimer = null;
+
+function setType(btn, t) {
+  currentType = t;
+  currentOffset = 0;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  load();
+}
+
+function scheduleLoad() {
+  clearTimeout(loadTimer);
+  loadTimer = setTimeout(load, 300);
+}
+
+async function load() {
+  const params = new URLSearchParams();
+  const q = document.getElementById('q').value.trim();
+  if (q) params.set('q', q);
+  if (currentType) params.set('type', currentType);
+  const from = document.getElementById('from-date').value;
+  const to = document.getElementById('to-date').value;
+  if (from) params.set('from_date', from);
+  if (to) params.set('to_date', to);
+  params.set('limit', LIMIT);
+  params.set('offset', currentOffset);
+  const r = await fetch('/api/sessions?' + params);
+  const data = await r.json();
+  render(data);
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toISOString().substring(11,16) + ' UTC';
+}
+
+function fmtDur(s) {
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60), ss = Math.floor(s%60);
+  if (h) return h + ':' + String(m).padStart(2,'0') + ':' + String(ss).padStart(2,'0');
+  return m + ':' + String(ss).padStart(2,'0');
+}
+
+function render(data) {
+  const el = document.getElementById('results');
+  if (!data.sessions.length) {
+    el.innerHTML = '<div class="empty">No sessions found</div>';
+    document.getElementById('pager').innerHTML = '';
+    return;
+  }
+  el.innerHTML = data.sessions.map(s => {
+    const start = fmtTime(s.start_utc);
+    const end = s.end_utc ? fmtTime(s.end_utc) : 'in progress';
+    const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDur(Math.round(s.duration_s)) + ')' : '';
+    const typeClass = s.type === 'race' ? 'badge-race' : s.type === 'practice' ? 'badge-practice' : 'badge-debrief';
+    const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
+    const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
+
+    let exports = '';
+    if (s.type !== 'debrief' && s.end_utc) {
+      const from = new Date(s.start_utc).getTime();
+      const to = new Date(s.end_utc).getTime();
+      exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.csv">&#8595; CSV</a>';
+      exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.gpx">&#8595; GPX</a>';
+      exports += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1" target="_blank">&#128202; Grafana</a>';
+    }
+    if (s.has_audio && s.audio_session_id) {
+      exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
+    }
+    const exportsHtml = exports ? '<div class="session-exports">' + exports + '</div>' : '';
+
+    return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
+      + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
+      + parent + exportsHtml + '</div>';
+  }).join('');
+
+  const total = data.total;
+  const page = Math.floor(currentOffset / LIMIT);
+  const totalPages = Math.ceil(total / LIMIT);
+  const pager = document.getElementById('pager');
+  if (totalPages <= 1) {
+    pager.innerHTML = '<span class="pager-info">' + total + ' session' + (total !== 1 ? 's' : '') + '</span>';
+  } else {
+    pager.innerHTML =
+      '<button class="btn btn-secondary" style="padding:8px 14px" onclick="go(' + (page-1) + ')"' + (page===0?' disabled':'') + '>&#8592; Prev</button>'
+      + '<span class="pager-info">Page ' + (page+1) + ' of ' + totalPages + ' (' + total + ' total)</span>'
+      + '<button class="btn btn-secondary" style="padding:8px 14px" onclick="go(' + (page+1) + ')"' + (page>=totalPages-1?' disabled':'') + '>Next &#8594;</button>';
+  }
+}
+
+function go(page) {
+  currentOffset = page * LIMIT;
+  load();
+  window.scrollTo(0, 0);
+}
+
+// Default: last 30 days
+const now = new Date();
+const past = new Date(now - 30 * 86400000);
+document.getElementById('to-date').value = now.toISOString().substring(0,10);
+document.getElementById('from-date').value = past.toISOString().substring(0,10);
+load();
 </script>
 </body>
 </html>
@@ -337,11 +566,20 @@ def create_app(
     """
     app = FastAPI(title="J105 Logger", docs_url=None, redoc_url=None)
     _audio_session_id: int | None = None
+    _debrief_audio_session_id: int | None = None
+    _debrief_race_id: int | None = None
+    _debrief_race_name: str | None = None
+    _debrief_start_utc: datetime | None = None
 
     from logger.races import RaceConfig
 
     cfg = RaceConfig()
-    _page = _HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace("__GRAFANA_UID__", cfg.grafana_uid)
+    _page = _HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace(
+        "__GRAFANA_UID__", cfg.grafana_uid
+    )
+    _history_page = _HISTORY_HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace(
+        "__GRAFANA_UID__", cfg.grafana_uid
+    )
 
     # ------------------------------------------------------------------
     # HTML UI
@@ -350,6 +588,10 @@ def create_app(
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     async def index() -> HTMLResponse:
         return HTMLResponse(_page)
+
+    @app.get("/history", response_class=HTMLResponse, include_in_schema=False)
+    async def history_page() -> HTMLResponse:
+        return HTMLResponse(_history_page)
 
     # ------------------------------------------------------------------
     # /api/state
@@ -413,6 +655,14 @@ def create_app(
                 "next_race_num": next_race_num,
                 "next_practice_num": next_practice_num,
                 "today_races": [_race_dict(r) for r in today_races],
+                "has_recorder": recorder is not None,
+                "current_debrief": {
+                    "race_id": _debrief_race_id,
+                    "race_name": _debrief_race_name,
+                    "start_utc": _debrief_start_utc.isoformat(),
+                }
+                if _debrief_race_id is not None
+                else None,
             }
         )
 
@@ -477,7 +727,12 @@ def create_app(
 
             try:
                 session = await recorder.start(audio_config, name=race.name)
-                _audio_session_id = await storage.write_audio_session(session)
+                _audio_session_id = await storage.write_audio_session(
+                    session,
+                    race_id=race.id,
+                    session_type=session_type,
+                    name=race.name,
+                )
                 logger.info("Audio recording started: {}", session.file_path)
             except AudioDeviceNotFoundError as exc:
                 logger.warning("Audio unavailable for race {}: {}", race.name, exc)
@@ -510,6 +765,72 @@ def create_app(
             await storage.update_audio_session_end(_audio_session_id, completed.end_utc)
             logger.info("Audio recording saved: {}", completed.file_path)
             _audio_session_id = None
+
+    # ------------------------------------------------------------------
+    # /api/races/{id}/debrief/start
+    # ------------------------------------------------------------------
+
+    @app.post("/api/races/{race_id}/debrief/start", status_code=201)
+    async def api_start_debrief(race_id: int) -> JSONResponse:
+        nonlocal _debrief_audio_session_id, _debrief_race_id, _debrief_race_name, _debrief_start_utc
+
+        if recorder is None or audio_config is None:
+            raise HTTPException(status_code=409, detail="No audio recorder configured")
+
+        cur = await storage._conn().execute(
+            "SELECT id, name, end_utc FROM races WHERE id = ?", (race_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+        if row["end_utc"] is None:
+            raise HTTPException(status_code=409, detail="Race is still in progress")
+
+        if _debrief_audio_session_id is not None:
+            completed = await recorder.stop()
+            assert completed.end_utc is not None
+            await storage.update_audio_session_end(_debrief_audio_session_id, completed.end_utc)
+            _debrief_audio_session_id = None
+
+        debrief_name = f"{row['name']}-debrief"
+        now = datetime.now(UTC)
+        session = await recorder.start(audio_config, name=debrief_name)
+        _debrief_audio_session_id = await storage.write_audio_session(
+            session,
+            race_id=race_id,
+            session_type="debrief",
+            name=debrief_name,
+        )
+        _debrief_race_id = race_id
+        _debrief_race_name = row["name"]
+        _debrief_start_utc = now
+        logger.info("Debrief recording started: {}", session.file_path)
+
+        return JSONResponse(
+            {"race_id": race_id, "race_name": row["name"], "start_utc": now.isoformat()},
+            status_code=201,
+        )
+
+    # ------------------------------------------------------------------
+    # /api/debrief/stop
+    # ------------------------------------------------------------------
+
+    @app.post("/api/debrief/stop", status_code=204)
+    async def api_stop_debrief() -> None:
+        nonlocal _debrief_audio_session_id, _debrief_race_id, _debrief_race_name, _debrief_start_utc
+
+        if _debrief_audio_session_id is None:
+            raise HTTPException(status_code=409, detail="No debrief in progress")
+
+        completed = await recorder.stop()
+        assert completed.end_utc is not None
+        await storage.update_audio_session_end(_debrief_audio_session_id, completed.end_utc)
+        logger.info("Debrief recording saved: {}", completed.file_path)
+
+        _debrief_audio_session_id = None
+        _debrief_race_id = None
+        _debrief_race_name = None
+        _debrief_start_utc = None
 
     # ------------------------------------------------------------------
     # /api/races/{id}/export.{fmt}
@@ -576,6 +897,35 @@ def create_app(
             filename=filename,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    # ------------------------------------------------------------------
+    # /api/sessions  (history browser)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions")
+    async def api_sessions(
+        q: str | None = None,
+        type: str | None = None,
+        from_date: str | None = None,
+        to_date: str | None = None,
+        limit: int = 25,
+        offset: int = 0,
+    ) -> JSONResponse:
+        if type is not None and type not in ("race", "practice", "debrief"):
+            raise HTTPException(
+                status_code=422,
+                detail="type must be 'race', 'practice', or 'debrief'",
+            )
+        limit = max(1, min(limit, 200))
+        total, sessions = await storage.list_sessions(
+            q=q or None,
+            session_type=type,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
+        return JSONResponse({"total": total, "sessions": sessions})
 
     # ------------------------------------------------------------------
     # /api/races

@@ -350,6 +350,128 @@ async def test_index_uses_env_grafana_url(
     assert "__GRAFANA_URL__" not in html
 
 
+# ---------------------------------------------------------------------------
+# Tests — debrief mode
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_debrief_start_creates_audio(storage: Storage, tmp_path: Path) -> None:
+    """POST /api/races/{id}/debrief/start calls recorder.start() with name containing '-debrief'."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        start_resp = await client.post("/api/races/start")
+        race_id = start_resp.json()["id"]
+        await client.post(f"/api/races/{race_id}/end")
+        debrief_resp = await client.post(f"/api/races/{race_id}/debrief/start")
+
+    assert debrief_resp.status_code == 201
+    # recorder.start called twice: once for race, once for debrief
+    assert recorder.start.await_count == 2
+    _args, kwargs = recorder.start.await_args
+    assert "name" in kwargs
+    assert kwargs["name"].endswith("-debrief")
+
+
+@pytest.mark.asyncio
+async def test_debrief_stop_ends_audio(storage: Storage, tmp_path: Path) -> None:
+    """POST /api/debrief/stop calls recorder.stop() and returns 204."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        start_resp = await client.post("/api/races/start")
+        race_id = start_resp.json()["id"]
+        await client.post(f"/api/races/{race_id}/end")
+        await client.post(f"/api/races/{race_id}/debrief/start")
+        stop_resp = await client.post("/api/debrief/stop")
+
+    assert stop_resp.status_code == 204
+    # stop called twice: once for race end, once for debrief stop
+    assert recorder.stop.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_debrief_requires_completed_race(storage: Storage, tmp_path: Path) -> None:
+    """POST /api/races/{id}/debrief/start on an in-progress race returns 409."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        start_resp = await client.post("/api/races/start")
+        race_id = start_resp.json()["id"]
+        # Race is still in progress — debrief should fail
+        debrief_resp = await client.post(f"/api/races/{race_id}/debrief/start")
+
+    assert debrief_resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_debrief_no_recorder_returns_409(storage: Storage) -> None:
+    """POST /api/races/{id}/debrief/start with no recorder configured returns 409."""
+    app = create_app(storage)  # no recorder
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Use a dummy race_id — the recorder check happens first
+        debrief_resp = await client.post("/api/races/1/debrief/start")
+
+    assert debrief_resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_state_includes_debrief_fields(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/state returns has_recorder and current_debrief fields."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app_with = create_app(storage, recorder=recorder, audio_config=config)
+    app_without = create_app(storage)
+
+    # Without recorder: has_recorder false, current_debrief null
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_without), base_url="http://test"
+    ) as client:
+        data = (await client.get("/api/state")).json()
+    assert data["has_recorder"] is False
+    assert data["current_debrief"] is None
+
+    # With recorder, before debrief: has_recorder true, current_debrief null
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app_with), base_url="http://test"
+    ) as client:
+        data = (await client.get("/api/state")).json()
+        assert data["has_recorder"] is True
+        assert data["current_debrief"] is None
+
+        # Start a race, end it, then start debrief
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(f"/api/races/{race_id}/end")
+        await client.post(f"/api/races/{race_id}/debrief/start")
+
+        data = (await client.get("/api/state")).json()
+    assert data["has_recorder"] is True
+    assert data["current_debrief"] is not None
+    assert data["current_debrief"]["race_id"] == race_id
+    assert "race_name" in data["current_debrief"]
+    assert "start_utc" in data["current_debrief"]
+
+
 @pytest.mark.asyncio
 async def test_end_race_no_active_recording_is_noop(storage: Storage, tmp_path: Path) -> None:
     """POST /api/races/{id}/end does not call recorder.stop() if no recording started."""
@@ -380,3 +502,226 @@ async def test_end_race_no_active_recording_is_noop(storage: Storage, tmp_path: 
 
     assert end_resp.status_code == 204
     recorder.stop.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# /history page and /api/sessions
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_history_page_served(storage: Storage) -> None:
+    """GET /history returns the history HTML page."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/history")
+    assert resp.status_code == 200
+    assert "Session History" in resp.text
+    assert "/api/sessions" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_main_page_has_history_link(storage: Storage) -> None:
+    """GET / contains a link to /history."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "/history" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_empty(storage: Storage) -> None:
+    """GET /api/sessions returns empty list when no sessions exist."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 0
+    assert data["sessions"] == []
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_returns_races_and_practices(storage: Storage) -> None:
+    """GET /api/sessions returns all races and practices sorted newest-first."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        # Create a race and a practice
+        r1 = (await client.post("/api/races/start?session_type=race")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+        r2 = (await client.post("/api/races/start?session_type=practice")).json()
+        await client.post(f"/api/races/{r2['id']}/end")
+
+        resp = await client.get("/api/sessions")
+    data = resp.json()
+    assert data["total"] == 2
+    types = [s["type"] for s in data["sessions"]]
+    assert "race" in types
+    assert "practice" in types
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_type_filter(storage: Storage) -> None:
+    """GET /api/sessions?type=race only returns races."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r1 = (await client.post("/api/races/start?session_type=race")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+        r2 = (await client.post("/api/races/start?session_type=practice")).json()
+        await client.post(f"/api/races/{r2['id']}/end")
+
+        resp = await client.get("/api/sessions?type=race")
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["sessions"][0]["type"] == "race"
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_invalid_type(storage: Storage) -> None:
+    """GET /api/sessions?type=bogus returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions?type=bogus")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_search(storage: Storage) -> None:
+    """GET /api/sessions?q=BallardCup only returns sessions matching the query."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client, "BallardCup")
+        r1 = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+
+        # Set a different event and create another race
+        await _set_event(client, "CYC")
+        r2 = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r2['id']}/end")
+
+        resp_all = await client.get("/api/sessions")
+        resp_filtered = await client.get("/api/sessions?q=BallardCup")
+
+    assert resp_all.json()["total"] == 2
+    data = resp_filtered.json()
+    assert data["total"] == 1
+    assert "BallardCup" in data["sessions"][0]["event"]
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_date_filter(storage: Storage) -> None:
+    """GET /api/sessions?from_date=...&to_date=... filters by date."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r1 = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+
+        today = datetime.now(UTC).date().isoformat()
+        resp_in = await client.get(f"/api/sessions?from_date={today}&to_date={today}")
+        resp_out = await client.get("/api/sessions?from_date=2000-01-01&to_date=2000-01-02")
+
+    assert resp_in.json()["total"] == 1
+    assert resp_out.json()["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_pagination(storage: Storage) -> None:
+    """GET /api/sessions limit/offset pagination works correctly."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        # Create 3 races
+        for _ in range(3):
+            r = (await client.post("/api/races/start")).json()
+            await client.post(f"/api/races/{r['id']}/end")
+
+        resp_all = await client.get("/api/sessions?limit=10")
+        resp_page1 = await client.get("/api/sessions?limit=2&offset=0")
+        resp_page2 = await client.get("/api/sessions?limit=2&offset=2")
+
+    assert resp_all.json()["total"] == 3
+    assert len(resp_page1.json()["sessions"]) == 2
+    assert len(resp_page2.json()["sessions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_has_audio_flag(storage: Storage, tmp_path: Path) -> None:
+    """has_audio is True for a race that has an associated audio session."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+
+        resp = await client.get("/api/sessions")
+    data = resp.json()
+    assert data["total"] == 1
+    s = data["sessions"][0]
+    assert s["has_audio"] is True
+    assert s["audio_session_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_api_sessions_includes_debriefs(storage: Storage, tmp_path: Path) -> None:
+    """Completed debriefs appear as separate 'debrief' rows in /api/sessions."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+        await client.post(f"/api/races/{r['id']}/debrief/start")
+        await client.post("/api/debrief/stop")
+
+        resp_all = await client.get("/api/sessions")
+        resp_debrief = await client.get("/api/sessions?type=debrief")
+
+    all_data = resp_all.json()
+    types = [s["type"] for s in all_data["sessions"]]
+    assert "debrief" in types
+
+    deb_data = resp_debrief.json()
+    assert deb_data["total"] == 1
+    deb = deb_data["sessions"][0]
+    assert deb["type"] == "debrief"
+    assert deb["parent_race_id"] == r["id"]
+    assert deb["has_audio"] is True
