@@ -938,7 +938,12 @@ def create_app(
 
     @app.post("/api/races/{race_id}/debrief/start", status_code=201)
     async def api_start_debrief(race_id: int) -> JSONResponse:
-        nonlocal _debrief_audio_session_id, _debrief_race_id, _debrief_race_name, _debrief_start_utc
+        nonlocal \
+            _audio_session_id, \
+            _debrief_audio_session_id, \
+            _debrief_race_id, \
+            _debrief_race_name, \
+            _debrief_start_utc
 
         if recorder is None or audio_config is None:
             raise HTTPException(status_code=409, detail="No audio recorder configured")
@@ -949,8 +954,17 @@ def create_app(
         row = await cur.fetchone()
         if row is None:
             raise HTTPException(status_code=404, detail="Race not found")
+
+        # Defensive: if the race is still in progress, auto-end it first
         if row["end_utc"] is None:
-            raise HTTPException(status_code=409, detail="Race is still in progress")
+            now_end = datetime.now(UTC)
+            await storage.end_race(race_id, now_end)
+            if _audio_session_id is not None:
+                completed = await recorder.stop()
+                assert completed.end_utc is not None
+                await storage.update_audio_session_end(_audio_session_id, completed.end_utc)
+                _audio_session_id = None
+            logger.info("Race {} auto-ended to start debrief", race_id)
 
         if _debrief_audio_session_id is not None:
             completed = await recorder.stop()
