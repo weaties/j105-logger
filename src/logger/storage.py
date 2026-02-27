@@ -53,6 +53,18 @@ class StorageConfig:
 _FLUSH_INTERVAL_S: float = 1.0  # commit to disk at most once per second
 _FLUSH_BATCH_SIZE: int = 200  # also flush if this many records are buffered
 
+_LIVE_KEYS = (
+    "heading_deg",
+    "bsp_kts",
+    "cog_deg",
+    "sog_kts",
+    "tws_kts",
+    "twa_deg",
+    "twd_deg",
+    "aws_kts",
+    "awa_deg",
+)
+
 
 # ---------------------------------------------------------------------------
 # Schema version & migrations
@@ -218,11 +230,55 @@ class Storage:
         self._pending: int = 0
         self._last_flush: float = 0.0
         self._session_active: bool = False
+        self._live: dict[str, float | None] = dict.fromkeys(_LIVE_KEYS)
+        self._live_tw_ref: int | None = None
+        self._live_tw_angle_raw: float | None = None
 
     @property
     def session_active(self) -> bool:
         """True when a race or practice session is currently in progress."""
         return self._session_active
+
+    # ------------------------------------------------------------------
+    # In-memory live instrument cache (always updated, no DB I/O)
+    # ------------------------------------------------------------------
+
+    def _recompute_true_wind(self) -> None:
+        ref = self._live_tw_ref
+        ang = self._live_tw_angle_raw
+        hdg = self._live["heading_deg"]
+        if ref is None or ang is None:
+            return
+        if ref == 0:  # boat-referenced angle (TWA)
+            self._live["twa_deg"] = round(ang, 1)
+            self._live["twd_deg"] = round((hdg + ang) % 360, 1) if hdg is not None else None
+        else:  # reference=4: north-referenced direction (TWD)
+            self._live["twd_deg"] = round(ang % 360, 1)
+            self._live["twa_deg"] = round((ang - hdg + 360) % 360, 1) if hdg is not None else None
+
+    def update_live(self, record: PGNRecord) -> None:
+        """Update the in-memory live cache from a decoded record (no DB write)."""
+        match record:
+            case HeadingRecord():
+                self._live["heading_deg"] = round(record.heading_deg, 1)
+                self._recompute_true_wind()
+            case SpeedRecord():
+                self._live["bsp_kts"] = round(record.speed_kts, 2)
+            case COGSOGRecord():
+                self._live["cog_deg"] = round(record.cog_deg, 1)
+                self._live["sog_kts"] = round(record.sog_kts, 2)
+            case WindRecord() if record.reference == 2:  # apparent
+                self._live["aws_kts"] = round(record.wind_speed_kts, 1)
+                self._live["awa_deg"] = round(record.wind_angle_deg, 1)
+            case WindRecord() if record.reference in (0, 4):  # true
+                self._live["tws_kts"] = round(record.wind_speed_kts, 1)
+                self._live_tw_ref = record.reference
+                self._live_tw_angle_raw = record.wind_angle_deg
+                self._recompute_true_wind()
+
+    def live_instruments(self) -> dict[str, float | None]:
+        """Return a snapshot of the current in-memory instrument cache."""
+        return dict(self._live)
 
     async def connect(self) -> None:
         """Open the database connection."""
@@ -563,7 +619,15 @@ class Storage:
         return dict(row) if row else None
 
     async def latest_instruments(self) -> dict[str, float | None]:
-        """Return the most recent reading from each instrument table."""
+        """Return the most recent reading from each instrument table.
+
+        Prefers the in-memory live cache (updated on every SK/CAN record) so
+        the instruments panel stays current even without an active session.
+        Falls back to DB queries only on startup before the first message.
+        """
+        if any(v is not None for v in self._live.values()):
+            return self.live_instruments()
+
         conn = self._conn()
 
         async def _q(table: str, cols: str, where: str = "") -> Any:  # noqa: ANN401
