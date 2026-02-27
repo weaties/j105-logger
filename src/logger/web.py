@@ -839,7 +839,12 @@ def create_app(
     async def api_start_race(
         session_type: str = Query(default="race"),
     ) -> JSONResponse:
-        nonlocal _audio_session_id
+        nonlocal \
+            _audio_session_id, \
+            _debrief_audio_session_id, \
+            _debrief_race_id, \
+            _debrief_race_name, \
+            _debrief_start_utc
         from logger.races import build_race_name, default_event_for_date
 
         if session_type not in ("race", "practice"):
@@ -861,10 +866,27 @@ def create_app(
                 detail="No event set for today. POST /api/event first.",
             )
 
+        # Auto-stop any active debrief before starting a new session
+        if _debrief_audio_session_id is not None:
+            completed = await recorder.stop()
+            assert completed.end_utc is not None
+            await storage.update_audio_session_end(_debrief_audio_session_id, completed.end_utc)
+            logger.info("Debrief auto-stopped to start new {}", session_type)
+            _debrief_audio_session_id = None
+            _debrief_race_id = None
+            _debrief_race_name = None
+            _debrief_start_utc = None
+
         race_num = await storage.count_sessions_for_date(date_str, session_type) + 1
         name = build_race_name(event, today, race_num, session_type)
 
         race = await storage.start_race(event, now, date_str, race_num, name, session_type)
+
+        # Copy crew from most recently closed session as defaults
+        last_crew = await storage.get_last_session_crew()
+        if last_crew:
+            await storage.set_race_crew(race.id, last_crew)
+            logger.info("Crew carried forward to {}: {} positions", race.name, len(last_crew))
 
         if recorder is not None and audio_config is not None:
             from logger.audio import AudioDeviceNotFoundError

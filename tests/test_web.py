@@ -898,3 +898,104 @@ async def test_post_crew_ignores_blank_sailors(storage: Storage) -> None:
     assert "helm" in positions
     assert "main" not in positions
     assert "pit" not in positions
+
+
+# ---------------------------------------------------------------------------
+# Issue #30: debrief auto-stop + crew carry-forward
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_race_while_debrief_active_stops_debrief(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """Starting a race while a debrief is active auto-stops the debrief."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        # Start + end race 1, then start a debrief
+        r1 = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+        await client.post(f"/api/races/{r1['id']}/debrief/start")
+
+        # Verify debrief is active
+        state = (await client.get("/api/state")).json()
+        assert state["current_debrief"] is not None
+
+        # Start race 2 without explicitly stopping the debrief
+        r2 = await client.post("/api/races/start")
+        assert r2.status_code == 201
+
+        # Debrief should have been auto-stopped
+        state = (await client.get("/api/state")).json()
+        assert state["current_debrief"] is None
+
+    # recorder.stop() called: once for race 1 end, once for debrief auto-stop
+    assert recorder.stop.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_debrief_end_utc_written_when_race_starts(storage: Storage, tmp_path: Path) -> None:
+    """When a race starts auto-stopping a debrief, end_utc is persisted to the DB."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r1 = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r1['id']}/end")
+        await client.post(f"/api/races/{r1['id']}/debrief/start")
+
+        # Start race 2 — should auto-stop the debrief
+        await client.post("/api/races/start")
+
+    # Check that the debrief audio_session row has end_utc set
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT end_utc FROM audio_sessions WHERE session_type = 'debrief' ORDER BY id DESC LIMIT 1"
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    assert row["end_utc"] is not None
+
+
+@pytest.mark.asyncio
+async def test_start_race_carries_forward_crew(storage: Storage) -> None:
+    """Starting a new race copies crew from the most recently ended session as defaults."""
+    app = create_app(storage)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+
+        # Race 1: set crew, then end it
+        r1 = (await client.post("/api/races/start")).json()
+        await client.post(
+            f"/api/races/{r1['id']}/crew",
+            json=[
+                {"position": "helm", "sailor": "Alice"},
+                {"position": "main", "sailor": "Bob"},
+            ],
+        )
+        await client.post(f"/api/races/{r1['id']}/end")
+
+        # Race 2: start without posting any crew
+        r2 = (await client.post("/api/races/start")).json()
+
+        # Crew should have been carried forward from race 1
+        crew_resp = await client.get(f"/api/races/{r2['id']}/crew")
+
+    assert crew_resp.status_code == 200
+    crew = crew_resp.json()["crew"]
+    pos_map = {c["position"]: c["sailor"] for c in crew}
+    assert pos_map.get("helm") == "Alice"
+    assert pos_map.get("main") == "Bob"

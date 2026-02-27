@@ -1119,6 +1119,22 @@ class Storage:
         rows = await cur.fetchall()
         return [row["sailor"] for row in rows]
 
+    async def get_last_session_crew(self) -> list[dict[str, str]]:
+        """Return crew from the most recently ended race/practice, or [] if none."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT position, sailor FROM race_crew"
+            " WHERE race_id = ("
+            "   SELECT id FROM races WHERE end_utc IS NOT NULL"
+            "   ORDER BY end_utc DESC LIMIT 1"
+            " )"
+        )
+        rows = await cur.fetchall()
+        position_order = {p: i for i, p in enumerate(_POSITIONS)}
+        result = [{"position": row["position"], "sailor": row["sailor"]} for row in rows]
+        result.sort(key=lambda x: position_order.get(x["position"], 99))
+        return result
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
