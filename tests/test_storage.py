@@ -501,3 +501,167 @@ class TestCrewStorage:
         await storage.set_race_crew(race2.id, [{"position": "helm", "sailor": "Newer"}])
         recent = await storage.get_recent_sailors()
         assert recent[0] == "Newer"
+
+
+# ---------------------------------------------------------------------------
+# Boat registry tests
+# ---------------------------------------------------------------------------
+
+_BOAT_DATE = "2025-10-01"
+_BOAT_START = datetime(2025, 10, 1, 14, 0, 0, tzinfo=UTC)
+
+
+class TestBoatRegistry:
+    async def test_add_boat(self, storage: Storage) -> None:
+        """add_boat returns a positive integer id."""
+        boat_id = await storage.add_boat("USA 52091", "Jubilee", "J105")
+        assert isinstance(boat_id, int)
+        assert boat_id > 0
+
+    async def test_find_or_create_boat_existing(self, storage: Storage) -> None:
+        """find_or_create_boat returns the same id for the same sail_number."""
+        id1 = await storage.add_boat("USA 1234", "Test Boat", "J105")
+        id2 = await storage.find_or_create_boat("USA 1234")
+        assert id1 == id2
+
+    async def test_find_or_create_boat_new(self, storage: Storage) -> None:
+        """find_or_create_boat creates a new boat if sail_number not found."""
+        boat_id = await storage.find_or_create_boat("USA 9999")
+        assert isinstance(boat_id, int)
+        assert boat_id > 0
+        boats = await storage.list_boats()
+        sail_numbers = [b["sail_number"] for b in boats]
+        assert "USA 9999" in sail_numbers
+
+    async def test_list_boats_mru_order(self, storage: Storage) -> None:
+        """list_boats returns boats ordered by last_used descending."""
+        race = await storage.start_race("Test", _BOAT_START, _BOAT_DATE, 1, "20251001-Test-1")
+        id_older = await storage.add_boat("USA 0001", None, None)
+        id_newer = await storage.add_boat("USA 0002", None, None)
+        # Use newer boat in a result to bump its last_used
+        await storage.upsert_race_result(race.id, 1, id_newer)
+        await storage.upsert_race_result(race.id, 2, id_older)
+        # Make newer's last_used actually newer by upserting again
+        await storage.upsert_race_result(race.id, 1, id_newer)
+        boats = await storage.list_boats()
+        ids = [b["id"] for b in boats]
+        assert ids.index(id_newer) < ids.index(id_older)
+
+    async def test_list_boats_exclude_race(self, storage: Storage) -> None:
+        """list_boats(exclude_race_id=X) omits boats already in that race."""
+        race = await storage.start_race("Test", _BOAT_START, _BOAT_DATE, 1, "20251001-Test-1")
+        id_in = await storage.add_boat("USA 1111", None, None)
+        id_out = await storage.add_boat("USA 2222", None, None)
+        await storage.upsert_race_result(race.id, 1, id_in)
+        boats = await storage.list_boats(exclude_race_id=race.id)
+        boat_ids = [b["id"] for b in boats]
+        assert id_in not in boat_ids
+        assert id_out in boat_ids
+
+    async def test_list_boats_search(self, storage: Storage) -> None:
+        """list_boats(q=...) filters by sail_number or name."""
+        await storage.add_boat("USA 5555", "Windward", "J105")
+        await storage.add_boat("USA 6666", "Leeward", "J105")
+        results = await storage.list_boats(q="windward")
+        assert len(results) == 1
+        assert results[0]["sail_number"] == "USA 5555"
+
+    async def test_update_boat(self, storage: Storage) -> None:
+        """update_boat changes the boat's fields."""
+        boat_id = await storage.add_boat("USA 7777", "Old Name", "J105")
+        await storage.update_boat(boat_id, "USA 7777", "New Name", "J/105")
+        boats = await storage.list_boats(q="USA 7777")
+        assert boats[0]["name"] == "New Name"
+        assert boats[0]["class"] == "J/105"
+
+    async def test_delete_boat(self, storage: Storage) -> None:
+        """delete_boat removes the boat from the registry."""
+        boat_id = await storage.add_boat("USA 8888", None, None)
+        await storage.delete_boat(boat_id)
+        boats = await storage.list_boats()
+        assert not any(b["id"] == boat_id for b in boats)
+
+
+# ---------------------------------------------------------------------------
+# Race results tests
+# ---------------------------------------------------------------------------
+
+
+class TestRaceResults:
+    async def _make_race(self, storage: Storage) -> int:
+        race = await storage.start_race("Regatta", _BOAT_START, _BOAT_DATE, 1, "20251001-Regatta-1")
+        assert race.id is not None
+        return race.id
+
+    async def _make_boat(self, storage: Storage, sail_number: str) -> int:
+        return await storage.add_boat(sail_number, None, None)
+
+    async def test_upsert_race_result_updates_last_used(self, storage: Storage) -> None:
+        """upsert_race_result sets last_used on the boat."""
+        race_id = await self._make_race(storage)
+        boat_id = await self._make_boat(storage, "USA 0010")
+        await storage.upsert_race_result(race_id, 1, boat_id)
+        boats = await storage.list_boats(q="USA 0010")
+        assert boats[0]["last_used"] is not None
+
+    async def test_list_race_results_ordered_by_place(self, storage: Storage) -> None:
+        """list_race_results returns results in ascending place order."""
+        race_id = await self._make_race(storage)
+        b1 = await self._make_boat(storage, "USA 0020")
+        b2 = await self._make_boat(storage, "USA 0021")
+        b3 = await self._make_boat(storage, "USA 0022")
+        await storage.upsert_race_result(race_id, 3, b3)
+        await storage.upsert_race_result(race_id, 1, b1)
+        await storage.upsert_race_result(race_id, 2, b2)
+        results = await storage.list_race_results(race_id)
+        assert [r["place"] for r in results] == [1, 2, 3]
+
+    async def test_delete_race_result(self, storage: Storage) -> None:
+        """delete_race_result removes the row."""
+        race_id = await self._make_race(storage)
+        boat_id = await self._make_boat(storage, "USA 0030")
+        result_id = await storage.upsert_race_result(race_id, 1, boat_id)
+        await storage.delete_race_result(result_id)
+        results = await storage.list_race_results(race_id)
+        assert results == []
+
+    async def test_unique_place_constraint(self, storage: Storage) -> None:
+        """Upserting the same place replaces the old boat assignment."""
+        race_id = await self._make_race(storage)
+        b1 = await self._make_boat(storage, "USA 0040")
+        b2 = await self._make_boat(storage, "USA 0041")
+        await storage.upsert_race_result(race_id, 1, b1)
+        await storage.upsert_race_result(race_id, 1, b2)
+        results = await storage.list_race_results(race_id)
+        assert len(results) == 1
+        assert results[0]["boat_id"] == b2
+
+    async def test_unique_boat_constraint(self, storage: Storage) -> None:
+        """The same boat cannot occupy two places simultaneously."""
+        race_id = await self._make_race(storage)
+        b1 = await self._make_boat(storage, "USA 0050")
+        await storage.upsert_race_result(race_id, 1, b1)
+        # Move same boat to place 2 — old place-1 row should disappear
+        await storage.upsert_race_result(race_id, 2, b1)
+        results = await storage.list_race_results(race_id)
+        boat_entries = [r for r in results if r["boat_id"] == b1]
+        assert len(boat_entries) == 1
+        assert boat_entries[0]["place"] == 2
+
+    async def test_result_dnf_dns_flags(self, storage: Storage) -> None:
+        """DNF and DNS flags are stored and retrieved correctly."""
+        race_id = await self._make_race(storage)
+        boat_id = await self._make_boat(storage, "USA 0060")
+        await storage.upsert_race_result(race_id, 1, boat_id, dnf=True, dns=False)
+        results = await storage.list_race_results(race_id)
+        assert results[0]["dnf"] is True
+        assert results[0]["dns"] is False
+
+    async def test_result_includes_boat_fields(self, storage: Storage) -> None:
+        """list_race_results joins boat name and sail_number."""
+        race_id = await self._make_race(storage)
+        boat_id = await storage.add_boat("USA 0070", "Jubilee", "J105")
+        await storage.upsert_race_result(race_id, 1, boat_id)
+        results = await storage.list_race_results(race_id)
+        assert results[0]["sail_number"] == "USA 0070"
+        assert results[0]["boat_name"] == "Jubilee"

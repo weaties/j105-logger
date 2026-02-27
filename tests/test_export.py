@@ -55,6 +55,11 @@ _EXPECTED_COLS = {
     "AIR_TEMP",
     "PRESSURE",
     "TIDE_HT",
+    "crew_helm",
+    "crew_main",
+    "crew_jib",
+    "crew_spin",
+    "crew_tactician",
 }
 
 

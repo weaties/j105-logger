@@ -98,6 +98,23 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 .sailor-chip{padding:6px 12px;border:1px solid #2563eb;border-radius:16px;background:#0a1628;color:#7eb8f7;font-size:.82rem;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
 .sailor-chip:active{background:#1e3a5f}
 .race-item-crew{font-size:.75rem;color:#8892a4;margin-top:2px}
+.results-section{margin-top:8px;border-top:1px solid #1e3a5f;padding-top:6px}
+.results-header{display:flex;align-items:center;gap:6px;cursor:pointer;-webkit-user-select:none;user-select:none;font-size:.8rem;color:#8892a4}
+.results-header:active{opacity:.7}
+.results-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0d1a2e}
+.results-row:last-child{border-bottom:none}
+.results-place{min-width:22px;font-size:.82rem;font-weight:700;color:#7eb8f7}
+.results-boat{flex:1;font-size:.82rem}
+.flag-btn{padding:2px 7px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#8892a4;font-size:.72rem;cursor:pointer}
+.flag-btn.active-dnf{background:#7f1d1d;color:#fca5a5;border-color:#dc2626}
+.flag-btn.active-dns{background:#1c1f2e;color:#818cf8;border-color:#4338ca}
+.btn-del-result{padding:2px 7px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#ef4444;font-size:.72rem;cursor:pointer}
+.boat-picker-input{width:100%;background:#0a1628;border:1px solid #374151;border-radius:6px;padding:6px 9px;color:#e8eaf0;font-size:.82rem}
+.boat-dropdown{position:absolute;top:calc(100% + 2px);left:0;right:0;background:#131f35;border:1px solid #2563eb;border-radius:6px;max-height:190px;overflow-y:auto;z-index:200;box-shadow:0 4px 14px rgba(0,0,0,.6)}
+.boat-option{padding:8px 12px;font-size:.82rem;cursor:pointer;border-bottom:1px solid #1e3a5f}
+.boat-option:last-child{border-bottom:none}
+.boat-option:active{background:#1e3a5f}
+.boat-option-new{color:#4ade80}
 </style>
 </head>
 <body>
@@ -105,6 +122,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <h1>J105 Logger</h1>
   <div style="display:flex;gap:6px;margin-top:2px">
     <a class="btn-export" href="/history">📋 History</a>
+    <a class="btn-export" href="/admin/boats">⚓ Boats</a>
     <a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?refresh=10s" target="_blank">📊 Grafana</a>
   </div>
 </div>
@@ -309,10 +327,12 @@ function render(s) {
         ? r.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
         : '';
       const crewHtml = crewLine ? `<div class="race-item-crew">${crewLine}</div>` : '';
+      const resultsHtml = renderResultsSection(r);
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
         ${crewHtml}
+        ${resultsHtml}
         ${exports}
       </div>`;
     }).join('');
@@ -492,6 +512,161 @@ async function saveEvent() {
   await loadState();
 }
 
+// ---- Race results ----
+const expandedResults = {};
+const _pickerBoats = {};
+
+function renderResultRow(res, raceId) {
+  const name = res.boat_name
+    ? res.sail_number + ' <span style="color:#8892a4;font-size:.78rem">' + res.boat_name + '</span>'
+    : res.sail_number;
+  const dnfCls = res.dnf ? ' active-dnf' : '';
+  const dnsCls = res.dns ? ' active-dns' : '';
+  return '<div class="results-row">'
+    + '<span class="results-place">' + res.place + '.</span>'
+    + '<span class="results-boat">' + name + '</span>'
+    + '<div class="results-flags">'
+    + '<button class="flag-btn' + dnfCls + '" onmousedown="event.preventDefault()" onclick="toggleResultFlag(' + raceId + ',' + res.place + ',' + res.boat_id + ',' + (!res.dnf) + ',' + res.dns + ')">DNF</button>'
+    + '<button class="flag-btn' + dnsCls + '" onmousedown="event.preventDefault()" onclick="toggleResultFlag(' + raceId + ',' + res.place + ',' + res.boat_id + ',' + res.dnf + ',' + (!res.dns) + ')">DNS</button>'
+    + '</div>'
+    + '<button class="btn-del-result" onmousedown="event.preventDefault()" onclick="deleteResult(' + raceId + ',' + res.id + ')">✕</button>'
+    + '</div>';
+}
+
+function renderResultsSection(race) {
+  const results = race.results || [];
+  const summary = results.length
+    ? results.slice(0,3).map(r => r.place + '. ' + r.sail_number).join(' · ') + (results.length > 3 ? ' +' + (results.length-3) + ' more' : '')
+    : 'No results yet';
+  const rows = results.map(r => renderResultRow(r, race.id)).join('');
+  return '<div class="results-section">'
+    + '<div class="results-header" onclick="toggleResults(' + race.id + ')">'
+    + '<span id="results-chevron-' + race.id + '" style="font-size:.7rem">▶</span>'
+    + '<span id="results-summary-' + race.id + '">' + summary + '</span>'
+    + '</div>'
+    + '<div id="results-body-' + race.id + '" style="display:none;margin-top:4px">'
+    + '<div id="results-list-' + race.id + '">' + rows + '</div>'
+    + '<div class="results-row" style="border-bottom:none;margin-top:4px">'
+    + '<span class="results-place" id="add-place-' + race.id + '">' + (results.length+1) + '.</span>'
+    + '<div style="position:relative;flex:1">'
+    + '<input class="boat-picker-input" id="picker-input-' + race.id + '" placeholder="Search boat…" autocomplete="off"'
+    + ' oninput="filterBoats(' + race.id + ',this.value)"'
+    + ' onfocus="openPicker(' + race.id + ')"'
+    + ' onblur="closePicker(' + race.id + ')"/>'
+    + '<div class="boat-dropdown" id="picker-dropdown-' + race.id + '" style="display:none"></div>'
+    + '</div></div></div></div>';
+}
+
+function toggleResults(raceId) {
+  expandedResults[raceId] = !expandedResults[raceId];
+  const body = document.getElementById('results-body-' + raceId);
+  const chevron = document.getElementById('results-chevron-' + raceId);
+  if (body) body.style.display = expandedResults[raceId] ? '' : 'none';
+  if (chevron) chevron.textContent = expandedResults[raceId] ? '▼' : '▶';
+}
+
+async function openPicker(raceId) {
+  const r = await fetch('/api/boats?exclude_race=' + raceId);
+  _pickerBoats[raceId] = await r.json();
+  const input = document.getElementById('picker-input-' + raceId);
+  showBoatDropdown(raceId, input ? input.value : '');
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = '';
+}
+
+function closePicker(raceId) {
+  setTimeout(() => {
+    const dd = document.getElementById('picker-dropdown-' + raceId);
+    if (dd) dd.style.display = 'none';
+  }, 200);
+}
+
+function filterBoats(raceId, searchText) {
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (!dd || dd.style.display === 'none') return;
+  showBoatDropdown(raceId, searchText);
+}
+
+function showBoatDropdown(raceId, searchText) {
+  const boats = _pickerBoats[raceId] || [];
+  const q = searchText.trim().toLowerCase();
+  const filtered = q
+    ? boats.filter(b => b.sail_number.toLowerCase().includes(q) || (b.name||'').toLowerCase().includes(q))
+    : boats;
+  let html = filtered.slice(0,15).map(b => {
+    const label = b.name ? b.sail_number + ' — ' + b.name : b.sail_number;
+    const esc = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<div class="boat-option" onmousedown="event.preventDefault()" onclick="selectBoat(' + raceId + ',' + b.id + ')">' + esc + '</div>';
+  }).join('');
+  const exactMatch = filtered.some(b => b.sail_number.toLowerCase() === searchText.trim().toLowerCase());
+  if (searchText.trim() && !exactMatch) {
+    const esc = searchText.trim().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const js = searchText.trim().replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'");
+    html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="selectNewBoat(' + raceId + ',\\'' + js + '\\')">+ Add &ldquo;' + esc + '&rdquo;</div>';
+  }
+  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.innerHTML = html;
+}
+
+async function selectBoat(raceId, boatId) {
+  const listEl = document.getElementById('results-list-' + raceId);
+  const nextPlace = listEl ? listEl.children.length + 1 : 1;
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place: nextPlace, boat_id: boatId})
+  });
+  const input = document.getElementById('picker-input-' + raceId);
+  if (input) input.value = '';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = 'none';
+  delete _pickerBoats[raceId];
+  await refreshResults(raceId);
+}
+
+async function selectNewBoat(raceId, sailNumber) {
+  const listEl = document.getElementById('results-list-' + raceId);
+  const nextPlace = listEl ? listEl.children.length + 1 : 1;
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place: nextPlace, sail_number: sailNumber})
+  });
+  const input = document.getElementById('picker-input-' + raceId);
+  if (input) input.value = '';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = 'none';
+  delete _pickerBoats[raceId];
+  await refreshResults(raceId);
+}
+
+async function toggleResultFlag(raceId, place, boatId, dnf, dns) {
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place, boat_id: boatId, dnf, dns})
+  });
+  await refreshResults(raceId);
+}
+
+async function deleteResult(raceId, resultId) {
+  await fetch('/api/results/' + resultId, {method:'DELETE'});
+  delete _pickerBoats[raceId];
+  await refreshResults(raceId);
+}
+
+async function refreshResults(raceId) {
+  const r = await fetch('/api/sessions/' + raceId + '/results');
+  const results = await r.json();
+  const listEl = document.getElementById('results-list-' + raceId);
+  if (listEl) listEl.innerHTML = results.map(r => renderResultRow(r, raceId)).join('');
+  const addPlace = document.getElementById('add-place-' + raceId);
+  if (addPlace) addPlace.textContent = (results.length + 1) + '.';
+  const summary = results.length
+    ? results.slice(0,3).map(r => r.place + '. ' + r.sail_number).join(' · ') + (results.length > 3 ? ' +' + (results.length-3) + ' more' : '')
+    : 'No results yet';
+  const sumEl = document.getElementById('results-summary-' + raceId);
+  if (sumEl) sumEl.textContent = summary;
+}
+
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
@@ -547,6 +722,7 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 .pager{display:flex;gap:8px;justify-content:center;align-items:center;margin-top:8px}
 .pager-info{color:#8892a4;font-size:.85rem}
 .session-crew{font-size:.78rem;color:#8892a4;margin-top:3px}
+.session-results{font-size:.78rem;color:#8892a4;margin-top:3px}
 </style>
 </head>
 <body>
@@ -655,14 +831,20 @@ function render(data) {
       exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.gpx">&#8595; GPX</a>';
       exports += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1&refresh=" target="_blank">&#128202; Grafana</a>';
     }
+    if (s.type !== 'debrief') {
+      exports += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
+    }
     if (s.has_audio && s.audio_session_id) {
       exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
     }
     const exportsHtml = exports ? '<div class="session-exports">' + exports + '</div>' : '';
+    const resultsPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-results-' + s.id + '" style="display:none"></div>'
+      : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + '</div>';
+      + parent + crewHtml + exportsHtml + resultsPanel + '</div>';
   }).join('');
 
   const total = data.total;
@@ -685,12 +867,177 @@ function go(page) {
   window.scrollTo(0, 0);
 }
 
+async function toggleHistoryResults(sessionId) {
+  const el = document.getElementById('hist-results-' + sessionId);
+  const btn = document.getElementById('hist-results-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = 'Results ▶';
+    return;
+  }
+  const r = await fetch('/api/sessions/' + sessionId + '/results');
+  const results = await r.json();
+  if (!results.length) {
+    el.innerHTML = 'No results recorded';
+  } else {
+    el.innerHTML = results.map(r =>
+      r.place + '. ' + r.sail_number + (r.boat_name ? ' (' + r.boat_name + ')' : '') + (r.dnf ? ' DNF' : '') + (r.dns ? ' DNS' : '')
+    ).join(' &nbsp;·&nbsp; ');
+  }
+  el.style.display = '';
+  if (btn) btn.textContent = 'Results ▼';
+}
+
 // Default: last 30 days
 const now = new Date();
 const past = new Date(now - 30 * 86400000);
 document.getElementById('to-date').value = now.toISOString().substring(0,10);
 document.getElementById('from-date').value = past.toISOString().substring(0,10);
 load();
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Admin — boat registry page
+# ---------------------------------------------------------------------------
+
+_ADMIN_BOATS_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Boat Registry — J105 Logger</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
+padding:16px;max-width:640px;margin:0 auto}
+h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
+.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
+.btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
+background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-block}
+.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;
+padding:9px 12px;color:#e8eaf0;font-size:.9rem;width:100%}
+.btn-add{padding:9px 16px;border:none;border-radius:6px;background:#2563eb;
+color:#fff;font-weight:700;cursor:pointer;font-size:.9rem}
+.btn-sm{padding:4px 10px;border:1px solid #374151;border-radius:4px;
+background:#0a1628;font-size:.78rem;cursor:pointer}
+.btn-edit{color:#7eb8f7;border-color:#2563eb}
+.btn-del{color:#ef4444;border-color:#7f1d1d}
+.btn-save{color:#4ade80;border-color:#16a34a}
+.btn-cancel{color:#8892a4}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
+padding:6px 8px;border-bottom:1px solid #1e3a5f}
+td{padding:7px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.empty{color:#8892a4;text-align:center;padding:20px 0}
+</style>
+</head>
+<body>
+<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+  <a href="/" class="btn-export" style="padding:7px 14px">← Back</a>
+  <h1>Boat Registry</h1>
+</div>
+
+<div class="card">
+  <div class="label">Add Boat</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+    <input id="new-sail" class="field" placeholder="Sail number *" maxlength="30"/>
+    <input id="new-name" class="field" placeholder="Boat name" maxlength="40"/>
+    <input id="new-class" class="field" placeholder="Class" maxlength="20"/>
+  </div>
+  <button class="btn-add" onclick="addBoat()">+ Add Boat</button>
+</div>
+
+<div class="card">
+  <div id="boat-table-wrap">Loading…</div>
+</div>
+
+<script>
+async function loadBoats() {
+  const r = await fetch('/api/boats');
+  const boats = await r.json();
+  const wrap = document.getElementById('boat-table-wrap');
+  if (!boats.length) {
+    wrap.innerHTML = '<div class="empty">No boats yet</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>Sail #</th><th>Name</th><th>Class</th><th>Last used</th><th></th></tr></thead><tbody>';
+  boats.forEach(b => {
+    const lu = b.last_used ? new Date(b.last_used).toLocaleDateString() : '—';
+    const safeSail = (b.sail_number||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeName = (b.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const safeCls  = (b.class||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    html += '<tr id="boat-row-' + b.id + '">'
+      + '<td>' + safeSail + '</td>'
+      + '<td>' + (safeName||'<span style="color:#8892a4">—</span>') + '</td>'
+      + '<td>' + (safeCls||'<span style="color:#8892a4">—</span>') + '</td>'
+      + '<td>' + lu + '</td>'
+      + '<td style="white-space:nowrap;display:flex;gap:4px">'
+      + '<button class="btn-sm btn-edit" onclick="editBoat(' + b.id + ',\'' + safeSail.replace(/'/g,"\\'") + '\',\'' + safeName.replace(/'/g,"\\'") + '\',\'' + safeCls.replace(/'/g,"\\'") + '\')">Edit</button>'
+      + '<button class="btn-sm btn-del" onclick="deleteBoat(' + b.id + ')">Delete</button>'
+      + '</td></tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+async function addBoat() {
+  const sail = document.getElementById('new-sail').value.trim();
+  if (!sail) { alert('Sail number is required'); return; }
+  const name = document.getElementById('new-name').value.trim() || null;
+  const cls  = document.getElementById('new-class').value.trim() || null;
+  const resp = await fetch('/api/boats', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sail_number: sail, name, class_name: cls})
+  });
+  if (!resp.ok) { alert('Failed to add boat'); return; }
+  document.getElementById('new-sail').value = '';
+  document.getElementById('new-name').value = '';
+  document.getElementById('new-class').value = '';
+  await loadBoats();
+}
+
+function editBoat(id, sail, name, cls) {
+  const row = document.getElementById('boat-row-' + id);
+  row.innerHTML = ''
+    + '<td><input class="field" id="edit-sail-' + id + '" value="' + sail + '" style="width:90px"/></td>'
+    + '<td><input class="field" id="edit-name-' + id + '" value="' + name + '" style="width:120px"/></td>'
+    + '<td><input class="field" id="edit-class-' + id + '" value="' + cls + '" style="width:80px"/></td>'
+    + '<td></td>'
+    + '<td style="white-space:nowrap;display:flex;gap:4px">'
+    + '<button class="btn-sm btn-save" onclick="saveBoat(' + id + ')">Save</button>'
+    + '<button class="btn-sm btn-cancel" onclick="loadBoats()">Cancel</button>'
+    + '</td>';
+}
+
+async function saveBoat(id) {
+  const sail  = document.getElementById('edit-sail-' + id).value.trim();
+  if (!sail) { alert('Sail number is required'); return; }
+  const name  = document.getElementById('edit-name-' + id).value.trim() || null;
+  const cls   = document.getElementById('edit-class-' + id).value.trim() || null;
+  await fetch('/api/boats/' + id, {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({sail_number: sail, name, class_name: cls})
+  });
+  await loadBoats();
+}
+
+async function deleteBoat(id) {
+  if (!confirm('Delete this boat?')) return;
+  await fetch('/api/boats/' + id, {method:'DELETE'});
+  await loadBoats();
+}
+
+loadBoats();
 </script>
 </body>
 </html>
@@ -712,6 +1059,28 @@ class EventRequest(BaseModel):
 class CrewEntry(BaseModel):
     position: str
     sailor: str
+
+
+class BoatCreate(BaseModel):
+    sail_number: str
+    name: str | None = None
+    class_name: str | None = None
+
+
+class BoatUpdate(BaseModel):
+    sail_number: str | None = None
+    name: str | None = None
+    class_name: str | None = None
+
+
+class RaceResultEntry(BaseModel):
+    place: int
+    boat_id: int | None = None
+    sail_number: str | None = None
+    finish_time: str | None = None
+    dnf: bool = False
+    dns: bool = False
+    notes: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +1127,10 @@ def create_app(
     async def history_page() -> HTMLResponse:
         return HTMLResponse(_history_page)
 
+    @app.get("/admin/boats", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_boats_page() -> HTMLResponse:
+        return HTMLResponse(_ADMIN_BOATS_HTML)
+
     # ------------------------------------------------------------------
     # /api/state
     # ------------------------------------------------------------------
@@ -799,6 +1172,7 @@ def create_app(
                 elapsed = (now - r.start_utc).total_seconds()
                 duration_s = elapsed
             crew = await storage.get_race_crew(r.id)
+            results = await storage.list_race_results(r.id)
             return {
                 "id": r.id,
                 "name": r.name,
@@ -810,6 +1184,7 @@ def create_app(
                 "duration_s": round(duration_s, 1) if duration_s is not None else None,
                 "session_type": r.session_type,
                 "crew": crew,
+                "results": results,
             }
 
         current_dict = await _race_dict(current) if current else None
@@ -1199,5 +1574,98 @@ def create_app(
     async def api_recent_sailors() -> JSONResponse:
         sailors = await storage.get_recent_sailors()
         return JSONResponse({"sailors": sailors})
+
+    # ------------------------------------------------------------------
+    # /api/boats
+    # ------------------------------------------------------------------
+
+    @app.get("/api/boats")
+    async def api_list_boats(
+        q: str | None = None,
+        exclude_race: int | None = None,
+    ) -> JSONResponse:
+        boats = await storage.list_boats(exclude_race_id=exclude_race, q=q or None)
+        return JSONResponse(boats)
+
+    @app.post("/api/boats", status_code=201)
+    async def api_create_boat(body: BoatCreate) -> JSONResponse:
+        sail = body.sail_number.strip()
+        if not sail:
+            raise HTTPException(status_code=422, detail="sail_number must not be blank")
+        boat_id = await storage.add_boat(sail, body.name, body.class_name)
+        return JSONResponse({"id": boat_id}, status_code=201)
+
+    @app.patch("/api/boats/{boat_id}", status_code=204)
+    async def api_update_boat(boat_id: int, body: BoatUpdate) -> None:
+        cur = await storage._conn().execute(
+            "SELECT sail_number, name, class FROM boats WHERE id = ?", (boat_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Boat not found")
+        sail = (body.sail_number or "").strip() or row["sail_number"]
+        name = body.name if body.name is not None else row["name"]
+        class_name = body.class_name if body.class_name is not None else row["class"]
+        await storage.update_boat(boat_id, sail, name, class_name)
+
+    @app.delete("/api/boats/{boat_id}", status_code=204)
+    async def api_delete_boat(boat_id: int) -> None:
+        cur = await storage._conn().execute("SELECT id FROM boats WHERE id = ?", (boat_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Boat not found")
+        await storage.delete_boat(boat_id)
+
+    # ------------------------------------------------------------------
+    # /api/sessions/{race_id}/results
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{race_id}/results")
+    async def api_get_results(race_id: int) -> JSONResponse:
+        results = await storage.list_race_results(race_id)
+        return JSONResponse(results)
+
+    @app.post("/api/sessions/{race_id}/results", status_code=201)
+    async def api_upsert_result(race_id: int, body: RaceResultEntry) -> JSONResponse:
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (race_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+
+        if body.place < 1:
+            raise HTTPException(status_code=422, detail="place must be >= 1")
+
+        if body.boat_id is not None:
+            boat_id = body.boat_id
+            # Verify boat exists
+            cur2 = await storage._conn().execute("SELECT id FROM boats WHERE id = ?", (boat_id,))
+            if await cur2.fetchone() is None:
+                raise HTTPException(status_code=404, detail="Boat not found")
+        elif body.sail_number:
+            boat_id = await storage.find_or_create_boat(body.sail_number)
+        else:
+            raise HTTPException(status_code=422, detail="boat_id or sail_number is required")
+
+        result_id = await storage.upsert_race_result(
+            race_id,
+            body.place,
+            boat_id,
+            finish_time=body.finish_time,
+            dnf=body.dnf,
+            dns=body.dns,
+            notes=body.notes,
+        )
+        return JSONResponse({"id": result_id}, status_code=201)
+
+    # ------------------------------------------------------------------
+    # /api/results/{result_id}
+    # ------------------------------------------------------------------
+
+    @app.delete("/api/results/{result_id}", status_code=204)
+    async def api_delete_result(result_id: int) -> None:
+        cur = await storage._conn().execute(
+            "SELECT id FROM race_results WHERE id = ?", (result_id,)
+        )
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Result not found")
+        await storage.delete_race_result(result_id)
 
     return app

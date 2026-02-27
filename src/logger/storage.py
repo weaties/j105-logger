@@ -70,7 +70,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 10
+_CURRENT_VERSION: int = 11
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -233,6 +233,29 @@ _MIGRATIONS: dict[int, str] = {
             sailor    TEXT PRIMARY KEY,
             last_used TEXT NOT NULL
         );
+    """,
+    11: """
+        CREATE TABLE IF NOT EXISTS boats (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            sail_number TEXT UNIQUE NOT NULL,
+            name        TEXT,
+            class       TEXT,
+            last_used   TEXT
+        );
+        CREATE TABLE IF NOT EXISTS race_results (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id     INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            place       INTEGER NOT NULL,
+            boat_id     INTEGER NOT NULL REFERENCES boats(id),
+            finish_time TEXT,
+            dnf         INTEGER NOT NULL DEFAULT 0,
+            dns         INTEGER NOT NULL DEFAULT 0,
+            notes       TEXT,
+            created_at  TEXT NOT NULL,
+            UNIQUE(race_id, place),
+            UNIQUE(race_id, boat_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_race_results_race_id ON race_results(race_id);
     """,
 }
 
@@ -1134,6 +1157,187 @@ class Storage:
         result = [{"position": row["position"], "sailor": row["sailor"]} for row in rows]
         result.sort(key=lambda x: position_order.get(x["position"], 99))
         return result
+
+    # ------------------------------------------------------------------
+    # Boat registry
+    # ------------------------------------------------------------------
+
+    async def add_boat(
+        self,
+        sail_number: str,
+        name: str | None,
+        class_name: str | None,
+    ) -> int:
+        """Insert a new boat and return its id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now_str = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO boats (sail_number, name, class, last_used) VALUES (?, ?, ?, ?)",
+            (sail_number.strip(), name, class_name, now_str),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.debug("Boat added: sail_number={} id={}", sail_number, cur.lastrowid)
+        return cur.lastrowid
+
+    async def find_or_create_boat(self, sail_number: str) -> int:
+        """Return existing boat id, or insert a minimal boat and return its id."""
+        db = self._conn()
+        cur = await db.execute("SELECT id FROM boats WHERE sail_number = ?", (sail_number.strip(),))
+        row = await cur.fetchone()
+        if row is not None:
+            return int(row["id"])
+        return await self.add_boat(sail_number, None, None)
+
+    async def list_boats(
+        self,
+        *,
+        exclude_race_id: int | None = None,
+        q: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return boats sorted by last_used desc (MRU order).
+
+        *exclude_race_id*: omit boats already placed in this race.
+        *q*: substring search on sail_number or name.
+        """
+        db = self._conn()
+        where_parts: list[str] = []
+        params: list[Any] = []
+
+        if q:
+            where_parts.append("(sail_number LIKE ? OR name LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like])
+
+        if exclude_race_id is not None:
+            where_parts.append("id NOT IN (SELECT boat_id FROM race_results WHERE race_id = ?)")
+            params.append(exclude_race_id)
+
+        where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+        cur = await db.execute(
+            f"SELECT id, sail_number, name, class, last_used FROM boats"  # noqa: S608
+            f" {where} ORDER BY last_used IS NULL, last_used DESC",
+            params,
+        )
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "sail_number": row["sail_number"],
+                "name": row["name"],
+                "class": row["class"],
+                "last_used": row["last_used"],
+            }
+            for row in rows
+        ]
+
+    async def update_boat(
+        self,
+        boat_id: int,
+        sail_number: str,
+        name: str | None,
+        class_name: str | None,
+    ) -> None:
+        """Update an existing boat's fields."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE boats SET sail_number = ?, name = ?, class = ? WHERE id = ?",
+            (sail_number.strip(), name, class_name, boat_id),
+        )
+        await db.commit()
+        logger.debug("Boat {} updated: sail_number={}", boat_id, sail_number)
+
+    async def delete_boat(self, boat_id: int) -> None:
+        """Delete a boat by id."""
+        db = self._conn()
+        await db.execute("DELETE FROM boats WHERE id = ?", (boat_id,))
+        await db.commit()
+        logger.debug("Boat {} deleted", boat_id)
+
+    # ------------------------------------------------------------------
+    # Race results
+    # ------------------------------------------------------------------
+
+    async def upsert_race_result(
+        self,
+        race_id: int,
+        place: int,
+        boat_id: int,
+        *,
+        finish_time: str | None = None,
+        dnf: bool = False,
+        dns: bool = False,
+        notes: str | None = None,
+    ) -> int:
+        """Insert or replace a race result row and update boat.last_used.
+
+        UNIQUE constraints on (race_id, place) and (race_id, boat_id) are
+        resolved by INSERT OR REPLACE, which removes conflicting rows first.
+
+        Returns:
+            The id of the upserted row.
+        """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now_str = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT OR REPLACE INTO race_results"
+            " (race_id, place, boat_id, finish_time, dnf, dns, notes, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (race_id, place, boat_id, finish_time, int(dnf), int(dns), notes, now_str),
+        )
+        await db.execute(
+            "UPDATE boats SET last_used = ? WHERE id = ?",
+            (now_str, boat_id),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.debug("Race result upserted: race={} place={} boat={}", race_id, place, boat_id)
+        return cur.lastrowid
+
+    async def list_race_results(self, race_id: int) -> list[dict[str, Any]]:
+        """Return results for *race_id* ordered by place."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT rr.id, rr.race_id, rr.place, rr.boat_id,"
+            " b.sail_number, b.name AS boat_name, b.class AS boat_class,"
+            " rr.finish_time, rr.dnf, rr.dns, rr.notes, rr.created_at"
+            " FROM race_results rr"
+            " JOIN boats b ON b.id = rr.boat_id"
+            " WHERE rr.race_id = ?"
+            " ORDER BY rr.place ASC",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "race_id": row["race_id"],
+                "place": row["place"],
+                "boat_id": row["boat_id"],
+                "sail_number": row["sail_number"],
+                "boat_name": row["boat_name"],
+                "boat_class": row["boat_class"],
+                "finish_time": row["finish_time"],
+                "dnf": bool(row["dnf"]),
+                "dns": bool(row["dns"]),
+                "notes": row["notes"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    async def delete_race_result(self, result_id: int) -> None:
+        """Delete a single race result row by id."""
+        db = self._conn()
+        await db.execute("DELETE FROM race_results WHERE id = ?", (result_id,))
+        await db.commit()
+        logger.debug("Race result {} deleted", result_id)
 
     # ------------------------------------------------------------------
     # Helpers

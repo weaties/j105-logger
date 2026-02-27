@@ -84,6 +84,8 @@ class _Indexes:
     wx: dict[str, dict[str, Any]]
     tide: dict[str, dict[str, Any]]
     crew: dict[str, str]
+    race_id: int | None
+    results: list[dict[str, Any]]
 
 
 async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
@@ -101,8 +103,10 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
     winds = await storage.query_range("winds", start, end)
     environmental = await storage.query_range("environmental", start, end)
 
-    # Load crew for the race that covers this export window
+    # Load crew and results for the race that covers this export window
     crew: dict[str, str] = {}
+    race_id: int | None = None
+    results: list[dict[str, Any]] = []
     race_cur = await storage._conn().execute(
         "SELECT id FROM races"
         " WHERE start_utc <= ? AND (end_utc IS NULL OR end_utc >= ?)"
@@ -111,8 +115,10 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
     )
     race_row = await race_cur.fetchone()
     if race_row is not None:
-        crew_list = await storage.get_race_crew(race_row["id"])
+        race_id = int(race_row["id"])
+        crew_list = await storage.get_race_crew(race_id)
         crew = {c["position"]: c["sailor"] for c in crew_list}
+        results = await storage.list_race_results(race_id)
 
     return _Indexes(
         video_sessions=video_sessions,
@@ -127,6 +133,8 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
         wx=_by_hour(weather_rows),
         tide=_by_hour(tide_rows),
         crew=crew,
+        race_id=race_id,
+        results=results,
     )
 
 
@@ -218,6 +226,8 @@ async def export_csv(
     idx = await _load(storage, start, end)
     rows_written = 0
 
+    _RESULT_COLUMNS = ["place", "sail_number", "boat_name", "finish_time", "dnf", "dns"]
+
     with output_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(fh, fieldnames=_COLUMNS)
         writer.writeheader()
@@ -227,6 +237,23 @@ async def export_csv(
             writer.writerow({k: _fmt(v) for k, v in row.items()})
             rows_written += 1
             current += timedelta(seconds=1)
+
+        if idx.results:
+            fh.write("\n")
+            fh.write("# Results\n")
+            result_writer = csv.DictWriter(fh, fieldnames=_RESULT_COLUMNS, extrasaction="ignore")
+            result_writer.writeheader()
+            for res in idx.results:
+                result_writer.writerow(
+                    {
+                        "place": res["place"],
+                        "sail_number": res["sail_number"],
+                        "boat_name": res["boat_name"] or "",
+                        "finish_time": res["finish_time"] or "",
+                        "dnf": "1" if res["dnf"] else "0",
+                        "dns": "1" if res["dns"] else "0",
+                    }
+                )
 
     logger.info("CSV export complete: {} rows → {}", rows_written, output_path)
     return rows_written
@@ -353,10 +380,23 @@ async def export_json(
         rows.append(_build_row(current, idx))
         current += timedelta(seconds=1)
 
+    results_out = [
+        {
+            "place": r["place"],
+            "sail_number": r["sail_number"],
+            "boat_name": r["boat_name"],
+            "finish_time": r["finish_time"],
+            "dnf": r["dnf"],
+            "dns": r["dns"],
+        }
+        for r in idx.results
+    ]
+
     doc: dict[str, Any] = {
         "generated": datetime.now(UTC).isoformat(),
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "results": results_out,
         "rows": rows,
     }
 
