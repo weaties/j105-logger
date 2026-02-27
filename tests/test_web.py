@@ -693,6 +693,37 @@ async def test_api_sessions_has_audio_flag(storage: Storage, tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_api_sessions_includes_crew(storage: Storage) -> None:
+    """GET /api/sessions returns crew list per race/practice session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        race_id = r["id"]
+        # Set crew for the race
+        crew_payload = [
+            {"position": "helm", "sailor": "Mark"},
+            {"position": "main", "sailor": "Dave"},
+        ]
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=crew_payload,
+        )
+        await client.post(f"/api/races/{race_id}/end")
+
+        resp = await client.get("/api/sessions")
+    data = resp.json()
+    assert data["total"] == 1
+    session = data["sessions"][0]
+    assert "crew" in session
+    pos_map = {c["position"]: c["sailor"] for c in session["crew"]}
+    assert pos_map.get("helm") == "Mark"
+    assert pos_map.get("main") == "Dave"
+
+
+@pytest.mark.asyncio
 async def test_api_sessions_includes_debriefs(storage: Storage, tmp_path: Path) -> None:
     """Completed debriefs appear as separate 'debrief' rows in /api/sessions."""
     recorder = _make_recorder()
@@ -725,3 +756,145 @@ async def test_api_sessions_includes_debriefs(storage: Storage, tmp_path: Path) 
     assert deb["type"] == "debrief"
     assert deb["parent_race_id"] == r["id"]
     assert deb["has_audio"] is True
+
+
+# ---------------------------------------------------------------------------
+# Crew API tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_post_crew_sets_crew(storage: Storage) -> None:
+    """POST /api/races/{id}/crew then GET returns the same crew in canonical order."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+
+        post_resp = await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[
+                {"position": "helm", "sailor": "Mark"},
+                {"position": "main", "sailor": "Dave"},
+                {"position": "tactician", "sailor": "Bill"},
+            ],
+        )
+        assert post_resp.status_code == 204
+
+        get_resp = await client.get(f"/api/races/{race_id}/crew")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    assert "crew" in data
+    assert "recent_sailors" in data
+    positions = [c["position"] for c in data["crew"]]
+    assert positions == ["helm", "main", "tactician"]
+    sailors = {c["position"]: c["sailor"] for c in data["crew"]}
+    assert sailors["helm"] == "Mark"
+    assert sailors["main"] == "Dave"
+    assert sailors["tactician"] == "Bill"
+
+
+@pytest.mark.asyncio
+async def test_post_crew_invalid_position(storage: Storage) -> None:
+    """POST /api/races/{id}/crew with an unknown position returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[{"position": "captain", "sailor": "Someone"}],
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_get_crew_unknown_race(storage: Storage) -> None:
+    """GET /api/races/{id}/crew for a non-existent race returns 404."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/races/99999/crew")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_api_state_includes_crew(storage: Storage) -> None:
+    """/api/state today_races include crew list per race."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[{"position": "helm", "sailor": "TestHelm"}],
+        )
+
+        state = (await client.get("/api/state")).json()
+
+    assert state["current_race"] is not None
+    assert "crew" in state["current_race"]
+    sailors = {c["position"]: c["sailor"] for c in state["current_race"]["crew"]}
+    assert sailors.get("helm") == "TestHelm"
+
+    # today_races also includes crew
+    assert len(state["today_races"]) == 1
+    assert "crew" in state["today_races"][0]
+
+
+@pytest.mark.asyncio
+async def test_recent_sailors_endpoint(storage: Storage) -> None:
+    """GET /api/sailors/recent returns names after crew is set."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[
+                {"position": "helm", "sailor": "Alice"},
+                {"position": "main", "sailor": "Bob"},
+            ],
+        )
+
+        resp = await client.get("/api/sailors/recent")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "sailors" in data
+    assert "Alice" in data["sailors"]
+    assert "Bob" in data["sailors"]
+
+
+@pytest.mark.asyncio
+async def test_post_crew_ignores_blank_sailors(storage: Storage) -> None:
+    """POST /api/races/{id}/crew skips entries with blank sailor names."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[
+                {"position": "helm", "sailor": "Mark"},
+                {"position": "main", "sailor": ""},
+                {"position": "pit", "sailor": "  "},
+            ],
+        )
+
+        resp = await client.get(f"/api/races/{race_id}/crew")
+    crew = resp.json()["crew"]
+    positions = [c["position"] for c in crew]
+    assert "helm" in positions
+    assert "main" not in positions
+    assert "pit" not in positions

@@ -49,6 +49,11 @@ _COLUMNS = [
     "AIR_TEMP",  # air temperature (°C) — Open-Meteo
     "PRESSURE",  # surface pressure (hPa) — Open-Meteo
     "TIDE_HT",  # tide height above MLLW (metres) — NOAA CO-OPS
+    "crew_helm",
+    "crew_main",
+    "crew_jib",
+    "crew_spin",
+    "crew_tactician",
 ]
 
 _WIND_REF_TRUE = 0
@@ -78,6 +83,7 @@ class _Indexes:
     env: dict[str, dict[str, Any]]
     wx: dict[str, dict[str, Any]]
     tide: dict[str, dict[str, Any]]
+    crew: dict[str, str]
 
 
 async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
@@ -95,6 +101,19 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
     winds = await storage.query_range("winds", start, end)
     environmental = await storage.query_range("environmental", start, end)
 
+    # Load crew for the race that covers this export window
+    crew: dict[str, str] = {}
+    race_cur = await storage._conn().execute(
+        "SELECT id FROM races"
+        " WHERE start_utc <= ? AND (end_utc IS NULL OR end_utc >= ?)"
+        " ORDER BY start_utc DESC LIMIT 1",
+        (end.isoformat(), start.isoformat()),
+    )
+    race_row = await race_cur.fetchone()
+    if race_row is not None:
+        crew_list = await storage.get_race_crew(race_row["id"])
+        crew = {c["position"]: c["sailor"] for c in crew_list}
+
     return _Indexes(
         video_sessions=video_sessions,
         hdg=_by_second(headings),
@@ -107,6 +126,7 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
         env=_by_second(environmental),
         wx=_by_hour(weather_rows),
         tide=_by_hour(tide_rows),
+        crew=crew,
     )
 
 
@@ -164,6 +184,12 @@ def _build_row(current: datetime, idx: _Indexes) -> dict[str, float | str | None
 
     tide = idx.tide.get(hk)
     row["TIDE_HT"] = _flt(tide, "height_m") if tide else None
+
+    row["crew_helm"] = idx.crew.get("helm") or None
+    row["crew_main"] = idx.crew.get("main") or None
+    row["crew_jib"] = idx.crew.get("jib") or None
+    row["crew_spin"] = idx.crew.get("spin") or None
+    row["crew_tactician"] = idx.crew.get("tactician") or None
 
     return row
 

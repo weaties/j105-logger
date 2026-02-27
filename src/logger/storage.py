@@ -70,7 +70,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 9
+_CURRENT_VERSION: int = 10
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -219,7 +219,25 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE audio_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'race';
         ALTER TABLE audio_sessions ADD COLUMN name TEXT;
     """,
+    10: """
+        CREATE TABLE IF NOT EXISTS race_crew (
+            id        INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id   INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            position  TEXT    NOT NULL,
+            sailor    TEXT    NOT NULL,
+            UNIQUE(race_id, position)
+        );
+        CREATE INDEX IF NOT EXISTS idx_race_crew_race_id ON race_crew(race_id);
+
+        CREATE TABLE IF NOT EXISTS recent_sailors (
+            sailor    TEXT PRIMARY KEY,
+            last_used TEXT NOT NULL
+        );
+    """,
 }
+
+# Canonical order for the 5 J105 positions
+_POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
 
 # ---------------------------------------------------------------------------
 # Storage class
@@ -1005,8 +1023,15 @@ class Storage:
                     "audio_session_id": row["audio_session_id"],
                     "parent_race_id": row["parent_race_id"],
                     "parent_race_name": row["parent_race_name"],
+                    "crew": [],
                 }
             )
+
+        # Attach crew to race/practice sessions (one query per session)
+        for session in result:
+            if session["type"] in ("race", "practice"):
+                session["crew"] = await self.get_race_crew(session["id"])
+
         return (total, result)
 
     async def get_daily_event(self, date_str: str) -> str | None:
@@ -1026,6 +1051,73 @@ class Storage:
         )
         await db.commit()
         logger.debug("Daily event set: {} → {}", date_str, event_name)
+
+    # ------------------------------------------------------------------
+    # Race crew
+    # ------------------------------------------------------------------
+
+    async def set_race_crew(self, race_id: int, crew: list[dict[str, str]]) -> None:
+        """Set crew positions for a race (full-replace semantics).
+
+        Each entry must have ``position`` and ``sailor`` keys.  Blank sailor
+        names must be filtered by the caller before invoking this method.
+        All existing positions not present in *crew* are deleted.
+        Each sailor name is upserted into ``recent_sailors``.
+        """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now_str = _datetime.now(UTC).isoformat()
+
+        if crew:
+            positions = [c["position"] for c in crew]
+            placeholders = ",".join("?" * len(positions))
+            await db.execute(
+                f"DELETE FROM race_crew WHERE race_id = ? AND position NOT IN ({placeholders})",
+                (race_id, *positions),
+            )
+        else:
+            await db.execute("DELETE FROM race_crew WHERE race_id = ?", (race_id,))
+
+        for entry in crew:
+            position = entry["position"]
+            sailor = entry["sailor"]
+            await db.execute(
+                "INSERT OR REPLACE INTO race_crew (race_id, position, sailor) VALUES (?, ?, ?)",
+                (race_id, position, sailor),
+            )
+            await db.execute(
+                "INSERT INTO recent_sailors (sailor, last_used) VALUES (?, ?)"
+                " ON CONFLICT(sailor) DO UPDATE SET last_used = excluded.last_used",
+                (sailor, now_str),
+            )
+
+        await db.commit()
+        logger.debug("Crew set for race {}: {} positions", race_id, len(crew))
+
+    async def get_race_crew(self, race_id: int) -> list[dict[str, str]]:
+        """Return crew for *race_id* ordered by canonical position (helm first)."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT position, sailor FROM race_crew WHERE race_id = ?",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        position_order = {p: i for i, p in enumerate(_POSITIONS)}
+        result = [{"position": row["position"], "sailor": row["sailor"]} for row in rows]
+        result.sort(key=lambda x: position_order.get(x["position"], 99))
+        return result
+
+    async def get_recent_sailors(self, limit: int = 10) -> list[str]:
+        """Return the most recently used sailor names, newest first."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT sailor FROM recent_sailors ORDER BY last_used DESC LIMIT ?",
+            (limit,),
+        )
+        rows = await cur.fetchall()
+        return [row["sailor"] for row in rows]
 
     # ------------------------------------------------------------------
     # Helpers

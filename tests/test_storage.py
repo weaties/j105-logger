@@ -409,9 +409,7 @@ class TestLiveCache:
         result = await storage.latest_instruments()
         assert result["bsp_kts"] == 8.5
 
-    async def test_latest_instruments_db_fallback_when_cache_empty(
-        self, storage: Storage
-    ) -> None:
+    async def test_latest_instruments_db_fallback_when_cache_empty(self, storage: Storage) -> None:
         """latest_instruments() falls back to DB when cache is entirely empty."""
         record = SpeedRecord(
             pgn=PGN_SPEED_THROUGH_WATER,
@@ -423,3 +421,83 @@ class TestLiveCache:
         result = await storage.latest_instruments()
         assert result["bsp_kts"] is not None
         assert abs(result["bsp_kts"] - 4.2) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Crew storage tests
+# ---------------------------------------------------------------------------
+
+_CREW_DATE = "2025-09-01"
+_CREW_START = datetime(2025, 9, 1, 14, 0, 0, tzinfo=UTC)
+
+
+class TestCrewStorage:
+    async def _make_race(self, storage: Storage) -> int:
+        race = await storage.start_race("Regatta", _CREW_START, _CREW_DATE, 1, "20250901-Regatta-1")
+        assert race.id is not None
+        return race.id
+
+    async def test_set_and_get_race_crew(self, storage: Storage) -> None:
+        """set_race_crew then get_race_crew returns all positions in canonical order."""
+        race_id = await self._make_race(storage)
+        crew_in = [
+            {"position": "tactician", "sailor": "Bill"},
+            {"position": "helm", "sailor": "Mark"},
+            {"position": "pit", "sailor": "Sarah"},
+            {"position": "main", "sailor": "Dave"},
+            {"position": "bow", "sailor": "Tom"},
+        ]
+        await storage.set_race_crew(race_id, crew_in)
+        crew_out = await storage.get_race_crew(race_id)
+        positions = [c["position"] for c in crew_out]
+        assert positions == ["helm", "main", "pit", "bow", "tactician"]
+        sailors = {c["position"]: c["sailor"] for c in crew_out}
+        assert sailors["helm"] == "Mark"
+        assert sailors["tactician"] == "Bill"
+
+    async def test_set_crew_updates_recent_sailors(self, storage: Storage) -> None:
+        """After set_race_crew, get_recent_sailors returns all crew names."""
+        race_id = await self._make_race(storage)
+        await storage.set_race_crew(
+            race_id,
+            [{"position": "helm", "sailor": "Alice"}, {"position": "main", "sailor": "Bob"}],
+        )
+        recent = await storage.get_recent_sailors()
+        assert "Alice" in recent
+        assert "Bob" in recent
+
+    async def test_set_crew_upsert(self, storage: Storage) -> None:
+        """Second set_race_crew call wins; old positions removed if absent."""
+        race_id = await self._make_race(storage)
+        await storage.set_race_crew(
+            race_id,
+            [{"position": "helm", "sailor": "Mark"}, {"position": "main", "sailor": "Dave"}],
+        )
+        # Second write: replace helm, drop main, add pit
+        await storage.set_race_crew(
+            race_id,
+            [{"position": "helm", "sailor": "New"}, {"position": "pit", "sailor": "Pat"}],
+        )
+        crew = await storage.get_race_crew(race_id)
+        pos_map = {c["position"]: c["sailor"] for c in crew}
+        assert pos_map.get("helm") == "New"
+        assert pos_map.get("pit") == "Pat"
+        assert "main" not in pos_map
+
+    async def test_get_crew_empty_race(self, storage: Storage) -> None:
+        """get_race_crew returns empty list for a race with no crew set."""
+        race_id = await self._make_race(storage)
+        crew = await storage.get_race_crew(race_id)
+        assert crew == []
+
+    async def test_get_recent_sailors_ordered_by_recency(self, storage: Storage) -> None:
+        """get_recent_sailors returns names newest-first."""
+        race_id = await self._make_race(storage)
+        await storage.set_race_crew(race_id, [{"position": "helm", "sailor": "Older"}])
+        # A second race to set a newer name
+        race2 = await storage.start_race(
+            "Regatta", _CREW_START, _CREW_DATE, 2, "20250901-Regatta-2"
+        )
+        await storage.set_race_crew(race2.id, [{"position": "helm", "sailor": "Newer"}])
+        recent = await storage.get_recent_sailors()
+        assert recent[0] == "Newer"

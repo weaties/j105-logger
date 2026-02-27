@@ -90,6 +90,13 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 .inst-value{font-size:1.3rem;font-weight:700;color:#7eb8f7;font-variant-numeric:tabular-nums}
 .inst-unit{font-size:.75rem;color:#8892a4;margin-left:2px}
 .inst-time{font-size:1rem;font-weight:600;color:#e8eaf0;font-variant-numeric:tabular-nums;margin-bottom:8px}
+.crew-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;-webkit-user-select:none;user-select:none}
+.crew-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.crew-pos{min-width:48px;font-size:.8rem;color:#8892a4;text-transform:uppercase;letter-spacing:.06em}
+.crew-input{flex:1;background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem}
+.sailor-chip{padding:6px 12px;border:1px solid #2563eb;border-radius:16px;background:#0a1628;color:#7eb8f7;font-size:.82rem;cursor:pointer;white-space:nowrap;-webkit-tap-highlight-color:transparent}
+.sailor-chip:active{background:#1e3a5f}
+.race-item-crew{font-size:.75rem;color:#8892a4;margin-top:2px}
 </style>
 </head>
 <body>
@@ -150,6 +157,23 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
       <span><span class="inst-value" id="iv-twa">—</span><span class="inst-unit">°</span></span></div>
     <div class="inst-item"><span class="inst-label">TWD</span>
       <span><span class="inst-value" id="iv-twd">—</span><span class="inst-unit">°</span></span></div>
+  </div>
+</div>
+
+<div class="card" id="crew-card">
+  <div class="crew-header" onclick="toggleCrew()">
+    <span class="label" style="margin-bottom:0">Crew</span>
+    <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">▼</span>
+  </div>
+  <div id="crew-body" style="display:none;margin-top:10px">
+    <div class="crew-row"><span class="crew-pos">Helm</span><input class="crew-input" id="crew-helm" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Main</span><input class="crew-input" id="crew-main" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Pit</span><input class="crew-input" id="crew-pit" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Bow</span><input class="crew-input" id="crew-bow" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Tac</span><input class="crew-input" id="crew-tac" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <datalist id="recent-sailors"></datalist>
+    <div id="sailor-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px"></div>
+    <button class="btn btn-secondary" style="margin-top:6px;font-size:.9rem;padding:12px" onclick="saveCrew()">Save Crew</button>
   </div>
 </div>
 
@@ -219,12 +243,17 @@ function render(s) {
       'Started ' + fmtTime(cur.start_utc);
     curRaceStartMs = new Date(cur.start_utc).getTime();
     btnEnd.textContent = '■ END ' + cur.name;
+    if(cur.id !== _crewLoadedForRaceId) {
+      setCrewInputs(cur.crew || []);
+      _crewLoadedForRaceId = cur.id;
+    }
   } else {
     curCard.classList.add('hidden');
     btnEnd.classList.add('hidden');
     btnStartRace.classList.remove('hidden');
     btnStartPractice.classList.remove('hidden');
     curRaceStartMs = null;
+    _crewLoadedForRaceId = null;
     clearInterval(tickInterval);
   }
 
@@ -266,9 +295,14 @@ function render(s) {
              ${debriefBtn}
            </div>`
         : `<div class="race-exports">${grafanaBtn}</div>`;
+      const crewLine = r.crew && r.crew.length
+        ? r.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
+        : '';
+      const crewHtml = crewLine ? `<div class="race-item-crew">${crewLine}</div>` : '';
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
+        ${crewHtml}
         ${exports}
       </div>`;
     }).join('');
@@ -311,8 +345,95 @@ async function loadInstruments() {
   } catch(e) { console.error('instruments error', e); }
 }
 
+let pendingCrew = null;
+let crewExpanded = false;
+let focusedCrewInput = null;
+let _crewLoadedForRaceId = null;
+
+function toggleCrew() {
+  crewExpanded = !crewExpanded;
+  document.getElementById('crew-body').style.display = crewExpanded ? '' : 'none';
+  document.getElementById('crew-chevron').textContent = crewExpanded ? '▲' : '▼';
+}
+
+function getCrewFromInputs() {
+  const positions = ['helm','main','pit','bow','tactician'];
+  const ids = ['crew-helm','crew-main','crew-pit','crew-bow','crew-tac'];
+  const crew = [];
+  positions.forEach((pos, i) => {
+    const val = document.getElementById(ids[i]).value.trim();
+    if(val) crew.push({position: pos, sailor: val});
+  });
+  return crew;
+}
+
+function setCrewInputs(crew) {
+  const posToId = {helm:'crew-helm',main:'crew-main',pit:'crew-pit',bow:'crew-bow',tactician:'crew-tac'};
+  Object.values(posToId).forEach(id => { document.getElementById(id).value = ''; });
+  if(crew) crew.forEach(c => {
+    const id = posToId[c.position];
+    if(id) document.getElementById(id).value = c.sailor;
+  });
+}
+
+function tapSailor(name) {
+  let target = focusedCrewInput;
+  if(!target) {
+    const inputs = [...document.querySelectorAll('.crew-input')];
+    target = inputs.find(i => !i.value.trim()) || inputs[0];
+  }
+  if(!target) return;
+  target.value = name;
+  const inputs = [...document.querySelectorAll('.crew-input')];
+  const idx = inputs.indexOf(target);
+  const nextEmpty = inputs.slice(idx + 1).find(i => !i.value.trim());
+  if(nextEmpty) { nextEmpty.focus(); focusedCrewInput = nextEmpty; }
+}
+
+async function loadRecentSailors() {
+  try {
+    const r = await fetch('/api/sailors/recent');
+    const d = await r.json();
+    const dl = document.getElementById('recent-sailors');
+    dl.innerHTML = d.sailors.map(s => '<option value="' + s.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '">').join('');
+    const chips = document.getElementById('sailor-chips');
+    chips.innerHTML = d.sailors.map(s => {
+      const display = s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const attr = s.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+      return '<button class="sailor-chip" onpointerdown="event.preventDefault()" onclick="tapSailor(this.dataset.name)" data-name="' + attr + '">' + display + '</button>';
+    }).join('');
+  } catch(e) { console.error('sailors error', e); }
+}
+
+async function saveCrew() {
+  const crew = getCrewFromInputs();
+  if(state && state.current_race) {
+    await fetch('/api/races/' + state.current_race.id + '/crew', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(crew)
+    });
+    await loadRecentSailors();
+  } else {
+    pendingCrew = crew;
+  }
+}
+
 async function startSession(type) {
-  await fetch(`/api/races/start?session_type=${type}`, {method:'POST'});
+  const resp = await fetch(`/api/races/start?session_type=${type}`, {method:'POST'});
+  if(resp.ok) {
+    const data = await resp.json();
+    const crew = pendingCrew && pendingCrew.length ? pendingCrew : getCrewFromInputs();
+    if(crew.length && data.id) {
+      await fetch('/api/races/' + data.id + '/crew', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(crew)
+      });
+      await loadRecentSailors();
+    }
+    pendingCrew = null;
+  }
   await loadState();
   clearInterval(tickInterval);
   if(curRaceStartMs) tickInterval = setInterval(tick, 1000);
@@ -350,6 +471,10 @@ setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
+loadRecentSailors();
+document.querySelectorAll('.crew-input').forEach(inp => {
+  inp.addEventListener('focus', () => { focusedCrewInput = inp; });
+});
 </script>
 </body>
 </html>
@@ -395,6 +520,7 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 .empty{color:#8892a4;text-align:center;padding:24px 0}
 .pager{display:flex;gap:8px;justify-content:center;align-items:center;margin-top:8px}
 .pager-info{color:#8892a4;font-size:.85rem}
+.session-crew{font-size:.78rem;color:#8892a4;margin-top:3px}
 </style>
 </head>
 <body>
@@ -490,6 +616,11 @@ function render(data) {
     const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
+    const crewLine = (s.type !== 'debrief' && s.crew && s.crew.length)
+      ? s.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
+      : '';
+    const crewHtml = crewLine ? '<div class="session-crew">' + crewLine + '</div>' : '';
+
     let exports = '';
     if (s.type !== 'debrief' && s.end_utc) {
       const from = new Date(s.start_utc).getTime();
@@ -505,7 +636,7 @@ function render(data) {
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + exportsHtml + '</div>';
+      + parent + crewHtml + exportsHtml + '</div>';
   }).join('');
 
   const total = data.total;
@@ -545,8 +676,16 @@ load();
 # ---------------------------------------------------------------------------
 
 
+POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
+
+
 class EventRequest(BaseModel):
     event_name: str
+
+
+class CrewEntry(BaseModel):
+    position: str
+    sailor: str
 
 
 # ---------------------------------------------------------------------------
@@ -626,13 +765,14 @@ def create_app(
         next_race_num = await storage.count_sessions_for_date(date_str, "race") + 1
         next_practice_num = await storage.count_sessions_for_date(date_str, "practice") + 1
 
-        def _race_dict(r: _Race) -> dict[str, Any]:
+        async def _race_dict(r: _Race) -> dict[str, Any]:
             duration_s: float | None = None
             if r.end_utc is not None:
                 duration_s = (r.end_utc - r.start_utc).total_seconds()
             else:
                 elapsed = (now - r.start_utc).total_seconds()
                 duration_s = elapsed
+            crew = await storage.get_race_crew(r.id)
             return {
                 "id": r.id,
                 "name": r.name,
@@ -643,7 +783,11 @@ def create_app(
                 "end_utc": r.end_utc.isoformat() if r.end_utc else None,
                 "duration_s": round(duration_s, 1) if duration_s is not None else None,
                 "session_type": r.session_type,
+                "crew": crew,
             }
+
+        current_dict = await _race_dict(current) if current else None
+        today_race_dicts = [await _race_dict(r) for r in today_races]
 
         return JSONResponse(
             {
@@ -651,10 +795,10 @@ def create_app(
                 "weekday": weekday,
                 "event": event,
                 "event_is_default": event_is_default,
-                "current_race": _race_dict(current) if current else None,
+                "current_race": current_dict,
                 "next_race_num": next_race_num,
                 "next_practice_num": next_practice_num,
-                "today_races": [_race_dict(r) for r in today_races],
+                "today_races": today_race_dicts,
                 "has_recorder": recorder is not None,
                 "current_debrief": {
                     "race_id": _debrief_race_id,
@@ -954,5 +1098,44 @@ def create_app(
                 }
             )
         return JSONResponse(result)
+
+    # ------------------------------------------------------------------
+    # /api/races/{id}/crew
+    # ------------------------------------------------------------------
+
+    @app.post("/api/races/{race_id}/crew", status_code=204)
+    async def api_set_crew(race_id: int, body: list[CrewEntry]) -> None:
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (race_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+
+        invalid = [e.position for e in body if e.position not in POSITIONS]
+        if invalid:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown position(s): {invalid}. Must be one of {list(POSITIONS)}",
+            )
+
+        crew = [{"position": e.position, "sailor": e.sailor} for e in body if e.sailor.strip()]
+        await storage.set_race_crew(race_id, crew)
+
+    @app.get("/api/races/{race_id}/crew")
+    async def api_get_crew(race_id: int) -> JSONResponse:
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (race_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+
+        crew = await storage.get_race_crew(race_id)
+        recent = await storage.get_recent_sailors()
+        return JSONResponse({"crew": crew, "recent_sailors": recent})
+
+    # ------------------------------------------------------------------
+    # /api/sailors/recent
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sailors/recent")
+    async def api_recent_sailors() -> JSONResponse:
+        sailors = await storage.get_recent_sailors()
+        return JSONResponse({"sailors": sailors})
 
     return app
