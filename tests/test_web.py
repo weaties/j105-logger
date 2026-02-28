@@ -1772,3 +1772,174 @@ async def test_debrief_session_includes_parent_race_crew(storage: Storage, tmp_p
     crew = {c["position"]: c["sailor"] for c in debriefs[0]["crew"]}
     assert crew.get("helm") == "DebriefHelm"
     assert crew.get("main") == "DebriefMain"
+
+
+# ---------------------------------------------------------------------------
+# Issue #57 — Sail inventory and per-race sail selection
+# ---------------------------------------------------------------------------
+
+
+async def _add_sail(client: httpx.AsyncClient, sail_type: str, name: str) -> int:
+    resp = await client.post("/api/sails", json={"type": sail_type, "name": name})
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_list_sails_empty(storage: Storage) -> None:
+    """GET /api/sails returns empty lists per type when no sails exist."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sails")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data == {"main": [], "jib": [], "spinnaker": []}
+
+
+@pytest.mark.asyncio
+async def test_add_sail_201(storage: Storage) -> None:
+    """POST /api/sails creates a sail and returns 201."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/sails", json={"type": "main", "name": "Full Main"})
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["type"] == "main"
+    assert data["name"] == "Full Main"
+    assert "id" in data
+
+
+@pytest.mark.asyncio
+async def test_add_sail_duplicate_409(storage: Storage) -> None:
+    """POST /api/sails with duplicate (type, name) returns 409."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post("/api/sails", json={"type": "jib", "name": "Code 3"})
+        resp = await client.post("/api/sails", json={"type": "jib", "name": "Code 3"})
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_add_sail_invalid_type_422(storage: Storage) -> None:
+    """POST /api/sails with unknown type returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/sails", json={"type": "foresail", "name": "Genoa"})
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_sail_retire(storage: Storage) -> None:
+    """PATCH /api/sails/{id} active=false retires the sail; GET /api/sails no longer shows it."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        sail_id = await _add_sail(client, "spinnaker", "A2")
+        patch_resp = await client.patch(f"/api/sails/{sail_id}", json={"active": False})
+        assert patch_resp.status_code == 200
+        list_resp = await client.get("/api/sails")
+    data = list_resp.json()
+    ids = [s["id"] for s in data["spinnaker"]]
+    assert sail_id not in ids
+
+
+@pytest.mark.asyncio
+async def test_get_session_sails_empty(storage: Storage) -> None:
+    """GET /api/sessions/{id}/sails returns all-None slots when no sails are set."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/api/sessions/{race_id}/sails")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["main"] is None
+    assert data["jib"] is None
+    assert data["spinnaker"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_session_sails(storage: Storage) -> None:
+    """PUT /api/sessions/{id}/sails sets sails; GET returns them."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        main_id = await _add_sail(client, "main", "Full Main")
+        jib_id = await _add_sail(client, "jib", "Jib Top")
+
+        put_resp = await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": main_id, "jib_id": jib_id, "spinnaker_id": None},
+        )
+        assert put_resp.status_code == 200
+
+        get_resp = await client.get(f"/api/sessions/{race_id}/sails")
+    data = get_resp.json()
+    assert data["main"] is not None
+    assert data["main"]["id"] == main_id
+    assert data["jib"] is not None
+    assert data["jib"]["id"] == jib_id
+    assert data["spinnaker"] is None
+
+
+@pytest.mark.asyncio
+async def test_set_session_sails_wrong_type_422(storage: Storage) -> None:
+    """PUT /api/sessions/{id}/sails returns 422 if sail id doesn't match the slot type."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        # Add a jib, then try to put it in the main slot
+        jib_id = await _add_sail(client, "jib", "Jib Top")
+        resp = await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": jib_id},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_set_session_sails_unknown_session_404(storage: Storage) -> None:
+    """PUT /api/sessions/{id}/sails returns 404 for an unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.put("/api/sessions/99999/sails", json={})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_state_includes_sails(storage: Storage) -> None:
+    """GET /api/state today_races entries include sails dict."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        main_id = await _add_sail(client, "main", "Full Main")
+        await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": main_id},
+        )
+        state = (await client.get("/api/state")).json()
+
+    assert "sails" in state["current_race"]
+    assert state["current_race"]["sails"]["main"]["id"] == main_id
