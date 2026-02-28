@@ -2243,6 +2243,7 @@ async def test_transcript_done_with_segments(
     with (
         patch("logger.transcribe._run_whisper_segments", return_value=_whisper_segs),
         patch("logger.transcribe._run_diarizer", return_value=_diar_segs),
+        patch("logger.transcribe._pyannote_available", return_value=True),
     ):
         from logger.transcribe import transcribe_session
 
