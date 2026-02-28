@@ -261,6 +261,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
     <div class="crew-row"><span class="crew-pos">Pit</span><input class="crew-input" id="crew-pit" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
     <div class="crew-row"><span class="crew-pos">Bow</span><input class="crew-input" id="crew-bow" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
     <div class="crew-row"><span class="crew-pos">Tac</span><input class="crew-input" id="crew-tac" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
+    <div class="crew-row"><span class="crew-pos">Guest</span><input class="crew-input" id="crew-guest" list="recent-sailors" placeholder="Name…" maxlength="40"/></div>
     <datalist id="recent-sailors"></datalist>
     <div id="sailor-chips" style="display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 4px"></div>
     <button class="btn btn-secondary" style="margin-top:6px;font-size:.9rem;padding:12px" onclick="saveCrew()">Save Crew</button>
@@ -411,11 +412,15 @@ function render(s) {
       const debriefBtn = (r.end_utc && s.has_recorder && !s.current_debrief && !s.current_race)
         ? `<button class="btn-export btn-debrief" onclick="startDebrief(${r.id})">🎙 Debrief</button>`
         : '';
+      const wavBtn = (r.end_utc && r.has_audio && r.audio_session_id)
+        ? `<a class="btn-export" href="/api/audio/${r.audio_session_id}/download">&#8595; WAV</a>`
+        : '';
       const exports = r.end_utc
         ? `<div class="race-exports">
              <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
              <a class="btn-export" href="/api/races/${r.id}/export.gpx">↓ GPX</a>
              ${grafanaBtn}
+             ${wavBtn}
              ${debriefBtn}
            </div>`
         : `<div class="race-exports">${grafanaBtn}</div>`;
@@ -523,8 +528,8 @@ function toggleCrew() {
 }
 
 function getCrewFromInputs() {
-  const positions = ['helm','main','pit','bow','tactician'];
-  const ids = ['crew-helm','crew-main','crew-pit','crew-bow','crew-tac'];
+  const positions = ['helm','main','pit','bow','tactician','guest'];
+  const ids = ['crew-helm','crew-main','crew-pit','crew-bow','crew-tac','crew-guest'];
   const crew = [];
   positions.forEach((pos, i) => {
     const val = document.getElementById(ids[i]).value.trim();
@@ -534,7 +539,7 @@ function getCrewFromInputs() {
 }
 
 function setCrewInputs(crew) {
-  const posToId = {helm:'crew-helm',main:'crew-main',pit:'crew-pit',bow:'crew-bow',tactician:'crew-tac'};
+  const posToId = {helm:'crew-helm',main:'crew-main',pit:'crew-pit',bow:'crew-bow',tactician:'crew-tac',guest:'crew-guest'};
   Object.values(posToId).forEach(id => { document.getElementById(id).value = ''; });
   if(crew) crew.forEach(c => {
     const id = posToId[c.position];
@@ -1336,10 +1341,11 @@ function render(data) {
     const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
-    const crewLine = (s.type !== 'debrief' && s.crew && s.crew.length)
+    const crewLine = (s.crew && s.crew.length)
       ? s.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
       : '';
-    const crewHtml = crewLine ? '<div class="session-crew">' + crewLine + '</div>' : '';
+    const crewSuffix = (s.type === 'debrief' && crewLine) ? ' <span style="color:#8892a4;font-size:.75rem">(from race)</span>' : '';
+    const crewHtml = crewLine ? '<div class="session-crew">' + crewLine + crewSuffix + '</div>' : '';
 
     let exports = '';
     if (s.type !== 'debrief' && s.end_utc) {
@@ -1807,7 +1813,7 @@ loadBoats();
 # ---------------------------------------------------------------------------
 
 
-POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
+POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician", "guest")
 
 
 class EventRequest(BaseModel):
@@ -1978,6 +1984,13 @@ def create_app(
             crew = await storage.get_race_crew(r.id)
             results = await storage.list_race_results(r.id)
             sails = await storage.get_race_sails(r.id)
+            cur = await storage._conn().execute(
+                "SELECT id FROM audio_sessions"
+                " WHERE race_id = ? AND session_type IN ('race', 'practice') LIMIT 1",
+                (r.id,),
+            )
+            audio_row = await cur.fetchone()
+            audio_session_id: int | None = audio_row["id"] if audio_row else None
             return {
                 "id": r.id,
                 "name": r.name,
@@ -1991,6 +2004,8 @@ def create_app(
                 "crew": crew,
                 "results": results,
                 "sails": sails,
+                "has_audio": audio_session_id is not None,
+                "audio_session_id": audio_session_id,
             }
 
         current_dict = await _race_dict(current) if current else None

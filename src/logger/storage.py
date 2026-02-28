@@ -310,8 +310,8 @@ _MIGRATIONS: dict[int, str] = {
     """,
 }
 
-# Canonical order for the 5 J105 positions
-_POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
+# Canonical order for the 5 J105 positions + one-off guests
+_POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician", "guest")
 
 # Valid sail slot types
 _SAIL_TYPES: tuple[str, ...] = ("main", "jib", "spinnaker")
@@ -1131,10 +1131,14 @@ class Storage:
                 }
             )
 
-        # Attach crew to race/practice sessions (one query per session)
+        # Attach crew to all session types (debriefs inherit from parent race)
         for session in result:
             if session["type"] in ("race", "practice"):
                 session["crew"] = await self.get_race_crew(session["id"])
+            elif session["type"] == "debrief" and session.get("parent_race_id"):
+                session["crew"] = await self.get_race_crew(session["parent_race_id"])
+            else:
+                session["crew"] = []
 
         return (total, result)
 

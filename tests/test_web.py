@@ -1639,6 +1639,142 @@ async def test_videos_redirect_missing_at_returns_422(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Issue #38 — guest crew position
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_guest_crew_accepted_and_returned(storage: Storage) -> None:
+    """POST /api/races/{id}/crew accepts 'guest' position and GET returns it."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[
+                {"position": "helm", "sailor": "Alice"},
+                {"position": "guest", "sailor": "Charlie"},
+            ],
+        )
+        assert resp.status_code == 204
+
+        crew_resp = await client.get(f"/api/races/{race_id}/crew")
+    assert crew_resp.status_code == 200
+    positions = {c["position"]: c["sailor"] for c in crew_resp.json()["crew"]}
+    assert positions.get("helm") == "Alice"
+    assert positions.get("guest") == "Charlie"
+
+
+@pytest.mark.asyncio
+async def test_guest_crew_in_state(storage: Storage) -> None:
+    """GET /api/state includes guest crew member in current_race.crew."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[{"position": "guest", "sailor": "GuestSailor"}],
+        )
+        state = (await client.get("/api/state")).json()
+
+    crew = {c["position"]: c["sailor"] for c in state["current_race"]["crew"]}
+    assert crew.get("guest") == "GuestSailor"
+
+
+# ---------------------------------------------------------------------------
+# Issue #49 — WAV download on home page race cards
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_state_race_has_audio_fields_when_audio_linked(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """GET /api/state today_races include has_audio=True and audio_session_id."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        await client.post("/api/races/start")
+        await client.post("/api/races/end")
+        state = (await client.get("/api/state")).json()
+
+    assert len(state["today_races"]) == 1
+    race = state["today_races"][0]
+    assert race["has_audio"] is True
+    assert race["audio_session_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_state_race_has_audio_false_when_no_audio(storage: Storage) -> None:
+    """GET /api/state today_races entries have has_audio=False when no recording."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        await client.post("/api/races/start")
+        await client.post("/api/races/end")
+        state = (await client.get("/api/state")).json()
+
+    assert len(state["today_races"]) == 1
+    race = state["today_races"][0]
+    assert race["has_audio"] is False
+    assert race["audio_session_id"] is None
+
+
+# ---------------------------------------------------------------------------
+# Issue #31 — debrief crew from parent race
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_debrief_session_includes_parent_race_crew(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/sessions returns debrief sessions with crew from the parent race."""
+    recorder = _make_recorder()
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    app = create_app(storage, recorder=recorder, audio_config=config)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        # Set crew on the race
+        await client.post(
+            f"/api/races/{race_id}/crew",
+            json=[
+                {"position": "helm", "sailor": "DebriefHelm"},
+                {"position": "main", "sailor": "DebriefMain"},
+            ],
+        )
+        await client.post("/api/races/end")
+        # Start and stop a debrief
+        await client.post(f"/api/races/{race_id}/debrief/start")
+        await client.post("/api/debrief/stop")
+
+        resp = await client.get("/api/sessions")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    debriefs = [s for s in data["sessions"] if s["type"] == "debrief"]
+    assert len(debriefs) == 1
+    crew = {c["position"]: c["sailor"] for c in debriefs[0]["crew"]}
+    assert crew.get("helm") == "DebriefHelm"
+    assert crew.get("main") == "DebriefMain"
+
+
+# ---------------------------------------------------------------------------
 # Issue #57 — Sail inventory and per-race sail selection
 # ---------------------------------------------------------------------------
 
