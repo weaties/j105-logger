@@ -339,6 +339,10 @@ function render(s) {
   const list = document.getElementById('race-list');
   if(s.today_races && s.today_races.length) {
     hist.style.display = '';
+    // Don't re-render while the user has focus inside the race list (e.g.
+    // typing in the boat picker). Replacing innerHTML destroys the active
+    // element and fires onblur, which closes the picker prematurely (#36).
+    if (list.contains(document.activeElement)) return;
     list.innerHTML = s.today_races.slice().reverse().map(r => {
       const start = fmtTime(r.start_utc);
       const end = r.end_utc ? fmtTime(r.end_utc) : 'in progress';
@@ -629,9 +633,15 @@ function closePicker(raceId) {
 }
 
 function filterBoats(raceId, searchText) {
-  const dd = document.getElementById('picker-dropdown-' + raceId);
-  if (!dd || dd.style.display === 'none') return;
-  showBoatDropdown(raceId, searchText);
+  if (_pickerBoats[raceId]) {
+    // Boats are cached — show/update the dropdown even if it isn't visible
+    // yet (user typed before the openPicker fetch completed) (#36).
+    showBoatDropdown(raceId, searchText);
+    const dd = document.getElementById('picker-dropdown-' + raceId);
+    if (dd) dd.style.display = '';
+  }
+  // If boats aren't cached yet the openPicker fetch is still in flight;
+  // it will call showBoatDropdown with the current input value on arrival.
 }
 
 function showBoatDropdown(raceId, searchText) {
@@ -1214,31 +1224,38 @@ tr:last-child td{border-bottom:none}
 
 <script>
 async function loadBoats() {
-  const r = await fetch('/api/boats');
-  const boats = await r.json();
   const wrap = document.getElementById('boat-table-wrap');
-  if (!boats.length) {
-    wrap.innerHTML = '<div class="empty">No boats yet</div>';
-    return;
+  try {
+    const r = await fetch('/api/boats');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const boats = await r.json();
+    if (!boats.length) {
+      wrap.innerHTML = '<div class="empty">No boats yet</div>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Sail #</th><th>Name</th><th>Class</th><th>Last used</th><th></th></tr></thead><tbody>';
+    boats.forEach(b => {
+      const lu = b.last_used ? new Date(b.last_used).toLocaleDateString() : '—';
+      const safeSail = (b.sail_number||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const safeName = (b.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const safeCls  = (b.class||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      // Store values in data attributes — avoids embedding strings in onclick
+      // which caused a JS SyntaxError via Python triple-quote escaping (#36).
+      html += '<tr id="boat-row-' + b.id + '" data-sail="' + safeSail + '" data-name="' + safeName + '" data-cls="' + safeCls + '">'
+        + '<td>' + safeSail + '</td>'
+        + '<td>' + (safeName||'<span style="color:#8892a4">—</span>') + '</td>'
+        + '<td>' + (safeCls||'<span style="color:#8892a4">—</span>') + '</td>'
+        + '<td>' + lu + '</td>'
+        + '<td style="white-space:nowrap;display:flex;gap:4px">'
+        + '<button class="btn-sm btn-edit" onclick="editBoat(' + b.id + ')">Edit</button>'
+        + '<button class="btn-sm btn-del" onclick="deleteBoat(' + b.id + ')">Delete</button>'
+        + '</td></tr>';
+    });
+    html += '</tbody></table>';
+    wrap.innerHTML = html;
+  } catch(e) {
+    wrap.innerHTML = '<div class="empty" style="color:#ef4444">Failed to load boats: ' + e.message + '</div>';
   }
-  let html = '<table><thead><tr><th>Sail #</th><th>Name</th><th>Class</th><th>Last used</th><th></th></tr></thead><tbody>';
-  boats.forEach(b => {
-    const lu = b.last_used ? new Date(b.last_used).toLocaleDateString() : '—';
-    const safeSail = (b.sail_number||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const safeName = (b.name||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    const safeCls  = (b.class||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    html += '<tr id="boat-row-' + b.id + '">'
-      + '<td>' + safeSail + '</td>'
-      + '<td>' + (safeName||'<span style="color:#8892a4">—</span>') + '</td>'
-      + '<td>' + (safeCls||'<span style="color:#8892a4">—</span>') + '</td>'
-      + '<td>' + lu + '</td>'
-      + '<td style="white-space:nowrap;display:flex;gap:4px">'
-      + '<button class="btn-sm btn-edit" onclick="editBoat(' + b.id + ',\'' + safeSail.replace(/'/g,"\\'") + '\',\'' + safeName.replace(/'/g,"\\'") + '\',\'' + safeCls.replace(/'/g,"\\'") + '\')">Edit</button>'
-      + '<button class="btn-sm btn-del" onclick="deleteBoat(' + b.id + ')">Delete</button>'
-      + '</td></tr>';
-  });
-  html += '</tbody></table>';
-  wrap.innerHTML = html;
 }
 
 async function addBoat() {
@@ -1258,12 +1275,19 @@ async function addBoat() {
   await loadBoats();
 }
 
-function editBoat(id, sail, name, cls) {
+function editBoat(id) {
   const row = document.getElementById('boat-row-' + id);
+  // Read values from data attributes set during render — safe, no escaping needed.
+  const sail = row.dataset.sail || '';
+  const name = row.dataset.name || '';
+  const cls  = row.dataset.cls  || '';
+  const eSail = sail.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  const eName = name.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  const eCls  = cls.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
   row.innerHTML = ''
-    + '<td><input class="field" id="edit-sail-' + id + '" value="' + sail + '" style="width:90px"/></td>'
-    + '<td><input class="field" id="edit-name-' + id + '" value="' + name + '" style="width:120px"/></td>'
-    + '<td><input class="field" id="edit-class-' + id + '" value="' + cls + '" style="width:80px"/></td>'
+    + '<td><input class="field" id="edit-sail-' + id + '" value="' + eSail + '" style="width:90px"/></td>'
+    + '<td><input class="field" id="edit-name-' + id + '" value="' + eName + '" style="width:120px"/></td>'
+    + '<td><input class="field" id="edit-class-' + id + '" value="' + eCls + '" style="width:80px"/></td>'
     + '<td></td>'
     + '<td style="white-space:nowrap;display:flex;gap:4px">'
     + '<button class="btn-sm btn-save" onclick="saveBoat(' + id + ')">Save</button>'
