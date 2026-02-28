@@ -70,8 +70,11 @@ _HTML = """\
 <title>J105 Logger</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
-padding:16px;max-width:480px;margin:0 auto}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+.page{max-width:480px;margin:0 auto;padding:16px 12px}
+@media(min-width:768px){.page{max-width:720px}}
+@media(min-width:1200px){.page{max-width:900px}}
+@media(min-width:768px){#controls{display:grid;grid-template-columns:1fr 1fr;gap:8px}#btn-end{grid-column:1/-1}}
 h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:2px}
 .sub{font-size:.9rem;color:#8892a4;margin-bottom:20px}
 .card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}
@@ -108,8 +111,8 @@ color:#fff;font-weight:700;cursor:pointer;font-size:1rem}
 .race-item-name{font-weight:600;font-size:.9rem;margin-bottom:4px}
 .race-item-time{font-size:.8rem;color:#8892a4}
 .race-exports{margin-top:6px;display:flex;gap:8px}
-.btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
-background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none}
+.btn-export{padding:8px 12px;border:1px solid #2563eb;border-radius:6px;
+background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .btn-grafana{border-color:#b45309;color:#fbbf24}
 .hidden{display:none}
 .instruments-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px 8px;margin-top:6px}
@@ -149,6 +152,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </style>
 </head>
 <body>
+<div class="page">
 <div id="health-banner" style="display:none;background:#7f1d1d;color:#fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
   <h1>J105 Logger</h1>
@@ -1215,6 +1219,7 @@ document.querySelectorAll('.crew-input').forEach(inp => {
 });
 </script>
 <footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+</div>
 </body>
 </html>
 """
@@ -1233,16 +1238,18 @@ _HISTORY_HTML = """\
 <title>Session History — J105 Logger</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
-padding:16px;max-width:600px;margin:0 auto}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+.page{max-width:600px;margin:0 auto;padding:16px 12px}
+@media(min-width:768px){.page{max-width:860px}}
+@media(min-width:1200px){.page{max-width:1100px}}
 h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
 .card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
 .label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:6px}
 .btn{display:inline-block;padding:10px 18px;border:none;border-radius:8px;
 font-size:.95rem;font-weight:700;cursor:pointer;letter-spacing:.02em}
 .btn-secondary{background:#1e3a5f;color:#7eb8f7;border:1px solid #2563eb}
-.btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
-background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-block}
+.btn-export{padding:8px 12px;border:1px solid #2563eb;border-radius:6px;
+background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .btn-grafana{border-color:#b45309;color:#fbbf24}
 .event-input{background:#0a1628;border:1px solid #2563eb;border-radius:8px;
 padding:10px 12px;color:#e8eaf0;font-size:.95rem;width:100%}
@@ -1279,8 +1286,9 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 </style>
 </head>
 <body>
+<div class="page">
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-  <a href="/" class="btn-export" style="padding:7px 14px">← Back</a>
+  <a href="/" class="btn-export" style="padding:8px 14px">← Back</a>
   <h1>Session History</h1>
 </div>
 
@@ -1878,6 +1886,7 @@ document.getElementById('from-date').value = past.toISOString().substring(0,10);
 load();
 </script>
 <footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+</div>
 </body>
 </html>
 """
@@ -1896,19 +1905,22 @@ _ADMIN_BOATS_HTML = """\
 <title>Boat Registry — J105 Logger</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
-padding:16px;max-width:640px;margin:0 auto}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+.page{max-width:640px;margin:0 auto;padding:16px 12px}
+@media(min-width:768px){.page{max-width:860px}}
+@media(min-width:1200px){.page{max-width:1100px}}
 h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
 .card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
 .label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-.btn-export{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;
-background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-block}
+.btn-export{padding:8px 12px;border:1px solid #2563eb;border-radius:6px;
+background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
 .field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;
 padding:9px 12px;color:#e8eaf0;font-size:.9rem;width:100%}
 .btn-add{padding:9px 16px;border:none;border-radius:6px;background:#2563eb;
 color:#fff;font-weight:700;cursor:pointer;font-size:.9rem}
-.btn-sm{padding:4px 10px;border:1px solid #374151;border-radius:4px;
-background:#0a1628;font-size:.78rem;cursor:pointer}
+.btn-sm{padding:8px 12px;border:1px solid #374151;border-radius:4px;
+background:#0a1628;font-size:.78rem;cursor:pointer;min-height:36px}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .btn-edit{color:#7eb8f7;border-color:#2563eb}
 .btn-del{color:#ef4444;border-color:#7f1d1d}
 .btn-save{color:#4ade80;border-color:#16a34a}
@@ -1922,14 +1934,15 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
+<div class="page">
 <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-  <a href="/" class="btn-export" style="padding:7px 14px">← Back</a>
+  <a href="/" class="btn-export" style="padding:8px 14px">← Back</a>
   <h1>Boat Registry</h1>
 </div>
 
 <div class="card">
   <div class="label">Add Boat</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px">
+  <div style="display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px">
     <input id="new-sail" class="field" placeholder="Sail number *" maxlength="30"/>
     <input id="new-name" class="field" placeholder="Boat name" maxlength="40"/>
     <input id="new-class" class="field" placeholder="Class" maxlength="20"/>
@@ -1938,7 +1951,7 @@ tr:last-child td{border-bottom:none}
 </div>
 
 <div class="card">
-  <div id="boat-table-wrap">Loading…</div>
+  <div class="table-wrap" id="boat-table-wrap">Loading…</div>
 </div>
 
 <script>
@@ -2036,6 +2049,7 @@ async function deleteBoat(id) {
 loadBoats();
 </script>
 <footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+</div>
 </body>
 </html>
 """
