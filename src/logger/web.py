@@ -37,6 +37,33 @@ if TYPE_CHECKING:
     from logger.storage import Storage
 
 # ---------------------------------------------------------------------------
+# Git version info — read once at import time
+# ---------------------------------------------------------------------------
+
+
+def _get_git_info() -> str:
+    """Return 'branch @ shortsha' from the current git repo, or '' on failure."""
+    import subprocess
+
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "--short=7", "HEAD"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        return f"{branch} @ {sha}"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+_GIT_INFO: str = _get_git_info()
+
+# ---------------------------------------------------------------------------
 # HTML — inline mobile-first single-page app
 # ---------------------------------------------------------------------------
 
@@ -1028,6 +1055,7 @@ document.querySelectorAll('.crew-input').forEach(inp => {
   inp.addEventListener('focus', () => { focusedCrewInput = inp; });
 });
 </script>
+<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
 </body>
 </html>
 """
@@ -1412,6 +1440,7 @@ document.getElementById('to-date').value = now.toISOString().substring(0,10);
 document.getElementById('from-date').value = past.toISOString().substring(0,10);
 load();
 </script>
+<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
 </body>
 </html>
 """
@@ -1569,6 +1598,7 @@ async function deleteBoat(id) {
 
 loadBoats();
 </script>
+<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
 </body>
 </html>
 """
@@ -1661,12 +1691,17 @@ def create_app(
     from logger.races import RaceConfig
 
     cfg = RaceConfig()
-    _page = _HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace(
-        "__GRAFANA_UID__", cfg.grafana_uid
+    _page = (
+        _HTML.replace("__GRAFANA_URL__", cfg.grafana_url)
+        .replace("__GRAFANA_UID__", cfg.grafana_uid)
+        .replace("__GIT_INFO__", _GIT_INFO)
     )
-    _history_page = _HISTORY_HTML.replace("__GRAFANA_URL__", cfg.grafana_url).replace(
-        "__GRAFANA_UID__", cfg.grafana_uid
+    _history_page = (
+        _HISTORY_HTML.replace("__GRAFANA_URL__", cfg.grafana_url)
+        .replace("__GRAFANA_UID__", cfg.grafana_uid)
+        .replace("__GIT_INFO__", _GIT_INFO)
     )
+    _admin_page = _ADMIN_BOATS_HTML.replace("__GIT_INFO__", _GIT_INFO)
 
     # ------------------------------------------------------------------
     # HTML UI
@@ -1682,7 +1717,7 @@ def create_app(
 
     @app.get("/admin/boats", response_class=HTMLResponse, include_in_schema=False)
     async def admin_boats_page() -> HTMLResponse:
-        return HTMLResponse(_ADMIN_BOATS_HTML)
+        return HTMLResponse(_admin_page)
 
     # ------------------------------------------------------------------
     # /api/state
