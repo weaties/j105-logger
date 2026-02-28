@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import Any
 
 from loguru import logger
 
 _INTERVAL_S = 60  # collect every minute
 
+# Previous network counters for rate calculation (updated each collection cycle)
+_prev_net: Any = None
+_prev_net_time: float | None = None
+
 
 async def monitor_loop() -> None:
-    """Collect CPU/mem/disk/temp metrics and write to InfluxDB periodically."""
+    """Collect CPU/mem/disk/temp/network metrics and write to InfluxDB periodically."""
     while True:
         try:
             await asyncio.to_thread(_collect_and_write)
@@ -22,6 +27,8 @@ async def monitor_loop() -> None:
 
 
 def _collect_and_write() -> None:
+    global _prev_net, _prev_net_time
+
     import psutil  # type: ignore[import-untyped]
 
     from logger.influx import _client
@@ -43,6 +50,19 @@ def _collect_and_write() -> None:
                     temp_c = float(current)
                 break
 
+    # Network throughput: compute bytes/sec since the previous sample
+    net_now: Any = psutil.net_io_counters()
+    net_time_now: float = time.monotonic()
+    net_bytes_sent_per_s: float | None = None
+    net_bytes_recv_per_s: float | None = None
+    if _prev_net is not None and _prev_net_time is not None:
+        dt = net_time_now - _prev_net_time
+        if dt > 0:
+            net_bytes_sent_per_s = (net_now.bytes_sent - _prev_net.bytes_sent) / dt
+            net_bytes_recv_per_s = (net_now.bytes_recv - _prev_net.bytes_recv) / dt
+    _prev_net = net_now
+    _prev_net_time = net_time_now
+
     client, write_api = _client()
     if write_api is None:
         return
@@ -60,6 +80,10 @@ def _collect_and_write() -> None:
         )
         if temp_c is not None:
             p = p.field("cpu_temp_c", temp_c)
+        if net_bytes_sent_per_s is not None:
+            p = p.field("net_bytes_sent_per_s", net_bytes_sent_per_s)
+        if net_bytes_recv_per_s is not None:
+            p = p.field("net_bytes_recv_per_s", net_bytes_recv_per_s)
         write_api.write(bucket=bucket, org=org, record=p)
         logger.debug(
             "system_health written: cpu={:.1f}% mem={:.1f}% disk={:.1f}%",
