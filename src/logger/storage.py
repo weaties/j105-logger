@@ -7,6 +7,7 @@ all logged data.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -1384,9 +1385,7 @@ class Storage:
         )
         await db.commit()
         assert cur.lastrowid is not None
-        logger.debug(
-            "Note created: id={} race_id={} type={}", cur.lastrowid, race_id, note_type
-        )
+        logger.debug("Note created: id={} race_id={} type={}", cur.lastrowid, race_id, note_type)
         return cur.lastrowid
 
     async def list_notes(
@@ -1445,6 +1444,28 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    async def list_settings_keys(self) -> list[str]:
+        """Return all distinct keys used in settings notes, sorted alphabetically.
+
+        Parses the JSON body of every saved settings note and collects the union
+        of all keys across all sessions.  Used to populate the typeahead datalist
+        on the settings note entry form.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT body FROM session_notes WHERE note_type = 'settings' AND body IS NOT NULL"
+        )
+        rows = await cur.fetchall()
+        keys: set[str] = set()
+        for (body,) in rows:
+            try:
+                obj = json.loads(body)
+                if isinstance(obj, dict):
+                    keys.update(obj.keys())
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return sorted(keys)
 
     # ------------------------------------------------------------------
     # Helpers

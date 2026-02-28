@@ -166,6 +166,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
         placeholder="Race observation…"></textarea>
     </div>
     <div id="note-pane-settings" style="display:none">
+      <datalist id="settings-key-suggestions"></datalist>
       <div id="settings-rows"></div>
       <button onclick="addSettingsRow()" style="font-size:.8rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:4px 0">+ Add field</button>
     </div>
@@ -743,19 +744,40 @@ function toggleNotePanel() {
   }
 }
 
+// Whether the settings-key datalist has been populated this session.
+let _settingsKeysFetched = false;
+
 function selectNoteType(type) {
   _activeNoteType = type;
   ['text', 'settings', 'photo'].forEach(t => {
     document.getElementById('note-pane-' + t).style.display = t === type ? '' : 'none';
     document.getElementById('note-tab-' + t).classList.toggle('active', t === type);
   });
+  // Lazily populate the key typeahead once per page load when the settings
+  // tab is first shown.  Re-fetches after a save so newly added keys appear
+  // immediately in the same session.
+  if (type === 'settings') _loadSettingsKeys();
+}
+
+async function _loadSettingsKeys() {
+  try {
+    const r = await fetch('/api/notes/settings-keys');
+    if (!r.ok) return;
+    const {keys} = await r.json();
+    const dl = document.getElementById('settings-key-suggestions');
+    if (!dl) return;
+    dl.innerHTML = keys.map(k => '<option value="' + k.replace(/&/g,'&amp;').replace(/"/g,'&quot;') + '"></option>').join('');
+    _settingsKeysFetched = true;
+  } catch (_) { /* non-fatal — degrades to plain input */ }
 }
 
 function addSettingsRow() {
   const container = document.getElementById('settings-rows');
   const row = document.createElement('div');
   row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;align-items:center';
-  row.innerHTML = '<input class="field" placeholder="Key" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
+  // list="settings-key-suggestions" wires this input to the <datalist> above,
+  // giving browser-native typeahead for previously used keys.
+  row.innerHTML = '<input class="field" placeholder="Key" list="settings-key-suggestions" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
     + '<input class="field" placeholder="Value" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
     + '<button onclick="this.parentElement.remove()" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
   container.appendChild(row);
@@ -801,6 +823,9 @@ async function _saveSettingsNote(sessionId) {
     body: JSON.stringify({body: JSON.stringify(obj), note_type: 'settings'})
   });
   document.getElementById('settings-rows').innerHTML = '';
+  // Refresh the datalist so any newly entered keys appear in the next save.
+  _settingsKeysFetched = false;
+  _loadSettingsKeys();
   _closeNotePanel(sessionId);
 }
 
@@ -1964,9 +1989,7 @@ def create_app(
 
     async def _resolve_session(session_id: int) -> tuple[int | None, int | None]:
         """Return (race_id, audio_session_id) for the given session_id, or raise 404."""
-        cur = await storage._conn().execute(
-            "SELECT id FROM races WHERE id = ?", (session_id,)
-        )
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (session_id,))
         if await cur.fetchone() is not None:
             return session_id, None
         cur2 = await storage._conn().execute(
@@ -1984,7 +2007,9 @@ def create_app(
             raise HTTPException(status_code=422, detail="body must not be blank for text notes")
         if body.note_type == "settings":
             if not body.body:
-                raise HTTPException(status_code=422, detail="body must not be blank for settings notes")
+                raise HTTPException(
+                    status_code=422, detail="body must not be blank for settings notes"
+                )
             try:
                 parsed = json.loads(body.body)
                 if not isinstance(parsed, dict):
@@ -2036,7 +2061,9 @@ def create_app(
             note_type="photo",
             photo_path=photo_path,
         )
-        return JSONResponse({"id": note_id, "ts": actual_ts, "photo_path": photo_path}, status_code=201)
+        return JSONResponse(
+            {"id": note_id, "ts": actual_ts, "photo_path": photo_path}, status_code=201
+        )
 
     @app.get("/notes/{path:path}")
     async def serve_note_photo(path: str) -> FileResponse:
@@ -2059,6 +2086,16 @@ def create_app(
         found = await storage.delete_note(note_id)
         if not found:
             raise HTTPException(status_code=404, detail="Note not found")
+
+    @app.get("/api/notes/settings-keys")
+    async def api_settings_keys() -> JSONResponse:
+        """Return all distinct keys used in settings notes, sorted alphabetically.
+
+        Used to populate the typeahead datalist on the settings note entry form.
+        Returns: {"keys": ["backstay", "cunningham", ...]}
+        """
+        keys = await storage.list_settings_keys()
+        return JSONResponse({"keys": keys})
 
     # ------------------------------------------------------------------
     # /api/grafana/annotations

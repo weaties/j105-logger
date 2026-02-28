@@ -678,18 +678,14 @@ _NOTE_START = datetime(2026, 2, 27, 14, 0, 0, tzinfo=UTC)
 
 class TestSessionNotes:
     async def _make_race(self, storage: Storage) -> int:
-        race = await storage.start_race(
-            "Regatta", _NOTE_START, _NOTE_DATE, 1, "20260227-Regatta-1"
-        )
+        race = await storage.start_race("Regatta", _NOTE_START, _NOTE_DATE, 1, "20260227-Regatta-1")
         assert race.id is not None
         return race.id
 
     async def test_create_note_returns_id(self, storage: Storage) -> None:
         """create_note returns a positive integer id."""
         race_id = await self._make_race(storage)
-        note_id = await storage.create_note(
-            _NOTE_START.isoformat(), "Test note", race_id=race_id
-        )
+        note_id = await storage.create_note(_NOTE_START.isoformat(), "Test note", race_id=race_id)
         assert isinstance(note_id, int)
         assert note_id > 0
 
@@ -713,9 +709,7 @@ class TestSessionNotes:
     async def test_delete_note_returns_true(self, storage: Storage) -> None:
         """delete_note returns True when the note is found and deleted."""
         race_id = await self._make_race(storage)
-        note_id = await storage.create_note(
-            _NOTE_START.isoformat(), "Gone", race_id=race_id
-        )
+        note_id = await storage.create_note(_NOTE_START.isoformat(), "Gone", race_id=race_id)
         assert await storage.delete_note(note_id) is True
         assert await storage.list_notes(race_id=race_id) == []
 
@@ -730,18 +724,14 @@ class TestSessionNotes:
         ts_out = _NOTE_START + timedelta(seconds=90)
         await storage.create_note(ts_in.isoformat(), "In range", race_id=race_id)
         await storage.create_note(ts_out.isoformat(), "Out of range", race_id=race_id)
-        notes = await storage.list_notes_range(
-            _NOTE_START, _NOTE_START + timedelta(seconds=60)
-        )
+        notes = await storage.list_notes_range(_NOTE_START, _NOTE_START + timedelta(seconds=60))
         assert len(notes) == 1
         assert notes[0]["body"] == "In range"
 
     async def test_note_cascade_delete_with_race(self, storage: Storage) -> None:
         """Notes are deleted when their parent race is deleted (CASCADE)."""
         race_id = await self._make_race(storage)
-        await storage.create_note(
-            _NOTE_START.isoformat(), "Will be gone", race_id=race_id
-        )
+        await storage.create_note(_NOTE_START.isoformat(), "Will be gone", race_id=race_id)
         db = storage._conn()
         await db.execute("DELETE FROM races WHERE id = ?", (race_id,))
         await db.commit()
@@ -751,3 +741,52 @@ class TestSessionNotes:
         """list_notes raises ValueError when called with no session argument."""
         with pytest.raises(ValueError, match="Either race_id or audio_session_id"):
             await storage.list_notes()
+
+    # ------------------------------------------------------------------
+    # list_settings_keys tests
+    # ------------------------------------------------------------------
+
+    async def test_list_settings_keys_empty_when_no_notes(self, storage: Storage) -> None:
+        """Returns [] when no settings notes have been saved."""
+        keys = await storage.list_settings_keys()
+        assert keys == []
+
+    async def test_list_settings_keys_returns_sorted_distinct_keys(self, storage: Storage) -> None:
+        """Returns alphabetically sorted unique keys across all settings notes."""
+        race_id = await self._make_race(storage)
+        ts = _NOTE_START.isoformat()
+        import json as _json
+
+        await storage.create_note(
+            ts,
+            _json.dumps({"backstay": "2.5", "cunningham": "off"}),
+            race_id=race_id,
+            note_type="settings",
+        )
+        await storage.create_note(
+            ts,
+            _json.dumps({"jib_lead": "5", "backstay": "3"}),
+            race_id=race_id,
+            note_type="settings",
+        )
+        keys = await storage.list_settings_keys()
+        assert keys == ["backstay", "cunningham", "jib_lead"]
+
+    async def test_list_settings_keys_ignores_text_notes(self, storage: Storage) -> None:
+        """Non-settings notes are excluded from the key list."""
+        race_id = await self._make_race(storage)
+        await storage.create_note(
+            _NOTE_START.isoformat(), "plain text note", race_id=race_id, note_type="text"
+        )
+        keys = await storage.list_settings_keys()
+        assert keys == []
+
+    async def test_list_settings_keys_ignores_malformed_bodies(self, storage: Storage) -> None:
+        """Notes with non-JSON or non-object bodies are silently skipped."""
+        race_id = await self._make_race(storage)
+        ts = _NOTE_START.isoformat()
+        # insert a malformed settings note directly via storage
+        await storage.create_note(ts, "not-json", race_id=race_id, note_type="settings")
+        await storage.create_note(ts, "[1, 2, 3]", race_id=race_id, note_type="settings")
+        keys = await storage.list_settings_keys()
+        assert keys == []
