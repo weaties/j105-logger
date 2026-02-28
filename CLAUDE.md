@@ -152,6 +152,7 @@ AUDIO_DEVICE=Gordik         # name substring to match (or integer index); omit t
 AUDIO_DIR=data/audio        # where WAV files are saved
 AUDIO_SAMPLE_RATE=48000     # sample rate in Hz
 AUDIO_CHANNELS=1            # 1=mono, 2=stereo
+NOTES_DIR=data/notes        # where photo notes are saved
 ```
 
 ---

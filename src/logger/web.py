@@ -18,11 +18,16 @@ Security:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import os
 import tempfile
+import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -117,6 +122,9 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 .boat-option:last-child{border-bottom:none}
 .boat-option:active{background:#1e3a5f}
 .boat-option-new{color:#4ade80}
+.note-tab{padding:5px 12px;border:1px solid #2563eb;border-radius:6px;background:#131f35;color:#8892a4;font-size:.8rem;cursor:pointer}
+.note-tab.active{background:#2563eb;color:#fff}
+.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;color:#e8eaf0}
 </style>
 </head>
 <body>
@@ -146,10 +154,27 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <div class="duration" id="cur-duration">—</div>
   <button class="btn btn-note" id="btn-note" onclick="toggleNotePanel()" style="margin-top:10px;display:none">+ Note</button>
   <div id="note-panel" style="display:none;margin-top:8px">
-    <textarea id="note-body" rows="3"
-      style="width:100%;background:#0a1628;border:1px solid #2563eb;border-radius:6px;
-             padding:8px;color:#e8eaf0;font-size:.9rem;resize:vertical"
-      placeholder="Race observation…"></textarea>
+    <div style="display:flex;gap:4px;margin-bottom:8px">
+      <button class="note-tab active" id="note-tab-text"     onclick="selectNoteType('text')">Text</button>
+      <button class="note-tab"        id="note-tab-settings" onclick="selectNoteType('settings')">Settings</button>
+      <button class="note-tab"        id="note-tab-photo"    onclick="selectNoteType('photo')">Photo</button>
+    </div>
+    <div id="note-pane-text">
+      <textarea id="note-body" rows="3"
+        style="width:100%;background:#0a1628;border:1px solid #2563eb;border-radius:6px;
+               padding:8px;color:#e8eaf0;font-size:.9rem;resize:vertical"
+        placeholder="Race observation…"></textarea>
+    </div>
+    <div id="note-pane-settings" style="display:none">
+      <div id="settings-rows"></div>
+      <button onclick="addSettingsRow()" style="font-size:.8rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:4px 0">+ Add field</button>
+    </div>
+    <div id="note-pane-photo" style="display:none;text-align:center">
+      <input type="file" id="photo-file" accept="image/*,video/*" capture="environment"
+        style="display:none" onchange="onPhotoSelected(this)"/>
+      <button class="btn btn-secondary" style="width:100%" onclick="document.getElementById('photo-file').click()">📷 Take Photo / Choose File</button>
+      <div id="photo-preview" style="margin-top:8px"></div>
+    </div>
     <button class="btn btn-primary" style="margin-top:8px;font-size:.9rem;padding:10px;width:100%"
       onclick="saveNote()">Save Note</button>
   </div>
@@ -691,6 +716,8 @@ async function refreshResults(raceId) {
 
 // ---- Notes ----
 
+let _activeNoteType = 'text';
+
 function toggleNotePanel() {
   const panel = document.getElementById('note-panel');
   panel.style.display = panel.style.display === 'none' ? '' : 'none';
@@ -699,29 +726,115 @@ function toggleNotePanel() {
   }
 }
 
+function selectNoteType(type) {
+  _activeNoteType = type;
+  ['text', 'settings', 'photo'].forEach(t => {
+    document.getElementById('note-pane-' + t).style.display = t === type ? '' : 'none';
+    document.getElementById('note-tab-' + t).classList.toggle('active', t === type);
+  });
+}
+
+function addSettingsRow() {
+  const container = document.getElementById('settings-rows');
+  const row = document.createElement('div');
+  row.style.cssText = 'display:flex;gap:6px;margin-bottom:6px;align-items:center';
+  row.innerHTML = '<input class="field" placeholder="Key" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
+    + '<input class="field" placeholder="Value" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
+    + '<button onclick="this.parentElement.remove()" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
+  container.appendChild(row);
+}
+
+function onPhotoSelected(input) {
+  const preview = document.getElementById('photo-preview');
+  if (!input.files || !input.files[0]) { preview.innerHTML = ''; return; }
+  const url = URL.createObjectURL(input.files[0]);
+  preview.innerHTML = '<img src="' + url + '" style="max-width:100%;max-height:150px;border-radius:6px"/>';
+}
+
 async function saveNote() {
   if (!state || !state.current_race) return;
+  if (_activeNoteType === 'text') await _saveTextNote(state.current_race.id);
+  else if (_activeNoteType === 'settings') await _saveSettingsNote(state.current_race.id);
+  else if (_activeNoteType === 'photo') await _savePhotoNote(state.current_race.id);
+}
+
+async function _saveTextNote(sessionId) {
   const body = document.getElementById('note-body').value.trim();
   if (!body) return;
-  await fetch('/api/sessions/' + state.current_race.id + '/notes', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
+  await fetch('/api/sessions/' + sessionId + '/notes', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({body, note_type: 'text'})
   });
   document.getElementById('note-body').value = '';
-  document.getElementById('note-panel').style.display = 'none';
-  const listEl = document.getElementById('notes-list-' + state.current_race.id);
-  if (listEl && listEl.style.display !== 'none') {
-    await refreshNotes(state.current_race.id);
-  }
+  _closeNotePanel(sessionId);
 }
 
-function renderNote(n) {
+async function _saveSettingsNote(sessionId) {
+  const rows = document.querySelectorAll('#settings-rows > div');
+  const obj = {};
+  rows.forEach(row => {
+    const inputs = row.querySelectorAll('input');
+    const k = inputs[0].value.trim();
+    const v = inputs[1].value.trim();
+    if (k) obj[k] = v;
+  });
+  if (!Object.keys(obj).length) return;
+  await fetch('/api/sessions/' + sessionId + '/notes', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({body: JSON.stringify(obj), note_type: 'settings'})
+  });
+  document.getElementById('settings-rows').innerHTML = '';
+  _closeNotePanel(sessionId);
+}
+
+async function _savePhotoNote(sessionId) {
+  const input = document.getElementById('photo-file');
+  if (!input.files || !input.files[0]) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  await fetch('/api/sessions/' + sessionId + '/notes/photo', {method: 'POST', body: fd});
+  input.value = '';
+  document.getElementById('photo-preview').innerHTML = '';
+  _closeNotePanel(sessionId);
+}
+
+function _closeNotePanel(sessionId) {
+  document.getElementById('note-panel').style.display = 'none';
+  const listEl = document.getElementById('notes-list-' + sessionId);
+  if (listEl && listEl.style.display !== 'none') refreshNotes(sessionId);
+}
+
+function renderNote(n, sessionId) {
   const t = new Date(n.ts).toISOString().substring(11, 19) + ' UTC';
-  const body = (n.body || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem">'
+  let content = '';
+  if (n.note_type === 'photo' && n.photo_path) {
+    const src = '/notes/' + n.photo_path;
+    content = '<img src="' + src + '" style="max-width:80px;max-height:60px;border-radius:4px;'
+      + 'cursor:pointer;vertical-align:middle;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '" />';
+  } else if (n.note_type === 'settings' && n.body) {
+    try {
+      const obj = JSON.parse(n.body);
+      content = Object.entries(obj).map(([k, v]) =>
+        '<span style="color:#8892a4">' + k.replace(/&/g, '&amp;') + ':</span> ' + String(v).replace(/&/g, '&amp;')
+      ).join(' &nbsp;·&nbsp; ');
+    } catch { content = n.body; }
+  } else {
+    content = (n.body || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+  const delBtn = sessionId != null
+    ? '<button onclick="deleteNote(' + n.id + ',' + sessionId + ')" '
+      + 'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;'
+      + 'padding:0 4px;float:right" title="Delete">✕</button>'
+    : '';
+  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
+    + delBtn
     + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
-    + body + '</div>';
+    + content + '</div>';
+}
+
+async function deleteNote(noteId, sessionId) {
+  await fetch('/api/notes/' + noteId, {method: 'DELETE'});
+  await refreshNotes(sessionId);
 }
 
 async function refreshNotes(sessionId) {
@@ -730,7 +843,7 @@ async function refreshNotes(sessionId) {
   const r = await fetch('/api/sessions/' + sessionId + '/notes');
   const notes = await r.json();
   el.innerHTML = notes.length
-    ? notes.map(n => renderNote(n)).join('')
+    ? notes.map(n => renderNote(n, sessionId)).join('')
     : '<div style="color:#8892a4;font-size:.8rem">No notes yet</div>';
 }
 
@@ -974,6 +1087,47 @@ async function toggleHistoryResults(sessionId) {
   if (btn) btn.textContent = 'Results ▼';
 }
 
+function renderHistoryNote(n, sessionId) {
+  const t = new Date(n.ts).toISOString().substring(11,19) + ' UTC';
+  let content = '';
+  if (n.note_type === 'photo' && n.photo_path) {
+    const src = '/notes/' + n.photo_path;
+    content = '<img src="' + src + '" style="max-width:80px;max-height:60px;border-radius:4px;'
+      + 'cursor:pointer;vertical-align:middle;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '" />';
+  } else if (n.note_type === 'settings' && n.body) {
+    try {
+      const obj = JSON.parse(n.body);
+      content = Object.entries(obj).map(([k,v]) =>
+        '<span style="color:#8892a4">' + k.replace(/&/g,'&amp;') + ':</span> ' + String(v).replace(/&/g,'&amp;')
+      ).join(' &nbsp;·&nbsp; ');
+    } catch { content = n.body; }
+  } else {
+    content = (n.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  const delBtn = '<button onclick="deleteHistoryNote(' + n.id + ',' + sessionId + ')" '
+    + 'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;'
+    + 'padding:0 4px;float:right" title="Delete">✕</button>';
+  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
+    + delBtn
+    + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
+    + content + '</div>';
+}
+
+async function deleteHistoryNote(noteId, sessionId) {
+  await fetch('/api/notes/' + noteId, {method:'DELETE'});
+  await _refreshHistoryNotes(sessionId);
+}
+
+async function _refreshHistoryNotes(sessionId) {
+  const el = document.getElementById('hist-notes-' + sessionId);
+  if (!el) return;
+  const r = await fetch('/api/sessions/' + sessionId + '/notes');
+  const notes = await r.json();
+  el.innerHTML = notes.length
+    ? notes.map(n => renderHistoryNote(n, sessionId)).join('')
+    : '<span style="color:#8892a4;font-size:.8rem">No notes</span>';
+}
+
 async function toggleHistoryNotes(sessionId) {
   const el = document.getElementById('hist-notes-' + sessionId);
   const btn = document.getElementById('hist-notes-btn-' + sessionId);
@@ -983,18 +1137,7 @@ async function toggleHistoryNotes(sessionId) {
     if (btn) btn.textContent = 'Notes ▶';
     return;
   }
-  const r = await fetch('/api/sessions/' + sessionId + '/notes');
-  const notes = await r.json();
-  if (!notes.length) {
-    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No notes</span>';
-  } else {
-    el.innerHTML = notes.map(n => {
-      const t = new Date(n.ts).toISOString().substring(11,19) + ' UTC';
-      const body = (n.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-      return '<div style="font-size:.8rem;padding:3px 0;border-bottom:1px solid #0d1a2e">'
-        + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>' + body + '</div>';
-    }).join('');
-  }
+  await _refreshHistoryNotes(sessionId);
   el.style.display = '';
   if (btn) btn.textContent = 'Notes ▼';
 }
@@ -1804,10 +1947,22 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/notes", status_code=201)
     async def api_create_note(session_id: int, body: NoteCreate) -> JSONResponse:
-        if body.note_type not in ("text",):
-            raise HTTPException(status_code=422, detail="note_type must be 'text'")
-        if not body.body or not body.body.strip():
+        if body.note_type not in ("text", "settings"):
+            raise HTTPException(status_code=422, detail="note_type must be 'text' or 'settings'")
+        if body.note_type == "text" and (not body.body or not body.body.strip()):
             raise HTTPException(status_code=422, detail="body must not be blank for text notes")
+        if body.note_type == "settings":
+            if not body.body:
+                raise HTTPException(status_code=422, detail="body must not be blank for settings notes")
+            try:
+                parsed = json.loads(body.body)
+                if not isinstance(parsed, dict):
+                    raise ValueError  # noqa: TRY301
+            except (json.JSONDecodeError, ValueError):
+                raise HTTPException(  # noqa: B904
+                    status_code=422,
+                    detail="body must be a JSON object for settings notes",
+                )
         race_id, audio_session_id = await _resolve_session(session_id)
         ts = body.ts if body.ts else datetime.now(UTC).isoformat()
         note_id = await storage.create_note(
@@ -1818,6 +1973,49 @@ def create_app(
             note_type=body.note_type,
         )
         return JSONResponse({"id": note_id, "ts": ts}, status_code=201)
+
+    @app.post("/api/sessions/{session_id}/notes/photo", status_code=201)
+    async def api_create_photo_note(
+        session_id: int,
+        file: UploadFile,
+        ts: str = Form(default=""),
+    ) -> JSONResponse:
+        race_id, audio_session_id = await _resolve_session(session_id)
+
+        notes_dir = os.environ.get("NOTES_DIR", "data/notes")
+        session_dir = Path(notes_dir) / str(session_id)
+        await asyncio.to_thread(session_dir.mkdir, parents=True, exist_ok=True)
+
+        now_str = datetime.now(UTC).isoformat()
+        actual_ts = ts.strip() if ts.strip() else now_str
+        safe_ts = actual_ts.replace(":", "-").replace("+", "")[:19]
+        ext = Path(file.filename or "photo.jpg").suffix or ".jpg"
+        filename = f"{safe_ts}_{uuid.uuid4().hex[:8]}{ext}"
+        dest = session_dir / filename
+
+        data = await file.read()
+        await asyncio.to_thread(dest.write_bytes, data)
+
+        photo_path = f"{session_id}/{filename}"
+        note_id = await storage.create_note(
+            actual_ts,
+            None,
+            race_id=race_id,
+            audio_session_id=audio_session_id,
+            note_type="photo",
+            photo_path=photo_path,
+        )
+        return JSONResponse({"id": note_id, "ts": actual_ts, "photo_path": photo_path}, status_code=201)
+
+    @app.get("/notes/{path:path}")
+    async def serve_note_photo(path: str) -> FileResponse:
+        notes_dir = Path(os.environ.get("NOTES_DIR", "data/notes")).resolve()
+        full_path = (notes_dir / path).resolve()
+        if not str(full_path).startswith(str(notes_dir)):
+            raise HTTPException(status_code=403, detail="Forbidden")
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(full_path)
 
     @app.get("/api/sessions/{session_id}/notes")
     async def api_list_notes(session_id: int) -> JSONResponse:
