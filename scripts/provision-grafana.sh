@@ -5,6 +5,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASHBOARD_SRC="$SCRIPT_DIR/grafana/sailing-data.json"
+PI_HEALTH_SRC="$SCRIPT_DIR/grafana/pi-health.json"
 PROVISION_SRC="$SCRIPT_DIR/grafana/dashboards.yaml"
 DATASOURCE_SRC="$SCRIPT_DIR/grafana/datasources.yaml"
 
@@ -16,8 +17,9 @@ GRAFANA_INI="/etc/grafana/grafana.ini"
 echo "==> Creating dashboard directory: $DASHBOARD_DEST_DIR"
 sudo mkdir -p "$DASHBOARD_DEST_DIR"
 
-echo "==> Copying dashboard JSON"
+echo "==> Copying dashboard JSONs"
 sudo cp "$DASHBOARD_SRC" "$DASHBOARD_DEST_DIR/sailing-data.json"
+sudo cp "$PI_HEALTH_SRC" "$DASHBOARD_DEST_DIR/pi-health.json"
 
 echo "==> Copying dashboard provisioning config"
 sudo cp "$PROVISION_SRC" "$PROVISION_DEST"
@@ -69,4 +71,6 @@ echo "==> Restarting grafana-server"
 sudo systemctl restart grafana-server
 
 echo ""
-echo "Done. Dashboard available at http://$(hostname):3001/d/j105-sailing/sailing-data"
+echo "Done."
+echo "  Sailing data: http://$(hostname):3001/d/j105-sailing/sailing-data"
+echo "  Pi health:    http://$(hostname):3001/d/pi-health/pi-health"
