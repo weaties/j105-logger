@@ -118,7 +118,14 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        }
+        },
+        "dataLinks": [
+          {
+            "title": "Watch Video at this moment",
+            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+            "targetBlank": true
+          }
+        ]
       },
       "targets": [
         {
@@ -208,7 +215,14 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        }
+        },
+        "dataLinks": [
+          {
+            "title": "Watch Video at this moment",
+            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+            "targetBlank": true
+          }
+        ]
       },
       "targets": [
         {
@@ -289,7 +303,14 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        }
+        },
+        "dataLinks": [
+          {
+            "title": "Watch Video at this moment",
+            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+            "targetBlank": true
+          }
+        ]
       },
       "targets": [
         {
@@ -396,7 +417,14 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        }
+        },
+        "dataLinks": [
+          {
+            "title": "Watch Video at this moment",
+            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+            "targetBlank": true
+          }
+        ]
       },
       "targets": [
         {
@@ -487,7 +515,14 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        }
+        },
+        "dataLinks": [
+          {
+            "title": "Watch Video at this moment",
+            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+            "targetBlank": true
+          }
+        ]
       },
       "targets": [
         {
@@ -529,6 +564,24 @@
         "query": "influxdb",
         "refresh": 1,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "value": "http://corvopi:3002"
+        },
+        "hide": 2,
+        "label": "Logger URL",
+        "name": "logger_url",
+        "options": [
+          {
+            "selected": true,
+            "text": "http://corvopi:3002",
+            "value": "http://corvopi:3002"
+          }
+        ],
+        "query": "http://corvopi:3002",
+        "skipUrlSync": false,
+        "type": "constant"
       }
     ]
   },
