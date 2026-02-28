@@ -679,6 +679,11 @@ async function selectBoat(raceId, boatId) {
   if (dd) dd.style.display = 'none';
   delete _pickerBoats[raceId];
   await refreshResults(raceId);
+  // Pre-populate the boat cache immediately so the next entry works without
+  // requiring a focus event. On mobile, the input may retain focus after
+  // selection so onfocus never re-fires — openPicker here ensures filterBoats
+  // has boats to display when the user starts typing the next entry (#36).
+  openPicker(raceId);
 }
 
 async function selectNewBoat(raceId, sailNumber) {
@@ -694,6 +699,8 @@ async function selectNewBoat(raceId, sailNumber) {
   if (dd) dd.style.display = 'none';
   delete _pickerBoats[raceId];
   await refreshResults(raceId);
+  // Same fix as selectBoat — pre-populate cache for the next entry (#36).
+  openPicker(raceId);
 }
 
 async function toggleResultFlag(raceId, place, boatId, dnf, dns) {
