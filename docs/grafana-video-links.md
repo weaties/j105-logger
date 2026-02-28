@@ -102,6 +102,60 @@ race you want to link.
 
 ---
 
+## Redirect endpoint (for Grafana Data Links)
+
+```
+GET /api/sessions/{race_id}/videos/redirect?at=<UTC ISO 8601>
+```
+
+Returns `HTTP 302` directly to the computed YouTube deep-link (`https://youtu.be/<id>?t=<seconds>`)
+for the session's first video. This is designed for use with Grafana **Data Links**, which open
+the redirect URL in a new browser tab.
+
+| Status | Condition |
+|--------|-----------|
+| `302`  | Redirect to `https://youtu.be/<id>?t=<seconds>` (or plain YouTube URL if duration is unknown) |
+| `404`  | Session not found, or no videos linked to it |
+| `422`  | `at` param is missing or not a valid ISO 8601 timestamp |
+
+If multiple videos are attached, the redirect goes to the first one (ordered by `created_at`).
+
+---
+
+## Grafana Data Links on time-series panels (recommended)
+
+Data Links let you right-click any data point in a Grafana time-series panel and open the
+corresponding video moment in a new tab.
+
+### Setup
+
+1. Open the panel editor for any time-series panel in your race dashboard.
+2. Scroll to **Panel options → Data links** and click **Add link**.
+3. Set **Title** to something like `▶ Watch video at this moment`.
+4. Set **URL** to:
+   ```
+   http://YOUR_PI_HOST:3002/api/sessions/YOUR_RACE_ID/videos/redirect?at=${__value.time:date:iso}
+   ```
+   Replace `YOUR_PI_HOST` with the Pi's hostname or Tailscale address and `YOUR_RACE_ID` with
+   the integer race ID (visible in the URL when you open a Grafana race dashboard).
+5. Enable **Open in new tab**.
+6. Click **Apply** and **Save dashboard**.
+
+Now right-clicking a data point shows a context menu with your link. Clicking it opens YouTube at
+exactly that moment.
+
+### `${__value.time}` vs `${__from}`
+
+| Variable | Value | Best use |
+|----------|-------|----------|
+| `${__value.time:date:iso}` | UTC timestamp of the clicked data point | Data Links on individual series points |
+| `${__from:date:iso}` | Left edge of the current time range | Text panel thumbnail strip (see below) |
+
+Use `${__value.time}` in Data Links so the video jumps to the exact moment you clicked, not just
+the start of the visible window.
+
+---
+
 ## Adding / editing videos
 
 Videos are managed via the logger's web UI (History page → session card → **🎬 Videos ▶**)

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
 from pydantic import BaseModel
 
@@ -2444,6 +2444,85 @@ def create_app(
             except ValueError:
                 raise HTTPException(status_code=422, detail="Invalid 'at' timestamp")  # noqa: B904
         return JSONResponse([_video_deep_link(r, at_utc) for r in rows])
+
+    @app.get("/api/sessions/{session_id}/videos/redirect")
+    async def api_videos_redirect(
+        session_id: int,
+        at: str | None = None,
+    ) -> RedirectResponse:
+        """Redirect to the YouTube deep-link for a specific moment in the session's first video.
+
+        Returns ``302 Location`` to the computed YouTube URL (with ``?t=<seconds>``).
+        Returns ``404`` if the session doesn't exist or has no linked videos.
+        Returns ``422`` if ``at`` is missing or cannot be parsed.
+        """
+        if not at:
+            raise HTTPException(status_code=422, detail="'at' query parameter is required")
+        try:
+            at_utc = datetime.fromisoformat(at)
+            if at_utc.tzinfo is None:
+                at_utc = at_utc.replace(tzinfo=UTC)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid 'at' timestamp")  # noqa: B904
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (session_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        rows = await storage.list_race_videos(session_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="No videos linked to this session")
+        # Use the first video by created_at (list_race_videos returns ASC order).
+        row = rows[0]
+        enriched = _video_deep_link(row, at_utc)
+        url = enriched["deep_link"] or row["youtube_url"]
+        return RedirectResponse(url=url, status_code=302)
+
+    @app.get("/api/videos/redirect")
+    async def api_videos_redirect_by_time(
+        at: str | None = None,
+    ) -> RedirectResponse:
+        """Resolve the race active at ``at`` and redirect to its first video.
+
+        Designed for Grafana Data Links — no session_id required.  Grafana
+        passes ``${__value.time:date:iso}`` as the ``at`` parameter and this
+        endpoint resolves the correct race automatically.
+
+        Returns ``302 Location`` to the YouTube deep-link with ``?t=<seconds>``.
+        Returns ``404`` if no race covers that timestamp or the race has no video.
+        Returns ``422`` if ``at`` is missing or cannot be parsed.
+        """
+        if not at:
+            raise HTTPException(status_code=422, detail="'at' query parameter is required")
+        try:
+            at_utc = datetime.fromisoformat(at)
+            if at_utc.tzinfo is None:
+                at_utc = at_utc.replace(tzinfo=UTC)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid 'at' timestamp")  # noqa: B904
+
+        at_iso = at_utc.isoformat()
+        cur = await storage._conn().execute(
+            """
+            SELECT id FROM races
+            WHERE start_utc <= ?
+              AND (end_utc >= ? OR end_utc IS NULL)
+            ORDER BY start_utc DESC
+            LIMIT 1
+            """,
+            (at_iso, at_iso),
+        )
+        race_row = await cur.fetchone()
+        if race_row is None:
+            raise HTTPException(status_code=404, detail="No race found at this timestamp")
+
+        session_id = race_row["id"]
+        rows = await storage.list_race_videos(session_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="No videos linked to this session")
+
+        row = rows[0]
+        enriched = _video_deep_link(row, at_utc)
+        url = enriched["deep_link"] or row["youtube_url"]
+        return RedirectResponse(url=url, status_code=302)
 
     @app.post("/api/sessions/{session_id}/videos", status_code=201)
     async def api_add_video(session_id: int, body: VideoCreate) -> JSONResponse:

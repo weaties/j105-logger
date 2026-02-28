@@ -101,7 +101,10 @@ class VideoLinker:
             RuntimeError: If yt-dlp cannot retrieve the metadata.
         """
         logger.info("Fetching video metadata for: {}", url)
-        info = await asyncio.to_thread(self._fetch_sync, url)
+        info = await asyncio.wait_for(
+            asyncio.to_thread(self._fetch_sync, url),
+            timeout=30.0,
+        )
 
         session = VideoSession(
             url=url,
@@ -131,6 +134,7 @@ class VideoLinker:
             "quiet": True,
             "no_warnings": True,
             "skip_download": True,
+            "socket_timeout": 10,
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
