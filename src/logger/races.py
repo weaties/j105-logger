@@ -82,3 +82,34 @@ def build_race_name(event: str, d: date, race_num: int, session_type: str = "rac
     """
     num_str = f"P{race_num}" if session_type == "practice" else str(race_num)
     return f"{d.strftime('%Y%m%d')}-{event}-{num_str}"
+
+
+def build_grafana_url(
+    base_url: str,
+    uid: str,
+    start_ms: int,
+    end_ms: int | None,
+    *,
+    org_id: int = 1,
+) -> str:
+    """Build a Grafana deep-link URL for a session.
+
+    For an active session (*end_ms* is ``None``) the URL includes
+    ``refresh=10s`` so the dashboard auto-refreshes while the race is live.
+    For a closed session (*end_ms* is set) the URL includes ``refresh=``
+    (empty string) to disable auto-refresh.
+
+    Example::
+
+        # Closed session
+        build_grafana_url("http://host:3001", "j105", 1700000000000, 1700003600000)
+        # → "http://host:3001/d/j105/sailing-data?from=1700000000000&to=1700003600000&orgId=1&refresh="
+
+        # Active session
+        build_grafana_url("http://host:3001", "j105", 1700000000000, None)
+        # → "http://host:3001/d/j105/sailing-data?from=1700000000000&to=now&orgId=1&refresh=10s"
+    """
+    to = str(end_ms) if end_ms is not None else "now"
+    refresh = "" if end_ms is not None else "10s"
+    path = f"/d/{uid}/sailing-data?from={start_ms}&to={to}&orgId={org_id}&refresh={refresh}"
+    return f"{base_url}{path}"

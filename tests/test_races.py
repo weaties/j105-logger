@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from logger.races import RaceConfig, build_race_name, default_event_for_date
+from logger.races import RaceConfig, build_grafana_url, build_race_name, default_event_for_date
 
 if TYPE_CHECKING:
     from logger.storage import Storage
@@ -57,6 +57,34 @@ def test_build_race_name_single_digit() -> None:
 def test_build_race_name_practice() -> None:
     name = build_race_name("BallardCup", date(2025, 8, 10), 1, "practice")
     assert name == "20250810-BallardCup-P1"
+
+
+# ---------------------------------------------------------------------------
+# build_grafana_url tests
+# ---------------------------------------------------------------------------
+
+_BASE = "http://corvopi:3001"
+_UID = "j105-sailing"
+_START_MS = 1700000000000
+_END_MS = 1700003600000
+
+
+def test_build_grafana_url_closed_session() -> None:
+    """Closed sessions disable auto-refresh (refresh=)."""
+    url = build_grafana_url(_BASE, _UID, _START_MS, _END_MS)
+    assert url == f"{_BASE}/d/{_UID}/sailing-data?from={_START_MS}&to={_END_MS}&orgId=1&refresh="
+
+
+def test_build_grafana_url_active_session() -> None:
+    """Active sessions keep auto-refresh at 10s (to=now, refresh=10s)."""
+    url = build_grafana_url(_BASE, _UID, _START_MS, None)
+    assert url == f"{_BASE}/d/{_UID}/sailing-data?from={_START_MS}&to=now&orgId=1&refresh=10s"
+
+
+def test_build_grafana_url_custom_org_id() -> None:
+    """org_id keyword argument is honoured."""
+    url = build_grafana_url(_BASE, _UID, _START_MS, _END_MS, org_id=2)
+    assert "&orgId=2&" in url
 
 
 # ---------------------------------------------------------------------------
