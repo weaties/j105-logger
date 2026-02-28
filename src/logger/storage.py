@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 14
+_CURRENT_VERSION: int = 15
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -307,6 +307,21 @@ _MIGRATIONS: dict[int, str] = {
             UNIQUE(race_id, sail_id)
         );
         CREATE INDEX IF NOT EXISTS idx_race_sails_race_id ON race_sails(race_id);
+    """,
+    15: """
+        CREATE TABLE IF NOT EXISTS transcripts (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            audio_session_id INTEGER NOT NULL REFERENCES audio_sessions(id) ON DELETE CASCADE,
+            status           TEXT    NOT NULL DEFAULT 'pending',
+            text             TEXT,
+            error_msg        TEXT,
+            model            TEXT,
+            created_utc      TEXT    NOT NULL,
+            updated_utc      TEXT    NOT NULL,
+            UNIQUE(audio_session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_transcripts_audio_session_id
+            ON transcripts(audio_session_id);
     """,
 }
 
@@ -1781,6 +1796,65 @@ class Storage:
                     "active": bool(row["active"]),
                 }
         return result
+
+    # ------------------------------------------------------------------
+    # Transcripts
+    # ------------------------------------------------------------------
+
+    async def create_transcript_job(self, audio_session_id: int, model: str) -> int:
+        """Insert a transcript row in 'pending' status; return the new id.
+
+        Raises ValueError if a transcript job already exists for this session.
+        """
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(_UTC).isoformat()
+        db = self._conn()
+        try:
+            cur = await db.execute(
+                "INSERT INTO transcripts"
+                " (audio_session_id, status, model, created_utc, updated_utc)"
+                " VALUES (?, 'pending', ?, ?, ?)",
+                (audio_session_id, model, now, now),
+            )
+            await db.commit()
+            assert cur.lastrowid is not None
+            return cur.lastrowid
+        except aiosqlite.IntegrityError as exc:
+            raise ValueError(
+                f"Transcript job already exists for audio_session_id={audio_session_id}"
+            ) from exc
+
+    async def update_transcript(
+        self,
+        transcript_id: int,
+        *,
+        status: str,
+        text: str | None = None,
+        error_msg: str | None = None,
+    ) -> None:
+        """Update the status (and optionally text/error_msg) of a transcript row."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(_UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "UPDATE transcripts SET status=?, text=?, error_msg=?, updated_utc=? WHERE id=?",
+            (status, text, error_msg, now, transcript_id),
+        )
+        await db.commit()
+
+    async def get_transcript(self, audio_session_id: int) -> dict[str, Any] | None:
+        """Return the transcript row for *audio_session_id*, or None if not found."""
+        cur = await self._conn().execute(
+            "SELECT id, audio_session_id, status, text, error_msg, model, created_utc, updated_utc"
+            " FROM transcripts WHERE audio_session_id = ?",
+            (audio_session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
     # ------------------------------------------------------------------
     # Helpers
