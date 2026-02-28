@@ -83,6 +83,91 @@ uv run mypy src/
 
 ---
 
+## Development Workflow
+
+### Mac setup (one time)
+
+```bash
+# System audio libraries required by sounddevice / soundfile
+brew install portaudio libsndfile
+
+# Install Python dependencies
+uv sync
+
+# Create a local .env (no CAN hardware or Signal K needed for tests)
+cp .env.example .env
+```
+
+The `.env` values that matter for local dev:
+
+```
+DB_PATH=data/logger.db
+LOG_LEVEL=DEBUG
+DATA_SOURCE=signalk   # tests mock the SK connection; value doesn't affect test runs
+```
+
+CAN bus and audio device env vars are ignored in tests — the architecture isolates
+hardware access in `can_reader.py` and `audio.py`, both of which are mocked.
+
+### Daily dev loop
+
+```bash
+# Run the full test suite (no hardware required)
+uv run pytest
+
+# Run with coverage report
+uv run pytest --cov=src/logger
+
+# Lint + format check before pushing
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src/
+
+# Auto-fix lint and formatting
+uv run ruff check --fix .
+uv run ruff format .
+```
+
+All of the above run cleanly on a Mac with no Pi, CAN bus, Signal K, or
+InfluxDB/Grafana required.
+
+### PR workflow
+
+1. Create a feature branch off `main`:
+   ```bash
+   git checkout main && git pull
+   git checkout -b feature/my-feature
+   ```
+2. Develop and test locally until `uv run pytest` and the lint/type checks pass.
+3. Push and open a pull request:
+   ```bash
+   git push -u origin feature/my-feature
+   gh pr create
+   ```
+4. When the PR is ready and tests pass, merge to `main` and delete the branch.
+
+### Deploying to the Raspberry Pi
+
+After a PR merges to `main`, SSH into the Pi and run the deploy script:
+
+```bash
+ssh weaties@corvopi
+cd ~/j105-logger
+./scripts/deploy.sh
+```
+
+The script pulls `main`, syncs Python dependencies, and restarts the
+`j105-logger` systemd service. It prints the service status at the end so you
+can confirm everything came up cleanly.
+
+> **Heads up**: if `pyproject.toml` gained new dependencies _or_ the systemd
+> service files changed, run the full idempotent setup script instead:
+> ```bash
+> ./scripts/setup.sh && sudo systemctl daemon-reload && sudo systemctl restart j105-logger
+> ```
+
+---
+
 ## Coding Conventions
 
 - **Python 3.12+** — use modern syntax: `match`, `X | Y` unions, `tomllib`, etc.

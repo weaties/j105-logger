@@ -49,10 +49,11 @@ grafana-server.service (independent, starts at boot)
 4. [Linking YouTube videos](#linking-youtube-videos)
 5. [External data — weather and tides](#external-data--weather-and-tides)
 6. [Recording audio commentary](#recording-audio-commentary)
-7. [Fresh SD card setup](#fresh-sd-card-setup)
-8. [Updating](#updating)
-9. [Configuration](#configuration)
-10. [Troubleshooting](#troubleshooting)
+7. [Mac development](#mac-development)
+8. [Fresh SD card setup](#fresh-sd-card-setup)
+9. [Updating / deploying](#updating--deploying)
+10. [Configuration](#configuration)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -414,6 +415,66 @@ and troubleshooting.
 
 ---
 
+## Mac development
+
+The full test suite runs on a Mac with no Pi, CAN bus, Signal K, InfluxDB, or
+Grafana required. Hardware access is isolated to `can_reader.py` and `audio.py`,
+both of which are mocked in tests.
+
+### One-time setup
+
+```bash
+# System audio libraries (required by sounddevice / soundfile)
+brew install portaudio libsndfile
+
+# Install Python dependencies
+uv sync
+
+# Create a local .env
+cp .env.example .env
+```
+
+You don't need Signal K or a CAN interface running locally. The only `.env`
+values that matter for running tests are:
+
+```
+DB_PATH=data/logger.db
+LOG_LEVEL=DEBUG
+```
+
+### Daily dev loop
+
+```bash
+# Run tests (no hardware required)
+uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src/logger
+
+# Lint + type check before pushing
+uv run ruff check . && uv run ruff format --check . && uv run mypy src/
+
+# Auto-fix lint and formatting
+uv run ruff check --fix . && uv run ruff format .
+```
+
+### PR workflow
+
+1. Branch off `main`:
+   ```bash
+   git checkout main && git pull
+   git checkout -b feature/my-feature
+   ```
+2. Develop and test locally until `uv run pytest` and lint/type checks pass.
+3. Push and open a PR:
+   ```bash
+   git push -u origin feature/my-feature
+   gh pr create
+   ```
+4. Merge when ready. The branch can then be deleted.
+
+---
+
 ## Fresh SD card setup
 
 This covers everything from a blank SD card to a fully running stack.
@@ -597,15 +658,32 @@ j105-logger status
 
 ---
 
-## Updating
+## Updating / deploying
 
-After a `git pull`, re-run setup to pick up dependency or service changes:
+### Normal deploy (code changes only)
+
+After a PR merges to `main`, SSH into the Pi and run:
+
+```bash
+ssh weaties@corvopi
+cd ~/j105-logger
+./scripts/deploy.sh
+```
+
+This pulls `main`, syncs Python dependencies, and restarts the `j105-logger`
+service. Service status is printed at the end for a quick sanity check.
+
+### Full update (new deps, service file changes, or Signal K updates)
+
+If `pyproject.toml` changed, systemd service files changed, or Signal K needs
+updating, run the full idempotent setup instead:
 
 ```bash
 cd ~/j105-logger
 git pull
 ./scripts/setup.sh
 sudo npm update -g signalk-server
+sudo systemctl daemon-reload
 sudo systemctl restart signalk j105-logger
 ```
 
