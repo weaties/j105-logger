@@ -2111,3 +2111,26 @@ async def test_serve_note_photo_404(
     ) as client:
         resp = await client.get("/notes/nonexistent.jpg")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# System health endpoint (#39)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_system_health_returns_200(storage: Storage) -> None:
+    """GET /api/system-health returns 200 with cpu_pct, mem_pct, disk_pct keys."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/system-health")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "cpu_pct" in data
+    assert "mem_pct" in data
+    assert "disk_pct" in data
+    assert isinstance(data["cpu_pct"], float | int)
+    assert isinstance(data["mem_pct"], float | int)
+    assert isinstance(data["disk_pct"], float | int)
