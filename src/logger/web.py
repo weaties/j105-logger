@@ -2151,7 +2151,7 @@ font-size:1rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
 <form method="post" action="/login">
 <input type="hidden" name="next" value="__NEXT__"/>
 <label>Invite token</label>
-<input type="text" name="token" placeholder="Paste your invite token here" autocomplete="off"/>
+<input type="text" name="token" placeholder="Paste your invite token here" autocomplete="off" value="__TOKEN__"/>
 <button class="btn" type="submit">Sign in</button>
 </form>
 <!--ERROR-->
@@ -2335,8 +2335,9 @@ def create_app(
         return JSONResponse({"status": "ok"})
 
     @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
-    async def login_page(next: str = "/") -> HTMLResponse:
-        return HTMLResponse(_LOGIN_HTML.replace("__NEXT__", next))
+    async def login_page(next: str = "/", token: str = "") -> HTMLResponse:
+        html = _LOGIN_HTML.replace("__NEXT__", next).replace("__TOKEN__", token)
+        return HTMLResponse(html)
 
     @app.post("/login", include_in_schema=False)
     async def login_submit(
@@ -2351,7 +2352,9 @@ def create_app(
         row = await storage.get_invite_token(token)
         if row is None:
             return HTMLResponse(
-                _LOGIN_HTML.replace("__NEXT__", next).replace(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
                     "<!--ERROR-->",
                     '<p style="color:#f87171;margin-top:12px">Invalid or expired token.</p>',
                 ),
@@ -2359,7 +2362,9 @@ def create_app(
             )
         if row["used_at"] is not None:
             return HTMLResponse(
-                _LOGIN_HTML.replace("__NEXT__", next).replace(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
                     "<!--ERROR-->",
                     '<p style="color:#f87171;margin-top:12px">Token already used.</p>',
                 ),
@@ -2368,7 +2373,9 @@ def create_app(
         expires_dt = _dt.fromisoformat(row["expires_at"])
         if _dt.now(_UTC) > expires_dt:
             return HTMLResponse(
-                _LOGIN_HTML.replace("__NEXT__", next).replace(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
                     "<!--ERROR-->",
                     '<p style="color:#f87171;margin-top:12px">Token expired.</p>',
                 ),

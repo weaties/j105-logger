@@ -28,7 +28,12 @@ dependencies = [
     "influxdb-client>=1.44.0",
     "psutil>=7.2.2",
     "faster-whisper>=1.2.1",
-    "pyannote-audio>=4.0.4",
+    # pyannote-audio is NOT listed here — it requires PyTorch and has no
+    # ARM Linux (aarch64) wheels, so it cannot be a hard dependency on the Pi.
+    # Install manually on x86 if diarisation is needed:
+    #   pip install pyannote-audio
+    # Diarisation is enabled at runtime only when HF_TOKEN is set AND the
+    # pyannote package is importable.
 ]
 
 [project.scripts]
