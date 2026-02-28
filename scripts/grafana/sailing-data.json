@@ -30,7 +30,19 @@
     }
   ],
   "annotations": {
-    "list": []
+    "list": [
+      {
+        "datasource": {
+          "type": "influxdb",
+          "uid": "${DS_INFLUXDB}"
+        },
+        "enable": true,
+        "hide": false,
+        "iconColor": "blue",
+        "name": "Race Notes",
+        "query": "from(bucket: \"signalk\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"session_notes\")\n  |> filter(fn: (r) => r[\"_field\"] == \"body\")\n  |> keep(columns: [\"_time\", \"_value\", \"note_type\", \"race_id\"])"
+      }
+    ]
   },
   "description": "J105 sailboat performance data from Signal K via InfluxDB",
   "editable": true,

@@ -1153,9 +1153,105 @@ async def test_grafana_annotations_returns_list(storage: Storage) -> None:
     assert isinstance(data, list)
     assert len(data) >= 1
     assert "time" in data[0]
+    assert "timeEnd" in data[0]
+    assert "title" in data[0]
     assert "text" in data[0]
     assert "tags" in data[0]
     assert data[0]["text"] == "Tack at mark"
+    assert data[0]["title"] == "Text"
+    assert data[0]["tags"] == ["text"]
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_empty_when_no_params(storage: Storage) -> None:
+    """Missing from/to returns empty list."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/grafana/annotations")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_session_filter(storage: Storage) -> None:
+    """sessionId param scopes results to a single race."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r1 = (await client.post("/api/races/start")).json()["id"]
+        await client.post(f"/api/sessions/{r1}/notes", json={"body": "Race 1 note"})
+        await client.post("/api/races/end")
+        r2 = (await client.post("/api/races/start")).json()["id"]
+        await client.post(f"/api/sessions/{r2}/notes", json={"body": "Race 2 note"})
+        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
+        resp_all = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
+        resp_r1 = await client.get(
+            f"/api/grafana/annotations?from={from_ms}&to={to_ms}&sessionId={r1}"
+        )
+        resp_r2 = await client.get(
+            f"/api/grafana/annotations?from={from_ms}&to={to_ms}&sessionId={r2}"
+        )
+    assert len(resp_all.json()) >= 2
+    r1_notes = resp_r1.json()
+    r2_notes = resp_r2.json()
+    assert len(r1_notes) == 1
+    assert r1_notes[0]["text"] == "Race 1 note"
+    assert len(r2_notes) == 1
+    assert r2_notes[0]["text"] == "Race 2 note"
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_out_of_range_returns_empty(storage: Storage) -> None:
+    """Time range that excludes the note returns empty list."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Some note"})
+        # Query a window in 2020 — before any test data
+        from_ms = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        to_ms = int(datetime(2020, 12, 31, tzinfo=UTC).timestamp() * 1000)
+        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_photo_note_includes_img_tag(storage: Storage) -> None:
+    """Photo notes include an <img> tag pointing at the photo URL."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        # Insert a photo note directly via storage to set photo_path without
+        # needing a real file upload.
+        await storage.create_note(
+            datetime.now(UTC).isoformat(),
+            "Caption text",
+            race_id=race_id,
+            note_type="photo",
+            photo_path=f"{race_id}/test.jpg",
+        )
+        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
+        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
+        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
+    assert resp.status_code == 200
+    data = resp.json()
+    photo_annotations = [a for a in data if "photo" in a["tags"]]
+    assert len(photo_annotations) == 1
+    ann = photo_annotations[0]
+    assert f"/notes/{race_id}/test.jpg" in ann["text"]
+    assert "<img" in ann["text"]
+    assert "Caption text" in ann["text"]
 
 
 # ---------------------------------------------------------------------------

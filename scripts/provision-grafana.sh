@@ -6,9 +6,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASHBOARD_SRC="$SCRIPT_DIR/grafana/sailing-data.json"
 PROVISION_SRC="$SCRIPT_DIR/grafana/dashboards.yaml"
+DATASOURCE_SRC="$SCRIPT_DIR/grafana/datasources.yaml"
 
 DASHBOARD_DEST_DIR="/var/lib/grafana/dashboards"
 PROVISION_DEST="/etc/grafana/provisioning/dashboards/j105-logger.yaml"
+DATASOURCE_DEST="/etc/grafana/provisioning/datasources/j105-logger.yaml"
 GRAFANA_INI="/etc/grafana/grafana.ini"
 
 echo "==> Creating dashboard directory: $DASHBOARD_DEST_DIR"
@@ -17,8 +19,11 @@ sudo mkdir -p "$DASHBOARD_DEST_DIR"
 echo "==> Copying dashboard JSON"
 sudo cp "$DASHBOARD_SRC" "$DASHBOARD_DEST_DIR/sailing-data.json"
 
-echo "==> Copying provisioning config"
+echo "==> Copying dashboard provisioning config"
 sudo cp "$PROVISION_SRC" "$PROVISION_DEST"
+
+echo "==> Copying datasource provisioning config"
+sudo cp "$DATASOURCE_SRC" "$DATASOURCE_DEST"
 
 echo "==> Enabling anonymous access in $GRAFANA_INI"
 # Insert/update the [auth.anonymous] section.

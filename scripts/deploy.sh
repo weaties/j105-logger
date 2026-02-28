@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# deploy.sh — Pull latest code from main and restart the logger service.
+# deploy.sh — Pull latest code from main, provision Grafana, and restart services.
 #
-# Run this on the Raspberry Pi after merging a PR to main. Covers the
-# common case: code-only changes with no new system dependencies or
-# service file modifications.
+# Run this on the Raspberry Pi after merging a PR to main. Handles the
+# common case: code changes, dashboard/annotation updates, plugin installs.
+# provision-grafana.sh is called every time and is fully idempotent.
 #
-# If pyproject.toml changed (new deps) or systemd service files changed,
-# run the full idempotent setup instead:
+# If systemd service files changed, also run:
 #   ./scripts/setup.sh && sudo systemctl daemon-reload
-#
-# Usage: ./scripts/deploy.sh
 
 set -euo pipefail
 
@@ -24,6 +21,9 @@ git pull origin main
 
 echo "==> Syncing Python dependencies..."
 uv sync
+
+echo "==> Provisioning Grafana (dashboard, datasources, plugins)..."
+"$SCRIPT_DIR/provision-grafana.sh"
 
 echo "==> Restarting j105-logger service..."
 sudo systemctl restart j105-logger

@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: J105 Logger API
+    type: marcusolsson-json-datasource
+    uid: j105-logger-api
+    url: http://localhost:3002
+    access: proxy
+    isDefault: false
+    editable: false
