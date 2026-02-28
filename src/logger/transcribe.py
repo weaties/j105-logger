@@ -3,8 +3,13 @@
 Transcription runs in a thread pool to avoid blocking the event loop.
 Results (including errors) are stored in the ``transcripts`` SQLite table.
 
-Speaker diarisation is performed via pyannote.audio when ``HF_TOKEN`` is set
-in the environment. Without it, the plain-text faster-whisper path is used.
+Speaker diarisation is performed via pyannote.audio when ALL of the following
+are true:
+  1. ``HF_TOKEN`` is set in the environment.
+  2. The ``pyannote.audio`` package is importable (it is NOT a hard dependency
+     because it requires PyTorch which has no ARM Linux / aarch64 wheels).
+
+Without diarisation the plain-text faster-whisper path is used.
 """
 
 from __future__ import annotations
@@ -47,7 +52,7 @@ async def transcribe_session(
 
     await storage.update_transcript(transcript_id, status="running")
     file_path: str = row["file_path"]
-    use_diarize = diarize and bool(os.environ.get("HF_TOKEN"))
+    use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
 
     try:
         if use_diarize:
@@ -73,6 +78,22 @@ async def transcribe_session(
     except Exception as exc:  # noqa: BLE001
         logger.warning("Transcription failed: audio_session_id={} err={}", audio_session_id, exc)
         await storage.update_transcript(transcript_id, status="error", error_msg=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Availability check
+# ---------------------------------------------------------------------------
+
+
+def _pyannote_available() -> bool:
+    """Return True only if pyannote.audio (and torch) can be imported."""
+    try:
+        import pyannote.audio  # noqa: F401  # type: ignore[import-untyped]
+        import torch  # noqa: F401  # type: ignore[import-untyped]
+
+        return True
+    except ImportError:
+        return False
 
 
 # ---------------------------------------------------------------------------
