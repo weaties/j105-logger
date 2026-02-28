@@ -961,9 +961,9 @@ function _videoAddForm(sessionId) {
     + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + ' <button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'\\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
 }
 
 function _parseVideoPosition(str) {
@@ -1335,9 +1335,9 @@ function _histVideoAddForm(sessionId) {
     + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + ' <button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'\\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
 }
 
 function _parseVideoPos(str) {
