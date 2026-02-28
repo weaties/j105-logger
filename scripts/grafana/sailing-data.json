@@ -27,6 +27,12 @@
       "id": "timeseries",
       "name": "Time series",
       "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "geomap",
+      "name": "Geomap",
+      "version": ""
     }
   ],
   "annotations": {
@@ -544,6 +550,119 @@
       ],
       "title": "Heading & COG",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "influxdb",
+        "uid": "${DS_INFLUXDB}"
+      },
+      "description": "GPS track coloured by boatspeed. Tooltip shows BSP, TWS, TWA, TWD. Click any point to jump to that moment in the linked YouTube video.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#6495ed", "value": null },
+              { "color": "#86efac", "value": 4 },
+              { "color": "#fde68a", "value": 6 },
+              { "color": "#fca5a5", "value": 8 }
+            ]
+          },
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "latitude" },
+            "properties": [
+              { "id": "custom.hideFrom", "value": { "legend": true, "tooltip": false, "viz": false } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "longitude" },
+            "properties": [
+              { "id": "custom.hideFrom", "value": { "legend": true, "tooltip": false, "viz": false } }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 16,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 6,
+      "options": {
+        "basemap": {
+          "config": {},
+          "name": "Layer 0",
+          "type": "default"
+        },
+        "controls": {
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showScale": false,
+          "showZoom": true
+        },
+        "layers": [
+          {
+            "config": {
+              "style": {
+                "color": {
+                  "field": "BSP (kts)",
+                  "fixed": "#6495ed"
+                },
+                "lineWidth": 3,
+                "opacity": 0.85
+              }
+            },
+            "location": {
+              "mode": "auto"
+            },
+            "name": "Track",
+            "tooltip": true,
+            "type": "route"
+          }
+        ],
+        "tooltip": {
+          "mode": "details"
+        },
+        "view": {
+          "allLayers": true,
+          "id": "fit",
+          "lat": 0,
+          "lon": 0,
+          "zoom": 5
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "influxdb",
+            "uid": "${DS_INFLUXDB}"
+          },
+          "query": "from(bucket: \"signalk\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) =>\n      r[\"_measurement\"] == \"navigation.position.latitude\" or\n      r[\"_measurement\"] == \"navigation.position.longitude\" or\n      r[\"_measurement\"] == \"navigation.speedThroughWater\" or\n      r[\"_measurement\"] == \"environment.wind.speedTrue\" or\n      r[\"_measurement\"] == \"environment.wind.angleTrueWater\" or\n      r[\"_measurement\"] == \"environment.wind.directionTrue\")\n  |> filter(fn: (r) => r[\"_field\"] == \"value\")\n  |> drop(columns: [\"context\", \"self\"])\n  |> aggregateWindow(every: 5s, fn: last, createEmpty: false)\n  |> drop(columns: [\"_field\", \"_start\", \"_stop\"])\n  |> group()\n  |> pivot(rowKey: [\"_time\"], columnKey: [\"_measurement\"], valueColumn: \"_value\")\n  |> rename(columns: {\n      \"navigation.position.latitude\":    \"latitude\",\n      \"navigation.position.longitude\":   \"longitude\",\n      \"navigation.speedThroughWater\":    \"bsp_ms\",\n      \"environment.wind.speedTrue\":      \"tws_ms\",\n      \"environment.wind.angleTrueWater\": \"twa_rad\",\n      \"environment.wind.directionTrue\":  \"twd_rad\"})\n  |> map(fn: (r) => ({r with\n      \"BSP (kts)\": if exists r.bsp_ms  then r.bsp_ms  * 1.94384  else 0.0,\n      \"TWS (kts)\": if exists r.tws_ms  then r.tws_ms  * 1.94384  else 0.0,\n      \"TWA (\u00b0)\":   if exists r.twa_rad then r.twa_rad * 57.29578 else 0.0,\n      \"TWD (\u00b0)\":   if exists r.twd_rad then r.twd_rad * 57.29578 else 0.0}))\n  |> drop(columns: [\"bsp_ms\", \"tws_ms\", \"twa_rad\", \"twd_rad\"])\n  |> filter(fn: (r) => exists r.latitude and exists r.longitude)",
+          "refId": "A"
+        }
+      ],
+      "title": "Race Track",
+      "type": "geomap"
     }
   ],
   "refresh": "",
@@ -593,5 +712,5 @@
   "timezone": "browser",
   "title": "Sailing Data",
   "uid": "j105-sailing",
-  "version": 1
+  "version": 2
 }

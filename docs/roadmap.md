@@ -26,7 +26,7 @@ Checked items are complete.
       (`admin` / `crew` / `viewer`), session cookies in SQLite, HTTPS deployment guide
       (Caddy / Cloudflare Tunnel / Tailscale Funnel).
 
-- [ ] **Grafana race track panel** (#18) — Geomap panel with speed-coloured GPS track,
+- [x] **Grafana race track panel** (#18) — Geomap panel with speed-coloured GPS track,
       wind tooltip, and YouTube deep-link per track point.
 
 - [ ] **External SSD** (#19) — mount at `/mnt/ssd`, relocate SQLite + audio + InfluxDB data,
