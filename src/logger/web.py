@@ -2482,25 +2482,42 @@ def create_app(
     async def api_grafana_annotations(
         from_: int | None = Query(default=None, alias="from"),
         to: int | None = None,
+        sessionId: int | None = None,  # noqa: N803
     ) -> JSONResponse:
         """Grafana SimpleJSON annotation feed.
 
         Grafana passes epoch milliseconds as ``from`` and ``to``.
+        Optional ``sessionId`` scopes results to a single race or practice.
         """
         if from_ is None or to is None:
             return JSONResponse([])
         start = datetime.fromtimestamp(from_ / 1000.0, tz=UTC)
         end = datetime.fromtimestamp(to / 1000.0, tz=UTC)
-        notes = await storage.list_notes_range(start, end)
-        result = [
-            {
-                "time": int(datetime.fromisoformat(n["ts"]).timestamp() * 1000),
-                "title": "Note",
-                "text": n["body"] or "",
-                "tags": [n["note_type"]],
-            }
-            for n in notes
-        ]
+        race_id: int | None = None
+        audio_session_id: int | None = None
+        if sessionId is not None:
+            race_id, audio_session_id = await _resolve_session(sessionId)
+        notes = await storage.list_notes_range(
+            start, end, race_id=race_id, audio_session_id=audio_session_id
+        )
+        result = []
+        for n in notes:
+            ts_ms = int(datetime.fromisoformat(n["ts"]).timestamp() * 1000)
+            text = n["body"] or ""
+            if n["note_type"] == "photo" and n.get("photo_path"):
+                photo_url = f"/notes/{n['photo_path']}"
+                text = f'<img src="{photo_url}" style="max-width:300px"/>'
+                if n["body"]:
+                    text = n["body"] + "<br/>" + text
+            result.append(
+                {
+                    "time": ts_ms,
+                    "timeEnd": ts_ms,
+                    "title": n["note_type"].capitalize(),
+                    "text": text,
+                    "tags": [n["note_type"]],
+                }
+            )
         return JSONResponse(result)
 
     return app

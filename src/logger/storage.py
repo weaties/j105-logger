@@ -1446,17 +1446,28 @@ class Storage:
         self,
         start: datetime,
         end: datetime,
+        *,
+        race_id: int | None = None,
+        audio_session_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return notes whose ts falls in [start, end], ordered by ts ASC.
 
+        Optionally scoped to a single race or audio session.
         Used by the Grafana annotations endpoint.
         """
         db = self._conn()
+        where = "ts >= ? AND ts <= ?"
+        params: list[object] = [start.isoformat(), end.isoformat()]
+        if race_id is not None:
+            where += " AND race_id = ?"
+            params.append(race_id)
+        elif audio_session_id is not None:
+            where += " AND audio_session_id = ?"
+            params.append(audio_session_id)
         cur = await db.execute(
             "SELECT id, race_id, audio_session_id, ts, note_type, body,"
-            " photo_path, created_at"
-            " FROM session_notes WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
-            (start.isoformat(), end.isoformat()),
+            f" photo_path, created_at FROM session_notes WHERE {where} ORDER BY ts ASC",
+            params,
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
