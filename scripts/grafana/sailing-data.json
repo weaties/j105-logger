@@ -7,14 +7,6 @@
       "type": "datasource",
       "pluginId": "influxdb",
       "pluginName": "InfluxDB"
-    },
-    {
-      "name": "DS_J105_LOGGER",
-      "label": "J105 Logger API",
-      "description": "J105 Logger HTTP API (marcusolsson-json-datasource)",
-      "type": "datasource",
-      "pluginId": "marcusolsson-json-datasource",
-      "pluginName": "JSON API"
     }
   ],
   "__requires": [
@@ -35,53 +27,20 @@
       "id": "timeseries",
       "name": "Time series",
       "version": ""
-    },
-    {
-      "type": "datasource",
-      "id": "marcusolsson-json-datasource",
-      "name": "JSON API",
-      "version": "0.6.0"
     }
   ],
   "annotations": {
     "list": [
       {
         "datasource": {
-          "type": "marcusolsson-json-datasource",
-          "uid": "${DS_J105_LOGGER}"
+          "type": "influxdb",
+          "uid": "${DS_INFLUXDB}"
         },
         "enable": true,
         "hide": false,
         "iconColor": "blue",
         "name": "Race Notes",
-        "target": {
-          "fields": [
-            {
-              "jsonPath": "$[*].time",
-              "name": "Time",
-              "type": "Time"
-            },
-            {
-              "jsonPath": "$[*].title",
-              "name": "Title",
-              "type": "String"
-            },
-            {
-              "jsonPath": "$[*].text",
-              "name": "Text",
-              "type": "String"
-            },
-            {
-              "jsonPath": "$[*].tags",
-              "name": "Tags",
-              "type": "String"
-            }
-          ],
-          "method": "GET",
-          "path": "/api/grafana/annotations",
-          "source": "url",
-          "type": "annotations"
-        }
+        "query": "from(bucket: \"signalk\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r[\"_measurement\"] == \"session_notes\")\n  |> filter(fn: (r) => r[\"_field\"] == \"body\")\n  |> keep(columns: [\"_time\", \"_value\", \"note_type\", \"race_id\"])"
       }
     ]
   },

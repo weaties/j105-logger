@@ -13,9 +13,6 @@ PROVISION_DEST="/etc/grafana/provisioning/dashboards/j105-logger.yaml"
 DATASOURCE_DEST="/etc/grafana/provisioning/datasources/j105-logger.yaml"
 GRAFANA_INI="/etc/grafana/grafana.ini"
 
-echo "==> Installing JSON API datasource plugin (for race-notes annotations)"
-sudo grafana-cli plugins install marcusolsson-json-datasource || true
-
 echo "==> Creating dashboard directory: $DASHBOARD_DEST_DIR"
 sudo mkdir -p "$DASHBOARD_DEST_DIR"
 

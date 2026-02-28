@@ -2266,6 +2266,16 @@ def create_app(
             audio_session_id=audio_session_id,
             note_type=body.note_type,
         )
+        from logger import influx
+
+        await asyncio.to_thread(
+            influx.write_note,
+            ts_iso=ts,
+            note_type=body.note_type,
+            body=body.body,
+            race_id=race_id,
+            note_id=note_id,
+        )
         return JSONResponse({"id": note_id, "ts": ts}, status_code=201)
 
     @app.post("/api/sessions/{session_id}/notes/photo", status_code=201)
@@ -2298,6 +2308,16 @@ def create_app(
             audio_session_id=audio_session_id,
             note_type="photo",
             photo_path=photo_path,
+        )
+        from logger import influx
+
+        await asyncio.to_thread(
+            influx.write_note,
+            ts_iso=actual_ts,
+            note_type="photo",
+            body=f"/notes/{photo_path}",
+            race_id=race_id,
+            note_id=note_id,
         )
         return JSONResponse(
             {"id": note_id, "ts": actual_ts, "photo_path": photo_path}, status_code=201
