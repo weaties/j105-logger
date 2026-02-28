@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 13
+_CURRENT_VERSION: int = 14
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -290,10 +290,31 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_race_videos_race_id
             ON race_videos(race_id);
     """,
+    14: """
+        CREATE TABLE IF NOT EXISTS sails (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            type    TEXT    NOT NULL,
+            name    TEXT    NOT NULL,
+            notes   TEXT,
+            active  INTEGER NOT NULL DEFAULT 1,
+            UNIQUE(type, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS race_sails (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id  INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            sail_id  INTEGER NOT NULL REFERENCES sails(id),
+            UNIQUE(race_id, sail_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_race_sails_race_id ON race_sails(race_id);
+    """,
 }
 
 # Canonical order for the 5 J105 positions
 _POSITIONS: tuple[str, ...] = ("helm", "main", "pit", "bow", "tactician")
+
+# Valid sail slot types
+_SAIL_TYPES: tuple[str, ...] = ("main", "jib", "spinnaker")
 
 # ---------------------------------------------------------------------------
 # Storage class
@@ -892,6 +913,32 @@ class Storage:
         await db.commit()
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
+
+    async def get_race(self, race_id: int) -> Race | None:
+        """Return the race with the given id, or None if not found."""
+        from datetime import datetime as _datetime
+
+        from logger.races import Race as _Race
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
+            " FROM races WHERE id = ?",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return _Race(
+            id=row["id"],
+            name=row["name"],
+            event=row["event"],
+            race_num=row["race_num"],
+            date=row["date"],
+            start_utc=_datetime.fromisoformat(row["start_utc"]),
+            end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+            session_type=row["session_type"],
+        )
 
     async def get_current_race(self) -> Race | None:
         """Return the most recent race with no end_utc, or None."""
@@ -1588,6 +1635,138 @@ class Storage:
         cur = await db.execute("DELETE FROM race_videos WHERE id = ?", (video_row_id,))
         await db.commit()
         return (cur.rowcount or 0) > 0
+
+    # ------------------------------------------------------------------
+    # Sail inventory
+    # ------------------------------------------------------------------
+
+    async def add_sail(
+        self,
+        sail_type: str,
+        name: str,
+        notes: str | None = None,
+    ) -> int:
+        """Insert a sail into the inventory and return its id.
+
+        Raises ``ValueError`` on duplicate (type, name).
+        """
+        db = self._conn()
+        try:
+            cur = await db.execute(
+                "INSERT INTO sails (type, name, notes) VALUES (?, ?, ?)",
+                (sail_type, name.strip(), notes),
+            )
+            await db.commit()
+        except Exception as exc:
+            if "UNIQUE constraint failed" in str(exc):
+                raise ValueError(f"Sail already exists: type={sail_type!r} name={name!r}") from exc
+            raise
+        assert cur.lastrowid is not None
+        logger.debug("Sail added: type={} name={} id={}", sail_type, name, cur.lastrowid)
+        return cur.lastrowid
+
+    async def list_sails(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        """Return sails ordered by type then name.
+
+        By default only active sails are returned.  Pass *include_inactive=True*
+        to include retired sails.
+        """
+        db = self._conn()
+        where = "" if include_inactive else "WHERE active = 1"
+        cur = await db.execute(
+            f"SELECT id, type, name, notes, active FROM sails {where} ORDER BY type, name"
+        )
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": row["id"],
+                "type": row["type"],
+                "name": row["name"],
+                "notes": row["notes"],
+                "active": bool(row["active"]),
+            }
+            for row in rows
+        ]
+
+    async def update_sail(
+        self,
+        sail_id: int,
+        *,
+        name: str | None = None,
+        notes: str | None = None,
+        active: bool | None = None,
+    ) -> bool:
+        """Update sail fields.  Returns True if the sail was found and updated."""
+        if name is None and notes is None and active is None:
+            return True  # nothing to do — treat as no-op success
+        db = self._conn()
+        parts: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            parts.append("name = ?")
+            params.append(name.strip())
+        if notes is not None:
+            parts.append("notes = ?")
+            params.append(notes)
+        if active is not None:
+            parts.append("active = ?")
+            params.append(1 if active else 0)
+        params.append(sail_id)
+        cur = await db.execute(f"UPDATE sails SET {', '.join(parts)} WHERE id = ?", params)
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_race_sails(
+        self,
+        race_id: int,
+        *,
+        main_id: int | None,
+        jib_id: int | None,
+        spinnaker_id: int | None,
+    ) -> None:
+        """Replace the sail selection for *race_id*.
+
+        Existing sail associations for the race are deleted and the provided
+        non-None sail ids are re-inserted.
+        """
+        db = self._conn()
+        await db.execute("DELETE FROM race_sails WHERE race_id = ?", (race_id,))
+        for sail_id in (main_id, jib_id, spinnaker_id):
+            if sail_id is not None:
+                await db.execute(
+                    "INSERT OR IGNORE INTO race_sails (race_id, sail_id) VALUES (?, ?)",
+                    (race_id, sail_id),
+                )
+        await db.commit()
+        logger.debug("Race sails set for race {}", race_id)
+
+    async def get_race_sails(self, race_id: int) -> dict[str, Any]:
+        """Return the sail selection for *race_id*.
+
+        Returns a dict with keys ``main``, ``jib``, ``spinnaker``, each
+        containing the full sail row dict or ``None`` if not set.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT s.id, s.type, s.name, s.notes, s.active"
+            " FROM race_sails rs"
+            " JOIN sails s ON s.id = rs.sail_id"
+            " WHERE rs.race_id = ?",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        result: dict[str, dict[str, Any] | None] = dict.fromkeys(_SAIL_TYPES)
+        for row in rows:
+            sail_type = row["type"]
+            if sail_type in result:
+                result[sail_type] = {
+                    "id": row["id"],
+                    "type": sail_type,
+                    "name": row["name"],
+                    "notes": row["notes"],
+                    "active": bool(row["active"]),
+                }
+        return result
 
     # ------------------------------------------------------------------
     # Helpers

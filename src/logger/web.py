@@ -278,6 +278,28 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
   <div class="race-list" id="race-list"></div>
 </div>
 
+<div class="card" id="sails-inventory-card">
+  <div class="crew-header" onclick="toggleSailInventory()">
+    <span class="label" style="margin-bottom:0">⛵ Sail Inventory</span>
+    <span id="sails-inventory-chevron" style="color:#8892a4;font-size:.85rem">▶</span>
+  </div>
+  <div id="sails-inventory-body" style="display:none;margin-top:10px">
+    <div id="sail-inventory-list"></div>
+    <div style="margin-top:8px;padding-top:8px;border-top:1px solid #1e3a5f">
+      <div style="font-size:.78rem;color:#8892a4;margin-bottom:6px">Add sail</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <select id="new-sail-type" style="background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:5px 8px;font-size:.82rem">
+          <option value="main">Main</option>
+          <option value="jib">Jib</option>
+          <option value="spinnaker">Spinnaker</option>
+        </select>
+        <input id="new-sail-name" class="field" placeholder="Sail name" maxlength="60" style="flex:1;padding:5px 8px;font-size:.82rem"/>
+        <button class="btn btn-primary" style="font-size:.82rem;padding:5px 12px" onclick="addSail()">Add</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 let state = null;
 let tickInterval = null;
@@ -416,6 +438,13 @@ function render(s) {
           + '<div id="videos-list-' + r.id + '" data-start-utc="' + r.start_utc + '" style="display:none;margin-top:4px"></div>'
           + '</div>'
         : '';
+      const sailsHtml = r.end_utc
+        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
+          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
+          + 'onclick="toggleSails(' + r.id + ')">⛵ Sails ▶</span>'
+          + '<div id="sails-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
+          + '</div>'
+        : '';
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
@@ -423,6 +452,7 @@ function render(s) {
         ${resultsHtml}
         ${notesHtml}
         ${videosHtml}
+        ${sailsHtml}
         ${exports}
       </div>`;
     }).join('');
@@ -959,6 +989,61 @@ async function toggleVideos(sessionId) {
   await _loadVideos(sessionId, el);
 }
 
+async function toggleSails(sessionId) {
+  const el = document.getElementById('sails-list-' + sessionId);
+  if (!el) return;
+  const span = el.previousElementSibling;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (span) span.textContent = '⛵ Sails ▶';
+    return;
+  }
+  el.style.display = '';
+  if (span) span.textContent = '⛵ Sails ▼';
+  await _loadSails(sessionId, el);
+}
+
+async function _loadSails(sessionId, el) {
+  if (!el) el = document.getElementById('sails-list-' + sessionId);
+  if (!el) return;
+  const [sailsResp, inventoryResp] = await Promise.all([
+    fetch('/api/sessions/' + sessionId + '/sails'),
+    fetch('/api/sails'),
+  ]);
+  const current = await sailsResp.json();
+  const inventory = await inventoryResp.json();
+  const slots = ['main', 'jib', 'spinnaker'];
+  let html = '<div style="font-size:.78rem">';
+  slots.forEach(slot => {
+    const opts = (inventory[slot] || []).map(s =>
+      '<option value="' + s.id + '"' + (current[slot] && current[slot].id === s.id ? ' selected' : '') + '>'
+      + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</option>'
+    ).join('');
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<option value="">— none —</option>' + opts
+      + '</select></div>';
+  });
+  html += '<button class="btn btn-primary" style="font-size:.78rem;padding:5px 12px;margin-top:2px" onclick="saveSails(' + sessionId + ')">Save Sails</button>';
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function saveSails(sessionId) {
+  const slots = ['main', 'jib', 'spinnaker'];
+  const body = {};
+  slots.forEach(slot => {
+    const sel = document.getElementById('sail-select-' + slot + '-' + sessionId);
+    body[slot + '_id'] = sel && sel.value ? parseInt(sel.value, 10) : null;
+  });
+  const r = await fetch('/api/sessions/' + sessionId + '/sails', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) { alert('Failed to save sails'); return; }
+  await _loadSails(sessionId, null);
+}
+
 async function _loadVideos(sessionId, el) {
   if (!el) el = document.getElementById('videos-list-' + sessionId);
   if (!el) return;
@@ -1043,6 +1128,60 @@ async function deleteVideo(videoId, sessionId) {
   if (!confirm('Remove this video link?')) return;
   await fetch('/api/videos/' + videoId, {method: 'DELETE'});
   await _loadVideos(sessionId);
+}
+
+let _sailInventoryExpanded = false;
+
+function toggleSailInventory() {
+  _sailInventoryExpanded = !_sailInventoryExpanded;
+  document.getElementById('sails-inventory-body').style.display = _sailInventoryExpanded ? '' : 'none';
+  document.getElementById('sails-inventory-chevron').textContent = _sailInventoryExpanded ? '▼' : '▶';
+  if (_sailInventoryExpanded) _loadSailInventory();
+}
+
+async function _loadSailInventory() {
+  const el = document.getElementById('sail-inventory-list');
+  if (!el) return;
+  const r = await fetch('/api/sails?include_inactive=1');
+  const data = await r.json();
+  const allSails = ['main','jib','spinnaker'].flatMap(t => (data[t] || []).map(s => ({...s, type:t})));
+  if (!allSails.length) { el.innerHTML = '<div style="font-size:.78rem;color:#8892a4">No sails yet</div>'; return; }
+  el.innerHTML = '<table style="width:100%;font-size:.78rem;border-collapse:collapse">'
+    + '<tr><th style="text-align:left;color:#8892a4;padding-bottom:4px">Type</th>'
+    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Name</th>'
+    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Status</th>'
+    + '<th></th></tr>'
+    + allSails.map(s => '<tr style="border-top:1px solid #1e3a5f">'
+      + '<td style="padding:3px 6px 3px 0;color:#8892a4">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
+      + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:#8892a4') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
+      + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? '#4ade80' : '#8892a4') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
+      + '<td><button onclick="toggleRetireSail(' + s.id + ',' + (s.active ? 'false' : 'true') + ')" style="font-size:.72rem;color:#8892a4;background:none;border:none;cursor:pointer">'
+      + (s.active ? 'Retire' : 'Restore') + '</button></td>'
+      + '</tr>'
+    ).join('')
+    + '</table>';
+}
+
+async function addSail() {
+  const type = document.getElementById('new-sail-type').value;
+  const name = document.getElementById('new-sail-name').value.trim();
+  if (!name) { alert('Enter a sail name'); return; }
+  const r = await fetch('/api/sails', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({type, name}),
+  });
+  if (r.status === 409) { alert('A sail with that name already exists'); return; }
+  if (!r.ok) { alert('Failed to add sail'); return; }
+  document.getElementById('new-sail-name').value = '';
+  await _loadSailInventory();
+}
+
+async function toggleRetireSail(id, makeActive) {
+  await fetch('/api/sails/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({active: makeActive}),
+  });
+  await _loadSailInventory();
 }
 
 loadState();
@@ -1214,6 +1353,7 @@ function render(data) {
       exports += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
       exports += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
       exports += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">🎬 Videos ▶</button>';
+      exports += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">⛵ Sails ▶</button>';
     }
     if (s.has_audio && s.audio_session_id) {
       exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
@@ -1228,10 +1368,13 @@ function render(data) {
     const videosPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
+    const sailsPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-sails-' + s.id + '" style="display:none"></div>'
+      : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + '</div>';
+      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + sailsPanel + '</div>';
   }).join('');
 
   const total = data.total;
@@ -1431,6 +1574,61 @@ async function deleteHistVideo(videoId, sessionId) {
   await fetch('/api/videos/' + videoId, {method: 'DELETE'});
   const el = document.getElementById('hist-videos-' + sessionId);
   await _loadVideos(sessionId, el);
+}
+
+async function toggleHistorySails(sessionId) {
+  const el = document.getElementById('hist-sails-' + sessionId);
+  const btn = document.getElementById('hist-sails-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = '⛵ Sails ▶';
+    return;
+  }
+  await _loadSailsForHistory(sessionId, el);
+  el.style.display = '';
+  if (btn) btn.textContent = '⛵ Sails ▼';
+}
+
+async function _loadSailsForHistory(sessionId, el) {
+  if (!el) el = document.getElementById('hist-sails-' + sessionId);
+  if (!el) return;
+  const [sailsResp, inventoryResp] = await Promise.all([
+    fetch('/api/sessions/' + sessionId + '/sails'),
+    fetch('/api/sails'),
+  ]);
+  const current = await sailsResp.json();
+  const inventory = await inventoryResp.json();
+  const slots = ['main', 'jib', 'spinnaker'];
+  let html = '<div style="font-size:.78rem">';
+  slots.forEach(slot => {
+    const opts = (inventory[slot] || []).map(s =>
+      '<option value="' + s.id + '"' + (current[slot] && current[slot].id === s.id ? ' selected' : '') + '>'
+      + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</option>'
+    ).join('');
+    html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
+      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="hist-sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<option value="">— none —</option>' + opts
+      + '</select></div>';
+  });
+  html += '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb;font-size:.78rem" onclick="saveHistSails(' + sessionId + ')">Save Sails</button>';
+  html += '</div>';
+  el.innerHTML = html;
+}
+
+async function saveHistSails(sessionId) {
+  const slots = ['main', 'jib', 'spinnaker'];
+  const body = {};
+  slots.forEach(slot => {
+    const sel = document.getElementById('hist-sail-select-' + slot + '-' + sessionId);
+    body[slot + '_id'] = sel && sel.value ? parseInt(sel.value, 10) : null;
+  });
+  const r = await fetch('/api/sessions/' + sessionId + '/sails', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  if (!r.ok) { alert('Failed to save sails'); return; }
+  await _loadSailsForHistory(sessionId, null);
 }
 
 // Default: last 30 days
@@ -1666,6 +1864,24 @@ class VideoUpdate(BaseModel):
     sync_offset_s: float | None = None
 
 
+class SailCreate(BaseModel):
+    type: str  # 'main' | 'jib' | 'spinnaker'
+    name: str
+    notes: str | None = None
+
+
+class SailUpdate(BaseModel):
+    name: str | None = None
+    notes: str | None = None
+    active: bool | None = None
+
+
+class RaceSailsSet(BaseModel):
+    main_id: int | None = None
+    jib_id: int | None = None
+    spinnaker_id: int | None = None
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -1761,6 +1977,7 @@ def create_app(
                 duration_s = elapsed
             crew = await storage.get_race_crew(r.id)
             results = await storage.list_race_results(r.id)
+            sails = await storage.get_race_sails(r.id)
             return {
                 "id": r.id,
                 "name": r.name,
@@ -1773,6 +1990,7 @@ def create_app(
                 "session_type": r.session_type,
                 "crew": crew,
                 "results": results,
+                "sails": sails,
             }
 
         current_dict = await _race_dict(current) if current else None
@@ -2653,5 +2871,95 @@ def create_app(
                 }
             )
         return JSONResponse(result)
+
+    # ------------------------------------------------------------------
+    # /api/sails  &  /api/sessions/{id}/sails
+    # ------------------------------------------------------------------
+
+    from logger.storage import _SAIL_TYPES  # noqa: PLC0415
+
+    @app.get("/api/sails")
+    async def api_list_sails() -> JSONResponse:
+        """Return active sails grouped by type."""
+        all_sails = await storage.list_sails(include_inactive=False)
+        grouped: dict[str, list[dict[str, Any]]] = {t: [] for t in _SAIL_TYPES}
+        for s in all_sails:
+            if s["type"] in grouped:
+                grouped[s["type"]].append(s)
+        return JSONResponse(grouped)
+
+    @app.post("/api/sails", status_code=201)
+    async def api_add_sail(body: SailCreate) -> JSONResponse:
+        """Add a sail to the inventory."""
+        if body.type not in _SAIL_TYPES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown sail type {body.type!r}. Must be one of {list(_SAIL_TYPES)}",
+            )
+        if not body.name.strip():
+            raise HTTPException(status_code=422, detail="name must not be blank")
+        try:
+            sail_id = await storage.add_sail(body.type, body.name, body.notes)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Sail already exists: type={body.type!r} name={body.name!r}",
+            ) from exc
+        return JSONResponse(
+            {"id": sail_id, "type": body.type, "name": body.name.strip()}, status_code=201
+        )
+
+    @app.patch("/api/sails/{sail_id}", status_code=200)
+    async def api_update_sail(sail_id: int, body: SailUpdate) -> JSONResponse:
+        """Update sail name/notes or retire it."""
+        found = await storage.update_sail(
+            sail_id, name=body.name, notes=body.notes, active=body.active
+        )
+        if not found:
+            raise HTTPException(status_code=404, detail="Sail not found")
+        return JSONResponse({"id": sail_id, "updated": True})
+
+    @app.get("/api/sessions/{session_id}/sails")
+    async def api_get_session_sails(session_id: int) -> JSONResponse:
+        """Return the sail selection for a race/practice session."""
+        race = await storage.get_race(session_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        sails = await storage.get_race_sails(session_id)
+        return JSONResponse(sails)
+
+    @app.put("/api/sessions/{session_id}/sails", status_code=200)
+    async def api_set_session_sails(session_id: int, body: RaceSailsSet) -> JSONResponse:
+        """Set the sail selection for a race/practice session."""
+        race = await storage.get_race(session_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Validate that each supplied sail_id references a sail of the correct type
+        slot_map = {"main": body.main_id, "jib": body.jib_id, "spinnaker": body.spinnaker_id}
+        for slot_type, sail_id in slot_map.items():
+            if sail_id is None:
+                continue
+            all_sails = await storage.list_sails(include_inactive=True)
+            matched = next((s for s in all_sails if s["id"] == sail_id), None)
+            if matched is None:
+                raise HTTPException(status_code=422, detail=f"Sail id={sail_id} not found")
+            if matched["type"] != slot_type:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Sail id={sail_id} has type {matched['type']!r},"
+                        f" expected {slot_type!r} for the {slot_type} slot"
+                    ),
+                )
+
+        await storage.set_race_sails(
+            session_id,
+            main_id=body.main_id,
+            jib_id=body.jib_id,
+            spinnaker_id=body.spinnaker_id,
+        )
+        sails = await storage.get_race_sails(session_id)
+        return JSONResponse(sails)
 
     return app
