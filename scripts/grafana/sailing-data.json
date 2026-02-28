@@ -79,7 +79,6 @@
           ],
           "method": "GET",
           "path": "/api/grafana/annotations",
-          "queryParams": "from=${__from}&to=${__to}",
           "source": "url",
           "type": "annotations"
         }
