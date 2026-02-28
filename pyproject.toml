@@ -27,6 +27,7 @@ dependencies = [
     "python-multipart>=0.0.22",
     "influxdb-client>=1.44.0",
     "psutil>=7.2.2",
+    "faster-whisper>=1.2.1",
 ]
 
 [project.scripts]

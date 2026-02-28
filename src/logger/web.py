@@ -1387,6 +1387,7 @@ function render(data) {
         + '<source src="/api/audio/' + s.audio_session_id + '/stream" type="audio/wav">'
         + '</audio>'
         + '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
+      exports += '<button class="btn-export" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">📝 Transcript ▶</button>';
     }
     const exportsHtml = exports ? '<div class="session-exports">' + exports + '</div>' : '';
     const resultsPanel = s.type !== 'debrief'
@@ -1401,10 +1402,13 @@ function render(data) {
     const sailsPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-sails-' + s.id + '" style="display:none"></div>'
       : '';
+    const transcriptPanel = s.has_audio && s.audio_session_id
+      ? '<div class="session-results" id="hist-transcript-' + s.id + '" style="display:none"></div>'
+      : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + sailsPanel + '</div>';
+      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + sailsPanel + transcriptPanel + '</div>';
   }).join('');
 
   const total = data.total;
@@ -1659,6 +1663,54 @@ async function saveHistSails(sessionId) {
   });
   if (!r.ok) { alert('Failed to save sails'); return; }
   await _loadSailsForHistory(sessionId, null);
+}
+
+async function toggleHistoryTranscript(sessionId, audioSessionId) {
+  const el = document.getElementById('hist-transcript-' + sessionId);
+  const btn = document.getElementById('hist-transcript-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = '📝 Transcript ▶';
+    return;
+  }
+  el.style.display = '';
+  if (btn) btn.textContent = '📝 Transcript ▼';
+  await _loadTranscript(sessionId, audioSessionId, el);
+}
+
+async function _loadTranscript(sessionId, audioSessionId, el) {
+  if (!el) el = document.getElementById('hist-transcript-' + sessionId);
+  if (!el) return;
+  el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">Loading…</span>';
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcript');
+  if (r.status === 404) {
+    // No job yet — offer a button to start transcription
+    el.innerHTML = '<div style="font-size:.8rem;color:#8892a4">No transcript yet. '
+      + '<button class="btn-export" style="font-size:.75rem" onclick="startTranscript(' + sessionId + ',' + audioSessionId + ')">▶ Transcribe</button></div>';
+    return;
+  }
+  const t = await r.json();
+  if (t.status === 'pending' || t.status === 'running') {
+    el.innerHTML = '<span style="color:#facc15;font-size:.8rem">⏳ Transcription in progress…</span>';
+    setTimeout(() => _loadTranscript(sessionId, audioSessionId, el), 3000);
+    return;
+  }
+  if (t.status === 'error') {
+    el.innerHTML = '<span style="color:#f87171;font-size:.8rem">⚠ Error: ' + (t.error_msg || 'unknown') + '</span>';
+    return;
+  }
+  // status === 'done'
+  const text = t.text ? t.text.replace(/&/g,'&amp;').replace(/</g,'&lt;') : '(empty)';
+  el.innerHTML = '<div style="font-size:.8rem;color:#c4cdd8;white-space:pre-wrap;max-height:200px;overflow-y:auto;'
+    + 'background:#0d1929;border-radius:6px;padding:8px">' + text + '</div>';
+}
+
+async function startTranscript(sessionId, audioSessionId) {
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcribe', {method: 'POST'});
+  if (!r.ok) { alert('Failed to start transcription'); return; }
+  const el = document.getElementById('hist-transcript-' + sessionId);
+  await _loadTranscript(sessionId, audioSessionId, el);
 }
 
 // Default: last 30 days
@@ -3070,5 +3122,41 @@ def create_app(
                     break
         payload["cpu_temp_c"] = temp_c
         return JSONResponse(payload)
+
+    # ------------------------------------------------------------------
+    # /api/audio/{session_id}/transcribe  &  /api/audio/{session_id}/transcript
+    # ------------------------------------------------------------------
+
+    @app.post("/api/audio/{session_id}/transcribe", status_code=202)
+    async def api_transcribe(session_id: int) -> JSONResponse:
+        """Trigger a transcription job for an audio session (202 Accepted).
+
+        If a job already exists, returns 409 Conflict.
+        """
+        row = await storage.get_audio_session_row(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Audio session not found")
+        model = os.environ.get("WHISPER_MODEL", "base")
+        try:
+            transcript_id = await storage.create_transcript_job(session_id, model)
+        except ValueError:
+            raise HTTPException(  # noqa: B904
+                status_code=409, detail="Transcript job already exists for this session"
+            )
+
+        from logger.transcribe import transcribe_session
+
+        asyncio.create_task(
+            transcribe_session(storage, session_id, transcript_id, model_size=model)
+        )
+        return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
+
+    @app.get("/api/audio/{session_id}/transcript")
+    async def api_get_transcript(session_id: int) -> JSONResponse:
+        """Poll transcription status and retrieve the transcript text when done."""
+        t = await storage.get_transcript(session_id)
+        if t is None:
+            raise HTTPException(status_code=404, detail="No transcript job found for this session")
+        return JSONResponse(t)
 
     return app

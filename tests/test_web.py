@@ -2134,3 +2134,92 @@ async def test_system_health_returns_200(storage: Storage) -> None:
     assert isinstance(data["cpu_pct"], float | int)
     assert isinstance(data["mem_pct"], float | int)
     assert isinstance(data["disk_pct"], float | int)
+
+
+# ---------------------------------------------------------------------------
+# Transcription endpoints (#42)
+# ---------------------------------------------------------------------------
+
+
+async def _create_audio_session(storage: Storage, tmp_path: Path) -> int:
+    """Helper: insert a real audio session row with a stub WAV file; return session_id."""
+    from logger.audio import AudioSession
+
+    wav_file = tmp_path / "test.wav"
+    wav_file.write_bytes(b"RIFF")
+    session = AudioSession(
+        file_path=str(wav_file),
+        device_name="Test",
+        start_utc=_START_UTC,
+        end_utc=_END_UTC,
+        sample_rate=48000,
+        channels=1,
+    )
+    return await storage.write_audio_session(session)
+
+
+@pytest.mark.asyncio
+async def test_get_transcript_no_job_404(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/audio/{id}/transcript returns 404 when no job exists."""
+    session_id = await _create_audio_session(storage, tmp_path)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/transcript")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_transcript_job_202(storage: Storage, tmp_path: Path) -> None:
+    """POST /api/audio/{id}/transcribe returns 202; GET shows status pending/running."""
+    from unittest.mock import AsyncMock, patch
+
+    session_id = await _create_audio_session(storage, tmp_path)
+    app = create_app(storage)
+
+    # Mock transcribe_session so it doesn't actually run faster-whisper
+    with patch("logger.web.asyncio.create_task") as mock_create_task:
+        mock_create_task.return_value = AsyncMock()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            post_resp = await client.post(f"/api/audio/{session_id}/transcribe")
+            assert post_resp.status_code == 202
+            assert post_resp.json()["status"] == "accepted"
+
+            # Job exists; second POST returns 409
+            post_resp2 = await client.post(f"/api/audio/{session_id}/transcribe")
+            assert post_resp2.status_code == 409
+
+            # GET returns the job row
+            get_resp = await client.get(f"/api/audio/{session_id}/transcript")
+    assert get_resp.status_code == 200
+    data = get_resp.json()
+    assert data["status"] in {"pending", "running"}
+
+
+@pytest.mark.asyncio
+async def test_transcript_done(storage: Storage, tmp_path: Path) -> None:
+    """After transcription completes, GET returns {status:'done', text:...}."""
+    from unittest.mock import patch
+
+    session_id = await _create_audio_session(storage, tmp_path)
+
+    # Directly exercise the storage + transcribe_session with mocked WhisperModel
+    with patch("logger.transcribe._run_whisper", return_value="Hello world"):
+        from logger.transcribe import transcribe_session
+
+        transcript_id = await storage.create_transcript_job(session_id, "base")
+        await transcribe_session(storage, session_id, transcript_id, model_size="base")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/transcript")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "done"
+    assert data["text"] == "Hello world"
