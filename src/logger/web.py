@@ -960,9 +960,9 @@ function _videoAddForm(sessionId) {
     + '<div style="font-size:.75rem;color:#8892a4;margin-bottom:4px">Link a YouTube video</div>'
     + '<input id="video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration — pick any moment you can identify in both the video and the data:</div>'
-    + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
     + ' <button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
@@ -984,13 +984,14 @@ async function submitAddVideo(sessionId) {
   const url = document.getElementById('video-url-' + sessionId).value.trim();
   const label = document.getElementById('video-label-' + sessionId).value.trim();
   const syncUtcVal = document.getElementById('video-sync-utc-' + sessionId).value;
-  const syncPosVal = document.getElementById('video-sync-pos-' + sessionId).value;
+  const syncPosVal = document.getElementById('video-sync-pos-' + sessionId).value.trim();
   if (!url) { alert('YouTube URL is required'); return; }
-  if (!syncUtcVal) { alert('Sync UTC time is required'); return; }
-  const syncOffsetS = _parseVideoPosition(syncPosVal);
+  // Sync fields are optional — default to now / 0s if not provided.
+  const syncUtc = syncUtcVal
+    ? (syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z')
+    : new Date().toISOString();
+  const syncOffsetS = syncPosVal ? _parseVideoPosition(syncPosVal) : 0;
   if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
-  // datetime-local gives local time — append Z only if no tz info
-  const syncUtc = syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z';
   const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
@@ -1334,9 +1335,9 @@ function _histVideoAddForm(sessionId) {
   return '<div id="hist-video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
     + '<input id="hist-video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync — pick a moment identifiable in both video and data:</div>'
-    + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
     + ' <button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
@@ -1357,12 +1358,14 @@ async function submitHistAddVideo(sessionId) {
   const url = document.getElementById('hist-video-url-' + sessionId).value.trim();
   const label = document.getElementById('hist-video-label-' + sessionId).value.trim();
   const syncUtcVal = document.getElementById('hist-video-sync-utc-' + sessionId).value;
-  const syncPosVal = document.getElementById('hist-video-sync-pos-' + sessionId).value;
+  const syncPosVal = document.getElementById('hist-video-sync-pos-' + sessionId).value.trim();
   if (!url) { alert('YouTube URL is required'); return; }
-  if (!syncUtcVal) { alert('Sync UTC time is required'); return; }
-  const syncOffsetS = _parseVideoPos(syncPosVal);
+  // Sync fields are optional — default to now / 0s if not provided.
+  const syncUtc = syncUtcVal
+    ? (syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z')
+    : new Date().toISOString();
+  const syncOffsetS = syncPosVal ? _parseVideoPos(syncPosVal) : 0;
   if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
-  const syncUtc = syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z';
   const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
