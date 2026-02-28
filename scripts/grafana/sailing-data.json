@@ -93,7 +93,14 @@
               "mode": "off"
             }
           },
-          "unit": "velocityknot"
+          "unit": "velocityknot",
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
         },
         "overrides": []
       },
@@ -118,14 +125,7 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        },
-        "dataLinks": [
-          {
-            "title": "Watch Video at this moment",
-            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
-            "targetBlank": true
-          }
-        ]
+        }
       },
       "targets": [
         {
@@ -190,7 +190,14 @@
               "mode": "off"
             }
           },
-          "unit": "velocityknot"
+          "unit": "velocityknot",
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
         },
         "overrides": []
       },
@@ -215,14 +222,7 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        },
-        "dataLinks": [
-          {
-            "title": "Watch Video at this moment",
-            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
-            "targetBlank": true
-          }
-        ]
+        }
       },
       "targets": [
         {
@@ -279,7 +279,14 @@
               "mode": "off"
             }
           },
-          "unit": "degree"
+          "unit": "degree",
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
         },
         "overrides": []
       },
@@ -303,14 +310,7 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        },
-        "dataLinks": [
-          {
-            "title": "Watch Video at this moment",
-            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
-            "targetBlank": true
-          }
-        ]
+        }
       },
       "targets": [
         {
@@ -375,7 +375,14 @@
               "mode": "off"
             }
           },
-          "unit": "velocityknot"
+          "unit": "velocityknot",
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
         },
         "overrides": [
           {
@@ -417,14 +424,7 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        },
-        "dataLinks": [
-          {
-            "title": "Watch Video at this moment",
-            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
-            "targetBlank": true
-          }
-        ]
+        }
       },
       "targets": [
         {
@@ -491,7 +491,14 @@
           },
           "max": 360,
           "min": 0,
-          "unit": "degree"
+          "unit": "degree",
+          "links": [
+            {
+              "title": "Watch Video at this moment",
+              "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
+              "targetBlank": true
+            }
+          ]
         },
         "overrides": []
       },
@@ -515,14 +522,7 @@
         "tooltip": {
           "mode": "multi",
           "sort": "none"
-        },
-        "dataLinks": [
-          {
-            "title": "Watch Video at this moment",
-            "url": "${logger_url}/api/videos/redirect?at=${__value.time:date:iso}",
-            "targetBlank": true
-          }
-        ]
+        }
       },
       "targets": [
         {
