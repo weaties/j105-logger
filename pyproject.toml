@@ -24,6 +24,7 @@ dependencies = [
     "soundfile>=0.13.1",
     "fastapi>=0.133.1",
     "uvicorn>=0.41.0",
+    "python-multipart>=0.0.22",
 ]
 
 [project.scripts]

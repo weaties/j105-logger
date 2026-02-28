@@ -1164,3 +1164,107 @@ async def test_grafana_annotations_returns_list(storage: Storage) -> None:
     assert "text" in data[0]
     assert "tags" in data[0]
     assert data[0]["text"] == "Tack at mark"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 notes: settings, photo, serve, traversal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_settings_note_returns_201(storage: Storage) -> None:
+    """POST /api/sessions/{id}/notes with note_type='settings' and valid JSON body returns 201."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/sessions/{race_id}/notes",
+            json={"body": '{"TWS": "15", "TWD": "220"}', "note_type": "settings"},
+        )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "id" in data
+    assert "ts" in data
+
+
+@pytest.mark.asyncio
+async def test_create_settings_note_invalid_json_returns_422(storage: Storage) -> None:
+    """POST /api/sessions/{id}/notes with note_type='settings' and non-JSON body returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/sessions/{race_id}/notes",
+            json={"body": "not valid json", "note_type": "settings"},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_create_photo_note_returns_201(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """POST /api/sessions/{id}/notes/photo with a file creates a photo note and saves file."""
+    notes_dir = tmp_path / "notes"
+    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
+    app = create_app(storage)
+    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.post(
+            f"/api/sessions/{race_id}/notes/photo",
+            files={"file": ("test.jpg", jpeg_bytes, "image/jpeg")},
+        )
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "id" in data
+    assert "photo_path" in data
+    # File should exist on disk
+    assert (notes_dir / data["photo_path"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_returns_200(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /notes/{path} serves a file that exists in NOTES_DIR."""
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    photo_file = notes_dir / "test.jpg"
+    photo_file.write_bytes(b"\xff\xd8\xff\xe0test")
+
+    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/notes/test.jpg")
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_traversal_blocked(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Path traversal via URL-encoded dots is blocked with 403 (not served)."""
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+
+    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Use URL-encoded dots to bypass client-side normalization
+        resp = await client.get("/notes/%2e%2e/%2e%2e/etc/passwd")
+    # Path traversal must not return 200 — either 403 (blocked) or 404 (not found)
+    assert resp.status_code in (403, 404)
