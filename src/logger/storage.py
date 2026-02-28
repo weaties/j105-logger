@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 12
+_CURRENT_VERSION: int = 13
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -273,6 +273,22 @@ _MIGRATIONS: dict[int, str] = {
             ON session_notes(race_id);
         CREATE INDEX IF NOT EXISTS idx_session_notes_ts
             ON session_notes(ts);
+    """,
+    13: """
+        CREATE TABLE IF NOT EXISTS race_videos (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id          INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            youtube_url      TEXT NOT NULL,
+            video_id         TEXT NOT NULL,
+            label            TEXT NOT NULL DEFAULT '',
+            sync_utc         TEXT NOT NULL,
+            sync_offset_s    REAL NOT NULL DEFAULT 0,
+            duration_s       REAL,
+            title            TEXT NOT NULL DEFAULT '',
+            created_at       TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_race_videos_race_id
+            ON race_videos(race_id);
     """,
 }
 
@@ -1466,6 +1482,101 @@ class Storage:
             except (json.JSONDecodeError, ValueError):
                 pass
         return sorted(keys)
+
+    # ------------------------------------------------------------------
+    # Race videos
+    # ------------------------------------------------------------------
+
+    async def add_race_video(
+        self,
+        race_id: int,
+        youtube_url: str,
+        video_id: str,
+        title: str,
+        label: str,
+        sync_utc: datetime,
+        sync_offset_s: float,
+        duration_s: float | None = None,
+    ) -> int:
+        """Add a YouTube video linked to a race.  Returns the new row id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now_str = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO race_videos"
+            " (race_id, youtube_url, video_id, title, label,"
+            " sync_utc, sync_offset_s, duration_s, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                race_id,
+                youtube_url,
+                video_id,
+                title,
+                label,
+                sync_utc.isoformat(),
+                sync_offset_s,
+                duration_s,
+                now_str,
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info(
+            "Race video added: id={} race_id={} video_id={}", cur.lastrowid, race_id, video_id
+        )  # noqa: E501
+        return cur.lastrowid
+
+    async def list_race_videos(self, race_id: int) -> list[dict[str, Any]]:
+        """Return all videos linked to a race, ordered by created_at ASC."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, race_id, youtube_url, video_id, title, label,"
+            " sync_utc, sync_offset_s, duration_s, created_at"
+            " FROM race_videos WHERE race_id = ? ORDER BY created_at ASC",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_race_video(
+        self,
+        video_row_id: int,
+        *,
+        label: str | None = None,
+        sync_utc: datetime | None = None,
+        sync_offset_s: float | None = None,
+    ) -> bool:
+        """Update mutable fields on a race video.  Returns True if found."""
+        updates: list[str] = []
+        params: list[object] = []
+        if label is not None:
+            updates.append("label = ?")
+            params.append(label)
+        if sync_utc is not None:
+            updates.append("sync_utc = ?")
+            params.append(sync_utc.isoformat())
+        if sync_offset_s is not None:
+            updates.append("sync_offset_s = ?")
+            params.append(sync_offset_s)
+        if not updates:
+            return True  # nothing to do
+        params.append(video_row_id)
+        db = self._conn()
+        cur = await db.execute(
+            f"UPDATE race_videos SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
+            params,
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_race_video(self, video_row_id: int) -> bool:
+        """Delete a race video by id.  Returns True if deleted."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM race_videos WHERE id = ?", (video_row_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
 
     # ------------------------------------------------------------------
     # Helpers

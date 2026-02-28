@@ -1094,12 +1094,8 @@ async def test_list_notes_returns_notes(storage: Storage) -> None:
     ) as client:
         await _set_event(client)
         race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Note one"}
-        )
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Note two"}
-        )
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note one"})
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note two"})
         resp = await client.get(f"/api/sessions/{race_id}/notes")
     assert resp.status_code == 200
     notes = resp.json()
@@ -1148,14 +1144,10 @@ async def test_grafana_annotations_returns_list(storage: Storage) -> None:
     ) as client:
         await _set_event(client)
         race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"}
-        )
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"})
         from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
         to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp = await client.get(
-            f"/api/grafana/annotations?from={from_ms}&to={to_ms}"
-        )
+        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
@@ -1268,3 +1260,205 @@ async def test_serve_note_photo_traversal_blocked(
         resp = await client.get("/notes/%2e%2e/%2e%2e/etc/passwd")
     # Path traversal must not return 200 — either 403 (blocked) or 404 (not found)
     assert resp.status_code in (403, 404)
+
+
+# ---------------------------------------------------------------------------
+# Video API tests
+# ---------------------------------------------------------------------------
+
+_SYNC_UTC = "2026-02-26T14:05:00+00:00"
+_YT_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+
+
+async def _start_race_for_videos(client: httpx.AsyncClient) -> int:
+    await _set_event(client)
+    return (await client.post("/api/races/start")).json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_list_videos_empty(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos returns [] when no videos are linked."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.get(f"/api/sessions/{race_id}/videos")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_list_videos_unknown_session(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos returns 404 for an unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/99999/videos")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_video_returns_201_and_lists(storage: Storage) -> None:
+    """POST /api/sessions/{id}/videos creates a video and GET returns it."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.post(
+            f"/api/sessions/{race_id}/videos",
+            json={
+                "youtube_url": _YT_URL,
+                "label": "Bow cam",
+                "sync_utc": _SYNC_UTC,
+                "sync_offset_s": 323.0,
+            },
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["youtube_url"] == _YT_URL
+        assert data["label"] == "Bow cam"
+        assert data["sync_offset_s"] == 323.0
+        assert "id" in data
+
+        list_resp = await client.get(f"/api/sessions/{race_id}/videos")
+    assert list_resp.status_code == 200
+    items = list_resp.json()
+    assert len(items) == 1
+    assert items[0]["id"] == data["id"]
+
+
+@pytest.mark.asyncio
+async def test_add_video_unknown_session_returns_404(storage: Storage) -> None:
+    """POST /api/sessions/{id}/videos returns 404 for an unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/sessions/99999/videos",
+            json={"youtube_url": _YT_URL, "sync_utc": _SYNC_UTC, "sync_offset_s": 0.0},
+        )
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_add_video_invalid_sync_utc_returns_422(storage: Storage) -> None:
+    """POST /api/sessions/{id}/videos returns 422 when sync_utc is not parseable."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.post(
+            f"/api/sessions/{race_id}/videos",
+            json={"youtube_url": _YT_URL, "sync_utc": "not-a-date", "sync_offset_s": 0.0},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_list_videos_at_param_returns_deep_link(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos?at= returns a computed deep_link for each video."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        # Add video manually via storage so we control duration_s
+        sync_utc = datetime(2026, 2, 26, 14, 5, 0, tzinfo=UTC)
+        await storage.add_race_video(
+            race_id=race_id,
+            youtube_url=_YT_URL,
+            video_id="dQw4w9WgXcQ",
+            title="Test",
+            label="",
+            sync_utc=sync_utc,
+            sync_offset_s=323.0,
+            duration_s=600.0,
+        )
+        # Request 30 seconds after sync — expected video pos = 323 + 30 = 353
+        at = "2026-02-26T14:05:30Z"
+        resp = await client.get(f"/api/sessions/{race_id}/videos?at={at}")
+    assert resp.status_code == 200
+    items = resp.json()
+    assert len(items) == 1
+    assert items[0]["deep_link"] == "https://youtu.be/dQw4w9WgXcQ?t=353"
+
+
+@pytest.mark.asyncio
+async def test_list_videos_at_invalid_returns_422(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos?at=bad returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.get(f"/api/sessions/{race_id}/videos?at=not-a-date")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_update_video_label(storage: Storage) -> None:
+    """PATCH /api/videos/{id} updates the label and returns 200."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        add_resp = await client.post(
+            f"/api/sessions/{race_id}/videos",
+            json={
+                "youtube_url": _YT_URL,
+                "label": "Old",
+                "sync_utc": _SYNC_UTC,
+                "sync_offset_s": 0.0,
+            },
+        )
+        vid_id = add_resp.json()["id"]
+        patch_resp = await client.patch(f"/api/videos/{vid_id}", json={"label": "New"})
+    assert patch_resp.status_code == 200
+    assert patch_resp.json()["updated"] is True
+
+
+@pytest.mark.asyncio
+async def test_update_video_not_found(storage: Storage) -> None:
+    """PATCH /api/videos/{id} returns 404 for an unknown video."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/videos/99999", json={"label": "Ghost"})
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_video(storage: Storage) -> None:
+    """DELETE /api/videos/{id} removes the video and returns 204."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        add_resp = await client.post(
+            f"/api/sessions/{race_id}/videos",
+            json={"youtube_url": _YT_URL, "sync_utc": _SYNC_UTC, "sync_offset_s": 0.0},
+        )
+        vid_id = add_resp.json()["id"]
+        del_resp = await client.delete(f"/api/videos/{vid_id}")
+        assert del_resp.status_code == 204
+        list_resp = await client.get(f"/api/sessions/{race_id}/videos")
+    assert list_resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_delete_video_not_found(storage: Storage) -> None:
+    """DELETE /api/videos/{id} returns 404 for an unknown video."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.delete("/api/videos/99999")
+    assert resp.status_code == 404
