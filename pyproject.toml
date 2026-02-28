@@ -28,6 +28,7 @@ dependencies = [
     "influxdb-client>=1.44.0",
     "psutil>=7.2.2",
     "faster-whisper>=1.2.1",
+    "pyannote-audio>=4.0.4",
 ]
 
 [project.scripts]
@@ -90,6 +91,10 @@ mypy_path = "src"
 
 [[tool.mypy.overrides]]
 module = ["sounddevice", "soundfile"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pyannote.*", "torch", "torchaudio"]
 ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------

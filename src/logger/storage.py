@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 15
+_CURRENT_VERSION: int = 16
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -322,6 +322,9 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_transcripts_audio_session_id
             ON transcripts(audio_session_id);
+    """,
+    16: """
+        ALTER TABLE transcripts ADD COLUMN segments_json TEXT;
     """,
 }
 
@@ -1833,23 +1836,26 @@ class Storage:
         status: str,
         text: str | None = None,
         error_msg: str | None = None,
+        segments_json: str | None = None,
     ) -> None:
-        """Update the status (and optionally text/error_msg) of a transcript row."""
+        """Update the status (and optionally text/error_msg/segments_json) of a transcript row."""
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
 
         now = _datetime.now(_UTC).isoformat()
         db = self._conn()
         await db.execute(
-            "UPDATE transcripts SET status=?, text=?, error_msg=?, updated_utc=? WHERE id=?",
-            (status, text, error_msg, now, transcript_id),
+            "UPDATE transcripts SET status=?, text=?, error_msg=?, segments_json=?, updated_utc=?"
+            " WHERE id=?",
+            (status, text, error_msg, segments_json, now, transcript_id),
         )
         await db.commit()
 
     async def get_transcript(self, audio_session_id: int) -> dict[str, Any] | None:
         """Return the transcript row for *audio_session_id*, or None if not found."""
         cur = await self._conn().execute(
-            "SELECT id, audio_session_id, status, text, error_msg, model, created_utc, updated_utc"
+            "SELECT id, audio_session_id, status, text, error_msg, model,"
+            " created_utc, updated_utc, segments_json"
             " FROM transcripts WHERE audio_session_id = ?",
             (audio_session_id,),
         )
