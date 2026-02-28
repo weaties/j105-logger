@@ -1558,3 +1558,81 @@ async def test_delete_video_not_found(storage: Storage) -> None:
     ) as client:
         resp = await client.delete("/api/videos/99999")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/sessions/{id}/videos/redirect tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_videos_redirect_302(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos/redirect returns 302 to computed YouTube URL."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=False
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        sync_utc = datetime(2026, 2, 26, 14, 5, 0, tzinfo=UTC)
+        await storage.add_race_video(
+            race_id=race_id,
+            youtube_url=_YT_URL,
+            video_id="dQw4w9WgXcQ",
+            title="Test",
+            label="",
+            sync_utc=sync_utc,
+            sync_offset_s=323.0,
+            duration_s=600.0,
+        )
+        # 30 s after sync → video pos = 323 + 30 = 353
+        at = "2026-02-26T14:05:30Z"
+        resp = await client.get(f"/api/sessions/{race_id}/videos/redirect?at={at}")
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://youtu.be/dQw4w9WgXcQ?t=353"
+
+
+@pytest.mark.asyncio
+async def test_videos_redirect_no_videos_returns_404(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos/redirect returns 404 when no videos are linked."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.get(f"/api/sessions/{race_id}/videos/redirect?at=2026-02-26T14:05:30Z")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_videos_redirect_unknown_session_returns_404(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos/redirect returns 404 for an unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/99999/videos/redirect?at=2026-02-26T14:05:30Z")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_videos_redirect_invalid_at_returns_422(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos/redirect returns 422 when 'at' is not parseable."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.get(f"/api/sessions/{race_id}/videos/redirect?at=not-a-date")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_videos_redirect_missing_at_returns_422(storage: Storage) -> None:
+    """GET /api/sessions/{id}/videos/redirect returns 422 when 'at' is absent."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _start_race_for_videos(client)
+        resp = await client.get(f"/api/sessions/{race_id}/videos/redirect")
+    assert resp.status_code == 422
