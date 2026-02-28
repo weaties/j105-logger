@@ -2,6 +2,11 @@
 data/*.db
 data/*.sqlite
 data/*.csv
+data/audio/
+data/notes/
+
+# Claude Code project directory
+.claude/
 
 # Environment — ignore real env files but not the example template
 .env
@@ -39,3 +44,7 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+
+# macOS
+.DS_Store
+**/.DS_Store
