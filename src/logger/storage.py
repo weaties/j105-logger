@@ -829,6 +829,16 @@ class Storage:
         await db.commit()
         logger.debug("Audio session {} end_utc updated", session_id)
 
+    async def get_audio_session_row(self, session_id: int) -> dict[str, Any] | None:
+        """Return a single audio_sessions row as a dict, or None if not found."""
+        cur = await self._conn().execute(
+            "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels"
+            " FROM audio_sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def list_audio_sessions(self) -> list[AudioSession]:
         """Return all audio sessions ordered by start_utc descending."""
         from datetime import datetime as _datetime

@@ -27,8 +27,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Form, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
 from pydantic import BaseModel
 
@@ -924,7 +924,7 @@ function renderNote(n, sessionId) {
   let content = '';
   if (n.note_type === 'photo' && n.photo_path) {
     const src = '/notes/' + n.photo_path;
-    content = '<img src="' + src + '" style="max-width:80px;max-height:60px;border-radius:4px;'
+    content = '<img src="' + src + '" loading="lazy" style="max-width:80px;max-height:60px;border-radius:4px;'
       + 'cursor:pointer;vertical-align:middle;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '" />';
   } else if (n.note_type === 'settings' && n.body) {
     try {
@@ -1362,7 +1362,10 @@ function render(data) {
       exports += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">⛵ Sails ▶</button>';
     }
     if (s.has_audio && s.audio_session_id) {
-      exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
+      exports += '<audio controls style="width:100%;margin-top:4px">'
+        + '<source src="/api/audio/' + s.audio_session_id + '/stream" type="audio/wav">'
+        + '</audio>'
+        + '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
     }
     const exportsHtml = exports ? '<div class="session-exports">' + exports + '</div>' : '';
     const resultsPanel = s.type !== 'debrief'
@@ -1430,7 +1433,7 @@ function renderHistoryNote(n, sessionId) {
   let content = '';
   if (n.note_type === 'photo' && n.photo_path) {
     const src = '/notes/' + n.photo_path;
-    content = '<img src="' + src + '" style="max-width:80px;max-height:60px;border-radius:4px;'
+    content = '<img src="' + src + '" loading="lazy" style="max-width:80px;max-height:60px;border-radius:4px;'
       + 'cursor:pointer;vertical-align:middle;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '" />';
   } else if (n.note_type === 'settings' && n.body) {
     try {
@@ -2592,14 +2595,24 @@ def create_app(
         )
 
     @app.get("/notes/{path:path}")
-    async def serve_note_photo(path: str) -> FileResponse:
+    async def serve_note_photo(path: str, request: Request) -> Response:
         notes_dir = Path(os.environ.get("NOTES_DIR", "data/notes")).resolve()
         full_path = (notes_dir / path).resolve()
         if not str(full_path).startswith(str(notes_dir)):
             raise HTTPException(status_code=403, detail="Forbidden")
         if not full_path.exists():
             raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(full_path)
+        st = full_path.stat()
+        etag = f'"{st.st_mtime_ns}-{st.st_size}"'
+        if request.headers.get("If-None-Match") == etag:
+            return Response(status_code=304)
+        return FileResponse(
+            full_path,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": etag,
+            },
+        )
 
     @app.get("/api/sessions/{session_id}/notes")
     async def api_list_notes(session_id: int) -> JSONResponse:
@@ -2976,5 +2989,35 @@ def create_app(
         )
         sails = await storage.get_race_sails(session_id)
         return JSONResponse(sails)
+
+    # ------------------------------------------------------------------
+    # /api/audio/{session_id}/download  &  /api/audio/{session_id}/stream
+    # ------------------------------------------------------------------
+
+    @app.get("/api/audio/{session_id}/download")
+    async def download_audio(session_id: int) -> FileResponse:
+        """Download a WAV file as an attachment."""
+        row = await storage.get_audio_session_row(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Audio session not found")
+        path = Path(row["file_path"])
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found on disk")
+        return FileResponse(
+            path,
+            media_type="audio/wav",
+            headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+        )
+
+    @app.get("/api/audio/{session_id}/stream")
+    async def stream_audio(session_id: int) -> FileResponse:
+        """Stream a WAV file; Starlette handles Range headers for seekable playback."""
+        row = await storage.get_audio_session_row(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="Audio session not found")
+        path = Path(row["file_path"])
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found on disk")
+        return FileResponse(path, media_type="audio/wav")
 
     return app

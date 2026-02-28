@@ -1943,3 +1943,171 @@ async def test_state_includes_sails(storage: Storage) -> None:
 
     assert "sails" in state["current_race"]
     assert state["current_race"]["sails"]["main"]["id"] == main_id
+
+
+# ---------------------------------------------------------------------------
+# Audio download / stream endpoints (#21)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_download_audio_404_unknown_session(storage: Storage) -> None:
+    """GET /api/audio/999/download returns 404 when session_id does not exist."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/audio/999/download")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_audio_404_missing_file(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/audio/{id}/download returns 404 when DB row exists but file is gone."""
+    from logger.audio import AudioSession
+
+    session = AudioSession(
+        file_path=str(tmp_path / "missing.wav"),
+        device_name="Test",
+        start_utc=_START_UTC,
+        end_utc=_END_UTC,
+        sample_rate=48000,
+        channels=1,
+    )
+    session_id = await storage.write_audio_session(session)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/download")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_download_audio_200(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/audio/{id}/download returns 200 with Content-Disposition attachment."""
+    from logger.audio import AudioSession
+
+    wav_file = tmp_path / "test.wav"
+    wav_file.write_bytes(b"RIFF")  # minimal stub
+    session = AudioSession(
+        file_path=str(wav_file),
+        device_name="Test",
+        start_utc=_START_UTC,
+        end_utc=_END_UTC,
+        sample_rate=48000,
+        channels=1,
+    )
+    session_id = await storage.write_audio_session(session)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/download")
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers.get("content-disposition", "")
+    assert "test.wav" in resp.headers.get("content-disposition", "")
+
+
+@pytest.mark.asyncio
+async def test_stream_audio_200(storage: Storage, tmp_path: Path) -> None:
+    """GET /api/audio/{id}/stream returns 200 with audio/wav media type."""
+    from logger.audio import AudioSession
+
+    wav_file = tmp_path / "stream.wav"
+    wav_file.write_bytes(b"RIFF")
+    session = AudioSession(
+        file_path=str(wav_file),
+        device_name="Test",
+        start_utc=_START_UTC,
+        end_utc=_END_UTC,
+        sample_rate=48000,
+        channels=1,
+    )
+    session_id = await storage.write_audio_session(session)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/stream")
+    assert resp.status_code == 200
+    assert resp.headers.get("content-type", "").startswith("audio/wav")
+
+
+# ---------------------------------------------------------------------------
+# Photo caching / lazy loading (#44)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_cache_headers(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /notes/{path} returns Cache-Control and ETag headers."""
+    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8")  # minimal JPEG stub
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/notes/photo.jpg")
+    assert resp.status_code == 200
+    assert "max-age=31536000" in resp.headers.get("cache-control", "")
+    assert resp.headers.get("etag", "") != ""
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_304_if_none_match(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /notes/{path} returns 304 when ETag matches If-None-Match header."""
+    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8")
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.get("/notes/photo.jpg")
+        etag = first.headers["etag"]
+        second = await client.get("/notes/photo.jpg", headers={"If-None-Match": etag})
+    assert second.status_code == 304
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_403_traversal(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /notes/{path} with percent-encoded path traversal returns 403.
+
+    Standard HTTP clients normalize literal '..' segments in URLs, so the
+    traversal must be encoded as %2e%2e to reach the handler.
+    """
+    notes_dir = tmp_path / "notes"
+    notes_dir.mkdir()
+    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
+    # Create a "secret" file one level above notes_dir
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # %2e%2e is URL-encoded '..'; httpx won't normalize it as a path segment
+        resp = await client.get("/notes/%2e%2e/secret.txt")
+    assert resp.status_code in {403, 404}  # 403 if handler catches it; 404 if server normalizes
+
+
+@pytest.mark.asyncio
+async def test_serve_note_photo_404(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /notes/{path} returns 404 when the file does not exist."""
+    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/notes/nonexistent.jpg")
+    assert resp.status_code == 404
