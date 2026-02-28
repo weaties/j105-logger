@@ -873,6 +873,14 @@ NOTES_DIR=data/notes    # directory where uploaded photo notes are stored
 WEB_HOST=0.0.0.0        # bind address
 WEB_PORT=3002           # http://corvopi:3002 on Tailscale
 # WEB_PIN=             # optional PIN (reserved, not yet implemented)
+# Grafana deep-link buttons in the web UI
+GRAFANA_URL=http://corvopi:3001
+GRAFANA_DASHBOARD_UID=j105-sailing
+# InfluxDB — required only for system health metrics; omit if not using InfluxDB
+# INFLUX_URL=http://localhost:8086
+# INFLUX_TOKEN=<token from ~/influx-token.txt>
+# INFLUX_ORG=j105
+# INFLUX_BUCKET=signalk
 ```
 
 Edit with `nano ~/j105-logger/.env`. Changes take effect on the next
