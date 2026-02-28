@@ -25,6 +25,7 @@ dependencies = [
     "fastapi>=0.133.1",
     "uvicorn>=0.41.0",
     "python-multipart>=0.0.22",
+    "influxdb-client>=1.44.0",
 ]
 
 [project.scripts]
