@@ -996,12 +996,20 @@ async function submitAddVideo(sessionId) {
     : new Date().toISOString();
   const syncOffsetS = syncPosVal ? _parseVideoPosition(syncPosVal) : 0;
   if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
-  const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
-  });
-  if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
-  await _loadVideos(sessionId);
+  const btn = document.querySelector('#video-add-form-' + sessionId + ' .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
+    });
+    if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
+    await _loadVideos(sessionId);
+  } catch (e) {
+    alert('Error saving video: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Add Video'; }
+  }
 }
 
 async function deleteVideo(videoId, sessionId) {
@@ -1373,13 +1381,21 @@ async function submitHistAddVideo(sessionId) {
     : new Date().toISOString();
   const syncOffsetS = syncPosVal ? _parseVideoPos(syncPosVal) : 0;
   if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
-  const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
-  });
-  if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
-  const el = document.getElementById('hist-videos-' + sessionId);
-  await _loadVideos(sessionId, el);
+  const btn = document.querySelector('#hist-video-add-form-' + sessionId + ' .btn-export');
+  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  try {
+    const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
+    });
+    if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
+    const el = document.getElementById('hist-videos-' + sessionId);
+    await _loadVideos(sessionId, el);
+  } catch (e) {
+    alert('Error saving video: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Add Video'; }
+  }
 }
 
 async function deleteHistVideo(videoId, sessionId) {
