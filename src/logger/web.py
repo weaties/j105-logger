@@ -1841,9 +1841,32 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
     return;
   }
   // status === 'done'
-  const text = t.text ? t.text.replace(/&/g,'&amp;').replace(/</g,'&lt;') : '(empty)';
-  el.innerHTML = '<div style="font-size:.8rem;color:#c4cdd8;white-space:pre-wrap;max-height:200px;overflow-y:auto;'
-    + 'background:#0d1929;border-radius:6px;padding:8px">' + text + '</div>';
+  if (t.segments && t.segments.length > 0) {
+    // merge consecutive same-speaker segments for readability
+    const blocks = [];
+    for (const seg of t.segments) {
+      const last = blocks[blocks.length - 1];
+      if (last && last.speaker === seg.speaker) {
+        last.text += ' ' + seg.text; last.end = seg.end;
+      } else { blocks.push({...seg}); }
+    }
+    const speakers = [...new Set(blocks.map(b => b.speaker))];
+    const palette = ['#7dd3fc','#86efac','#fde68a','#fca5a5','#c4b5fd','#f9a8d4'];
+    const color = s => palette[speakers.indexOf(s) % palette.length];
+    const fmt = s => { const m=Math.floor(s/60); return m+':'+String(Math.floor(s%60)).padStart(2,'0'); };
+    const html = blocks.map(b =>
+      `<div style="margin-bottom:8px">
+         <span style="color:${color(b.speaker)};font-weight:600;font-size:.75rem">${b.speaker}</span>
+         <span style="color:#8892a4;font-size:.7rem;margin-left:4px">[${fmt(b.start)}]</span>
+         <div style="color:#c4cdd8;font-size:.8rem;margin-top:2px">${b.text.trim().replace(/</g,'&lt;')}</div>
+       </div>`
+    ).join('');
+    el.innerHTML = '<div style="max-height:300px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">' + html + '</div>';
+  } else {
+    // legacy: plain text fallback
+    const text = t.text ? t.text.replace(/</g,'&lt;') : '(empty)';
+    el.innerHTML = '<div style="font-size:.8rem;color:#c4cdd8;white-space:pre-wrap;max-height:200px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">' + text + '</div>';
+  }
 }
 
 async function startTranscript(sessionId, audioSessionId) {
@@ -3286,17 +3309,25 @@ def create_app(
 
         from logger.transcribe import transcribe_session
 
+        diarize = bool(os.environ.get("HF_TOKEN"))
         asyncio.create_task(
-            transcribe_session(storage, session_id, transcript_id, model_size=model)
+            transcribe_session(
+                storage, session_id, transcript_id, model_size=model, diarize=diarize
+            )
         )
         return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
 
     @app.get("/api/audio/{session_id}/transcript")
     async def api_get_transcript(session_id: int) -> JSONResponse:
         """Poll transcription status and retrieve the transcript text when done."""
+        import json as _json
+
         t = await storage.get_transcript(session_id)
         if t is None:
             raise HTTPException(status_code=404, detail="No transcript job found for this session")
+        if t.get("segments_json"):
+            t["segments"] = _json.loads(t["segments_json"])
+        del t["segments_json"]
         return JSONResponse(t)
 
     return app

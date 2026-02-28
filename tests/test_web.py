@@ -2223,3 +2223,47 @@ async def test_transcript_done(storage: Storage, tmp_path: Path) -> None:
     data = resp.json()
     assert data["status"] == "done"
     assert data["text"] == "Hello world"
+    assert "segments_json" not in data
+
+
+@pytest.mark.asyncio
+async def test_transcript_done_with_segments(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diarised transcription stores segments; GET exposes them and omits segments_json."""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("HF_TOKEN", "fake-token")
+
+    _whisper_segs = [(0.0, 3.0, "Ready about."), (3.1, 6.5, "Ready.")]
+    _diar_segs = [(0.0, 3.5, "A"), (3.5, 7.0, "B")]
+
+    session_id = await _create_audio_session(storage, tmp_path)
+
+    with (
+        patch("logger.transcribe._run_whisper_segments", return_value=_whisper_segs),
+        patch("logger.transcribe._run_diarizer", return_value=_diar_segs),
+    ):
+        from logger.transcribe import transcribe_session
+
+        transcript_id = await storage.create_transcript_job(session_id, "base")
+        await transcribe_session(
+            storage, session_id, transcript_id, model_size="base", diarize=True
+        )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/audio/{session_id}/transcript")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "done"
+    assert "segments_json" not in data
+    segs = data["segments"]
+    assert isinstance(segs, list)
+    assert len(segs) == 2
+    assert set(segs[0].keys()) == {"start", "end", "speaker", "text"}
+    assert segs[0]["speaker"] == "SPEAKER_00"
+    assert segs[1]["speaker"] == "SPEAKER_01"

@@ -482,9 +482,76 @@ WHISPER_MODEL=small
 Restart the logger after changing the model. The model is downloaded on first
 use and cached automatically.
 
+### Speaker diarisation (who said what)
+
+When a Hugging Face token is configured, transcription automatically labels
+each segment with the speaker (`SPEAKER_00`, `SPEAKER_01`, …). The result is
+displayed as colour-coded blocks on the History page.
+
+Diarisation uses [pyannote.audio](https://github.com/pyannote/pyannote-audio)
+(`pyannote/speaker-diarization-3.1`) running locally on the Pi — no audio is
+sent to any cloud service.
+
+#### 1. Create a free Hugging Face account
+
+Go to [huggingface.co](https://huggingface.co) and sign up (or log in).
+
+#### 2. Accept the model terms
+
+You must accept the licence for both models before they can be downloaded:
+
+1. [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) — click **Agree and access repository**
+2. [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) — click **Agree and access repository**
+
+Both require being logged in. The pages will show a licence gate the first
+time you visit; once accepted, access is granted immediately.
+
+#### 3. Generate a read token
+
+1. Go to [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
+2. Click **New token**.
+3. Give it a name (e.g. `corvopi`) and set **Type** to **Read**.
+4. Click **Generate a token** and copy the value — it starts with `hf_`.
+
+Keep this token private. It grants read access to any public or gated model
+your account has accepted terms for.
+
+#### 4. Add the token to `.env` on the Pi
+
+```bash
+ssh weaties@corvopi
+nano ~/j105-logger/.env
+```
+
+Add this line (replace with your actual token):
+
+```
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+```
+
+Then restart the logger:
+
+```bash
+sudo systemctl restart j105-logger
+```
+
+The model weights (~1 GB) are downloaded and cached on the first transcription
+that uses diarisation. Subsequent runs use the cached weights.
+
+#### Performance
+
+Diarisation adds roughly 2–3× real-time on a Pi 4 on top of the Whisper pass.
+A 60-minute recording will take approximately 2–3 hours total. You can navigate
+away and return — the job runs in the background and results are stored in
+SQLite.
+
+#### Disabling diarisation
+
+Remove (or comment out) `HF_TOKEN` from `.env` and restart the logger.
+Transcription will continue to work using the plain Whisper path.
+
 ### Limitations
 
-- Speaker diarisation (labelling who said what) is not yet implemented.
 - Accuracy degrades in high wind/engine noise environments.
 - Transcripts are stored in the `transcripts` SQLite table and cannot yet be
   exported to CSV or PDF from the UI.
@@ -799,6 +866,7 @@ AUDIO_SAMPLE_RATE=48000
 AUDIO_CHANNELS=1
 # Audio transcription
 WHISPER_MODEL=base      # faster-whisper model: tiny, base, small, medium, large
+# HF_TOKEN=hf_...      # Hugging Face token — enables speaker diarisation (optional)
 # Photo notes
 NOTES_DIR=data/notes    # directory where uploaded photo notes are stored
 # Web interface (race marker)
