@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 16
+_CURRENT_VERSION: int = 17
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -325,6 +325,38 @@ _MIGRATIONS: dict[int, str] = {
     """,
     16: """
         ALTER TABLE transcripts ADD COLUMN segments_json TEXT;
+    """,
+    17: """
+        CREATE TABLE IF NOT EXISTS users (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            email      TEXT UNIQUE NOT NULL,
+            name       TEXT,
+            role       TEXT NOT NULL DEFAULT 'viewer',
+            created_at TEXT NOT NULL,
+            last_seen  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS invite_tokens (
+            token      TEXT PRIMARY KEY,
+            email      TEXT NOT NULL,
+            role       TEXT NOT NULL,
+            created_by INTEGER REFERENCES users(id),
+            expires_at TEXT NOT NULL,
+            used_at    TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            session_id TEXT PRIMARY KEY,
+            user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            ip         TEXT,
+            user_agent TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user_id ON auth_sessions(user_id);
+
+        ALTER TABLE session_notes ADD COLUMN user_id INTEGER REFERENCES users(id);
+        ALTER TABLE race_videos   ADD COLUMN user_id INTEGER REFERENCES users(id);
     """,
 }
 
@@ -1465,6 +1497,7 @@ class Storage:
         audio_session_id: int | None = None,
         note_type: str = "text",
         photo_path: str | None = None,
+        user_id: int | None = None,
     ) -> int:
         """Insert a new note and return its id."""
         from datetime import UTC
@@ -1474,9 +1507,9 @@ class Storage:
         now_str = _datetime.now(UTC).isoformat()
         cur = await db.execute(
             "INSERT INTO session_notes"
-            " (race_id, audio_session_id, ts, note_type, body, photo_path, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (race_id, audio_session_id, ts, note_type, body, photo_path, now_str),
+            " (race_id, audio_session_id, ts, note_type, body, photo_path, created_at, user_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (race_id, audio_session_id, ts, note_type, body, photo_path, now_str, user_id),
         )
         await db.commit()
         assert cur.lastrowid is not None
@@ -1587,6 +1620,7 @@ class Storage:
         sync_utc: datetime,
         sync_offset_s: float,
         duration_s: float | None = None,
+        user_id: int | None = None,
     ) -> int:
         """Add a YouTube video linked to a race.  Returns the new row id."""
         from datetime import UTC
@@ -1597,8 +1631,8 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO race_videos"
             " (race_id, youtube_url, video_id, title, label,"
-            " sync_utc, sync_offset_s, duration_s, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " sync_utc, sync_offset_s, duration_s, created_at, user_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 race_id,
                 youtube_url,
@@ -1609,6 +1643,7 @@ class Storage:
                 sync_offset_s,
                 duration_s,
                 now_str,
+                user_id,
             ),
         )
         await db.commit()
@@ -1861,6 +1896,158 @@ class Storage:
         )
         row = await cur.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Auth: users, invite tokens, sessions
+    # ------------------------------------------------------------------
+
+    async def create_user(self, email: str, name: str | None, role: str) -> int:
+        """Insert a new user and return the new id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO users (email, name, role, created_at) VALUES (?, ?, ?, ?)",
+            (email.lower().strip(), name, role, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
+        cur = await self._conn().execute(
+            "SELECT id, email, name, role, created_at, last_seen FROM users WHERE id = ?",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        cur = await self._conn().execute(
+            "SELECT id, email, name, role, created_at, last_seen FROM users WHERE email = ?",
+            (email.lower().strip(),),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def update_user_role(self, user_id: int, role: str) -> None:
+        db = self._conn()
+        await db.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+        await db.commit()
+
+    async def update_user_last_seen(self, user_id: int) -> None:
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
+        await db.commit()
+
+    async def list_users(self) -> list[dict[str, Any]]:
+        cur = await self._conn().execute(
+            "SELECT id, email, name, role, created_at, last_seen FROM users ORDER BY created_at"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def create_invite_token(
+        self,
+        token: str,
+        email: str,
+        role: str,
+        created_by: int,
+        expires_at: str,
+    ) -> None:
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO invite_tokens (token, email, role, created_by, expires_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (token, email.lower().strip(), role, created_by, expires_at),
+        )
+        await db.commit()
+
+    async def get_invite_token(self, token: str) -> dict[str, Any] | None:
+        cur = await self._conn().execute(
+            "SELECT token, email, role, created_by, expires_at, used_at"
+            " FROM invite_tokens WHERE token = ?",
+            (token,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def redeem_invite_token(self, token: str) -> None:
+        """Mark the token as used (sets used_at to now)."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute("UPDATE invite_tokens SET used_at = ? WHERE token = ?", (now, token))
+        await db.commit()
+
+    async def create_session(
+        self,
+        session_id: str,
+        user_id: int,
+        expires_at: str,
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO auth_sessions"
+            " (session_id, user_id, created_at, expires_at, ip, user_agent)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, user_id, now, expires_at, ip, user_agent),
+        )
+        await db.commit()
+
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
+        cur = await self._conn().execute(
+            "SELECT session_id, user_id, created_at, expires_at, ip, user_agent"
+            " FROM auth_sessions WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def delete_session(self, session_id: str) -> None:
+        db = self._conn()
+        await db.execute("DELETE FROM auth_sessions WHERE session_id = ?", (session_id,))
+        await db.commit()
+
+    async def list_auth_sessions(self, user_id: int | None = None) -> list[dict[str, Any]]:
+        if user_id is not None:
+            cur = await self._conn().execute(
+                "SELECT session_id, user_id, created_at, expires_at, ip, user_agent"
+                " FROM auth_sessions WHERE user_id = ? ORDER BY created_at DESC",
+                (user_id,),
+            )
+        else:
+            cur = await self._conn().execute(
+                "SELECT s.session_id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent,"
+                " u.email, u.name, u.role"
+                " FROM auth_sessions s JOIN users u ON s.user_id = u.id"
+                " ORDER BY s.created_at DESC"
+            )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def delete_expired_sessions(self) -> None:
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute("DELETE FROM auth_sessions WHERE expires_at < ?", (now,))
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Helpers
