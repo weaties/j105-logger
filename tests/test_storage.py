@@ -55,6 +55,7 @@ class TestMigration:
             "weather",
             "tides",
             "session_notes",
+            "race_videos",
         }:
             assert expected in names, f"Table {expected!r} not found"
 
@@ -790,3 +791,175 @@ class TestSessionNotes:
         await storage.create_note(ts, "[1, 2, 3]", race_id=race_id, note_type="settings")
         keys = await storage.list_settings_keys()
         assert keys == []
+
+
+# ---------------------------------------------------------------------------
+# Race videos tests
+# ---------------------------------------------------------------------------
+
+_VID_DATE = "2026-02-27"
+_VID_RACE_START = datetime(2026, 2, 27, 18, 0, 0, tzinfo=UTC)
+_VID_SYNC_UTC = datetime(2026, 2, 27, 18, 5, 0, tzinfo=UTC)  # 5 min into race
+
+
+@pytest.mark.asyncio
+class TestRaceVideos:
+    async def _make_race(self, storage: Storage) -> int:
+        race = await storage.start_race(
+            "BallardCup", _VID_RACE_START, _VID_DATE, 1, "20260227-BallardCup-1"
+        )
+        assert race.id is not None
+        return race.id
+
+    async def _add_video(self, storage: Storage, race_id: int, **kwargs: object) -> int:
+        defaults: dict[str, object] = {
+            "youtube_url": "https://youtu.be/dQw4w9WgXcQ",
+            "video_id": "dQw4w9WgXcQ",
+            "title": "Test Video",
+            "label": "Bow cam",
+            "sync_utc": _VID_SYNC_UTC,
+            "sync_offset_s": 323.0,  # video was at 5:23 when the gun went off
+            "duration_s": 3600.0,
+        }
+        defaults.update(kwargs)
+        return await storage.add_race_video(race_id=race_id, **defaults)  # type: ignore[arg-type]
+
+    async def test_add_and_list(self, storage: Storage) -> None:
+        """add_race_video returns an id; list_race_videos returns it."""
+        race_id = await self._make_race(storage)
+        vid_id = await self._add_video(storage, race_id)
+        rows = await storage.list_race_videos(race_id)
+        assert len(rows) == 1
+        assert rows[0]["id"] == vid_id
+        assert rows[0]["video_id"] == "dQw4w9WgXcQ"
+        assert rows[0]["label"] == "Bow cam"
+        assert rows[0]["sync_offset_s"] == 323.0
+
+    async def test_list_returns_empty_for_new_race(self, storage: Storage) -> None:
+        race_id = await self._make_race(storage)
+        assert await storage.list_race_videos(race_id) == []
+
+    async def test_list_ordered_by_created_at(self, storage: Storage) -> None:
+        """Videos are returned in insertion order."""
+        race_id = await self._make_race(storage)
+        id1 = await self._add_video(storage, race_id, label="Bow cam")
+        id2 = await self._add_video(storage, race_id, label="Cockpit cam")
+        rows = await storage.list_race_videos(race_id)
+        assert [r["id"] for r in rows] == [id1, id2]
+
+    async def test_update_label(self, storage: Storage) -> None:
+        race_id = await self._make_race(storage)
+        vid_id = await self._add_video(storage, race_id)
+        found = await storage.update_race_video(vid_id, label="Mastcam")
+        assert found is True
+        rows = await storage.list_race_videos(race_id)
+        assert rows[0]["label"] == "Mastcam"
+
+    async def test_update_sync(self, storage: Storage) -> None:
+        race_id = await self._make_race(storage)
+        vid_id = await self._add_video(storage, race_id)
+        new_sync = datetime(2026, 2, 27, 18, 10, 0, tzinfo=UTC)
+        found = await storage.update_race_video(vid_id, sync_utc=new_sync, sync_offset_s=500.0)
+        assert found is True
+        rows = await storage.list_race_videos(race_id)
+        assert rows[0]["sync_offset_s"] == 500.0
+        assert rows[0]["sync_utc"] == new_sync.isoformat()
+
+    async def test_update_returns_false_for_missing(self, storage: Storage) -> None:
+        found = await storage.update_race_video(99999, label="ghost")
+        assert found is False
+
+    async def test_delete(self, storage: Storage) -> None:
+        race_id = await self._make_race(storage)
+        vid_id = await self._add_video(storage, race_id)
+        assert await storage.delete_race_video(vid_id) is True
+        assert await storage.list_race_videos(race_id) == []
+
+    async def test_delete_returns_false_for_missing(self, storage: Storage) -> None:
+        assert await storage.delete_race_video(99999) is False
+
+    async def test_cascade_delete_with_race(self, storage: Storage) -> None:
+        """Videos are removed when the parent race is deleted."""
+        race_id = await self._make_race(storage)
+        await self._add_video(storage, race_id)
+        db = storage._conn()
+        await db.execute("DELETE FROM races WHERE id = ?", (race_id,))
+        await db.commit()
+        assert await storage.list_race_videos(race_id) == []
+
+
+# ---------------------------------------------------------------------------
+# VideoSession offset math tests (pure unit tests, no DB)
+# ---------------------------------------------------------------------------
+
+
+def test_video_offset_at_sync_point() -> None:
+    """At the sync point itself, video_offset_at == sync_offset_s."""
+    from logger.video import VideoSession
+
+    sync = datetime(2026, 2, 27, 18, 5, 0, tzinfo=UTC)
+    vs = VideoSession(
+        url="https://youtu.be/x",
+        video_id="x",
+        title="t",
+        duration_s=3600.0,
+        sync_utc=sync,
+        sync_offset_s=323.0,
+    )
+    assert vs.video_offset_at(sync) == pytest.approx(323.0)
+
+
+def test_video_offset_at_30s_after_sync() -> None:
+    """30 seconds after sync, the video position is sync_offset_s + 30."""
+    from datetime import timedelta
+
+    from logger.video import VideoSession
+
+    sync = datetime(2026, 2, 27, 18, 5, 0, tzinfo=UTC)
+    vs = VideoSession(
+        url="https://youtu.be/x",
+        video_id="x",
+        title="t",
+        duration_s=3600.0,
+        sync_utc=sync,
+        sync_offset_s=323.0,
+    )
+    assert vs.video_offset_at(sync + timedelta(seconds=30)) == pytest.approx(353.0)
+
+
+def test_url_at_returns_none_outside_duration() -> None:
+    """url_at returns None when the computed position is outside [0, duration_s]."""
+    from logger.video import VideoSession
+
+    sync = datetime(2026, 2, 27, 18, 5, 0, tzinfo=UTC)
+    vs = VideoSession(
+        url="https://youtu.be/dQw4w9WgXcQ",
+        video_id="dQw4w9WgXcQ",
+        title="t",
+        duration_s=60.0,  # only 1-minute video
+        sync_utc=sync,
+        sync_offset_s=30.0,
+    )
+    from datetime import timedelta
+
+    # 35 seconds after sync → position 65 > duration 60 → None
+    assert vs.url_at(sync + timedelta(seconds=35)) is None
+
+
+def test_url_at_generates_correct_link() -> None:
+    """url_at embeds floor(offset) as ?t= parameter."""
+    from logger.video import VideoSession
+
+    sync = datetime(2026, 2, 27, 18, 0, 0, tzinfo=UTC)
+    vs = VideoSession(
+        url="https://youtu.be/dQw4w9WgXcQ",
+        video_id="dQw4w9WgXcQ",
+        title="t",
+        duration_s=3600.0,
+        sync_utc=sync,
+        sync_offset_s=0.0,
+    )
+    from datetime import timedelta
+
+    link = vs.url_at(sync + timedelta(seconds=90))
+    assert link == "https://youtu.be/dQw4w9WgXcQ?t=90"

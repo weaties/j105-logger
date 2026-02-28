@@ -343,7 +343,10 @@ function render(s) {
     // Don't re-render while the user has focus inside the race list (e.g.
     // typing in the boat picker). Replacing innerHTML destroys the active
     // element and fires onblur, which closes the picker prematurely (#36).
-    if (list.contains(document.activeElement)) return;
+    // Also skip if any expandable panel is open — re-rendering wipes the form.
+    const anyPanelOpen = [...list.querySelectorAll('[id^="videos-list-"],[id^="notes-list-"]')]
+      .some(el => el.style.display !== 'none');
+    if (list.contains(document.activeElement) || anyPanelOpen) return;
     list.innerHTML = s.today_races.slice().reverse().map(r => {
       const start = fmtTime(r.start_utc);
       const end = r.end_utc ? fmtTime(r.end_utc) : 'in progress';
@@ -379,12 +382,20 @@ function render(s) {
           + '<div id="notes-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
           + '</div>'
         : '';
+      const videosHtml = r.end_utc
+        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
+          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
+          + 'onclick="toggleVideos(' + r.id + ')">🎬 Videos ▶</span>'
+          + '<div id="videos-list-' + r.id + '" data-start-utc="' + r.start_utc + '" style="display:none;margin-top:4px"></div>'
+          + '</div>'
+        : '';
       return `<div class="race-item">
         <div class="race-item-name">${r.name}${badge}</div>
         <div class="race-item-time">${start} → ${end}${dur}</div>
         ${crewHtml}
         ${resultsHtml}
         ${notesHtml}
+        ${videosHtml}
         ${exports}
       </div>`;
     }).join('');
@@ -903,6 +914,102 @@ async function toggleNotes(sessionId) {
   await refreshNotes(sessionId);
 }
 
+// ---------------------------------------------------------------------------
+// Video linking — home page
+// ---------------------------------------------------------------------------
+
+async function toggleVideos(sessionId) {
+  const el = document.getElementById('videos-list-' + sessionId);
+  if (!el) return;
+  const span = el.previousElementSibling;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (span) span.textContent = '🎬 Videos ▶';
+    return;
+  }
+  el.style.display = '';
+  if (span) span.textContent = '🎬 Videos ▼';
+  await _loadVideos(sessionId, el);
+}
+
+async function _loadVideos(sessionId, el) {
+  if (!el) el = document.getElementById('videos-list-' + sessionId);
+  if (!el) return;
+  const r = await fetch('/api/sessions/' + sessionId + '/videos');
+  const videos = await r.json();
+  let html = '';
+  if (videos.length) {
+    html += '<div style="margin-bottom:4px">';
+    html += videos.map(v => {
+      const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
+      const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:#7eb8f7">' + ttl.substring(0,50) + '</a>';
+      const del = '<button onclick="deleteVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
+      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + yt + del + '</div>';
+    }).join('');
+    html += '</div>';
+  } else {
+    html += '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>';
+  }
+  html += _videoAddForm(sessionId);
+  el.innerHTML = html;
+}
+
+function _videoAddForm(sessionId) {
+  const container = document.getElementById('videos-list-' + sessionId);
+  const startUtc = container ? container.dataset.startUtc : '';
+  // Format as datetime-local value (YYYY-MM-DDTHH:mm:ss, no timezone suffix)
+  const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
+  return '<div id="video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
+    + '<div style="font-size:.75rem;color:#8892a4;margin-bottom:4px">Link a YouTube video</div>'
+    + '<input id="video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
+    + ' <button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + '</div>'
+    + '<button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'\\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+}
+
+function _parseVideoPosition(str) {
+  // Parse "mm:ss", "hh:mm:ss", or plain seconds string into seconds.
+  str = str.trim();
+  const parts = str.split(':').map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+async function submitAddVideo(sessionId) {
+  const url = document.getElementById('video-url-' + sessionId).value.trim();
+  const label = document.getElementById('video-label-' + sessionId).value.trim();
+  const syncUtcVal = document.getElementById('video-sync-utc-' + sessionId).value;
+  const syncPosVal = document.getElementById('video-sync-pos-' + sessionId).value.trim();
+  if (!url) { alert('YouTube URL is required'); return; }
+  // Sync fields are optional — default to now / 0s if not provided.
+  const syncUtc = syncUtcVal
+    ? (syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z')
+    : new Date().toISOString();
+  const syncOffsetS = syncPosVal ? _parseVideoPosition(syncPosVal) : 0;
+  if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
+  const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
+  });
+  if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
+  await _loadVideos(sessionId);
+}
+
+async function deleteVideo(videoId, sessionId) {
+  if (!confirm('Remove this video link?')) return;
+  await fetch('/api/videos/' + videoId, {method: 'DELETE'});
+  await _loadVideos(sessionId);
+}
+
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
@@ -1070,6 +1177,7 @@ function render(data) {
     if (s.type !== 'debrief') {
       exports += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
       exports += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
+      exports += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">🎬 Videos ▶</button>';
     }
     if (s.has_audio && s.audio_session_id) {
       exports += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
@@ -1081,10 +1189,13 @@ function render(data) {
     const notesPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
       : '';
+    const videosPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
+      : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + '</div>';
+      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + '</div>';
   }).join('');
 
   const total = data.total;
@@ -1182,6 +1293,100 @@ async function toggleHistoryNotes(sessionId) {
   await _refreshHistoryNotes(sessionId);
   el.style.display = '';
   if (btn) btn.textContent = 'Notes ▼';
+}
+
+async function toggleHistoryVideos(sessionId) {
+  const el = document.getElementById('hist-videos-' + sessionId);
+  const btn = document.getElementById('hist-videos-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = '🎬 Videos ▶';
+    return;
+  }
+  await _loadVideos(sessionId, el);
+  el.style.display = '';
+  if (btn) btn.textContent = '🎬 Videos ▼';
+}
+
+// Shared video helpers (same functions used by home page are available here
+// since _loadVideos, submitAddVideo, deleteVideo are defined in the main page
+// JS — the history page re-defines them inline for self-containedness).
+async function _loadVideos(sessionId, el) {
+  if (!el) el = document.getElementById('hist-videos-' + sessionId);
+  if (!el) return;
+  const r = await fetch('/api/sessions/' + sessionId + '/videos');
+  const videos = await r.json();
+  let html = '';
+  if (videos.length) {
+    html += '<div style="margin-bottom:4px">';
+    html += videos.map(v => {
+      const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
+      const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:#7eb8f7">' + ttl.substring(0,50) + '</a>';
+      const del = '<button onclick="deleteHistVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
+      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + yt + del + '</div>';
+    }).join('');
+    html += '</div>';
+  } else {
+    html += '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>';
+  }
+  html += _histVideoAddForm(sessionId);
+  el.innerHTML = html;
+}
+
+function _histVideoAddForm(sessionId) {
+  const container = document.getElementById('hist-videos-' + sessionId);
+  const startUtc = container ? container.dataset.startUtc : '';
+  const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
+  return '<div id="hist-video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
+    + '<input id="hist-video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="hist-video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
+    + ' <button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + '</div>'
+    + '<button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'\\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+}
+
+function _parseVideoPos(str) {
+  str = str.trim();
+  const parts = str.split(':').map(Number);
+  if (parts.some(isNaN)) return null;
+  if (parts.length === 1) return parts[0];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return null;
+}
+
+async function submitHistAddVideo(sessionId) {
+  const url = document.getElementById('hist-video-url-' + sessionId).value.trim();
+  const label = document.getElementById('hist-video-label-' + sessionId).value.trim();
+  const syncUtcVal = document.getElementById('hist-video-sync-utc-' + sessionId).value;
+  const syncPosVal = document.getElementById('hist-video-sync-pos-' + sessionId).value.trim();
+  if (!url) { alert('YouTube URL is required'); return; }
+  // Sync fields are optional — default to now / 0s if not provided.
+  const syncUtc = syncUtcVal
+    ? (syncUtcVal.includes('Z') || syncUtcVal.includes('+') ? syncUtcVal : syncUtcVal + 'Z')
+    : new Date().toISOString();
+  const syncOffsetS = syncPosVal ? _parseVideoPos(syncPosVal) : 0;
+  if (syncOffsetS === null) { alert('Video position must be mm:ss or seconds'); return; }
+  const resp = await fetch('/api/sessions/' + sessionId + '/videos', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
+  });
+  if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
+  const el = document.getElementById('hist-videos-' + sessionId);
+  await _loadVideos(sessionId, el);
+}
+
+async function deleteHistVideo(videoId, sessionId) {
+  if (!confirm('Remove this video link?')) return;
+  await fetch('/api/videos/' + videoId, {method: 'DELETE'});
+  const el = document.getElementById('hist-videos-' + sessionId);
+  await _loadVideos(sessionId, el);
 }
 
 // Default: last 30 days
@@ -1396,6 +1601,23 @@ class NoteCreate(BaseModel):
     body: str | None = None
     note_type: str = "text"
     ts: str | None = None  # UTC ISO 8601; defaults to server time if absent
+
+
+class VideoCreate(BaseModel):
+    youtube_url: str
+    label: str = ""
+    # Sync point: a known UTC time and the corresponding video player position.
+    # offset = logger_utc_s - video_position_s
+    # The UI may send either the raw offset or derive it via the calibration
+    # helper (sync_utc + sync_video_s).
+    sync_utc: str  # UTC ISO 8601
+    sync_offset_s: float = 0.0  # seconds; can also be supplied by calibration
+
+
+class VideoUpdate(BaseModel):
+    label: str | None = None
+    sync_utc: str | None = None
+    sync_offset_s: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -2096,6 +2318,145 @@ def create_app(
         """
         keys = await storage.list_settings_keys()
         return JSONResponse({"keys": keys})
+
+    # ------------------------------------------------------------------
+    # /api/sessions/{session_id}/videos  &  /api/videos/{video_id}
+    # ------------------------------------------------------------------
+
+    def _video_deep_link(row: dict[str, Any], at_utc: datetime | None = None) -> dict[str, Any]:
+        """Augment a race_videos row with a computed YouTube deep-link.
+
+        If *at_utc* is supplied the link jumps to that moment in the video.
+        Otherwise the link just opens the video from the beginning.
+        """
+        from logger.video import VideoSession  # local import to avoid circular deps
+
+        sync_utc = datetime.fromisoformat(row["sync_utc"])
+        duration_s = row["duration_s"]
+
+        out = dict(row)
+        if at_utc is not None and duration_s is not None:
+            vs = VideoSession(
+                url=row["youtube_url"],
+                video_id=row["video_id"],
+                title=row["title"],
+                duration_s=duration_s,
+                sync_utc=sync_utc,
+                sync_offset_s=row["sync_offset_s"],
+            )
+            out["deep_link"] = vs.url_at(at_utc)
+        else:
+            out["deep_link"] = None
+        return out
+
+    @app.get("/api/sessions/{session_id}/videos")
+    async def api_list_videos(
+        session_id: int,
+        at: str | None = None,
+    ) -> JSONResponse:
+        """List videos linked to a session.
+
+        Optional ``?at=<UTC ISO 8601>`` param computes a deep-link to that
+        moment in each video.
+        """
+        # Videos are only supported on races (not audio sessions).
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (session_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        rows = await storage.list_race_videos(session_id)
+        at_utc: datetime | None = None
+        if at:
+            try:
+                at_utc = datetime.fromisoformat(at)
+                if at_utc.tzinfo is None:
+                    at_utc = at_utc.replace(tzinfo=UTC)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="Invalid 'at' timestamp")  # noqa: B904
+        return JSONResponse([_video_deep_link(r, at_utc) for r in rows])
+
+    @app.post("/api/sessions/{session_id}/videos", status_code=201)
+    async def api_add_video(session_id: int, body: VideoCreate) -> JSONResponse:
+        """Link a YouTube video to a race session.
+
+        The caller supplies a sync point: a UTC wall-clock time and the
+        corresponding video player position (seconds).  This pins the video
+        timeline to logger time.
+        """
+        cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (session_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Parse the sync UTC
+        try:
+            sync_utc = datetime.fromisoformat(body.sync_utc)
+            if sync_utc.tzinfo is None:
+                sync_utc = sync_utc.replace(tzinfo=UTC)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid sync_utc timestamp")  # noqa: B904
+
+        # Extract YouTube video ID and fetch metadata via yt-dlp if available
+        from logger.video import VideoLinker
+
+        video_id = ""
+        title = ""
+        duration_s: float | None = None
+        try:
+            linker = VideoLinker()
+            vs = await linker.create_session(body.youtube_url, sync_utc, body.sync_offset_s)
+            video_id = vs.video_id
+            title = vs.title
+            duration_s = vs.duration_s
+        except Exception:  # noqa: BLE001
+            # yt-dlp unavailable or network error — store the URL as-is.
+            # Extract video ID from URL heuristically.
+            import re
+
+            m = re.search(r"(?:v=|youtu\.be/)([A-Za-z0-9_-]{11})", body.youtube_url)
+            video_id = m.group(1) if m else ""
+            title = ""
+            duration_s = None
+
+        row_id = await storage.add_race_video(
+            race_id=session_id,
+            youtube_url=body.youtube_url,
+            video_id=video_id,
+            title=title,
+            label=body.label,
+            sync_utc=sync_utc,
+            sync_offset_s=body.sync_offset_s,
+            duration_s=duration_s,
+        )
+        rows = await storage.list_race_videos(session_id)
+        row = next(r for r in rows if r["id"] == row_id)
+        return JSONResponse(_video_deep_link(row), status_code=201)
+
+    @app.patch("/api/videos/{video_id}", status_code=200)
+    async def api_update_video(video_id: int, body: VideoUpdate) -> JSONResponse:
+        """Update label or sync calibration on an existing video link."""
+        sync_utc: datetime | None = None
+        if body.sync_utc is not None:
+            try:
+                sync_utc = datetime.fromisoformat(body.sync_utc)
+                if sync_utc.tzinfo is None:
+                    sync_utc = sync_utc.replace(tzinfo=UTC)
+            except ValueError:
+                raise HTTPException(status_code=422, detail="Invalid sync_utc timestamp")  # noqa: B904
+        found = await storage.update_race_video(
+            video_id,
+            label=body.label,
+            sync_utc=sync_utc,
+            sync_offset_s=body.sync_offset_s,
+        )
+        if not found:
+            raise HTTPException(status_code=404, detail="Video not found")
+        return JSONResponse({"id": video_id, "updated": True})
+
+    @app.delete("/api/videos/{video_id}", status_code=204)
+    async def api_delete_video(video_id: int) -> None:
+        """Remove a video link."""
+        found = await storage.delete_race_video(video_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Video not found")
 
     # ------------------------------------------------------------------
     # /api/grafana/annotations
