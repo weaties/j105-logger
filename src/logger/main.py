@@ -181,10 +181,13 @@ async def _run() -> None:
     audio_config = AudioConfig()
     recorder = AudioRecorder()
 
+    from logger.monitor import monitor_loop
+
     async with ExternalFetcher() as fetcher:
         weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
         tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
         web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
+        monitor_task = asyncio.create_task(monitor_loop())
         try:
             if data_source == "signalk":
                 from logger.sk_reader import SKReader, SKReaderConfig
@@ -224,7 +227,10 @@ async def _run() -> None:
             weather_task.cancel()
             tide_task.cancel()
             web_task.cancel()
-            await asyncio.gather(weather_task, tide_task, web_task, return_exceptions=True)
+            monitor_task.cancel()
+            await asyncio.gather(
+                weather_task, tide_task, web_task, monitor_task, return_exceptions=True
+            )
             await storage.close()
             logger.info("Logger stopped")
 

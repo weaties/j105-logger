@@ -155,6 +155,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 </style>
 </head>
 <body>
+<div id="health-banner" style="display:none;background:#7f1d1d;color:#fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
   <h1>J105 Logger</h1>
   <div style="display:flex;gap:6px;margin-top:2px">
@@ -1189,12 +1190,32 @@ async function toggleRetireSail(id, makeActive) {
   await _loadSailInventory();
 }
 
+async function checkSystemHealth() {
+  try {
+    const r = await fetch('/api/system-health');
+    if (!r.ok) return;
+    const h = await r.json();
+    const banner = document.getElementById('health-banner');
+    const warnings = [];
+    if (h.disk_pct > 85) warnings.push('Disk ' + h.disk_pct.toFixed(0) + '% full');
+    if (h.cpu_temp_c != null && h.cpu_temp_c > 75) warnings.push('CPU temp ' + h.cpu_temp_c.toFixed(0) + '°C');
+    if (warnings.length) {
+      banner.textContent = '⚠ ' + warnings.join(' · ');
+      banner.style.display = 'block';
+    } else {
+      banner.style.display = 'none';
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
 loadRecentSailors();
+checkSystemHealth();
+setInterval(checkSystemHealth, 30000);
 document.querySelectorAll('.crew-input').forEach(inp => {
   inp.addEventListener('focus', () => { focusedCrewInput = inp; });
 });
@@ -3019,5 +3040,35 @@ def create_app(
         if not path.exists():
             raise HTTPException(status_code=404, detail="Audio file not found on disk")
         return FileResponse(path, media_type="audio/wav")
+
+    # ------------------------------------------------------------------
+    # /api/system-health
+    # ------------------------------------------------------------------
+
+    @app.get("/api/system-health")
+    async def api_system_health() -> JSONResponse:
+        """Return current CPU, memory, and disk utilisation percentages."""
+        import psutil  # type: ignore[import-untyped]
+
+        cpu = psutil.cpu_percent(interval=0.2)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        payload: dict[str, float | None] = {
+            "cpu_pct": cpu,
+            "mem_pct": mem.percent,
+            "disk_pct": disk.percent,
+        }
+        temp_c: float | None = None
+        get_temps = getattr(psutil, "sensors_temperatures", None)
+        if get_temps is not None:
+            temps: dict[str, list[object]] = get_temps()
+            for entries in temps.values():
+                if entries:
+                    current = getattr(entries[0], "current", None)
+                    if current is not None:
+                        temp_c = float(current)
+                    break
+        payload["cpu_temp_c"] = temp_c
+        return JSONResponse(payload)
 
     return app
