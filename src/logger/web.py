@@ -386,7 +386,7 @@ function render(s) {
         ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
           + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
           + 'onclick="toggleVideos(' + r.id + ')">🎬 Videos ▶</span>'
-          + '<div id="videos-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
+          + '<div id="videos-list-' + r.id + '" data-start-utc="' + r.start_utc + '" style="display:none;margin-top:4px"></div>'
           + '</div>'
         : '';
       return `<div class="race-item">
@@ -956,12 +956,16 @@ async function _loadVideos(sessionId, el) {
 }
 
 function _videoAddForm(sessionId) {
+  const container = document.getElementById('videos-list-' + sessionId);
+  const startUtc = container ? container.dataset.startUtc : '';
+  // Format as datetime-local value (YYYY-MM-DDTHH:mm:ss, no timezone suffix)
+  const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
   return '<div id="video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
     + '<div style="font-size:.75rem;color:#8892a4;margin-bottom:4px">Link a YouTube video</div>'
     + '<input id="video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
-    + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
     + ' <button onclick="document.getElementById(\\'video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
@@ -1186,7 +1190,7 @@ function render(data) {
       ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
       : '';
     const videosPanel = s.type !== 'debrief'
-      ? '<div class="session-results" id="hist-videos-' + s.id + '" style="display:none"></div>'
+      ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
 
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
@@ -1332,11 +1336,14 @@ async function _loadVideos(sessionId, el) {
 }
 
 function _histVideoAddForm(sessionId) {
+  const container = document.getElementById('hist-videos-' + sessionId);
+  const startUtc = container ? container.dataset.startUtc : '';
+  const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
   return '<div id="hist-video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
     + '<input id="hist-video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
-    + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
+    + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
     + ' <button onclick="document.getElementById(\\'hist-video-add-form-' + sessionId + '\\').style.display=\\'none\\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
