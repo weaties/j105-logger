@@ -5,15 +5,9 @@ crew tap a button to start/end races. The app factory pattern (create_app)
 keeps this testable without running a live server.
 
 Security:
-  Layer 1 (current) — Tailscale is the security boundary. All tailnet devices
-    are trusted; no additional auth code.
-  Layer 2 (TODO) — Optional WEB_PIN env var. If set, POST /login accepts the
-    PIN, sets a signed session cookie (HMAC-SHA256(pin, WEB_SECRET_KEY) using
-    stdlib hmac + hashlib only). GET / checks for cookie; redirect to /login
-    if missing or invalid.
-  Layer 3 (TODO) — Tailscale Whois API (GET http://100.100.100.100/v0/whois
-    ?addr=<client_ip>) returns the caller's Tailscale identity for audit logs
-    and per-device permissions — zero login UI, no extra dependencies.
+  Magic-link invite-token auth with three roles: admin, crew, viewer.
+  Set AUTH_DISABLED=true to bypass auth entirely (e.g. Tailscale-only deployments).
+  See src/logger/auth.py and docs/https-deployment.md for details.
 """
 
 from __future__ import annotations
@@ -27,7 +21,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from fastapi import FastAPI, Form, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from loguru import logger
 from pydantic import BaseModel
@@ -2131,6 +2125,135 @@ class RaceSailsSet(BaseModel):
 # App factory
 # ---------------------------------------------------------------------------
 
+_LOGIN_HTML = """\
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>J105 Logger — Sign In</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
+padding:16px;max-width:480px;margin:0 auto}
+h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:16px}
+.card{background:#131f35;border-radius:12px;padding:20px}
+label{font-size:.85rem;color:#8892a4;display:block;margin-bottom:6px}
+input{width:100%;background:#0a1628;border:1px solid #2563eb;border-radius:8px;
+padding:12px;color:#e8eaf0;font-size:1rem;margin-bottom:14px}
+.btn{display:block;width:100%;padding:14px;border:none;border-radius:10px;
+font-size:1rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
+</style>
+</head>
+<body>
+<h1>J105 Logger</h1>
+<div class="card">
+<form method="post" action="/login">
+<input type="hidden" name="next" value="__NEXT__"/>
+<label>Invite token</label>
+<input type="text" name="token" placeholder="Paste your invite token here" autocomplete="off" value="__TOKEN__"/>
+<button class="btn" type="submit">Sign in</button>
+</form>
+<!--ERROR-->
+</div>
+</body>
+</html>
+"""
+
+
+def _render_admin_users_html(users: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> str:
+    """Render a simple admin users management page."""
+    role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
+
+    def _badge(role: str) -> str:
+        color = role_colors.get(role, "#8892a4")
+        return f'<span style="background:{color}22;color:{color};padding:1px 7px;border-radius:4px;font-size:.75rem">{role}</span>'
+
+    rows = "".join(
+        f"<tr><td>{u['email']}</td><td>{u['name'] or '—'}</td>"
+        f"<td>{_badge(u['role'])}</td>"
+        f"<td>{(u['last_seen'] or '—')[:19]}</td>"
+        f'<td><button onclick="changeRole({u["id"]})" style="cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem">Change role</button></td>'
+        f"</tr>"
+        for u in users
+    )
+    sess_rows = "".join(
+        f"<tr><td>{s.get('email', '')}</td><td>{s.get('role', '')}</td>"
+        f"<td>{s.get('ip', '—')}</td>"
+        f"<td>{s['created_at'][:19]}</td>"
+        f"<td>{s['expires_at'][:19]}</td>"
+        f'<td><button onclick="revokeSession(\'{s["session_id"]}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'
+        f"</tr>"
+        for s in sessions
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>J105 Logger — Admin Users</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;padding:16px;max-width:900px;margin:0 auto}}
+h1{{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:4px}}
+h2{{font-size:1rem;font-weight:600;color:#e8eaf0;margin:20px 0 10px}}
+.card{{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}}
+table{{width:100%;border-collapse:collapse;font-size:.85rem}}
+th{{text-align:left;padding:6px 8px;color:#8892a4;font-weight:500;border-bottom:1px solid #1e3a5f}}
+td{{padding:6px 8px;border-bottom:1px solid #0d1a2e}}
+label{{font-size:.85rem;color:#8892a4;display:block;margin-bottom:4px}}
+input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem;margin-bottom:10px}}
+.btn{{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}}
+#invite-result{{margin-top:12px;font-size:.85rem;color:#4ade80;word-break:break-all}}
+</style>
+</head>
+<body>
+<h1>Admin — Users &amp; Sessions</h1>
+<div class="card">
+<h2>Users</h2>
+<table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last seen</th><th></th></tr></thead>
+<tbody>{rows}</tbody>
+</table>
+</div>
+<div class="card">
+<h2>Invite a user</h2>
+<form id="invite-form">
+<label>Email</label><input type="email" id="inv-email" required/>
+<label>Role</label>
+<select id="inv-role"><option value="viewer">viewer</option><option value="crew">crew</option><option value="admin">admin</option></select><br/>
+<button class="btn" type="submit">Generate invite link</button>
+</form>
+<div id="invite-result"></div>
+</div>
+<div class="card">
+<h2>Active sessions</h2>
+<table><thead><tr><th>User</th><th>Role</th><th>IP</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+<tbody>{sess_rows}</tbody>
+</table>
+</div>
+<script>
+document.getElementById('invite-form').addEventListener('submit', async e => {{
+  e.preventDefault();
+  const email = document.getElementById('inv-email').value;
+  const role = document.getElementById('inv-role').value;
+  const fd = new FormData();
+  fd.append('email', email);
+  fd.append('role', role);
+  const r = await fetch('/admin/users/invite', {{method:'POST', body:fd}});
+  const d = await r.json();
+  document.getElementById('invite-result').textContent = d.invite_url || JSON.stringify(d);
+}});
+async function changeRole(userId) {{
+  const role = prompt('New role (viewer/crew/admin):');
+  if (!role) return;
+  await fetch('/admin/users/' + userId + '/role', {{method:'PUT', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{role}})}});
+  location.reload();
+}}
+async function revokeSession(sid) {{
+  await fetch('/admin/sessions/' + sid, {{method:'DELETE'}});
+  location.reload();
+}}
+</script>
+</body></html>"""
+
 
 def create_app(
     storage: Storage,
@@ -2143,6 +2266,7 @@ def create_app(
     starts and stops when the race ends.
     """
     app = FastAPI(title="J105 Logger", docs_url=None, redoc_url=None)
+    app.state.storage = storage
     _audio_session_id: int | None = None
     _debrief_audio_session_id: int | None = None
     _debrief_race_id: int | None = None
@@ -2164,6 +2288,140 @@ def create_app(
     )
     _admin_page = _ADMIN_BOATS_HTML.replace("__GIT_INFO__", _GIT_INFO)
 
+    from logger.auth import (
+        _is_auth_disabled,
+        _resolve_user,
+        generate_token,
+        invite_expires_at,
+        require_auth,
+        session_expires_at,
+    )
+
+    _PUBLIC_PATHS = {"/login", "/logout", "/healthz"}
+
+    @app.middleware("http")
+    async def auth_middleware(  # type: ignore[no-untyped-def]
+        request: Request,
+        call_next,  # noqa: ANN001
+    ) -> Response:
+        path = request.url.path
+        if _is_auth_disabled() or path in _PUBLIC_PATHS or path.startswith("/notes/"):
+            return await call_next(request)  # type: ignore[no-any-return]
+        from http.cookies import SimpleCookie
+
+        raw_cookie = request.headers.get("cookie", "")
+        cookie: SimpleCookie = SimpleCookie()
+        cookie.load(raw_cookie)
+        session_val = cookie["session"].value if "session" in cookie else None
+        user = await _resolve_user(request, session=session_val)
+        if user is None:
+            accept = request.headers.get("accept", "")
+            if "text/html" in accept:
+                from starlette.responses import RedirectResponse as _RR
+
+                return _RR(url=f"/login?next={path}", status_code=307)
+            from starlette.responses import JSONResponse as _JR
+
+            return _JR({"detail": "Not authenticated"}, status_code=401)
+        request.state.user = user
+        return await call_next(request)  # type: ignore[no-any-return]
+
+    # ------------------------------------------------------------------
+    # Public routes: /healthz, /login, /logout
+    # ------------------------------------------------------------------
+
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
+    async def login_page(next: str = "/", token: str = "") -> HTMLResponse:
+        html = _LOGIN_HTML.replace("__NEXT__", next).replace("__TOKEN__", token)
+        return HTMLResponse(html)
+
+    @app.post("/login", include_in_schema=False)
+    async def login_submit(
+        request: Request,
+        token: str = Form(...),
+        next: str = Form(default="/"),
+    ) -> Response:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _dt
+
+        token = token.strip()
+        row = await storage.get_invite_token(token)
+        if row is None:
+            return HTMLResponse(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
+                    "<!--ERROR-->",
+                    '<p style="color:#f87171;margin-top:12px">Invalid or expired token.</p>',
+                ),
+                status_code=400,
+            )
+        if row["used_at"] is not None:
+            return HTMLResponse(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
+                    "<!--ERROR-->",
+                    '<p style="color:#f87171;margin-top:12px">Token already used.</p>',
+                ),
+                status_code=400,
+            )
+        expires_dt = _dt.fromisoformat(row["expires_at"])
+        if _dt.now(_UTC) > expires_dt:
+            return HTMLResponse(
+                _LOGIN_HTML.replace("__NEXT__", next)
+                .replace("__TOKEN__", token)
+                .replace(
+                    "<!--ERROR-->",
+                    '<p style="color:#f87171;margin-top:12px">Token expired.</p>',
+                ),
+                status_code=400,
+            )
+
+        # Find or create the user
+        user = await storage.get_user_by_email(row["email"])
+        if user is None:
+            user_id = await storage.create_user(row["email"], None, row["role"])
+        else:
+            user_id = user["id"]
+
+        # Mark token used and create session
+        await storage.redeem_invite_token(token)
+        session_id = generate_token()
+        await storage.create_session(
+            session_id,
+            user_id,
+            session_expires_at(),
+            ip=request.client.host if request.client else None,
+            user_agent=request.headers.get("user-agent"),
+        )
+        response = RedirectResponse(url=next if next.startswith("/") else "/", status_code=303)
+        response.set_cookie(
+            "session",
+            session_id,
+            httponly=True,
+            samesite="lax",
+            max_age=int(os.getenv("AUTH_SESSION_TTL_DAYS", "90")) * 86400,
+        )
+        return response
+
+    @app.post("/logout", include_in_schema=False)
+    async def logout(request: Request) -> Response:
+        from http.cookies import SimpleCookie
+
+        raw_cookie = request.headers.get("cookie", "")
+        cookie: SimpleCookie = SimpleCookie()
+        cookie.load(raw_cookie)
+        if "session" in cookie:
+            await storage.delete_session(cookie["session"].value)
+        response = RedirectResponse(url="/login", status_code=303)
+        response.delete_cookie("session")
+        return response
+
     # ------------------------------------------------------------------
     # HTML UI
     # ------------------------------------------------------------------
@@ -2179,6 +2437,54 @@ def create_app(
     @app.get("/admin/boats", response_class=HTMLResponse, include_in_schema=False)
     async def admin_boats_page() -> HTMLResponse:
         return HTMLResponse(_admin_page)
+
+    @app.get("/admin/users", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_users_page(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> HTMLResponse:
+        users = await storage.list_users()
+        sessions = await storage.list_auth_sessions()
+        await storage.delete_expired_sessions()
+        return HTMLResponse(_render_admin_users_html(users, sessions))
+
+    @app.post("/admin/users/invite", status_code=201, include_in_schema=False)
+    async def admin_invite_user(
+        request: Request,
+        email: str = Form(...),
+        role: str = Form(...),
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        if role not in ("admin", "crew", "viewer"):
+            raise HTTPException(status_code=422, detail="Invalid role")
+        email = email.strip().lower()
+        if not email:
+            raise HTTPException(status_code=422, detail="email must not be blank")
+        token = generate_token()
+        base = str(request.base_url).rstrip("/")
+        await storage.create_invite_token(token, email, role, _user["id"], invite_expires_at())
+        invite_url = f"{base}/login?token={token}"
+        return JSONResponse({"invite_url": invite_url, "token": token}, status_code=201)
+
+    @app.put("/admin/users/{user_id}/role", status_code=204, include_in_schema=False)
+    async def admin_update_role(
+        user_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        role = (body.get("role") or "").strip()
+        if role not in ("admin", "crew", "viewer"):
+            raise HTTPException(status_code=422, detail="Invalid role")
+        user = await storage.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        await storage.update_user_role(user_id, role)
+
+    @app.delete("/admin/sessions/{session_id}", status_code=204, include_in_schema=False)
+    async def admin_revoke_session(
+        session_id: str,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        await storage.delete_session(session_id)
 
     # ------------------------------------------------------------------
     # /api/state
@@ -2285,7 +2591,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/event", status_code=204)
-    async def api_set_event(body: EventRequest) -> None:
+    async def api_set_event(
+        body: EventRequest,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         event_name = body.event_name.strip()
         if not event_name:
             raise HTTPException(status_code=422, detail="event_name must not be blank")
@@ -2299,6 +2608,7 @@ def create_app(
     @app.post("/api/races/start", status_code=201)
     async def api_start_race(
         session_type: str = Query(default="race"),
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
         nonlocal \
             _audio_session_id, \
@@ -2381,7 +2691,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/races/{race_id}/end", status_code=204)
-    async def api_end_race(race_id: int) -> None:
+    async def api_end_race(
+        race_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         nonlocal _audio_session_id
         now = datetime.now(UTC)
         await storage.end_race(race_id, now)
@@ -2398,7 +2711,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/races/{race_id}/debrief/start", status_code=201)
-    async def api_start_debrief(race_id: int) -> JSONResponse:
+    async def api_start_debrief(
+        race_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         nonlocal \
             _audio_session_id, \
             _debrief_audio_session_id, \
@@ -2457,7 +2773,9 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/debrief/stop", status_code=204)
-    async def api_stop_debrief() -> None:
+    async def api_stop_debrief(
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         nonlocal _debrief_audio_session_id, _debrief_race_id, _debrief_race_name, _debrief_start_utc
 
         if _debrief_audio_session_id is None:
@@ -2601,7 +2919,11 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/races/{race_id}/crew", status_code=204)
-    async def api_set_crew(race_id: int, body: list[CrewEntry]) -> None:
+    async def api_set_crew(
+        race_id: int,
+        body: list[CrewEntry],
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (race_id,))
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Race not found")
@@ -2648,7 +2970,10 @@ def create_app(
         return JSONResponse(boats)
 
     @app.post("/api/boats", status_code=201)
-    async def api_create_boat(body: BoatCreate) -> JSONResponse:
+    async def api_create_boat(
+        body: BoatCreate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         sail = body.sail_number.strip()
         if not sail:
             raise HTTPException(status_code=422, detail="sail_number must not be blank")
@@ -2656,7 +2981,11 @@ def create_app(
         return JSONResponse({"id": boat_id}, status_code=201)
 
     @app.patch("/api/boats/{boat_id}", status_code=204)
-    async def api_update_boat(boat_id: int, body: BoatUpdate) -> None:
+    async def api_update_boat(
+        boat_id: int,
+        body: BoatUpdate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         cur = await storage._conn().execute(
             "SELECT sail_number, name, class FROM boats WHERE id = ?", (boat_id,)
         )
@@ -2669,7 +2998,10 @@ def create_app(
         await storage.update_boat(boat_id, sail, name, class_name)
 
     @app.delete("/api/boats/{boat_id}", status_code=204)
-    async def api_delete_boat(boat_id: int) -> None:
+    async def api_delete_boat(
+        boat_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         cur = await storage._conn().execute("SELECT id FROM boats WHERE id = ?", (boat_id,))
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Boat not found")
@@ -2685,7 +3017,11 @@ def create_app(
         return JSONResponse(results)
 
     @app.post("/api/sessions/{race_id}/results", status_code=201)
-    async def api_upsert_result(race_id: int, body: RaceResultEntry) -> JSONResponse:
+    async def api_upsert_result(
+        race_id: int,
+        body: RaceResultEntry,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         cur = await storage._conn().execute("SELECT id FROM races WHERE id = ?", (race_id,))
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Race not found")
@@ -2720,7 +3056,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.delete("/api/results/{result_id}", status_code=204)
-    async def api_delete_result(result_id: int) -> None:
+    async def api_delete_result(
+        result_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         cur = await storage._conn().execute(
             "SELECT id FROM race_results WHERE id = ?", (result_id,)
         )
@@ -2745,7 +3084,11 @@ def create_app(
         raise HTTPException(status_code=404, detail="Session not found")
 
     @app.post("/api/sessions/{session_id}/notes", status_code=201)
-    async def api_create_note(session_id: int, body: NoteCreate) -> JSONResponse:
+    async def api_create_note(
+        session_id: int,
+        body: NoteCreate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         if body.note_type not in ("text", "settings"):
             raise HTTPException(status_code=422, detail="note_type must be 'text' or 'settings'")
         if body.note_type == "text" and (not body.body or not body.body.strip()):
@@ -2772,6 +3115,7 @@ def create_app(
             race_id=race_id,
             audio_session_id=audio_session_id,
             note_type=body.note_type,
+            user_id=_user.get("id"),
         )
         from logger import influx
 
@@ -2790,6 +3134,7 @@ def create_app(
         session_id: int,
         file: UploadFile,
         ts: str = Form(default=""),
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
         race_id, audio_session_id = await _resolve_session(session_id)
 
@@ -2815,6 +3160,7 @@ def create_app(
             audio_session_id=audio_session_id,
             note_type="photo",
             photo_path=photo_path,
+            user_id=_user.get("id"),
         )
         from logger import influx
 
@@ -2857,7 +3203,10 @@ def create_app(
         return JSONResponse(notes)
 
     @app.delete("/api/notes/{note_id}", status_code=204)
-    async def api_delete_note(note_id: int) -> None:
+    async def api_delete_note(
+        note_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         found = await storage.delete_note(note_id)
         if not found:
             raise HTTPException(status_code=404, detail="Note not found")
@@ -3007,7 +3356,11 @@ def create_app(
         return RedirectResponse(url=url, status_code=302)
 
     @app.post("/api/sessions/{session_id}/videos", status_code=201)
-    async def api_add_video(session_id: int, body: VideoCreate) -> JSONResponse:
+    async def api_add_video(
+        session_id: int,
+        body: VideoCreate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Link a YouTube video to a race session.
 
         The caller supplies a sync point: a UTC wall-clock time and the
@@ -3057,13 +3410,18 @@ def create_app(
             sync_utc=sync_utc,
             sync_offset_s=body.sync_offset_s,
             duration_s=duration_s,
+            user_id=_user.get("id"),
         )
         rows = await storage.list_race_videos(session_id)
         row = next(r for r in rows if r["id"] == row_id)
         return JSONResponse(_video_deep_link(row), status_code=201)
 
     @app.patch("/api/videos/{video_id}", status_code=200)
-    async def api_update_video(video_id: int, body: VideoUpdate) -> JSONResponse:
+    async def api_update_video(
+        video_id: int,
+        body: VideoUpdate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Update label or sync calibration on an existing video link."""
         sync_utc: datetime | None = None
         if body.sync_utc is not None:
@@ -3084,7 +3442,10 @@ def create_app(
         return JSONResponse({"id": video_id, "updated": True})
 
     @app.delete("/api/videos/{video_id}", status_code=204)
-    async def api_delete_video(video_id: int) -> None:
+    async def api_delete_video(
+        video_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
         """Remove a video link."""
         found = await storage.delete_race_video(video_id)
         if not found:
@@ -3153,7 +3514,10 @@ def create_app(
         return JSONResponse(grouped)
 
     @app.post("/api/sails", status_code=201)
-    async def api_add_sail(body: SailCreate) -> JSONResponse:
+    async def api_add_sail(
+        body: SailCreate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Add a sail to the inventory."""
         if body.type not in _SAIL_TYPES:
             raise HTTPException(
@@ -3174,7 +3538,11 @@ def create_app(
         )
 
     @app.patch("/api/sails/{sail_id}", status_code=200)
-    async def api_update_sail(sail_id: int, body: SailUpdate) -> JSONResponse:
+    async def api_update_sail(
+        sail_id: int,
+        body: SailUpdate,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Update sail name/notes or retire it."""
         found = await storage.update_sail(
             sail_id, name=body.name, notes=body.notes, active=body.active
@@ -3193,7 +3561,11 @@ def create_app(
         return JSONResponse(sails)
 
     @app.put("/api/sessions/{session_id}/sails", status_code=200)
-    async def api_set_session_sails(session_id: int, body: RaceSailsSet) -> JSONResponse:
+    async def api_set_session_sails(
+        session_id: int,
+        body: RaceSailsSet,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Set the sail selection for a race/practice session."""
         race = await storage.get_race(session_id)
         if race is None:
@@ -3291,7 +3663,10 @@ def create_app(
     # ------------------------------------------------------------------
 
     @app.post("/api/audio/{session_id}/transcribe", status_code=202)
-    async def api_transcribe(session_id: int) -> JSONResponse:
+    async def api_transcribe(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         """Trigger a transcription job for an audio session (202 Accepted).
 
         If a job already exists, returns 409 Conflict.
