@@ -359,12 +359,16 @@ function render(s) {
       const debriefBtn = (r.end_utc && s.has_recorder && !s.current_debrief && !s.current_race)
         ? `<button class="btn-export btn-debrief" onclick="startDebrief(${r.id})">🎙 Debrief</button>`
         : '';
+      const wavBtn = (r.has_audio && r.audio_session_id && r.end_utc)
+        ? `<a class="btn-export" href="/api/audio/${r.audio_session_id}/download">↓ WAV</a>`
+        : '';
       const exports = r.end_utc
         ? `<div class="race-exports">
              <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
              <a class="btn-export" href="/api/races/${r.id}/export.gpx">↓ GPX</a>
              ${grafanaBtn}
              ${debriefBtn}
+             ${wavBtn}
            </div>`
         : `<div class="race-exports">${grafanaBtn}</div>`;
       const crewLine = r.crew && r.crew.length
@@ -1488,6 +1492,7 @@ def create_app(
                 duration_s = elapsed
             crew = await storage.get_race_crew(r.id)
             results = await storage.list_race_results(r.id)
+            audio = await storage.get_audio_session_for_race(r.id)
             return {
                 "id": r.id,
                 "name": r.name,
@@ -1500,6 +1505,8 @@ def create_app(
                 "session_type": r.session_type,
                 "crew": crew,
                 "results": results,
+                "has_audio": audio is not None and audio.get("end_utc") is not None,
+                "audio_session_id": audio["id"] if audio else None,
             }
 
         current_dict = await _race_dict(current) if current else None

@@ -1094,12 +1094,8 @@ async def test_list_notes_returns_notes(storage: Storage) -> None:
     ) as client:
         await _set_event(client)
         race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Note one"}
-        )
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Note two"}
-        )
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note one"})
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note two"})
         resp = await client.get(f"/api/sessions/{race_id}/notes")
     assert resp.status_code == 200
     notes = resp.json()
@@ -1148,14 +1144,10 @@ async def test_grafana_annotations_returns_list(storage: Storage) -> None:
     ) as client:
         await _set_event(client)
         race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"}
-        )
+        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"})
         from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
         to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp = await client.get(
-            f"/api/grafana/annotations?from={from_ms}&to={to_ms}"
-        )
+        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
@@ -1268,3 +1260,57 @@ async def test_serve_note_photo_traversal_blocked(
         resp = await client.get("/notes/%2e%2e/%2e%2e/etc/passwd")
     # Path traversal must not return 200 — either 403 (blocked) or 404 (not found)
     assert resp.status_code in (403, 404)
+
+
+# ---------------------------------------------------------------------------
+# /api/state today_races audio fields
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_api_state_today_races_has_audio_flag(storage: Storage, tmp_path: Path) -> None:
+    """today_races entries in /api/state include has_audio and audio_session_id."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+
+        state = (await client.get("/api/state")).json()
+
+    races = state["today_races"]
+    assert len(races) == 1
+    race = races[0]
+    assert race["has_audio"] is True
+    assert race["audio_session_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_api_state_today_races_no_audio_without_recorder(
+    storage: Storage,
+) -> None:
+    """today_races entries have has_audio=False when no recording was made."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+
+        state = (await client.get("/api/state")).json()
+
+    races = state["today_races"]
+    assert len(races) == 1
+    race = races[0]
+    assert race["has_audio"] is False
+    assert race["audio_session_id"] is None

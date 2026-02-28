@@ -816,6 +816,24 @@ class Storage:
             for row in rows
         ]
 
+    async def get_audio_session_for_race(self, race_id: int) -> dict[str, Any] | None:
+        """Return the audio session row linked to this race, or None.
+
+        Only considers ``session_type`` values of ``'race'`` or ``'practice'``
+        (i.e. the recording made *during* the race, not a debrief).
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, end_utc FROM audio_sessions"
+            " WHERE race_id = ? AND session_type IN ('race', 'practice')"
+            " ORDER BY start_utc DESC LIMIT 1",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {"id": row["id"], "end_utc": row["end_utc"]}
+
     # ------------------------------------------------------------------
     # Races
     # ------------------------------------------------------------------
