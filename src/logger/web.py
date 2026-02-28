@@ -1267,6 +1267,21 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 .pager-info{color:#8892a4;font-size:.85rem}
 .session-crew{font-size:.78rem;color:#8892a4;margin-top:3px}
 .session-results{font-size:.78rem;color:#8892a4;margin-top:3px}
+.results-row{display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid #0d1a2e}
+.results-row:last-child{border-bottom:none}
+.results-place{min-width:22px;font-size:.82rem;font-weight:700;color:#7eb8f7}
+.results-boat{flex:1;font-size:.82rem}
+.results-flags{display:flex;gap:3px}
+.flag-btn{padding:2px 7px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#8892a4;font-size:.72rem;cursor:pointer}
+.flag-btn.active-dnf{background:#7f1d1d;color:#fca5a5;border-color:#dc2626}
+.flag-btn.active-dns{background:#1c1f2e;color:#818cf8;border-color:#4338ca}
+.btn-del-result{padding:2px 7px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#ef4444;font-size:.72rem;cursor:pointer}
+.boat-picker-input{width:100%;background:#0a1628;border:1px solid #374151;border-radius:6px;padding:6px 9px;color:#e8eaf0;font-size:.82rem}
+.boat-dropdown{position:absolute;top:calc(100% + 2px);left:0;right:0;background:#131f35;border:1px solid #2563eb;border-radius:6px;max-height:190px;overflow-y:auto;z-index:200;box-shadow:0 4px 14px rgba(0,0,0,.6)}
+.boat-option{padding:8px 12px;font-size:.82rem;cursor:pointer;border-bottom:1px solid #1e3a5f}
+.boat-option:last-child{border-bottom:none}
+.boat-option:active{background:#1e3a5f}
+.boat-option-new{color:#4ade80}
 </style>
 </head>
 <body>
@@ -1431,6 +1446,24 @@ function go(page) {
   window.scrollTo(0, 0);
 }
 
+// ---- History page results (editable) ----
+const _histPickerBoats = {};
+
+function _renderHistResultRow(res, raceId) {
+  const name = res.sail_number + (res.boat_name ? ' — ' + res.boat_name : '');
+  const dnfCls = res.dnf ? ' active-dnf' : '';
+  const dnsCls = res.dns ? ' active-dns' : '';
+  return '<div class="results-row">'
+    + '<span class="results-place">' + res.place + '.</span>'
+    + '<span class="results-boat">' + name + '</span>'
+    + '<div class="results-flags">'
+    + '<button class="flag-btn' + dnfCls + '" onmousedown="event.preventDefault()" onclick="_histToggleFlag(' + raceId + ',' + res.place + ',' + res.boat_id + ',' + (!res.dnf) + ',' + res.dns + ')">DNF</button>'
+    + '<button class="flag-btn' + dnsCls + '" onmousedown="event.preventDefault()" onclick="_histToggleFlag(' + raceId + ',' + res.place + ',' + res.boat_id + ',' + res.dnf + ',' + (!res.dns) + ')">DNS</button>'
+    + '</div>'
+    + '<button class="btn-del-result" onmousedown="event.preventDefault()" onclick="_histDeleteResult(' + raceId + ',' + res.id + ')">✕</button>'
+    + '</div>';
+}
+
 async function toggleHistoryResults(sessionId) {
   const el = document.getElementById('hist-results-' + sessionId);
   const btn = document.getElementById('hist-results-btn-' + sessionId);
@@ -1440,17 +1473,124 @@ async function toggleHistoryResults(sessionId) {
     if (btn) btn.textContent = 'Results ▶';
     return;
   }
-  const r = await fetch('/api/sessions/' + sessionId + '/results');
-  const results = await r.json();
-  if (!results.length) {
-    el.innerHTML = 'No results recorded';
-  } else {
-    el.innerHTML = results.map(r =>
-      r.place + '. ' + r.sail_number + (r.boat_name ? ' (' + r.boat_name + ')' : '') + (r.dnf ? ' DNF' : '') + (r.dns ? ' DNS' : '')
-    ).join(' &nbsp;·&nbsp; ');
-  }
+  el.innerHTML = _renderHistResultsPanel(sessionId);
+  await _refreshHistResults(sessionId);
   el.style.display = '';
   if (btn) btn.textContent = 'Results ▼';
+}
+
+function _renderHistResultsPanel(raceId) {
+  return '<div id="results-list-' + raceId + '"></div>'
+    + '<div class="results-row" style="border-bottom:none;margin-top:4px">'
+    + '<span class="results-place" id="add-place-' + raceId + '">1.</span>'
+    + '<div style="position:relative;flex:1">'
+    + '<input class="boat-picker-input" id="picker-input-' + raceId + '" placeholder="Search boat…" autocomplete="off"'
+    + ' oninput="_histFilterBoats(' + raceId + ',this.value)"'
+    + ' onfocus="_histOpenPicker(' + raceId + ')"'
+    + ' onblur="_histClosePicker(' + raceId + ')"/>'
+    + '<div class="boat-dropdown" id="picker-dropdown-' + raceId + '" style="display:none"></div>'
+    + '</div></div>';
+}
+
+async function _histOpenPicker(raceId) {
+  const r = await fetch('/api/boats?exclude_race=' + raceId);
+  _histPickerBoats[raceId] = await r.json();
+  const input = document.getElementById('picker-input-' + raceId);
+  _histShowBoatDropdown(raceId, input ? input.value : '');
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = '';
+}
+
+function _histClosePicker(raceId) {
+  setTimeout(() => {
+    const dd = document.getElementById('picker-dropdown-' + raceId);
+    if (dd) dd.style.display = 'none';
+  }, 200);
+}
+
+function _histFilterBoats(raceId, searchText) {
+  if (_histPickerBoats[raceId]) {
+    _histShowBoatDropdown(raceId, searchText);
+    const dd = document.getElementById('picker-dropdown-' + raceId);
+    if (dd) dd.style.display = '';
+  }
+}
+
+function _histShowBoatDropdown(raceId, searchText) {
+  const boats = _histPickerBoats[raceId] || [];
+  const q = searchText.trim().toLowerCase();
+  const filtered = q
+    ? boats.filter(b => b.sail_number.toLowerCase().includes(q) || (b.name||'').toLowerCase().includes(q))
+    : boats;
+  let html = filtered.slice(0,15).map(b => {
+    const label = b.name ? b.sail_number + ' — ' + b.name : b.sail_number;
+    const esc = label.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<div class="boat-option" onmousedown="event.preventDefault()" onclick="_histSelectBoat(' + raceId + ',' + b.id + ')">' + esc + '</div>';
+  }).join('');
+  const exactMatch = filtered.some(b => b.sail_number.toLowerCase() === searchText.trim().toLowerCase());
+  if (searchText.trim() && !exactMatch) {
+    const esc = searchText.trim().replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const js = searchText.trim().replace(/\\\\/g,'\\\\\\\\').replace(/'/g,"\\\\'");
+    html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="_histSelectNewBoat(' + raceId + ',\\'' + js + '\\')">+ Add &ldquo;' + esc + '&rdquo;</div>';
+  }
+  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.innerHTML = html;
+}
+
+async function _histSelectBoat(raceId, boatId) {
+  const listEl = document.getElementById('results-list-' + raceId);
+  const nextPlace = listEl ? listEl.children.length + 1 : 1;
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place: nextPlace, boat_id: boatId})
+  });
+  const input = document.getElementById('picker-input-' + raceId);
+  if (input) input.value = '';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = 'none';
+  delete _histPickerBoats[raceId];
+  await _refreshHistResults(raceId);
+  _histOpenPicker(raceId);
+}
+
+async function _histSelectNewBoat(raceId, sailNumber) {
+  const listEl = document.getElementById('results-list-' + raceId);
+  const nextPlace = listEl ? listEl.children.length + 1 : 1;
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place: nextPlace, sail_number: sailNumber})
+  });
+  const input = document.getElementById('picker-input-' + raceId);
+  if (input) input.value = '';
+  const dd = document.getElementById('picker-dropdown-' + raceId);
+  if (dd) dd.style.display = 'none';
+  delete _histPickerBoats[raceId];
+  await _refreshHistResults(raceId);
+  _histOpenPicker(raceId);
+}
+
+async function _histToggleFlag(raceId, place, boatId, dnf, dns) {
+  await fetch('/api/sessions/' + raceId + '/results', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({place, boat_id: boatId, dnf, dns})
+  });
+  await _refreshHistResults(raceId);
+}
+
+async function _histDeleteResult(raceId, resultId) {
+  await fetch('/api/results/' + resultId, {method:'DELETE'});
+  delete _histPickerBoats[raceId];
+  await _refreshHistResults(raceId);
+}
+
+async function _refreshHistResults(raceId) {
+  const r = await fetch('/api/sessions/' + raceId + '/results');
+  const results = await r.json();
+  const listEl = document.getElementById('results-list-' + raceId);
+  if (listEl) listEl.innerHTML = results.map(r => _renderHistResultRow(r, raceId)).join('');
+  const addPlace = document.getElementById('add-place-' + raceId);
+  if (addPlace) addPlace.textContent = (results.length + 1) + '.';
 }
 
 function renderHistoryNote(n, sessionId) {
