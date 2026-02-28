@@ -343,7 +343,10 @@ function render(s) {
     // Don't re-render while the user has focus inside the race list (e.g.
     // typing in the boat picker). Replacing innerHTML destroys the active
     // element and fires onblur, which closes the picker prematurely (#36).
-    if (list.contains(document.activeElement)) return;
+    // Also skip if any expandable panel is open — re-rendering wipes the form.
+    const anyPanelOpen = [...list.querySelectorAll('[id^="videos-list-"],[id^="notes-list-"]')]
+      .some(el => el.style.display !== 'none');
+    if (list.contains(document.activeElement) || anyPanelOpen) return;
     list.innerHTML = s.today_races.slice().reverse().map(r => {
       const start = fmtTime(r.start_utc);
       const end = r.end_utc ? fmtTime(r.end_utc) : 'in progress';
