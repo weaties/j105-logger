@@ -46,14 +46,17 @@ grafana-server.service (independent, starts at boot)
 1. [Daily use](#daily-use)
 2. [Web interfaces](#web-interfaces)
 3. [Race marking](#race-marking)
-4. [Linking YouTube videos](#linking-youtube-videos)
-5. [External data — weather and tides](#external-data--weather-and-tides)
-6. [Recording audio commentary](#recording-audio-commentary)
-7. [Mac development](#mac-development)
-8. [Fresh SD card setup](#fresh-sd-card-setup)
-9. [Updating / deploying](#updating--deploying)
-10. [Configuration](#configuration)
-11. [Troubleshooting](#troubleshooting)
+4. [Sail tracking](#sail-tracking)
+5. [Linking YouTube videos](#linking-youtube-videos)
+6. [External data — weather and tides](#external-data--weather-and-tides)
+7. [Recording audio commentary](#recording-audio-commentary)
+8. [Audio transcription](#audio-transcription)
+9. [System health monitoring](#system-health-monitoring)
+10. [Mac development](#mac-development)
+11. [Fresh SD card setup](#fresh-sd-card-setup)
+12. [Updating / deploying](#updating--deploying)
+13. [Configuration](#configuration)
+14. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -233,6 +236,25 @@ future PIN-based access control (not yet implemented).
 
 ---
 
+## Sail tracking
+
+The **Boats** page (`http://corvopi:3002` → Boats tab) maintains a sail inventory
+for the boat. Each sail has a type, name, and optional notes.
+
+### Managing the sail inventory
+
+Open the Boats page and use the **Add Sail** form to record each sail you own
+(main, jib, spinnaker, etc.). Sails appear in a list and can be deleted when
+retired.
+
+### Recording sails per race
+
+On the **History** page, each completed race card has a **Sails** panel. Select
+the main and jib (and kite if used) from dropdown menus populated from your sail
+inventory. Selections are saved immediately and appear in the race summary.
+
+---
+
 ## Linking YouTube videos
 
 If you record a race on video and upload it to YouTube, you can link it to
@@ -404,6 +426,12 @@ data/audio/audio_20250810_140530.wav             1:23:45  2025-08-10T14:05:30+00
 Files are named `audio_YYYYMMDD_HHMMSS.wav` using the UTC start time, so they
 can be matched to the instrument log by timestamp.
 
+### Listening to recordings in the browser
+
+The **History** page shows an inline audio player for each completed race that
+has an associated recording. You can also download the WAV file directly from
+the same card using the **↓ WAV** button.
+
 ### Graceful degradation
 
 If no audio device is found at startup (e.g. Gordik receiver not plugged in),
@@ -412,6 +440,69 @@ never interrupted by a missing audio device.
 
 See `docs/audio-setup.md` for full details, including system dependency notes
 and troubleshooting.
+
+---
+
+## Audio transcription
+
+Completed audio recordings can be transcribed to text directly from the
+**History** page. Transcription runs on the Pi using
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) — no cloud service
+or internet connection required.
+
+### Transcribing a recording
+
+1. On the History page, open a race card that has an audio recording.
+2. Click **📝 Transcript ▶**.
+3. The button shows a spinner while the job runs. When done, the transcript text
+   appears in the panel below.
+
+Transcription is CPU-bound and takes roughly 0.5–1× real-time on a Pi 4
+(i.e. a 60-minute race takes about 30–60 minutes). You can navigate away and
+come back — the job continues in the background and the result is stored in
+SQLite.
+
+### Model selection
+
+The default model is `base` (good accuracy, fast on Pi). You can choose a larger
+model for better accuracy by setting `WHISPER_MODEL` in `.env`:
+
+| Model | Speed on Pi 4 | Accuracy |
+|---|---|---|
+| `tiny` | Fastest | Lower |
+| `base` | ~1× real-time | Good (default) |
+| `small` | ~2× real-time | Better |
+| `medium` | ~4× real-time | Best practical |
+
+```bash
+# In ~/j105-logger/.env:
+WHISPER_MODEL=small
+```
+
+Restart the logger after changing the model. The model is downloaded on first
+use and cached automatically.
+
+### Limitations
+
+- Speaker diarisation (labelling who said what) is not yet implemented.
+- Accuracy degrades in high wind/engine noise environments.
+- Transcripts are stored in the `transcripts` SQLite table and cannot yet be
+  exported to CSV or PDF from the UI.
+
+---
+
+## System health monitoring
+
+The logger automatically monitors the Pi's CPU, memory, disk usage, and
+temperature, writing a `system_health` measurement to InfluxDB every 60 seconds.
+
+The **home page** polls `/api/system-health` every 30 seconds and shows a
+warning banner if:
+- Disk usage exceeds **85 %**
+- CPU temperature exceeds **75 °C**
+
+No configuration is needed. If InfluxDB is not configured, the metric write
+fails silently and only the web banner is active.
 
 ---
 
@@ -706,6 +797,10 @@ SK_PORT=3000             # Signal K WebSocket port
 AUDIO_DIR=data/audio    # directory for WAV files
 AUDIO_SAMPLE_RATE=48000
 AUDIO_CHANNELS=1
+# Audio transcription
+WHISPER_MODEL=base      # faster-whisper model: tiny, base, small, medium, large
+# Photo notes
+NOTES_DIR=data/notes    # directory where uploaded photo notes are stored
 # Web interface (race marker)
 WEB_HOST=0.0.0.0        # bind address
 WEB_PORT=3002           # http://corvopi:3002 on Tailscale
