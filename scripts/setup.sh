@@ -96,7 +96,8 @@ cat > "$HOME/.signalk/package.json" << 'EOF'
   "name": "signalk-server-config",
   "version": "1.0.0",
   "dependencies": {
-    "signalk-to-influxdb2": "*"
+    "signalk-to-influxdb2": "*",
+    "signalk-derived-data": "*"
   }
 }
 EOF
