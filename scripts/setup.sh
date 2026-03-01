@@ -189,7 +189,6 @@ sudo tee /etc/systemd/system/grafana-server.service.d/port.conf > /dev/null << '
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
-Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now grafana-server
@@ -406,7 +405,6 @@ if command -v tailscale &>/dev/null; then
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://${TS_HOSTNAME}/grafana/
-Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
 EOF
         sudo systemctl daemon-reload
         sudo systemctl restart grafana-server
