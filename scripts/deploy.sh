@@ -35,10 +35,9 @@ echo "==> Configuring Tailscale Funnel routes..."
 if command -v tailscale &>/dev/null; then
     TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
     if [[ -n "$TS_HOSTNAME" ]]; then
-        tailscale serve --bg / http://localhost:3002
-        tailscale serve --bg /grafana/ http://localhost:3001
-        tailscale serve --bg /signalk/ http://localhost:3000
-        tailscale funnel --bg 443
+        tailscale funnel --bg 3002
+        tailscale funnel --bg --set-path /grafana/ 3001
+        tailscale funnel --bg --set-path /signalk/ 3000
         echo "    Routes verified for https://${TS_HOSTNAME}"
         # Keep PUBLIC_URL in .env current so the webapp generates correct links
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"

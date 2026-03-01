@@ -394,12 +394,10 @@ if command -v tailscale &>/dev/null; then
     TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
     if [[ -n "$TS_HOSTNAME" ]]; then
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
-        # Path-based serve rules (idempotent — safe to re-run)
-        tailscale serve --bg / http://localhost:3002
-        tailscale serve --bg /grafana/ http://localhost:3001
-        tailscale serve --bg /signalk/ http://localhost:3000
-        # Make the serve rules publicly reachable via Funnel
-        tailscale funnel --bg 443
+        # Path-based funnel rules (idempotent — safe to re-run)
+        tailscale funnel --bg 3002
+        tailscale funnel --bg --set-path /grafana/ 3001
+        tailscale funnel --bg --set-path /signalk/ 3000
         info "Tailscale Funnel enabled: ${PUBLIC_URL_VALUE}"
         # Persist PUBLIC_URL in .env so the webapp generates correct links
         if grep -q '^PUBLIC_URL=' "$ENV_FILE" 2>/dev/null; then
