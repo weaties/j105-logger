@@ -101,7 +101,8 @@ cat > "$HOME/.signalk/package.json" << 'EOF'
   }
 }
 EOF
-(cd "$HOME/.signalk" && npm install --silent)
+(cd "$HOME/.signalk" && npm install --no-fund --no-audit --legacy-peer-deps) || \
+    warn "Signal K plugin install had errors — run 'cd ~/.signalk && npm install --legacy-peer-deps' to retry."
 
 # systemd service for Signal K
 sudo tee /etc/systemd/system/signalk.service > /dev/null << EOF
