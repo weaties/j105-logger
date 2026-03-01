@@ -60,6 +60,8 @@ _EXPECTED_COLS = {
     "crew_jib",
     "crew_spin",
     "crew_tactician",
+    "BSP_BASELINE",
+    "BSP_DELTA",
 }
 
 
@@ -369,3 +371,22 @@ class TestExportToFile:
         with out.open() as fh:
             first_line = fh.readline()
         assert "timestamp" in first_line
+
+
+# ---------------------------------------------------------------------------
+# Polar baseline columns
+# ---------------------------------------------------------------------------
+
+
+class TestPolarBaselineColumns:
+    async def test_bsp_baseline_null_without_polar(self, storage: Storage, tmp_path: Path) -> None:
+        """Export with no polar baseline data → BSP_BASELINE and BSP_DELTA are empty."""
+        await _populate(storage)
+        out = tmp_path / "export.csv"
+        await export_csv(storage, _TS, _END, out)
+        with out.open() as fh:
+            reader = csv.DictReader(fh)
+            rows = list(reader)
+        first = rows[0]
+        assert first["BSP_BASELINE"] == ""
+        assert first["BSP_DELTA"] == ""

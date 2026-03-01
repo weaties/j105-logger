@@ -121,6 +121,8 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 .inst-label{font-size:.7rem;text-transform:uppercase;letter-spacing:.07em;color:#8892a4}
 .inst-value{font-size:1.3rem;font-weight:700;color:#7eb8f7;font-variant-numeric:tabular-nums}
 .inst-unit{font-size:.75rem;color:#8892a4;margin-left:2px}
+.polar-delta-pos{color:#22c55e}
+.polar-delta-neg{color:#f87171}
 .inst-time{font-size:1rem;font-weight:600;color:#e8eaf0;font-variant-numeric:tabular-nums;margin-bottom:8px}
 .crew-header{display:flex;align-items:center;justify-content:space-between;cursor:pointer;-webkit-user-select:none;user-select:none}
 .crew-row{display:flex;align-items:center;gap:8px;margin-bottom:8px}
@@ -297,6 +299,21 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
         <button class="btn btn-primary" style="font-size:.82rem;padding:5px 12px" onclick="addSail()">Add</button>
       </div>
     </div>
+  </div>
+</div>
+
+<div class="card" id="polar-card">
+  <div class="label">Boatspeed vs Baseline</div>
+  <div class="instruments-grid" style="margin-top:6px">
+    <div class="inst-item"><span class="inst-label">BSP</span>
+      <span><span class="inst-value" id="pv-bsp">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">Baseline</span>
+      <span><span class="inst-value" id="pv-baseline">—</span><span class="inst-unit">kts</span></span></div>
+    <div class="inst-item"><span class="inst-label">Delta</span>
+      <span><span class="inst-value" id="pv-delta">—</span><span class="inst-unit">kts</span></span></div>
+  </div>
+  <div id="polar-no-data" style="display:none;font-size:.78rem;color:#8892a4;margin-top:4px">
+    No baseline data for this wind condition (need ≥3 sessions)
   </div>
 </div>
 
@@ -1206,11 +1223,38 @@ async function checkSystemHealth() {
   } catch(e) { /* non-fatal */ }
 }
 
+async function loadPolar() {
+  try {
+    const r = await fetch('/api/polar/current');
+    if (!r.ok) return;
+    const d = await r.json();
+    const set = (id, val, dec) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val != null ? Number(val).toFixed(dec) : '—';
+    };
+    set('pv-bsp', d.bsp, 1);
+    set('pv-baseline', d.baseline_bsp, 1);
+    const deltaEl = document.getElementById('pv-delta');
+    const noData = document.getElementById('polar-no-data');
+    if (d.sufficient_data && d.delta != null) {
+      deltaEl.textContent = (d.delta >= 0 ? '+' : '') + d.delta.toFixed(2);
+      deltaEl.className = 'inst-value ' + (d.delta >= 0 ? 'polar-delta-pos' : 'polar-delta-neg');
+      if (noData) noData.style.display = 'none';
+    } else {
+      deltaEl.textContent = '—';
+      deltaEl.className = 'inst-value';
+      if (noData) noData.style.display = d.tws != null ? 'block' : 'none';
+    }
+  } catch(e) {}
+}
+
 loadState();
 setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
+loadPolar();
+setInterval(loadPolar, 2000);
 loadRecentSailors();
 checkSystemHealth();
 setInterval(checkSystemHealth, 30000);
@@ -2599,6 +2643,39 @@ def create_app(
     async def api_instruments() -> JSONResponse:
         data = await storage.latest_instruments()
         return JSONResponse(data)
+
+    # ------------------------------------------------------------------
+    # /api/polar/current
+    # ------------------------------------------------------------------
+
+    @app.get("/api/polar/current")
+    async def api_polar_current() -> JSONResponse:
+        import logger.polar as _polar
+
+        inst = await storage.latest_instruments()
+        tws = inst.get("tws_kts")
+        twa = inst.get("twa_deg")
+        bsp = inst.get("bsp_kts")
+        point = None
+        if tws is not None and twa is not None:
+            point = await _polar.lookup_polar(storage, float(tws), float(twa))
+        baseline_bsp = point["mean_bsp"] if point else None
+        delta = (
+            round(float(bsp) - float(baseline_bsp), 2)
+            if (bsp is not None and baseline_bsp is not None)
+            else None
+        )
+        return JSONResponse(
+            {
+                "bsp": bsp,
+                "tws": tws,
+                "twa": twa,
+                "baseline_bsp": baseline_bsp,
+                "baseline_p90": point["p90_bsp"] if point else None,
+                "delta": delta,
+                "sufficient_data": point is not None,
+            }
+        )
 
     # ------------------------------------------------------------------
     # /api/event

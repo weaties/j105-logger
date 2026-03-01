@@ -2268,3 +2268,76 @@ async def test_transcript_done_with_segments(
     assert set(segs[0].keys()) == {"start", "end", "speaker", "text"}
     assert segs[0]["speaker"] == "SPEAKER_00"
     assert segs[1]["speaker"] == "SPEAKER_01"
+
+
+# ---------------------------------------------------------------------------
+# /api/polar/current
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_polar_current_empty_db(storage: Storage) -> None:
+    """GET /api/polar/current with no data → 200, all nulls, sufficient_data=False."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/polar/current")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sufficient_data"] is False
+    assert data["bsp"] is None
+    assert data["baseline_bsp"] is None
+    assert data["delta"] is None
+
+
+@pytest.mark.asyncio
+async def test_polar_current_with_baseline(storage: Storage) -> None:
+    """GET /api/polar/current with baseline seeded → sufficient_data=True, correct delta."""
+    from datetime import timedelta
+
+    from logger.polar import build_polar_baseline
+
+    base_ts = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
+
+    # Seed 3 races, each with BSP=6.0, TWS=10.0, TWA=45°
+    for race_num in range(1, 4):
+        start = base_ts + timedelta(hours=race_num)
+        end = start + timedelta(seconds=10)
+        db = storage._conn()
+        await db.execute(
+            "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+            " VALUES (?, 'TestEvent', ?, ?, ?, ?)",
+            (
+                f"TestEvent-R{race_num}",
+                race_num,
+                start.date().isoformat(),
+                start.isoformat(),
+                end.isoformat(),
+            ),
+        )
+        await db.commit()
+        for i in range(10):
+            ts = start + timedelta(seconds=i)
+            await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 6.0))
+            await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+
+    await build_polar_baseline(storage)
+
+    # Set live instruments: BSP=7.0, TWS=10.2, TWA=46°
+    live_ts = datetime(2024, 6, 10, 12, 0, 0, tzinfo=UTC)
+    storage.update_live(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, live_ts, 7.0))
+    storage.update_live(WindRecord(PGN_WIND_DATA, 5, live_ts, 10.2, 46.0, 0))
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/polar/current")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["sufficient_data"] is True
+    assert data["baseline_bsp"] == pytest.approx(6.0, rel=1e-2)
+    assert data["delta"] == pytest.approx(1.0, rel=1e-2)
