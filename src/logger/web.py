@@ -162,6 +162,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
     <a class="btn-export" href="/history">📋 History</a>
     <a class="btn-export" href="/admin/boats">⚓ Boats</a>
     <a class="btn-export btn-grafana" href="__GRAFANA_URL__/d/__GRAFANA_UID__/sailing-data?refresh=10s" target="_blank">📊 Grafana</a>
+    __SIGNALK_LINK__
   </div>
 </div>
 <div class="sub" id="header-sub">Loading…</div>
@@ -2334,9 +2335,15 @@ def create_app(
     from logger.races import RaceConfig
 
     cfg = RaceConfig()
+    _signalk_link = (
+        f'<a class="btn-export" href="{cfg.signalk_url}" target="_blank">⚙ Signal K</a>'
+        if cfg.signalk_url
+        else ""
+    )
     _page = (
         _HTML.replace("__GRAFANA_URL__", cfg.grafana_url)
         .replace("__GRAFANA_UID__", cfg.grafana_uid)
+        .replace("__SIGNALK_LINK__", _signalk_link)
         .replace("__GIT_INFO__", _GIT_INFO)
     )
     _history_page = (
@@ -3586,7 +3593,7 @@ def create_app(
                     "tags": [n["note_type"]],
                 }
             )
-        return JSONResponse(result)
+        return JSONResponse(result, headers={"Access-Control-Allow-Origin": "*"})
 
     # ------------------------------------------------------------------
     # /api/sails  &  /api/sessions/{id}/sails

@@ -350,6 +350,52 @@ async def test_index_uses_env_grafana_url(
     assert "__GRAFANA_URL__" not in html
 
 
+@pytest.mark.asyncio
+async def test_index_public_url_grafana_and_signalk(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When PUBLIC_URL is set, Grafana links use PUBLIC_URL/grafana and Signal K link appears."""
+    monkeypatch.setenv("PUBLIC_URL", "https://corvopi.tail1234.ts.net")
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+
+    html = resp.text
+    assert "https://corvopi.tail1234.ts.net/grafana" in html
+    assert "https://corvopi.tail1234.ts.net/signalk" in html
+    assert "__SIGNALK_LINK__" not in html
+    assert "__GRAFANA_URL__" not in html
+
+
+@pytest.mark.asyncio
+async def test_index_no_signalk_link_without_public_url(storage: Storage) -> None:
+    """Without PUBLIC_URL the Signal K link is absent from the main page."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+
+    html = resp.text
+    assert "__SIGNALK_LINK__" not in html
+    # No /signalk link (the placeholder was replaced with empty string)
+    assert "Signal K" not in html
+
+
+@pytest.mark.asyncio
+async def test_grafana_annotations_cors_header(storage: Storage) -> None:
+    """GET /api/grafana/annotations returns Access-Control-Allow-Origin: *."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/grafana/annotations", params={"from": 0, "to": 1000})
+
+    assert resp.headers.get("access-control-allow-origin") == "*"
+
+
 # ---------------------------------------------------------------------------
 # Tests — debrief mode
 # ---------------------------------------------------------------------------
