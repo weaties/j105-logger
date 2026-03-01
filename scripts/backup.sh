@@ -36,14 +36,16 @@ log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
 # extra disk space across snapshots.
 PREV=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | head -1)
 
-link_dest_args() {
-  # Usage: link_dest_args <subdir>
-  # Emits --link-dest=<prev>/<subdir> if a previous snapshot exists.
-  local subdir="$1"
-  if [ -n "$PREV" ] && [ -d "$PREV/$subdir" ]; then
-    echo "--link-dest=$PREV/$subdir"
-  fi
-}
+# Pre-compute link-dest flags as variables to avoid command substitution
+# inside &&-chains (which interacts badly with inline comments).
+LINK_DATA=""
+LINK_INFLUX=""
+LINK_GRAFANA=""
+if [ -n "$PREV" ]; then
+  [ -d "$PREV/data" ]    && LINK_DATA="--link-dest=$PREV/data"
+  [ -d "$PREV/influxdb" ] && LINK_INFLUX="--link-dest=$PREV/influxdb"
+  [ -d "$PREV/grafana" ]  && LINK_GRAFANA="--link-dest=$PREV/grafana"
+fi
 
 mkdir -p "$SNAP"
 log "Starting backup → $SNAP"
@@ -55,8 +57,8 @@ log "Step 1/4: SQLite WAL checkpoint + rsync"
 ssh "$PI" "sqlite3 ~/j105-logger/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE);'" 2>/dev/null || \
   log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
 
-# shellcheck disable=SC2046
-rsync -az --info=progress2 $(link_dest_args data) \
+# shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
+rsync -az --info=progress2 $LINK_DATA \
   "$PI:~/j105-logger/data/" \
   "$SNAP/data/"
 log "  SQLite + file data done"
@@ -67,8 +69,7 @@ if ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
   ssh "$PI" "influx backup /tmp/influx-backup \
     --host http://localhost:8086 \
     --token \$(cat $INFLUX_TOKEN_FILE)" 2>/dev/null && \
-  # shellcheck disable=SC2046
-  rsync -az --info=progress2 $(link_dest_args influxdb) \
+  rsync -az --info=progress2 $LINK_INFLUX \
     "$PI:/tmp/influx-backup/" \
     "$SNAP/influxdb/" && \
   ssh "$PI" "rm -rf /tmp/influx-backup" && \
@@ -83,7 +84,7 @@ log "Step 3/4: Grafana data dir"
 # shellcheck disable=SC2046
 if rsync -az --info=progress2 \
     --rsync-path='sudo rsync' \
-    $(link_dest_args grafana) \
+    $LINK_GRAFANA \
     "$PI:/var/lib/grafana/" \
     "$SNAP/grafana/" 2>/dev/null; then
   log "  Grafana backup done"
