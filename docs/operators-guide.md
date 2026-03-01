@@ -1,18 +1,60 @@
 # J105 Logger — Crew Operations Guide
 
-_Last reviewed: 2026-02-28 · App version: schema v16_
+_Last reviewed: 2026-03-01 · App version: schema v16_
 
 Quick reference for using the logger on race day.
 No technical knowledge required. Print double-sided, laminate, keep in the nav station.
 
 ---
 
+## What the system does
+
+The J105 Logger is an always-on Raspberry Pi that collects data from the boat's
+B&G instrument system (via NMEA 2000) and gives the crew tools to:
+
+- **Mark races** — one tap to start and stop race sessions; every instrument
+  reading is captured automatically for the duration
+- **Log notes** — text observations, boat settings (vang, cunningham, etc.), or
+  photos, all timestamped and attached to the session
+- **Record the debrief** — if the Gordik USB mic is plugged in, record audio
+  debriefs and get an automatic text transcript
+- **Track results** — record finishing positions with boat names / sail numbers
+  directly in the app
+- **Track sails** — record which main, jib, and spinnaker were used each race
+- **Export data** — download a CSV spreadsheet or GPX track for any race for
+  import into Sailmon, Expedition, or a spreadsheet tool
+- **Link YouTube videos** — sync a GoPro upload with instrument data by
+  marking a common timestamp; the app then generates a deep-link to the exact
+  moment in the video for any point in the race
+- **View Grafana dashboards** — one-tap link from any race card opens a live
+  time-series Grafana dashboard scoped to that race window, showing boatspeed,
+  true wind, COG, heading, and more
+- **Browse history** — searchable, filterable log of every session with all of
+  the above tools available for past races
+
+---
+
 ## 1. Connecting to the system
+
+**On the boat (Tailscale network):**
 
 1. Make sure your phone or tablet is on the boat's **Tailscale** network.
    _(One-time setup — ask the navigator if you haven't joined yet.)_
 2. Open your browser and go to: **`http://corvopi:3002`**
 3. Bookmark this address — you'll open it at the start line.
+
+**From anywhere over the internet (Tailscale Funnel):**
+
+The logger, Grafana, and Signal K are also accessible publicly via Tailscale Funnel:
+
+| Interface | Public URL |
+|---|---|
+| Race marker / history | `https://corvopi.taileb1513.ts.net/` |
+| Grafana dashboards | `https://corvopi.taileb1513.ts.net/grafana/` |
+| Signal K explorer | `https://corvopi.taileb1513.ts.net/signalk/` |
+
+These URLs work from any device — no Tailscale app required.
+Ask the navigator for the exact URL for your tailnet.
 
 The page refreshes itself. You do not need to reload it manually.
 

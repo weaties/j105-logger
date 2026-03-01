@@ -7,7 +7,7 @@ dashboards) and j105-logger (SQLite → CSV/GPX/JSON for regatta analysis tools)
 
 Two Signal K plugins are required:
 - **signalk-to-influxdb2** — forwards all SK data to InfluxDB for Grafana dashboards
-- **@signalk/derived-data** — computes true wind (TWS/TWA/TWD) from apparent wind + boatspeed + heading; without this, true wind fields will be empty in the logger and exports
+- **signalk-derived-data** — computes true wind (TWS/TWA/TWD) from apparent wind + boatspeed + heading; without this, true wind fields will be empty in the logger and exports
 
 ---
 
@@ -172,17 +172,21 @@ ip -details link show can0
 
 ## Web interfaces
 
-All four are available from any device on your Tailscale network:
+All interfaces are available locally over Tailscale and — after `setup.sh` configures
+Tailscale Funnel — publicly via `https://corvopi.<tailnet>.ts.net`:
 
-| Interface | URL | Purpose |
-|---|---|---|
-| Signal K | `http://corvopi:3000` | NMEA 2000 data explorer, plugin management |
-| Grafana | `http://corvopi:3001` | Real-time sailing dashboards |
-| j105-logger | `http://corvopi:3002` | Race marker (mobile-optimised) |
-| InfluxDB | `http://corvopi:8086` | Time-series data explorer, query UI |
+| Interface | Local URL | Public URL (Funnel) | Purpose |
+|---|---|---|---|
+| j105-logger | `http://corvopi:3002` | `https://corvopi.<tailnet>.ts.net/` | Race marker, history, exports |
+| Grafana | `http://corvopi:3001` | `https://corvopi.<tailnet>.ts.net/grafana/` | Real-time sailing dashboards |
+| Signal K | `http://corvopi:3000` | `https://corvopi.<tailnet>.ts.net/signalk/` | NMEA 2000 data explorer, plugin management |
+| InfluxDB | `http://corvopi:8086` | — (not exposed) | Time-series data explorer, query UI |
 
-Grafana is pre-provisioned with an InfluxDB datasource. The default credentials
-are `admin` / `changeme123` — change these after first login.
+`setup.sh` configures all three public routes automatically when Tailscale is connected.
+The public URL is written to `PUBLIC_URL` in `.env` so the webapp generates correct
+Grafana deep-links.
+
+Grafana default credentials: `admin` / `changeme123` — change after first login.
 
 ---
 
@@ -828,13 +832,13 @@ cd ~/j105-logger
 ./scripts/deploy.sh
 ```
 
-This pulls `main`, syncs Python dependencies, and restarts the `j105-logger`
-service. Service status is printed at the end for a quick sanity check.
+This pulls `main`, syncs Python dependencies, re-applies Tailscale Funnel routes,
+updates `PUBLIC_URL` in `.env`, updates Grafana's `ROOT_URL`, and restarts the
+`j105-logger` service. Service status is printed at the end for a quick sanity check.
 
-### Full update (new deps, service file changes, or Signal K updates)
+### Full update (new deps, systemd service file changes, or Signal K updates)
 
-If `pyproject.toml` changed, systemd service files changed, or Signal K needs
-updating, run the full idempotent setup instead:
+If systemd service files or apt packages changed, run the full idempotent setup instead:
 
 ```bash
 cd ~/j105-logger
@@ -876,6 +880,8 @@ WEB_PORT=3002           # http://corvopi:3002 on Tailscale
 # Grafana deep-link buttons in the web UI
 GRAFANA_URL=http://corvopi:3001
 GRAFANA_DASHBOARD_UID=j105-sailing
+# Public URL — set by setup.sh/deploy.sh from Tailscale hostname; used for Grafana deep-links
+# PUBLIC_URL=https://corvopi.<tailnet>.ts.net
 # InfluxDB — required only for system health metrics; omit if not using InfluxDB
 # INFLUX_URL=http://localhost:8086
 # INFLUX_TOKEN=<token from ~/influx-token.txt>
