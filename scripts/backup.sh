@@ -47,6 +47,15 @@ if [ -n "$PREV" ]; then
   [ -d "$PREV/grafana" ]  && LINK_GRAFANA="--link-dest=$PREV/grafana"
 fi
 
+# --info=progress2 requires rsync 3.1+; macOS ships with 2.6.9 (BSD rsync).
+# Fall back to --progress on older versions.
+RSYNC_MAJOR=$(rsync --version 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+if [ "${RSYNC_MAJOR:-2}" -ge 3 ]; then
+  RSYNC_PROGRESS="--info=progress2"
+else
+  RSYNC_PROGRESS="--progress"
+fi
+
 mkdir -p "$SNAP"
 log "Starting backup → $SNAP"
 log "Source: $PI"
@@ -58,7 +67,7 @@ ssh "$PI" "sqlite3 ~/j105-logger/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE)
   log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
 
 # shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
-rsync -az --info=progress2 $LINK_DATA \
+rsync -az $RSYNC_PROGRESS $LINK_DATA \
   "$PI:~/j105-logger/data/" \
   "$SNAP/data/"
 log "  SQLite + file data done"
@@ -69,7 +78,7 @@ if ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
   ssh "$PI" "influx backup /tmp/influx-backup \
     --host http://localhost:8086 \
     --token \$(cat $INFLUX_TOKEN_FILE)" 2>/dev/null && \
-  rsync -az --info=progress2 $LINK_INFLUX \
+  rsync -az $RSYNC_PROGRESS $LINK_INFLUX \
     "$PI:/tmp/influx-backup/" \
     "$SNAP/influxdb/" && \
   ssh "$PI" "rm -rf /tmp/influx-backup" && \
@@ -82,7 +91,7 @@ fi
 # ── 3. Grafana — rsync with sudo ─────────────────────────────────────────────
 log "Step 3/4: Grafana data dir"
 # shellcheck disable=SC2046
-if rsync -az --info=progress2 \
+if rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GRAFANA \
     "$PI:/var/lib/grafana/" \
