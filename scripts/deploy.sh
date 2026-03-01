@@ -40,6 +40,15 @@ if command -v tailscale &>/dev/null; then
         tailscale funnel --bg --set-path /grafana/ 3001
         tailscale funnel --bg --set-path /signalk/ 3000
         echo "    Routes verified for https://${TS_HOSTNAME}"
+        # Update Grafana ROOT_URL with the actual public hostname
+        sudo tee /etc/systemd/system/grafana-server.service.d/port.conf > /dev/null << EOF
+[Service]
+Environment=GF_SERVER_HTTP_PORT=3001
+Environment=GF_SERVER_ROOT_URL=https://${TS_HOSTNAME}/grafana/
+Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
+EOF
+        sudo systemctl daemon-reload
+        sudo systemctl restart grafana-server
         # Keep PUBLIC_URL in .env current so the webapp generates correct links
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
         if [[ -f "$ENV_FILE" ]]; then

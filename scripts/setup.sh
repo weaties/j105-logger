@@ -401,6 +401,16 @@ if command -v tailscale &>/dev/null; then
         tailscale funnel --bg --set-path /grafana/ 3001
         tailscale funnel --bg --set-path /signalk/ 3000
         info "Tailscale Funnel enabled: ${PUBLIC_URL_VALUE}"
+        # Update Grafana ROOT_URL now that we know the public hostname
+        sudo tee /etc/systemd/system/grafana-server.service.d/port.conf > /dev/null << EOF
+[Service]
+Environment=GF_SERVER_HTTP_PORT=3001
+Environment=GF_SERVER_ROOT_URL=https://${TS_HOSTNAME}/grafana/
+Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
+EOF
+        sudo systemctl daemon-reload
+        sudo systemctl restart grafana-server
+        info "Grafana ROOT_URL set to https://${TS_HOSTNAME}/grafana/"
         # Persist PUBLIC_URL in .env so the webapp generates correct links
         if grep -q '^PUBLIC_URL=' "$ENV_FILE" 2>/dev/null; then
             sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=${PUBLIC_URL_VALUE}|" "$ENV_FILE"
