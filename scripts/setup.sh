@@ -96,8 +96,7 @@ cat > "$HOME/.signalk/package.json" << 'EOF'
   "name": "signalk-server-config",
   "version": "1.0.0",
   "dependencies": {
-    "signalk-to-influxdb2": "*",
-    "@signalk/derived-data": "*"
+    "signalk-to-influxdb2": "*"
   }
 }
 EOF
@@ -395,11 +394,11 @@ if command -v tailscale &>/dev/null; then
     if [[ -n "$TS_HOSTNAME" ]]; then
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
         # Path-based serve rules (idempotent — safe to re-run)
-        tailscale serve https / http://localhost:3002
-        tailscale serve https /grafana/ http://localhost:3001
-        tailscale serve https /signalk/ http://localhost:3000
+        tailscale serve --bg / http://localhost:3002
+        tailscale serve --bg /grafana/ http://localhost:3001
+        tailscale serve --bg /signalk/ http://localhost:3000
         # Make the serve rules publicly reachable via Funnel
-        tailscale funnel 443 on
+        tailscale funnel --bg 443
         info "Tailscale Funnel enabled: ${PUBLIC_URL_VALUE}"
         # Persist PUBLIC_URL in .env so the webapp generates correct links
         if grep -q '^PUBLIC_URL=' "$ENV_FILE" 2>/dev/null; then
