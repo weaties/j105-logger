@@ -35,6 +35,7 @@ echo "==> Configuring Tailscale Funnel routes..."
 if command -v tailscale &>/dev/null; then
     TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
     if [[ -n "$TS_HOSTNAME" ]]; then
+        sudo tailscale set --operator="$(id -un)"
         tailscale funnel --bg 3002
         tailscale funnel --bg --set-path /grafana/ 3001
         tailscale funnel --bg --set-path /signalk/ 3000

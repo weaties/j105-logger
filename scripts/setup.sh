@@ -394,6 +394,8 @@ if command -v tailscale &>/dev/null; then
     TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
     if [[ -n "$TS_HOSTNAME" ]]; then
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
+        # Grant current user permission to configure Tailscale serve/funnel (idempotent)
+        sudo tailscale set --operator="$CURRENT_USER"
         # Path-based funnel rules (idempotent — safe to re-run)
         tailscale funnel --bg 3002
         tailscale funnel --bg --set-path /grafana/ 3001
