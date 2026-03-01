@@ -186,12 +186,12 @@ cd ~/j105-logger
 ./scripts/deploy.sh
 ```
 
-The script pulls `main`, syncs Python dependencies, and restarts the
-`j105-logger` systemd service. It prints the service status at the end so you
-can confirm everything came up cleanly.
+The script pulls `main`, syncs Python dependencies, re-applies Tailscale Funnel
+routes, updates `PUBLIC_URL` in `.env`, and restarts `j105-logger`. It prints
+the service status at the end so you can confirm everything came up cleanly.
 
-> **Heads up**: if `pyproject.toml` gained new dependencies _or_ the systemd
-> service files changed, run the full idempotent setup script instead:
+> **Heads up**: if systemd service unit files or apt packages changed (rare),
+> run the full idempotent setup script instead:
 > ```bash
 > ./scripts/setup.sh && sudo systemctl daemon-reload && sudo systemctl restart j105-logger
 > ```
