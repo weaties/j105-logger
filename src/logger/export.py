@@ -21,6 +21,9 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
+from logger.polar import _twa_bin as _polar_twa_bin
+from logger.polar import _tws_bin as _polar_tws_bin
+
 if TYPE_CHECKING:
     from logger.storage import Storage
 
@@ -54,6 +57,8 @@ _COLUMNS = [
     "crew_jib",
     "crew_spin",
     "crew_tactician",
+    "BSP_BASELINE",
+    "BSP_DELTA",
 ]
 
 _WIND_REF_TRUE = 0
@@ -86,6 +91,7 @@ class _Indexes:
     crew: dict[str, str]
     race_id: int | None
     results: list[dict[str, Any]]
+    polar: dict[tuple[int, int], dict[str, Any]]
 
 
 async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
@@ -120,6 +126,17 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
         crew = {c["position"]: c["sailor"] for c in crew_list}
         results = await storage.list_race_results(race_id)
 
+    # Load polar baseline once for the whole export
+    polar_rows: dict[tuple[int, int], dict[str, Any]] = {}
+    try:
+        polar_cur = await storage._conn().execute(
+            "SELECT tws_bin, twa_bin, mean_bsp FROM polar_baseline WHERE session_count >= 3"
+        )
+        for pr in await polar_cur.fetchall():
+            polar_rows[(int(pr["tws_bin"]), int(pr["twa_bin"]))] = dict(pr)
+    except Exception:
+        pass  # absent on un-migrated DB; export degrades gracefully
+
     return _Indexes(
         video_sessions=video_sessions,
         hdg=_by_second(headings),
@@ -135,6 +152,7 @@ async def _load(storage: Storage, start: datetime, end: datetime) -> _Indexes:
         crew=crew,
         race_id=race_id,
         results=results,
+        polar=polar_rows,
     )
 
 
@@ -198,6 +216,19 @@ def _build_row(current: datetime, idx: _Indexes) -> dict[str, float | str | None
     row["crew_jib"] = idx.crew.get("jib") or None
     row["crew_spin"] = idx.crew.get("spin") or None
     row["crew_tactician"] = idx.crew.get("tactician") or None
+
+    bsp_val = row.get("BSP")
+    tws_val = row.get("TWS")
+    twa_val = row.get("TWA")
+    row["BSP_BASELINE"] = None
+    row["BSP_DELTA"] = None
+    if isinstance(tws_val, float) and isinstance(twa_val, float):
+        pk = (_polar_tws_bin(tws_val), _polar_twa_bin(twa_val))
+        prow = idx.polar.get(pk)
+        if prow is not None:
+            row["BSP_BASELINE"] = prow["mean_bsp"]
+            if isinstance(bsp_val, float):
+                row["BSP_DELTA"] = round(bsp_val - prow["mean_bsp"], 3)
 
     return row
 

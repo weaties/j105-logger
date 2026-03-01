@@ -383,6 +383,25 @@ async def _list_audio() -> None:
 
 
 # ---------------------------------------------------------------------------
+# build-polar
+# ---------------------------------------------------------------------------
+
+
+async def _build_polar(min_sessions: int) -> None:
+    """Rebuild the polar performance baseline from historical session data."""
+    import logger.polar as polar
+    from logger.storage import Storage, StorageConfig
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        count = await polar.build_polar_baseline(storage, min_sessions=min_sessions)
+        print(f"Polar baseline built: {count} bins")
+    finally:
+        await storage.close()
+
+
+# ---------------------------------------------------------------------------
 # list-devices
 # ---------------------------------------------------------------------------
 
@@ -469,6 +488,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-audio", help="List recorded audio sessions")
     sub.add_parser("list-devices", help="List available audio input devices")
 
+    bp = sub.add_parser("build-polar", help="Rebuild polar baseline from historical session data")
+    bp.add_argument("--min-sessions", type=int, default=3, metavar="N")
+
     return parser
 
 
@@ -499,6 +521,8 @@ def main() -> None:
                 asyncio.run(_list_audio())
             case "list-devices":
                 asyncio.run(_list_devices())
+            case "build-polar":
+                asyncio.run(_build_polar(args.min_sessions))
     except KeyboardInterrupt:
         logger.info("Interrupted by user — shutting down")
     except Exception as exc:

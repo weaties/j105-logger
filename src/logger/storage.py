@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 17
+_CURRENT_VERSION: int = 18
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -357,6 +357,20 @@ _MIGRATIONS: dict[int, str] = {
 
         ALTER TABLE session_notes ADD COLUMN user_id INTEGER REFERENCES users(id);
         ALTER TABLE race_videos   ADD COLUMN user_id INTEGER REFERENCES users(id);
+    """,
+    18: """
+        CREATE TABLE IF NOT EXISTS polar_baseline (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            tws_bin       INTEGER NOT NULL,
+            twa_bin       INTEGER NOT NULL,
+            mean_bsp      REAL    NOT NULL,
+            p90_bsp       REAL    NOT NULL,
+            session_count INTEGER NOT NULL,
+            sample_count  INTEGER NOT NULL,
+            built_at      TEXT    NOT NULL,
+            UNIQUE(tws_bin, twa_bin)
+        );
+        CREATE INDEX IF NOT EXISTS idx_polar_tws_twa ON polar_baseline(tws_bin, twa_bin);
     """,
 }
 
@@ -1896,6 +1910,41 @@ class Storage:
         )
         row = await cur.fetchone()
         return dict(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Polar baseline
+    # ------------------------------------------------------------------
+
+    async def get_polar_point(self, tws_bin: int, twa_bin: int) -> dict[str, Any] | None:
+        """Return the polar_baseline row for *(tws_bin, twa_bin)*, or None."""
+        cur = await self._conn().execute(
+            "SELECT tws_bin, twa_bin, mean_bsp, p90_bsp, session_count, sample_count"
+            " FROM polar_baseline WHERE tws_bin = ? AND twa_bin = ?",
+            (tws_bin, twa_bin),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def upsert_polar_baseline(self, rows: list[dict[str, Any]], built_at: str) -> None:
+        """Replace all polar_baseline rows with the freshly computed set."""
+        db = self._conn()
+        await db.execute("DELETE FROM polar_baseline")
+        for row in rows:
+            await db.execute(
+                "INSERT INTO polar_baseline"
+                " (tws_bin, twa_bin, mean_bsp, p90_bsp, session_count, sample_count, built_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["tws_bin"],
+                    row["twa_bin"],
+                    row["mean_bsp"],
+                    row["p90_bsp"],
+                    row["session_count"],
+                    row["sample_count"],
+                    built_at,
+                ),
+            )
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Auth: users, invite tokens, sessions
