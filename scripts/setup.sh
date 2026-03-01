@@ -187,6 +187,8 @@ sudo mkdir -p /etc/systemd/system/grafana-server.service.d
 sudo tee /etc/systemd/system/grafana-server.service.d/port.conf > /dev/null << 'EOF'
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
+Environment=GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
+Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
 EOF
 sudo systemctl daemon-reload
 sudo systemctl enable --now grafana-server
@@ -383,7 +385,40 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# l) Done — summary
+# l) Tailscale Funnel — expose webapp, Grafana, and Signal K on port 443
+# ---------------------------------------------------------------------------
+
+step "Configuring Tailscale Funnel..."
+if command -v tailscale &>/dev/null; then
+    TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
+    if [[ -n "$TS_HOSTNAME" ]]; then
+        PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
+        # Path-based serve rules (idempotent — safe to re-run)
+        tailscale serve https / http://localhost:3002
+        tailscale serve https /grafana/ http://localhost:3001
+        tailscale serve https /signalk/ http://localhost:3000
+        # Make the serve rules publicly reachable via Funnel
+        tailscale funnel 443 on
+        info "Tailscale Funnel enabled: ${PUBLIC_URL_VALUE}"
+        # Persist PUBLIC_URL in .env so the webapp generates correct links
+        if grep -q '^PUBLIC_URL=' "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^PUBLIC_URL=.*|PUBLIC_URL=${PUBLIC_URL_VALUE}|" "$ENV_FILE"
+            info "Updated PUBLIC_URL in .env"
+        else
+            printf '\nPUBLIC_URL=%s\n' "${PUBLIC_URL_VALUE}" >> "$ENV_FILE"
+            info "Added PUBLIC_URL to .env — restart j105-logger to pick it up"
+        fi
+    else
+        warn "Tailscale not connected — Funnel not configured."
+        warn "Run 'tailscale up', then re-run setup.sh to enable public access."
+    fi
+else
+    warn "tailscale CLI not found — Funnel not configured."
+    warn "Install Tailscale (https://tailscale.com/download/linux), then re-run setup.sh."
+fi
+
+# ---------------------------------------------------------------------------
+# m) Done — summary
 # ---------------------------------------------------------------------------
 
 echo ""
@@ -391,10 +426,17 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Setup complete. Reboot, then verify:${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Signal K:  http://corvopi:3000"
-echo "  Grafana:   http://corvopi:3001"
-echo "  InfluxDB:  http://corvopi:8086"
+echo "  Signal K:    http://corvopi:3000"
+echo "  Grafana:     http://corvopi:3001"
+echo "  InfluxDB:    http://corvopi:8086"
 echo "  Race marker: http://corvopi:3002"
+if [[ -n "${TS_HOSTNAME:-}" ]]; then
+    echo ""
+    echo "  Public (Tailscale Funnel):"
+    echo "    Race marker: https://${TS_HOSTNAME}/"
+    echo "    Grafana:     https://${TS_HOSTNAME}/grafana/"
+    echo "    Signal K:    https://${TS_HOSTNAME}/signalk/"
+fi
 echo ""
 if [[ -f "$INFLUX_TOKEN_FILE" ]]; then
     echo "  InfluxDB token saved to: $INFLUX_TOKEN_FILE"
