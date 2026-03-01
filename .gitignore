@@ -8,6 +8,9 @@ data/notes/
 # Claude Code project directory
 .claude/
 
+# Credentials reference (contains real secrets — never commit)
+docs/credentials.md
+
 # Environment — ignore real env files but not the example template
 .env
 .env.local

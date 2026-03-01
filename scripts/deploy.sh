@@ -6,6 +6,9 @@
 # provision-grafana.sh is called every time and is fully idempotent.
 # Tailscale Funnel routes are re-applied on every deploy (idempotent).
 #
+# All sudo commands used here are in /etc/sudoers.d/j105-logger-allowed
+# so they run without a password prompt (set up by setup.sh).
+#
 # If systemd service files or apt packages changed, also run:
 #   ./scripts/setup.sh && sudo systemctl daemon-reload
 
@@ -29,13 +32,12 @@ echo "==> Provisioning Grafana (dashboard, datasources, plugins)..."
 
 # ---------------------------------------------------------------------------
 # Tailscale Funnel routes — re-applied on every deploy (idempotent, fast)
-# Also updates PUBLIC_URL in .env so the app generates correct deep-links.
+# Also updates PUBLIC_URL in .env and Grafana ROOT_URL so deep-links stay current.
 # ---------------------------------------------------------------------------
 echo "==> Configuring Tailscale Funnel routes..."
 if command -v tailscale &>/dev/null; then
-    TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\.$//' || echo '')"
+    TS_HOSTNAME="$(tailscale status --json 2>/dev/null | jq -r '.Self.DNSName // empty' | sed 's/\\.$//' || echo '')"
     if [[ -n "$TS_HOSTNAME" ]]; then
-        sudo tailscale set --operator="$(id -un)"
         tailscale funnel --bg 3002
         tailscale funnel --bg --set-path /grafana/ 3001
         tailscale funnel --bg --set-path /signalk/ 3000
@@ -45,6 +47,9 @@ if command -v tailscale &>/dev/null; then
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://${TS_HOSTNAME}/grafana/
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
+Environment=GF_AUTH_DISABLE_LOGIN_FORM=false
+Environment=GF_AUTH_ANONYMOUS_ENABLED=false
 EOF
         sudo systemctl daemon-reload
         sudo systemctl restart grafana-server

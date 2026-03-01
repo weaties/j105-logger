@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v16) |
+| Storage | SQLite via `aiosqlite` (schema v18) |
 | Web interface | `fastapi` + `uvicorn` |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -52,8 +52,10 @@ j105-logger/
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
 │       ├── races.py        # Race naming logic + RaceConfig dataclass
+│       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
+│       ├── polar.py        # Polar performance baseline builder
 │       ├── sk_reader.py    # Signal K WebSocket reader — primary data source
-│       ├── storage.py      # SQLite read/write; schema migrations (currently v16)
+│       ├── storage.py      # SQLite read/write; schema migrations (currently v18)
 │       ├── transcribe.py   # faster-whisper transcription + pyannote diarisation
 │       ├── video.py        # YouTube video metadata / sync-point logic
 │       └── web.py          # FastAPI app — race marker, history, boats, admin UI
@@ -97,6 +99,8 @@ j105-logger list-audio        # list recorded WAV sessions
 j105-logger list-devices      # list available audio input devices
 j105-logger list-videos       # list linked YouTube videos
 j105-logger link-video --url <url> --sync-utc <utc> --sync-offset <seconds>
+j105-logger add-user --email <email> --name <name> --role admin|crew|viewer  # create user (no email required)
+j105-logger build-polar --min-sessions 3  # rebuild polar performance baseline
 j105-logger --help            # full subcommand list
 
 # Run tests (coverage report printed by default via pyproject.toml addopts)
@@ -210,6 +214,22 @@ the service status at the end so you can confirm everything came up cleanly.
 
 ---
 
+## Deployed Service Architecture (Pi-specific)
+
+On the Pi (`corvopi`), the service runs as a dedicated `j105logger` system account
+(not as `weaties`). Key implications:
+
+- The systemd unit has `User=j105logger` + `UV_CACHE_DIR=/var/cache/j105-logger` + `--no-sync`
+- `data/` is owned by `j105logger:j105logger`; the rest of the project tree is read-only for it
+- `.env` is `chmod 600 weaties:weaties`; systemd reads it as root before dropping privileges
+- `sudo` access for `weaties` is scoped to specific service commands (see `/etc/sudoers.d/j105-logger-allowed`)
+- InfluxDB binds to `127.0.0.1:8086` only; Grafana binds to `127.0.0.1:3001` only
+- Signal K is on `*:3000`; exposed publicly via Tailscale Funnel at `/signalk/`
+- Grafana auth: anonymous disabled; `GF_AUTH_ANONYMOUS_ENABLED=false` via systemd `Environment=`
+- Signal K auth: `@signalk/sk-simple-token-security`; admin password in `~/.signalk-admin-pass.txt`
+
+---
+
 ## Architecture Principles
 
 - **Signal K is the primary data source**: `sk_reader.py` connects to the Signal K WebSocket (`ws://localhost:3000/signalk/v1/stream`). Signal K owns the CAN bus. The legacy direct-CAN path (`can_reader.py`) is available via `DATA_SOURCE=can` but not the default.
@@ -291,6 +311,11 @@ NOTES_DIR=data/notes        # where uploaded photo notes are saved
 WEB_HOST=0.0.0.0            # bind address
 WEB_PORT=3002               # http://corvopi:3002 on Tailscale
 # WEB_PIN=                  # reserved, not yet implemented
+
+# Authentication
+# AUTH_DISABLED=true          # bypass auth (local dev only; never with Tailscale Funnel active)
+AUTH_SESSION_TTL_DAYS=90      # session cookie lifetime
+# ADMIN_EMAIL=you@example.com # auto-create admin user on startup
 
 # Grafana deep-link buttons in the web UI
 GRAFANA_URL=http://corvopi:3001

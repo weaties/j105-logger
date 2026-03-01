@@ -20,12 +20,16 @@ from loguru import logger
 
 
 def _load_env() -> None:
-    """Load .env file if present (best-effort)."""
+    """Load .env file if present (best-effort).
+
+    When running as a dedicated service account, .env may not be readable
+    (systemd injects env vars from EnvironmentFile as root). Ignore that too.
+    """
     try:
         from dotenv import load_dotenv
 
         load_dotenv()
-    except ImportError:  # pragma: no cover
+    except (ImportError, PermissionError):  # pragma: no cover
         pass
 
 
@@ -383,6 +387,38 @@ async def _list_audio() -> None:
 
 
 # ---------------------------------------------------------------------------
+# add-user
+# ---------------------------------------------------------------------------
+
+
+async def _add_user(email: str, name: str | None, role: str) -> None:
+    """Create a user directly in the DB (admin bootstrap; no email required)."""
+    from logger.storage import Storage, StorageConfig
+
+    valid_roles = {"admin", "crew", "viewer"}
+    if role not in valid_roles:
+        logger.error("Invalid role {!r} — must be one of {}", role, sorted(valid_roles))
+        sys.exit(1)
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        existing = await storage.get_user_by_email(email)
+        if existing:
+            logger.info(
+                "User {} already exists (id={} role={})",
+                email,
+                existing["id"],
+                existing["role"],
+            )
+            return
+        user_id = await storage.create_user(email, name, role)
+        logger.info("Created user id={} email={} name={!r} role={}", user_id, email, name, role)
+    finally:
+        await storage.close()
+
+
+# ---------------------------------------------------------------------------
 # build-polar
 # ---------------------------------------------------------------------------
 
@@ -488,6 +524,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list-audio", help="List recorded audio sessions")
     sub.add_parser("list-devices", help="List available audio input devices")
 
+    au = sub.add_parser("add-user", help="Create a user directly in the DB (admin bootstrap)")
+    au.add_argument("--email", required=True, metavar="EMAIL", help="User email address")
+    au.add_argument("--name", default=None, metavar="NAME", help="Display name")
+    au.add_argument(
+        "--role",
+        default="viewer",
+        choices=["admin", "crew", "viewer"],
+        help="Role (default: viewer)",
+    )
+
     bp = sub.add_parser("build-polar", help="Rebuild polar baseline from historical session data")
     bp.add_argument("--min-sessions", type=int, default=3, metavar="N")
 
@@ -521,6 +567,8 @@ def main() -> None:
                 asyncio.run(_list_audio())
             case "list-devices":
                 asyncio.run(_list_devices())
+            case "add-user":
+                asyncio.run(_add_user(args.email, args.name, args.role))
             case "build-polar":
                 asyncio.run(_build_polar(args.min_sessions))
     except KeyboardInterrupt:
