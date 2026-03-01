@@ -1,6 +1,37 @@
 # Release Notes
 
-## Unreleased (main, 2026-02-28)
+## Unreleased (main, 2026-03-01)
+
+### Public internet access via Tailscale Funnel (#82–#89)
+
+The logger, Grafana, and Signal K are now accessible over the public internet
+via Tailscale Funnel — no separate domain, certificate, or firewall changes
+needed. All three routes are configured automatically by `setup.sh` and
+`deploy.sh`.
+
+| Public path | Local service |
+|---|---|
+| `https://corvopi.<tailnet>.ts.net/` | j105-logger (port 3002) |
+| `https://corvopi.<tailnet>.ts.net/grafana/` | Grafana (port 3001) |
+| `https://corvopi.<tailnet>.ts.net/signalk/` | Signal K (port 3000) |
+
+Changes across PRs #82–#89:
+
+- **PR #82** — initial Tailscale path-based routing added to `setup.sh`
+- **PR #83** — made Signal K npm install non-fatal (was aborting setup); added
+  Tailscale route application to `deploy.sh` so deploys keep routes current
+- **PR #84** — updated to current Tailscale CLI syntax (`tailscale funnel --bg`)
+- **PR #85** — fixed Signal K plugin name from `@signalk/derived-data` (404 on
+  npm) to the correct unscoped name `signalk-derived-data`; required for true
+  wind (TWS/TWA/TWD) computation
+- **PR #86** — used `tailscale funnel --bg --set-path` for sub-path routing
+- **PR #87** — added `sudo tailscale set --operator=$USER` prerequisite; without
+  it `tailscale funnel` returns "Access denied"
+- **PR #88** — set Grafana `GF_SERVER_ROOT_URL` to the actual Tailscale hostname
+  so Grafana deep-links resolve to the correct public URL
+- **PR #89** — removed `GF_SERVER_SERVE_FROM_SUB_PATH=true`; with Tailscale
+  Funnel stripping path prefixes, the `SERVE_FROM_SUB_PATH` flag caused an
+  infinite redirect loop
 
 ### Audio transcription (#42, PR #63)
 

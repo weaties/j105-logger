@@ -89,23 +89,48 @@ No router changes needed.  HTTPS is provided by Cloudflare.
 
 ---
 
-## Option C — Tailscale Funnel (stay on Tailscale)
+## Option C — Tailscale Funnel (recommended — handled automatically by setup.sh)
 
-Tailscale Funnel exposes a Tailscale node to the public internet under a
+Tailscale Funnel exposes the Pi to the public internet under a permanent
 `ts.net` HTTPS URL — no separate domain or certificate needed.
 
-```bash
-# Enable Funnel for port 3002
-tailscale serve --bg http://localhost:3002
-tailscale funnel --bg 443
+**`setup.sh` and `deploy.sh` both configure this automatically** when Tailscale
+is already authenticated on the Pi. The three public routes are:
 
-# Your logger is now accessible at:
-#   https://corvopi.<tailnet-name>.ts.net
-tailscale funnel status
+| Path | Local service | Purpose |
+|---|---|---|
+| `/` | port 3002 | j105-logger race marker |
+| `/grafana/` | port 3001 | Grafana dashboards |
+| `/signalk/` | port 3000 | Signal K explorer |
+
+Run `tailscale funnel status` to confirm, or let `setup.sh` report it.
+
+**Prerequisite (one-time per Pi):**
+
+```bash
+sudo tailscale set --operator=$USER
 ```
 
-Sharing the `ts.net` URL with non-Tailscale users gives them public HTTPS access.
-Tailscale handles certificate management automatically.
+This is also done automatically by `setup.sh`, but if running the commands
+manually for the first time, do this step first.
+
+**To manually configure:**
+
+```bash
+sudo tailscale set --operator=$USER
+tailscale funnel --bg 3002
+tailscale funnel --bg --set-path /grafana/ 3001
+tailscale funnel --bg --set-path /signalk/ 3000
+```
+
+Your logger is then accessible at `https://corvopi.<tailnet>.ts.net`. Run
+`tailscale funnel status` to see the exact public URL.
+
+> **Note**: Tailscale Funnel strips the path prefix when proxying — Grafana
+> receives `/d/...` not `/grafana/d/...`. This is handled automatically by
+> `setup.sh`/`deploy.sh` which write the correct `GF_SERVER_ROOT_URL` to
+> Grafana's `port.conf`. **Do not** set `GF_SERVER_SERVE_FROM_SUB_PATH=true`
+> — it causes redirect loops with this Funnel setup.
 
 ---
 
