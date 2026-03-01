@@ -47,10 +47,9 @@ if [ -n "$PREV" ]; then
   [ -d "$PREV/grafana" ]  && LINK_GRAFANA="--link-dest=$PREV/grafana"
 fi
 
-# --info=progress2 requires rsync 3.1+; macOS ships with 2.6.9 (BSD rsync).
-# Fall back to --progress on older versions.
-RSYNC_MAJOR=$(rsync --version 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
-if [ "${RSYNC_MAJOR:-2}" -ge 3 ]; then
+# --info=progress2 requires rsync 3.1+; macOS ships with BSD rsync 2.6.9.
+# Feature-detect rather than parse the version string.
+if rsync --info=progress2 --version >/dev/null 2>&1; then
   RSYNC_PROGRESS="--info=progress2"
 else
   RSYNC_PROGRESS="--progress"
