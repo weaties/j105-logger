@@ -69,9 +69,9 @@ name, so this scales to multiple boats in the future.
 
 | Environment | URL | Host | Branch | Deploys |
 |---|---|---|---|---|
-| **Live** | `corvo.live.saillog.io` | Pi 4 8GB (`corvopi`) | `main` | Auto on promotion push |
+| **Live** | `corvo.live.saillog.io` | Pi 4 8GB (`corvopi`) | `live` | Auto on promotion push |
 | **Stage** | `corvo.stage.saillog.io` | Pi 5 8GB (test Pi) | `stage` | Auto on `stage` branch push |
-| **Test** | `corvo.test.saillog.io` | Pi 5 8GB (test Pi) | `main` | Auto on merge to `main` |
+| **Test** | `corvo.test.saillog.io` | Pi 5 8GB (test Pi) | `test` | Auto on merge to `test` |
 | **PR Preview** | `corvo.test-pr{N}.saillog.io` | Pi 5 8GB (test Pi) | PR branch | Auto on PR open/update |
 | **Dev** | `localhost:3002` | Developer's Mac | feature branch | Manual |
 
@@ -80,17 +80,20 @@ name, so this scales to multiple boats in the future.
 ```
 Developer Mac (dev)
   └─ PR opened ──────────→ corvo.test-pr{N}.saillog.io  (ephemeral, auto-deployed)
-  └─ PR merged to main ──→ corvo.test.saillog.io        (auto-deployed)
-  └─ promote stage ───────→ corvo.stage.saillog.io       (fast-forward main → stage, auto-deployed)
+  └─ PR merged to test ──→ corvo.test.saillog.io        (auto-deployed)
+  └─ promote stage ───────→ corvo.stage.saillog.io       (fast-forward test → stage, auto-deployed)
   └─ promote live ────────→ corvo.live.saillog.io        (fast-forward stage → live, auto-deployed)
 ```
 
 Promotions are fast-forward merges only — no merge commits, no surprises.
 Every promotion creates a timestamped git tag (`live/2026-03-02T14.30.00Z` or
-`stage/2026-03-02T14.30.00Z`) forming a complete deployment audit trail.
+`stage/2026-03-02T14.30.00Z` or `test/2026-03-02T14.30.00Z`) forming a complete deployment audit trail.
 
 ```bash
-# Promote main → stage
+# prepare PR for deployment to test
+j105-logger promote PR# test
+
+# Promote test → stage
 j105-logger promote stage
 
 # Promote stage → live
