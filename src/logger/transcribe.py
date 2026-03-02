@@ -5,9 +5,13 @@ Results (including errors) are stored in the ``transcripts`` SQLite table.
 
 Speaker diarisation is performed via pyannote.audio when ALL of the following
 are true:
-  1. ``HF_TOKEN`` is set in the environment.
-  2. The ``pyannote.audio`` package is importable (it is NOT a hard dependency
-     because it requires PyTorch which has no ARM Linux / aarch64 wheels).
+  1. ``HF_TOKEN`` is set in the environment (requires accepted model licences
+     on huggingface.co for pyannote/speaker-diarization-3.1 and dependencies).
+  2. The ``pyannote.audio`` and ``torch`` packages are importable.
+
+Audio is pre-loaded via soundfile and converted to a torch tensor to bypass
+pyannote's built-in audio decoder which depends on torchcodec (unavailable
+on aarch64).
 
 Without diarisation the plain-text faster-whisper path is used.
 """
@@ -123,7 +127,13 @@ def _run_whisper_segments(*, file_path: str, model_size: str) -> list[tuple[floa
 
 
 def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
-    """Return [(start, end, speaker_label)] from pyannote diarisation."""
+    """Return [(start, end, speaker_label)] from pyannote diarisation.
+
+    Audio is pre-loaded via soundfile and converted to a torch tensor to bypass
+    pyannote's built-in audio decoder which depends on torchcodec (unavailable
+    on aarch64).
+    """
+    import soundfile as sf
     import torch
     from pyannote.audio import Pipeline
 
@@ -133,9 +143,20 @@ def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
     if pipeline is None:
         raise RuntimeError("pyannote Pipeline.from_pretrained returned None — check HF_TOKEN")
     pipeline.to(torch.device("cpu"))
-    diarization = pipeline(file_path)
+
+    # Load audio via soundfile → numpy, then convert to torch tensor.
+    # soundfile returns (samples,) for mono or (samples, channels) for multi-channel;
+    # pyannote expects (channels, samples).
+    data, sample_rate = sf.read(file_path, dtype="float32")
+    waveform = torch.from_numpy(data).unsqueeze(0) if data.ndim == 1 else torch.from_numpy(data).T
+    audio_input: dict[str, object] = {"waveform": waveform, "sample_rate": sample_rate}
+    result = pipeline(audio_input)
+
+    # pyannote 4.x returns DiarizeOutput; 3.x returns Annotation directly.
+    annotation = getattr(result, "speaker_diarization", result)
     return [
-        (turn.start, turn.end, spk) for turn, _, spk in diarization.itertracks(yield_label=True)
+        (turn.start, turn.end, spk)
+        for turn, _, spk in annotation.itertracks(yield_label=True)
     ]
 
 
