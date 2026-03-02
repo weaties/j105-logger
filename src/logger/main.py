@@ -475,9 +475,13 @@ async def _scan_transcript(session_id: int | None, scan_all: bool) -> None:
             if t is None or t.get("status") != "done":
                 logger.info("Skipping audio session {} (no completed transcript)", aid)
                 continue
-            segments = _json.loads(t["segments_json"]) if t.get("segments_json") else []
-            if not segments:
-                logger.info("Skipping audio session {} (no segments)", aid)
+            if t.get("segments_json"):
+                segments = _json.loads(t["segments_json"])
+            elif t.get("text"):
+                # Plain whisper (no diarisation) — synthesize a single segment
+                segments = [{"start": 0.0, "end": 0.0, "text": t["text"]}]
+            else:
+                logger.info("Skipping audio session {} (no text or segments)", aid)
                 continue
             row = await storage.get_audio_session_row(aid)
             if row is None:
