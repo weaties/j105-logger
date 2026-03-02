@@ -94,18 +94,40 @@ for svc in cups avahi-daemon; do
 done
 
 step "Hardening SSH configuration..."
-chmod 700 "$HOME/.ssh" 2>/dev/null || true
-chmod 600 "$HOME/.ssh/authorized_keys" 2>/dev/null || true
-chmod 600 "$HOME/.ssh/config" 2>/dev/null || true
-# Disable X11 forwarding — no GUI apps needed on the Pi
-SSHD_CONF="/etc/ssh/sshd_config"
-if sudo grep -qE "^#?X11Forwarding" "$SSHD_CONF" 2>/dev/null; then
-    sudo sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$SSHD_CONF"
+
+# SAFETY: Verify authorized_keys exists and has at least one key before touching SSH.
+# On 2026-03-01 an autonomous hardening run deleted the only SSH key from
+# authorized_keys, locking the operator out.  Recovery required pulling the
+# microSD card and using debugfs from a Mac.  Never let that happen again.
+AUTH_KEYS="$HOME/.ssh/authorized_keys"
+if [[ ! -s "$AUTH_KEYS" ]]; then
+    warn "~/.ssh/authorized_keys is missing or empty!"
+    warn "SSH key-based login will not work.  Add at least one public key before continuing."
+    warn "Skipping SSH hardening to avoid a lockout."
 else
-    echo "X11Forwarding no" | sudo tee -a "$SSHD_CONF" > /dev/null
+    KEY_COUNT=$(grep -cE '^(ssh-|ecdsa-)' "$AUTH_KEYS" 2>/dev/null || echo 0)
+    info "authorized_keys contains $KEY_COUNT key(s)."
+    if [[ "$KEY_COUNT" -eq 0 ]]; then
+        warn "No valid SSH public keys found in authorized_keys — skipping SSH hardening."
+    else
+        chmod 700 "$HOME/.ssh"
+        chmod 600 "$AUTH_KEYS"
+        chmod 600 "$HOME/.ssh/config" 2>/dev/null || true
+        # Disable X11 forwarding — no GUI apps needed on the Pi
+        SSHD_CONF="/etc/ssh/sshd_config"
+        if sudo grep -qE "^#?X11Forwarding" "$SSHD_CONF" 2>/dev/null; then
+            sudo sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$SSHD_CONF"
+        else
+            echo "X11Forwarding no" | sudo tee -a "$SSHD_CONF" > /dev/null
+        fi
+        sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
+        info "SSH hardening applied (X11Forwarding disabled, permissions tightened)."
+    fi
 fi
-sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
-info "SSH hardening applied (X11Forwarding disabled)."
+
+# SAFETY: setup.sh must NEVER modify the contents of authorized_keys.
+# Adding or removing keys is an operator action — not something an
+# automated script should do.  See docs/incident-ssh-lockout-2026-03-01.md.
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -606,6 +628,9 @@ if command -v tailscale &>/dev/null; then
         PUBLIC_URL_VALUE="https://${TS_HOSTNAME}"
         # Grant current user permission to configure Tailscale serve/funnel (idempotent)
         sudo tailscale set --operator="$CURRENT_USER"
+        # Enable Tailscale SSH as a backup access path (bypasses OpenSSH authorized_keys)
+        sudo tailscale set --ssh
+        info "Tailscale SSH enabled (backup access path)."
         # Path-based funnel rules (idempotent — safe to re-run)
         tailscale funnel --bg 3002
         tailscale funnel --bg --set-path /grafana/ 3001
