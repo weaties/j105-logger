@@ -599,6 +599,7 @@ Group=j105logger
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=UV_CACHE_DIR=/var/cache/j105-logger
+Environment=HOME=/var/cache/j105-logger
 ExecStart=${UV_BIN} run --no-sync --project ${PROJECT_DIR} j105-logger run
 Restart=on-failure
 RestartSec=5
