@@ -2005,7 +2005,7 @@ class Storage:
 
     async def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
         cur = await self._conn().execute(
-            "SELECT id, email, name, role, created_at, last_seen FROM users WHERE id = ?",
+            "SELECT id, email, name, role, created_at, last_seen, avatar_path FROM users WHERE id = ?",
             (user_id,),
         )
         row = await cur.fetchone()
@@ -2013,7 +2013,7 @@ class Storage:
 
     async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
         cur = await self._conn().execute(
-            "SELECT id, email, name, role, created_at, last_seen FROM users WHERE email = ?",
+            "SELECT id, email, name, role, created_at, last_seen, avatar_path FROM users WHERE email = ?",
             (email.lower().strip(),),
         )
         row = await cur.fetchone()

@@ -2349,13 +2349,16 @@ async function revokeSession(sid) {{
 
 def _render_profile_html(user: dict[str, Any]) -> str:
     """Render the self-service profile page."""
+    import time
+
     user_id = user.get("id") or 0
     name = user.get("name") or user.get("email") or "Unknown"
     email = user.get("email") or ""
     role = user.get("role", "viewer")
     role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
     rc = role_colors.get(role, "#8892a4")
-    avatar_url = f"/avatars/{user_id}.jpg" if user_id else ""
+    cache_bust = int(time.time())
+    avatar_url = f"/avatars/{user_id}.jpg?v={cache_bust}" if user_id else ""
     return f"""<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -2391,7 +2394,7 @@ document.getElementById('file').addEventListener('change', async e => {{
   fd.append('file', f);
   const r = await fetch('/profile/avatar', {{method:'POST', body:fd}});
   if (r.ok) {{
-    document.getElementById('avatar').src = '{avatar_url}?' + Date.now();
+    window.location.reload();
   }} else {{
     const d = await r.json();
     alert(d.detail || 'Upload failed');
@@ -4224,10 +4227,11 @@ def create_app(
         avatar_dir = Path(os.environ.get("AVATAR_DIR", "data/avatars"))
         path = avatar_dir / f"{user_id}.jpg"
         if path.exists():
+            mtime = int(path.stat().st_mtime)
             return FileResponse(
                 path,
                 media_type="image/jpeg",
-                headers={"Cache-Control": "public, max-age=3600"},
+                headers={"Cache-Control": "public, max-age=60", "ETag": f'"{user_id}-{mtime}"'},
             )
         # Generate initials SVG fallback
         user = await storage.get_user_by_id(user_id)
@@ -4249,7 +4253,7 @@ def create_app(
         return Response(
             content=svg,
             media_type="image/svg+xml",
-            headers={"Cache-Control": "public, max-age=300"},
+            headers={"Cache-Control": "no-cache"},
         )
 
     return app
