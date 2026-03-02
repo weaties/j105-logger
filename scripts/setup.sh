@@ -690,21 +690,38 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start j105-logger.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop j105-logger.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart j105-logger.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active j105-logger
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active j105-logger.service
 
 # Log access
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/journalctl
+
+# Privileged file copy (update system configs without blanket sudo)
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/rsync
 
 # Grafana ROOT_URL update (deploy.sh writes port.conf when Tailscale hostname changes)
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/grafana-server.service.d/port.conf
