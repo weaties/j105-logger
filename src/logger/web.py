@@ -171,6 +171,7 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
     <a class="btn-export" id="nav-users" style="display:none" href="/admin/users">👥 Users</a>
     <a id="grafana-nav" class="btn-export btn-grafana" href="#" target="_blank">📊 Grafana</a>
     <a id="signalk-nav" class="btn-export" href="#" target="_blank" style="display:none">⚙ Signal K</a>
+    <a class="btn-export" id="nav-profile" style="display:none" href="/profile"><img id="nav-avatar" src="" alt="" style="width:20px;height:20px;border-radius:50%;vertical-align:middle;margin-right:4px"><span id="nav-profile-name"></span></a>
   </div>
 </div>
 <div class="sub" id="header-sub">Loading…</div>
@@ -1285,7 +1286,7 @@ setInterval(loadPolar, 2000);
 loadRecentSailors();
 checkSystemHealth();
 setInterval(checkSystemHealth, 30000);
-fetch('/api/me').then(r=>r.json()).then(u=>{if(u.role==='admin'){const el=document.getElementById('nav-users');if(el)el.style.display='';}}).catch(()=>{});
+fetch('/api/me').then(r=>r.json()).then(u=>{if(u.role==='admin'){const el=document.getElementById('nav-users');if(el)el.style.display='';}if(u.id){const p=document.getElementById('nav-profile');const a=document.getElementById('nav-avatar');const n=document.getElementById('nav-profile-name');if(p){p.style.display='';a.src='/avatars/'+u.id+'.jpg';n.textContent=u.name||'Profile';}}}).catch(()=>{});
 document.querySelectorAll('.crew-input').forEach(inp => {
   inp.addEventListener('focus', () => { focusedCrewInput = inp; });
 });
