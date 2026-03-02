@@ -111,7 +111,9 @@ def _run_whisper(*, file_path: str, model_size: str) -> str:
 
     logger.debug("Loading faster-whisper model={} for {}", model_size, file_path)
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _info = model.transcribe(file_path, beam_size=5)
+    segments, _info = model.transcribe(
+        file_path, beam_size=5, condition_on_previous_text=False, repetition_penalty=1.2
+    )
     parts = [seg.text for seg in segments]
     return " ".join(parts).strip()
 
@@ -122,7 +124,9 @@ def _run_whisper_segments(*, file_path: str, model_size: str) -> list[tuple[floa
 
     logger.debug("Loading faster-whisper model={} for {}", model_size, file_path)
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
-    segments, _info = model.transcribe(file_path, beam_size=5)
+    segments, _info = model.transcribe(
+        file_path, beam_size=5, condition_on_previous_text=False, repetition_penalty=1.2
+    )
     return [(s.start, s.end, s.text) for s in segments]
 
 
