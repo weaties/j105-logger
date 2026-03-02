@@ -186,7 +186,8 @@ Tailscale Funnel — publicly via `https://corvopi.<tailnet>.ts.net`:
 The public URL is written to `PUBLIC_URL` in `.env` so the webapp generates correct
 Grafana deep-links.
 
-Grafana default credentials: `admin` / `changeme123` — change after first login.
+Grafana default credentials: `admin` / `changeme123` — **change after first login**.
+InfluxDB is bound to loopback only (127.0.0.1:8086) — access it via SSH tunnel or from the Pi directly.
 
 ---
 
@@ -232,11 +233,27 @@ every second.
 Completed races in the "Today's races" list show **↓ CSV** and **↓ GPX**
 buttons. Tapping either downloads that race's data directly to the phone.
 
-### Security
+### Security and access
 
-Tailscale is the security boundary — all crew devices on the tailnet are
-trusted. No login is required. An optional `WEB_PIN` env var is reserved for
-future PIN-based access control (not yet implemented).
+The web app uses **magic-link authentication**. Before anyone can log in, an admin
+must create user accounts from the Pi's command line:
+
+```bash
+# Create an admin account (first time — run from the Pi)
+j105-logger add-user --email you@example.com --name "Your Name" --role admin
+
+# Create crew accounts (viewer role — can mark races, can't manage users)
+j105-logger add-user --email crew@example.com --name "Crew Member" --role viewer
+```
+
+Roles: `admin` (full access + user management), `crew` (race ops), `viewer` (read-only).
+
+Once users exist, the admin can generate invite links from the **Admin** page
+(`/admin`) so crew can log in on their own devices without needing SSH access.
+
+To bypass auth entirely on a trusted LAN (e.g. local development), set
+`AUTH_DISABLED=true` in `.env` and restart the service. **Never set this when
+Tailscale Funnel is active** — the web app would be publicly accessible without login.
 
 ---
 
@@ -769,16 +786,22 @@ configures:
 
 1. Node.js 24 LTS (via NodeSource)
 2. Signal K Server + plugins (`signalk-to-influxdb2`, `@signalk/derived-data`)
-3. InfluxDB 2.7.11 (pinned; `apt-mark hold` prevents v3 auto-upgrade)
-4. Grafana OSS (pre-provisioned InfluxDB datasource, port 3001)
+3. InfluxDB 2.7.11 (pinned; loopback-only binding; `apt-mark hold` prevents v3 auto-upgrade)
+4. Grafana OSS (loopback-only; login required; pre-provisioned InfluxDB datasource; port 3001)
 5. `uv` and all Python dependencies
 6. System audio libraries (`libportaudio2`, `libsndfile1`) for USB audio recording
-7. `.env` config file from the template
-8. `data/` directory for the SQLite database; `data/audio/` for WAV recordings
-9. `netdev` group membership for non-root CAN bus access
-10. `can-interface.service` — brings up `can0` at boot
-11. `signalk.service` — starts Signal K after CAN is up
-12. `j105-logger.service` — starts logger after Signal K is up
+7. `.env` config file from the template (chmod 600)
+8. `data/` directory for SQLite, audio, and notes — owned by the `j105logger` service account
+9. `j105logger` dedicated service account (UID ≈ 997; `nologin`; in `audio` + `netdev` groups)
+10. `netdev` group membership for non-root CAN bus access
+11. `can-interface.service` — brings up `can0` at boot
+12. `signalk.service` — starts Signal K after CAN is up
+13. `j105-logger.service` — starts logger as `j105logger` after Signal K is up
+14. Signal K bcrypt admin password (saved to `~/.signalk-admin-pass.txt`)
+15. Automatic security updates (`unattended-upgrades`)
+16. Unused services masked (cups, avahi-daemon, bluetooth, etc.)
+17. SSH hardened (X11Forwarding disabled; `~/.ssh` permissions tightened)
+18. Scoped NOPASSWD sudo replacing the Pi OS blanket `NOPASSWD:ALL`
 
 The InfluxDB admin token is saved to `~/influx-token.txt` (permissions 600).
 If you ever lose it, retrieve it with:
@@ -796,7 +819,26 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
-### 9. Reboot and verify
+### 9. Create your admin user
+
+Before rebooting, create the first admin account for the race-marker web app:
+
+```bash
+j105-logger add-user --email you@example.com --name "Your Name" --role admin
+```
+
+This uses the SQLite DB directly — no running service needed. After this you can
+log in at `http://corvopi:3002` and generate invite links for crew.
+
+Also change the Grafana admin password from the default `changeme123`:
+
+```bash
+# Open in a browser and change the password via the UI
+open http://corvopi:3001   # Mac
+# or: xdg-open http://corvopi:3001   (Linux)
+```
+
+### 10. Reboot and verify
 
 ```bash
 sudo reboot
@@ -811,11 +853,14 @@ sudo systemctl status can-interface signalk influxd grafana-server j105-logger
 # Logger rows accumulating
 j105-logger status
 
-# Signal K dashboard
+# Signal K dashboard (login with admin password from ~/.signalk-admin-pass.txt)
 # Open http://corvopi:3000 in a browser
 
-# Grafana dashboards
-# Open http://corvopi:3001 in a browser (admin/changeme123)
+# Grafana dashboards (login required — admin / your-new-password)
+# Open http://corvopi:3001 in a browser
+
+# Race marker (login required — use the account created in step 9)
+# Open http://corvopi:3002 in a browser
 ```
 
 ---
@@ -835,6 +880,9 @@ cd ~/j105-logger
 This pulls `main`, syncs Python dependencies, re-applies Tailscale Funnel routes,
 updates `PUBLIC_URL` in `.env`, updates Grafana's `ROOT_URL`, and restarts the
 `j105-logger` service. Service status is printed at the end for a quick sanity check.
+
+All `sudo` commands in `deploy.sh` are in the scoped `/etc/sudoers.d/j105-logger-allowed`
+file (configured by `setup.sh`), so no password prompt is needed during a normal deploy.
 
 ### Full update (new deps, systemd service file changes, or Signal K updates)
 
@@ -880,6 +928,10 @@ WEB_PORT=3002           # http://corvopi:3002 on Tailscale
 # Grafana deep-link buttons in the web UI
 GRAFANA_URL=http://corvopi:3001
 GRAFANA_DASHBOARD_UID=j105-sailing
+# Authentication
+# AUTH_DISABLED=true          # bypass auth entirely — only for local/LAN dev; NEVER with Tailscale Funnel
+AUTH_SESSION_TTL_DAYS=90      # session cookie lifetime in days
+# ADMIN_EMAIL=you@example.com # if set, this user is auto-created as admin on first startup
 # Public URL — set by setup.sh/deploy.sh from Tailscale hostname; used for Grafana deep-links
 # PUBLIC_URL=https://corvopi.<tailnet>.ts.net
 # InfluxDB — required only for system health metrics; omit if not using InfluxDB

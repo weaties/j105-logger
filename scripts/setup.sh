@@ -6,6 +6,26 @@
 #
 # Fully idempotent — safe to re-run after a git pull. No browser steps required.
 # Requires sudo for package installation and systemd service management.
+# Run from a terminal where you can enter your sudo password when prompted.
+#
+# What this script does:
+#   a)   System prerequisites (git, curl, audio libs, unattended-upgrades)
+#   a.1) Security hardening (auto-updates, mask unused services, SSH hardening)
+#   b)   Node.js 24 LTS
+#   c)   Signal K Server + plugins
+#   d)   InfluxDB 2.7.11 (pinned; loopback-only binding)
+#   e)   Grafana OSS (loopback-only; login required; no anonymous access)
+#   e.1) j105logger dedicated service account
+#   f)   Signal K → InfluxDB plugin config
+#   g)   uv + Python dependencies
+#   g.1) Signal K authentication (bcrypt admin password)
+#   h)   .env file (chmod 600) and data directories
+#   i)   netdev group membership
+#   j)   CAN interface systemd service
+#   k)   j105-logger systemd service (runs as j105logger)
+#   l)   Tailscale Funnel routing
+#   l.1) Scoped NOPASSWD sudo (replaces blanket Pi OS default)
+#   m)   Summary
 
 set -euo pipefail
 
@@ -39,7 +59,53 @@ sudo apt-get update -qq
 sudo apt-get install -y \
     git can-utils curl gnupg2 apt-transport-https \
     ca-certificates lsb-release jq \
-    libportaudio2 libsndfile1
+    libportaudio2 libsndfile1 \
+    unattended-upgrades apt-listchanges
+
+# Apply all pending security updates now
+sudo apt-get upgrade -y
+
+# ---------------------------------------------------------------------------
+# a.1) Security hardening
+# ---------------------------------------------------------------------------
+
+step "Configuring automatic security updates..."
+sudo tee /etc/apt/apt.conf.d/20auto-upgrades > /dev/null << 'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+sudo dpkg-reconfigure -f noninteractive unattended-upgrades 2>/dev/null || true
+info "Daily unattended security updates enabled."
+
+step "Masking unused system services..."
+UNUSED_SERVICES=(cups cups-browsed rpcbind avahi-daemon bluetooth ModemManager)
+for svc in "${UNUSED_SERVICES[@]}"; do
+    if systemctl list-unit-files "${svc}.service" 2>/dev/null | grep -qw "${svc}\.service"; then
+        sudo systemctl disable "${svc}" 2>/dev/null || true
+        sudo systemctl stop "${svc}" 2>/dev/null || true
+        sudo systemctl mask "${svc}.service" 2>/dev/null || true
+        info "Masked ${svc}.service"
+    fi
+done
+# Mask socket units too
+for svc in cups avahi-daemon; do
+    sudo systemctl mask "${svc}.socket" 2>/dev/null || true
+done
+
+step "Hardening SSH configuration..."
+chmod 700 "$HOME/.ssh" 2>/dev/null || true
+chmod 600 "$HOME/.ssh/authorized_keys" 2>/dev/null || true
+chmod 600 "$HOME/.ssh/config" 2>/dev/null || true
+# Disable X11 forwarding — no GUI apps needed on the Pi
+SSHD_CONF="/etc/ssh/sshd_config"
+if sudo grep -qE "^#?X11Forwarding" "$SSHD_CONF" 2>/dev/null; then
+    sudo sed -i 's/^#\?X11Forwarding.*/X11Forwarding no/' "$SSHD_CONF"
+else
+    echo "X11Forwarding no" | sudo tee -a "$SSHD_CONF" > /dev/null
+fi
+sudo systemctl reload ssh 2>/dev/null || sudo systemctl reload sshd 2>/dev/null || true
+info "SSH hardening applied (X11Forwarding disabled)."
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -68,6 +134,8 @@ info "signalk-server: $SK_BIN"
 mkdir -p "$HOME/.signalk"
 
 # Write settings.json (CAN bus pipedProvider pre-configured)
+# Only write a fresh file if one doesn't exist.  If it does, preserve any
+# existing vessel/security config but ensure the security strategy is present.
 if [[ ! -f "$HOME/.signalk/settings.json" ]]; then
     info "Writing ~/.signalk/settings.json..."
     cat > "$HOME/.signalk/settings.json" << 'EOF'
@@ -82,11 +150,22 @@ if [[ ! -f "$HOME/.signalk/settings.json" ]]; then
     ],
     "enabled": true
   }],
-  "interfaces": { "plugins": true }
+  "interfaces": { "plugins": true },
+  "security": { "strategy": "@signalk/sk-simple-token-security" }
 }
 EOF
 else
-    info "~/.signalk/settings.json already exists — skipping."
+    info "~/.signalk/settings.json already exists — checking security strategy..."
+    # Idempotently add security strategy if missing
+    if ! jq -e '.security' "$HOME/.signalk/settings.json" > /dev/null 2>&1; then
+        TMP_SK="$(mktemp)"
+        jq '. + {"security": {"strategy": "@signalk/sk-simple-token-security"}}' \
+            "$HOME/.signalk/settings.json" > "$TMP_SK"
+        mv "$TMP_SK" "$HOME/.signalk/settings.json"
+        info "Added security strategy to settings.json."
+    else
+        info "Security strategy already configured."
+    fi
 fi
 
 # Install Signal K plugins
@@ -127,6 +206,7 @@ info "signalk.service installed and enabled."
 
 # ---------------------------------------------------------------------------
 # d) InfluxDB 2.7.11 (pinned; apt-mark hold prevents v3 auto-upgrade)
+#    Bound to loopback only — not exposed outside the Pi.
 # ---------------------------------------------------------------------------
 
 step "Checking InfluxDB..."
@@ -139,17 +219,25 @@ if ! influx version 2>/dev/null | grep -q "${INFLUX_VERSION}"; then
         sudo tee /etc/apt/sources.list.d/influxdata.list > /dev/null
     sudo apt-get update -qq
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "influxdb2=${INFLUX_VERSION}-1"
-    sudo systemctl enable --now influxdb
     sudo apt-mark hold influxdb2
-    # Wait for influxd to be ready
-    info "Waiting for influxd to start..."
-    for i in {1..15}; do
-        influx ping 2>/dev/null && break
-        sleep 2
-    done
-else
-    info "InfluxDB ${INFLUX_VERSION} already installed."
 fi
+
+# Bind InfluxDB to loopback only (not exposed to LAN or internet)
+INFLUX_CONF="/etc/influxdb/config.toml"
+if [[ -f "$INFLUX_CONF" ]] && ! sudo grep -q 'http-bind-address' "$INFLUX_CONF" 2>/dev/null; then
+    printf '\n# Bind to loopback — proxied internally, not exposed externally\nhttp-bind-address = "127.0.0.1:8086"\n' \
+        | sudo tee -a "$INFLUX_CONF" > /dev/null
+    info "InfluxDB loopback binding configured."
+fi
+
+sudo systemctl enable --now influxdb
+
+# Wait for influxd to be ready
+info "Waiting for influxd to start..."
+for i in {1..15}; do
+    influx ping 2>/dev/null && break
+    sleep 2
+done
 
 # Initial setup (idempotent — exits 0 if already configured)
 influx setup \
@@ -171,8 +259,14 @@ else
     info "InfluxDB token saved to: $INFLUX_TOKEN_FILE"
 fi
 
+# Restart to pick up config.toml changes
+sudo systemctl restart influxdb
+
 # ---------------------------------------------------------------------------
-# e) Grafana OSS (latest via apt repo, port 3001 to avoid clash with Signal K)
+# e) Grafana OSS (loopback-only; login required; no anonymous access)
+#    Port 3001 to avoid clash with Signal K on 3000.
+#    Auth is managed via systemd env vars so service.d/port.conf controls both
+#    network binding and auth — no need to modify /etc/grafana/grafana.ini.
 # ---------------------------------------------------------------------------
 
 step "Installing Grafana..."
@@ -183,13 +277,39 @@ echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stab
     sudo tee /etc/apt/sources.list.d/grafana.list > /dev/null
 sudo apt-get update -qq && sudo apt-get install -y grafana
 
-# Override Grafana's default port (3000 is taken by Signal K)
+# Create a world-readable custom config file so the Grafana process can read it.
+# /etc/grafana/grafana.ini is root:grafana 640 — changing it risks a permission
+# problem if ownership shifts. Using a separate file avoids that entirely.
+sudo tee /etc/grafana/grafana-custom.ini > /dev/null << 'EOF'
+# j105-logger custom Grafana config
+# Auth and network settings are set via systemd Environment= in port.conf below.
+# This file is intentionally minimal — full reference: /usr/share/grafana/conf/defaults.ini
+[paths]
+# (nothing extra needed — defaults are fine)
+EOF
+sudo chmod 644 /etc/grafana/grafana-custom.ini
+
+# Point Grafana at the custom ini (idempotent)
+if sudo grep -q '^CONF_FILE=' /etc/default/grafana-server 2>/dev/null; then
+    sudo sed -i 's|^CONF_FILE=.*|CONF_FILE=/etc/grafana/grafana-custom.ini|' \
+        /etc/default/grafana-server
+else
+    echo 'CONF_FILE=/etc/grafana/grafana-custom.ini' | \
+        sudo tee -a /etc/default/grafana-server > /dev/null
+fi
+
+# Systemd override — port, binding, and auth settings
+# ROOT_URL placeholder is updated in section l) once the Tailscale hostname is known.
 sudo mkdir -p /etc/systemd/system/grafana-server.service.d
 sudo tee /etc/systemd/system/grafana-server.service.d/port.conf > /dev/null << 'EOF'
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
+Environment=GF_AUTH_DISABLE_LOGIN_FORM=false
+Environment=GF_AUTH_ANONYMOUS_ENABLED=false
 EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now grafana-server
 
@@ -201,7 +321,7 @@ datasources:
   - name: InfluxDB
     type: influxdb
     access: proxy
-    url: http://localhost:8086
+    url: http://127.0.0.1:8086
     jsonData:
       version: Flux
       organization: j105
@@ -212,7 +332,37 @@ datasources:
     isDefault: true
 EOF
 sudo systemctl restart grafana-server
-info "Grafana installed and provisioned on port 3001."
+info "Grafana installed on port 3001 (loopback-only, login required)."
+info "Default Grafana admin credentials: admin / changeme123 — change after first login."
+
+# ---------------------------------------------------------------------------
+# e.1) j105logger dedicated service account
+#      The logger runs as this system account rather than as the Pi user.
+#      Only data/ is writable by this account; the rest of the project is read-only.
+# ---------------------------------------------------------------------------
+
+step "Creating j105logger dedicated service account..."
+if ! id j105logger &>/dev/null; then
+    sudo useradd --system \
+        --shell /usr/sbin/nologin \
+        --no-create-home \
+        --comment "j105-logger service account" \
+        j105logger
+    info "Created j105logger system account."
+else
+    info "j105logger already exists — skipping useradd."
+fi
+sudo usermod -aG audio,netdev j105logger
+
+# uv cache directory (service account has no home dir, so uv can't write ~/.cache/uv)
+sudo mkdir -p /var/cache/j105-logger
+sudo chown j105logger:j105logger /var/cache/j105-logger
+info "uv cache: /var/cache/j105-logger"
+
+# Make the Pi user's home and .local traversable so j105logger can exec the venv
+chmod 711 "$HOME"
+chmod -f 711 "$HOME/.local" 2>/dev/null || true
+chmod -f 711 "$HOME/.local/bin" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # f) Signal K → InfluxDB plugin config (with captured token)
@@ -225,7 +375,7 @@ cat > "$HOME/.signalk/plugin-config-data/signalk-to-influxdb2.json" << EOF
   "configuration": {
     "influxes": [
       {
-        "url": "http://localhost:8086",
+        "url": "http://127.0.0.1:8086",
         "token": "${INFLUX_TOKEN}",
         "org": "j105",
         "bucket": "signalk",
@@ -279,7 +429,53 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# h) .env file and data directory
+# g.1) Signal K authentication — bcrypt admin password
+#      Generates a random password, hashes it with bcrypt (via the project's
+#      Python venv), and writes ~/.signalk/security.json.
+#      Skipped if security.json already exists (idempotent).
+# ---------------------------------------------------------------------------
+
+step "Configuring Signal K authentication..."
+SK_SECURITY_FILE="$HOME/.signalk/security.json"
+if [[ ! -f "$SK_SECURITY_FILE" ]]; then
+    info "Generating Signal K admin password..."
+    # Generate random password (alphanumeric only, no shell quoting issues)
+    SK_ADMIN_PASS="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)"
+    export SK_ADMIN_PASS
+
+    # bcrypt-hash via the project's Python venv (bcrypt is a project dependency)
+    "$UV_BIN" run --project "$PROJECT_DIR" python -c "
+import os, json, bcrypt
+pw = os.environ['SK_ADMIN_PASS'].encode()
+h = bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12)).decode()
+data = {
+    'allowedCorsOrigins': [],
+    'immutableConfig': False,
+    'acls': [],
+    'users': [
+        {'userId': 'admin', 'type': 'password', 'password': h, 'roles': ['admin']}
+    ],
+    'devices': []
+}
+print(json.dumps(data, indent=2))
+" > "$SK_SECURITY_FILE"
+
+    # Save the plaintext password for the operator
+    echo "$SK_ADMIN_PASS" > "$HOME/.signalk-admin-pass.txt"
+    chmod 600 "$HOME/.signalk-admin-pass.txt"
+
+    info "Signal K admin account created."
+    info "Username: admin"
+    info "Password: ${SK_ADMIN_PASS}"
+    info "Password also saved to ~/.signalk-admin-pass.txt (chmod 600)"
+    unset SK_ADMIN_PASS
+else
+    info "~/.signalk/security.json already exists — skipping."
+    info "Password is in ~/.signalk-admin-pass.txt (if this setup.sh created it)."
+fi
+
+# ---------------------------------------------------------------------------
+# h) .env file and data directories
 # ---------------------------------------------------------------------------
 
 step "Configuring environment..."
@@ -290,6 +486,10 @@ if [[ ! -f "$ENV_FILE" ]]; then
 else
     info ".env already exists — leaving untouched."
 fi
+
+# Restrict .env so only weaties (and root via systemd EnvironmentFile) can read it
+chmod 600 "$ENV_FILE"
+info ".env permissions set to 600."
 
 # Load env vars for service generation
 set -a
@@ -303,8 +503,14 @@ CAN_BITRATE="${CAN_BITRATE:-250000}"
 step "Ensuring data directories exist..."
 mkdir -p "$PROJECT_DIR/data"
 mkdir -p "$PROJECT_DIR/data/audio"
+mkdir -p "$PROJECT_DIR/data/notes"
 info "$PROJECT_DIR/data (SQLite DB)"
 info "$PROJECT_DIR/data/audio (WAV recordings)"
+info "$PROJECT_DIR/data/notes (photo notes)"
+
+# Transfer data directory ownership to j105logger so the service can write to it
+sudo chown -R j105logger:j105logger "$PROJECT_DIR/data"
+info "data/ ownership transferred to j105logger."
 
 # ---------------------------------------------------------------------------
 # i) netdev group (allows non-root SocketCAN access)
@@ -352,7 +558,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# k) j105-logger systemd service (depends on Signal K, not directly on CAN)
+# k) j105-logger systemd service
+#    Runs as the dedicated j105logger account (not as the Pi user).
+#    --no-sync: use the existing venv without trying to modify it (weaties owns it).
+#    UV_CACHE_DIR: j105logger has no home dir, so point uv cache to /var/cache.
 # ---------------------------------------------------------------------------
 
 step "Installing j105-logger service..."
@@ -363,13 +572,15 @@ After=signalk.service
 Wants=signalk.service
 
 [Service]
-User=${CURRENT_USER}
+User=j105logger
+Group=j105logger
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
-ExecStart=${UV_BIN} run --project ${PROJECT_DIR} j105-logger run
+Environment=UV_CACHE_DIR=/var/cache/j105-logger
+ExecStart=${UV_BIN} run --no-sync --project ${PROJECT_DIR} j105-logger run
 Restart=on-failure
 RestartSec=5
-SupplementaryGroups=netdev
+SupplementaryGroups=netdev audio
 
 [Install]
 WantedBy=multi-user.target
@@ -405,6 +616,9 @@ if command -v tailscale &>/dev/null; then
 [Service]
 Environment=GF_SERVER_HTTP_PORT=3001
 Environment=GF_SERVER_ROOT_URL=https://${TS_HOSTNAME}/grafana/
+Environment=GF_SERVER_HTTP_ADDR=127.0.0.1
+Environment=GF_AUTH_DISABLE_LOGIN_FORM=false
+Environment=GF_AUTH_ANONYMOUS_ENABLED=false
 EOF
         sudo systemctl daemon-reload
         sudo systemctl restart grafana-server
@@ -427,6 +641,73 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# l.1) Scoped NOPASSWD sudo
+#      Creates /etc/sudoers.d/j105-logger-allowed with the specific commands
+#      needed for day-to-day operations (deploy.sh, service management).
+#      Then removes the blanket NOPASSWD from the Pi OS default sudoers files.
+#      This is done last so all earlier sudo commands in this script succeed.
+# ---------------------------------------------------------------------------
+
+step "Configuring scoped sudo permissions..."
+SUDOERS_FILE="/etc/sudoers.d/j105-logger-allowed"
+sudo tee "$SUDOERS_FILE" > /dev/null << EOF
+# j105-logger scoped sudo permissions — generated by setup.sh
+# Only the commands listed here run without a password prompt.
+# For full sudo access (package installs, system config), type your password.
+
+# Service management — used by deploy.sh and daily operations
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start j105-logger
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop j105-logger
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart j105-logger
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status j105-logger
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb.service
+
+# Log access
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/journalctl
+
+# Grafana ROOT_URL update (deploy.sh writes port.conf when Tailscale hostname changes)
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/grafana-server.service.d/port.conf
+
+# Tailscale operator grant (setup.sh only — not needed on every deploy)
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale set --operator=${CURRENT_USER}
+EOF
+sudo chmod 440 "$SUDOERS_FILE"
+
+# Validate before removing blanket access
+if sudo visudo -c -f "$SUDOERS_FILE" > /dev/null 2>&1; then
+    info "Scoped sudoers file created and validated: $SUDOERS_FILE"
+else
+    warn "Sudoers file has syntax errors — removing to prevent lockout. Blanket NOPASSWD retained."
+    sudo rm "$SUDOERS_FILE"
+fi
+
+# Remove blanket NOPASSWD from Raspberry Pi OS default sudoers files.
+# weaties still has sudo — just needs to type the password for non-scoped commands.
+for SUDO_BLANKET in /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/90-cloud-init-users; do
+    if sudo test -f "$SUDO_BLANKET" 2>/dev/null; then
+        # Replace NOPASSWD: with nothing (preserves the rest of the rule)
+        sudo sed -i 's/[[:space:]]*NOPASSWD:[[:space:]]*//' "$SUDO_BLANKET"
+        info "Removed blanket NOPASSWD from $SUDO_BLANKET"
+    fi
+done
+
+# ---------------------------------------------------------------------------
 # m) Done — summary
 # ---------------------------------------------------------------------------
 
@@ -435,13 +716,13 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Setup complete. Reboot, then verify:${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Signal K:    http://corvopi:3000"
-echo "  Grafana:     http://corvopi:3001"
-echo "  InfluxDB:    http://corvopi:8086"
-echo "  Race marker: http://corvopi:3002"
+echo "  Signal K:    http://corvopi:3000   (admin password in ~/.signalk-admin-pass.txt)"
+echo "  Grafana:     http://corvopi:3001   (admin / changeme123 — change after first login)"
+echo "  InfluxDB:    http://corvopi:8086   (loopback-only — access via SSH tunnel or Tailscale)"
+echo "  Race marker: http://corvopi:3002   (login required — see below)"
 if [[ -n "${TS_HOSTNAME:-}" ]]; then
     echo ""
-    echo "  Public (Tailscale Funnel):"
+    echo "  Public (Tailscale Funnel — authentication required):"
     echo "    Race marker: https://${TS_HOSTNAME}/"
     echo "    Grafana:     https://${TS_HOSTNAME}/grafana/"
     echo "    Signal K:    https://${TS_HOSTNAME}/signalk/"
@@ -451,9 +732,19 @@ if [[ -f "$INFLUX_TOKEN_FILE" ]]; then
     echo "  InfluxDB token saved to: $INFLUX_TOKEN_FILE"
 fi
 echo ""
-echo "  sudo reboot"
+echo -e "${YELLOW}  NEXT STEPS:${NC}"
 echo ""
-echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
+echo "  1. Create your admin user for the race-marker web app:"
+echo "       j105-logger add-user --email you@example.com --name 'Your Name' --role admin"
+echo ""
+echo "  2. Change the Grafana password:"
+echo "       Open http://corvopi:3001 and change the admin password from 'changeme123'."
+echo ""
+echo "  3. Find the Signal K admin password:"
+echo "       cat ~/.signalk-admin-pass.txt"
+echo ""
+echo "  4. Reboot:"
+echo "       sudo reboot"
 echo ""
 echo "  After reboot, check service status:"
 echo "    sudo systemctl status can-interface signalk influxd grafana-server j105-logger"
@@ -466,5 +757,6 @@ echo "    j105-logger list-devices"
 echo "  Then set AUDIO_DEVICE in .env to match the device name or index."
 echo ""
 echo "  To update after a git pull:"
-echo "    git pull && ./scripts/setup.sh"
-echo "    sudo npm update -g signalk-server"
+echo "    ./scripts/deploy.sh"
+echo ""
+echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
