@@ -28,12 +28,8 @@ dependencies = [
     "influxdb-client>=1.44.0",
     "psutil>=7.2.2",
     "faster-whisper>=1.2.1",
-    # pyannote-audio is NOT listed here — it requires PyTorch and has no
-    # ARM Linux (aarch64) wheels, so it cannot be a hard dependency on the Pi.
-    # Install manually on x86 if diarisation is needed:
-    #   pip install pyannote-audio
-    # Diarisation is enabled at runtime only when HF_TOKEN is set AND the
-    # pyannote package is importable.
+    # Speaker diarisation (optional at runtime — only runs when HF_TOKEN is set)
+    "pyannote-audio>=1.1",
 ]
 
 [project.scripts]
@@ -45,6 +41,17 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/logger"]
+
+# ---------------------------------------------------------------------------
+# uv — resolver overrides
+# ---------------------------------------------------------------------------
+[tool.uv]
+# torchcodec (pulled in by speechbrain) has no aarch64 wheels.
+# speechbrain doesn't need it at runtime for diarisation — it's only used
+# for optional audio decoding that we handle via soundfile instead.
+override-dependencies = [
+    "torchcodec>=0.1; platform_machine != 'aarch64'",
+]
 
 [dependency-groups]
 dev = [
