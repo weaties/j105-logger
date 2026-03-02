@@ -329,8 +329,15 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 const _GRAFANA_PORT = '__GRAFANA_PORT__';
 const _GRAFANA_UID = '__GRAFANA_UID__';
 const _SK_PORT = '__SK_PORT__';
-const GRAFANA_BASE = location.protocol + '//' + location.hostname + ':' + _GRAFANA_PORT;
-const SK_BASE = location.protocol + '//' + location.hostname + ':' + _SK_PORT;
+// When served via Tailscale Funnel (default HTTPS/HTTP port), use path-based
+// routing (/grafana/, /signalk/).  On the LAN use direct hostname:port.
+const _isDefaultPort = !location.port || location.port === '443' || location.port === '80';
+const GRAFANA_BASE = _isDefaultPort
+  ? location.origin + '/grafana'
+  : location.protocol + '//' + location.hostname + ':' + _GRAFANA_PORT;
+const SK_BASE = _isDefaultPort
+  ? location.origin + '/signalk'
+  : location.protocol + '//' + location.hostname + ':' + _SK_PORT;
 (function initNavLinks() {
   const g = document.getElementById('grafana-nav');
   if (g) g.href = GRAFANA_BASE + '/d/' + _GRAFANA_UID + '/sailing-data?refresh=10s';
@@ -1382,7 +1389,10 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 <script>
 const _GRAFANA_PORT = '__GRAFANA_PORT__';
 const _GRAFANA_UID = '__GRAFANA_UID__';
-const GRAFANA_URL = location.protocol + '//' + location.hostname + ':' + _GRAFANA_PORT;
+const _isDefaultPort = !location.port || location.port === '443' || location.port === '80';
+const GRAFANA_URL = _isDefaultPort
+  ? location.origin + '/grafana'
+  : location.protocol + '//' + location.hostname + ':' + _GRAFANA_PORT;
 const GRAFANA_UID = _GRAFANA_UID;
 let currentType = '';
 let currentOffset = 0;
