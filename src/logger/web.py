@@ -2309,6 +2309,7 @@ input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padd
 <h2>Invite a user</h2>
 <form id="invite-form">
 <label>Email</label><input type="email" id="inv-email" required/>
+<label>Name</label><input type="text" id="inv-name" placeholder="Optional"/>
 <label>Role</label>
 <select id="inv-role"><option value="viewer">viewer</option><option value="crew">crew</option><option value="admin">admin</option></select><br/>
 <button class="btn" type="submit">Generate invite link</button>
@@ -2325,9 +2326,11 @@ input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padd
 document.getElementById('invite-form').addEventListener('submit', async e => {{
   e.preventDefault();
   const email = document.getElementById('inv-email').value;
+  const name = document.getElementById('inv-name').value;
   const role = document.getElementById('inv-role').value;
   const fd = new FormData();
   fd.append('email', email);
+  fd.append('name', name);
   fd.append('role', role);
   const r = await fetch('/admin/users/invite', {{method:'POST', body:fd}});
   const d = await r.json();
@@ -2697,6 +2700,7 @@ def create_app(
         request: Request,
         email: str = Form(...),
         role: str = Form(...),
+        name: str = Form(default=""),
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> JSONResponse:
         if role not in ("admin", "crew", "viewer"):
@@ -2704,6 +2708,7 @@ def create_app(
         email = email.strip().lower()
         if not email:
             raise HTTPException(status_code=422, detail="email must not be blank")
+        clean_name = name.strip() or None
         token = generate_token()
         base = str(request.base_url).rstrip("/")
         await storage.create_invite_token(token, email, role, _user["id"], invite_expires_at())
@@ -2714,7 +2719,7 @@ def create_app(
 
         email_sent = False
         if smtp_configured() and email:
-            email_sent = await send_welcome_email(None, email, role, invite_url)
+            email_sent = await send_welcome_email(clean_name, email, role, invite_url)
 
         return JSONResponse(
             {"invite_url": invite_url, "token": token, "email_sent": email_sent},
