@@ -3694,3 +3694,30 @@ async def test_v41_migration_creates_sail_changes_table(storage: Storage) -> Non
     )
     row = await cur.fetchone()
     assert row is not None
+
+
+# ---------------------------------------------------------------------------
+# Startup guard: AUTH_DISABLED + PUBLIC_URL (F-01 defence-in-depth)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_app_refuses_auth_disabled_with_public_url(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """create_app() raises SystemExit when AUTH_DISABLED=true and PUBLIC_URL is a Funnel URL."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setenv("PUBLIC_URL", "https://corvopi.taileb1513.ts.net")
+    with pytest.raises(SystemExit):
+        create_app(storage)
+
+
+@pytest.mark.asyncio
+async def test_create_app_allows_auth_disabled_without_public_url(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """create_app() succeeds when AUTH_DISABLED=true but no PUBLIC_URL is set."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.delenv("PUBLIC_URL", raising=False)
+    app = create_app(storage)
+    assert app is not None

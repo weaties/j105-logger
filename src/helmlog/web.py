@@ -377,6 +377,17 @@ def create_app(
         verify_password,
     )
 
+    if _is_auth_disabled():
+        public_url = os.environ.get("PUBLIC_URL", "")
+        if ".ts.net" in public_url or public_url.startswith("https://"):
+            logger.critical(
+                "AUTH_DISABLED=true with PUBLIC_URL={} — refusing to start. "
+                "Remove AUTH_DISABLED from .env or unset PUBLIC_URL.",
+                public_url,
+            )
+            raise SystemExit(1)
+        logger.warning("Auth is disabled — all requests treated as admin.")
+
     _PUBLIC_PATHS = {
         "/login",
         "/logout",
