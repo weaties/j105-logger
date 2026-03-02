@@ -437,6 +437,50 @@ async def _build_polar(min_sessions: int) -> None:
         await storage.close()
 
 
+async def _scan_transcript(session_id: int | None, scan_all: bool) -> None:
+    """Scan transcripts for trigger keywords and create auto-notes."""
+    import json as _json
+
+    from logger.storage import Storage, StorageConfig
+    from logger.triggers import scan_transcript
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        if session_id is not None:
+            ids = [session_id]
+        else:
+            # Get all audio sessions that have transcripts
+            db = storage._conn()
+            cur = await db.execute(
+                "SELECT a.id FROM audio_sessions a"
+                " JOIN transcripts t ON a.id = t.audio_session_id"
+                " WHERE t.status = 'done'"
+            )
+            ids = [row["id"] for row in await cur.fetchall()]
+
+        total = 0
+        for aid in ids:
+            t = await storage.get_transcript(aid)
+            if t is None or t.get("status") != "done":
+                logger.info("Skipping audio session {} (no completed transcript)", aid)
+                continue
+            segments = _json.loads(t["segments_json"]) if t.get("segments_json") else []
+            if not segments:
+                logger.info("Skipping audio session {} (no segments)", aid)
+                continue
+            row = await storage.get_audio_session_row(aid)
+            if row is None:
+                continue
+            count = await scan_transcript(storage, aid, row["start_utc"], segments)
+            total += count
+            logger.info("Audio session {}: {} auto-notes created", aid, count)
+
+        print(f"Scan complete: {total} auto-notes created across {len(ids)} session(s)")
+    finally:
+        await storage.close()
+
+
 # ---------------------------------------------------------------------------
 # list-devices
 # ---------------------------------------------------------------------------
@@ -537,6 +581,14 @@ def _build_parser() -> argparse.ArgumentParser:
     bp = sub.add_parser("build-polar", help="Rebuild polar baseline from historical session data")
     bp.add_argument("--min-sessions", type=int, default=3, metavar="N")
 
+    st = sub.add_parser(
+        "scan-transcript",
+        help="Scan transcripts for trigger keywords and create auto-notes",
+    )
+    st_target = st.add_mutually_exclusive_group(required=True)
+    st_target.add_argument("--session", type=int, metavar="ID", help="Audio session ID to scan")
+    st_target.add_argument("--all", action="store_true", help="Scan all sessions with transcripts")
+
     return parser
 
 
@@ -571,6 +623,8 @@ def main() -> None:
                 asyncio.run(_add_user(args.email, args.name, args.role))
             case "build-polar":
                 asyncio.run(_build_polar(args.min_sessions))
+            case "scan-transcript":
+                asyncio.run(_scan_transcript(args.session, getattr(args, "all", False)))
     except KeyboardInterrupt:
         logger.info("Interrupted by user — shutting down")
     except Exception as exc:

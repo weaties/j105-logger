@@ -154,10 +154,7 @@ def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
 
     # pyannote 4.x returns DiarizeOutput; 3.x returns Annotation directly.
     annotation = getattr(result, "speaker_diarization", result)
-    return [
-        (turn.start, turn.end, spk)
-        for turn, _, spk in annotation.itertracks(yield_label=True)
-    ]
+    return [(turn.start, turn.end, spk) for turn, _, spk in annotation.itertracks(yield_label=True)]
 
 
 def _merge(
