@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import signal
 import sys
 from datetime import UTC, datetime
@@ -393,6 +394,7 @@ async def _list_audio() -> None:
 
 async def _add_user(email: str, name: str | None, role: str) -> None:
     """Create a user directly in the DB (admin bootstrap; no email required)."""
+    from logger.auth import generate_token, invite_expires_at
     from logger.storage import Storage, StorageConfig
 
     valid_roles = {"admin", "crew", "viewer"}
@@ -411,9 +413,17 @@ async def _add_user(email: str, name: str | None, role: str) -> None:
                 existing["id"],
                 existing["role"],
             )
-            return
-        user_id = await storage.create_user(email, name, role)
-        logger.info("Created user id={} email={} name={!r} role={}", user_id, email, name, role)
+            user_id = existing["id"]
+        else:
+            user_id = await storage.create_user(email, name, role)
+            logger.info("Created user id={} email={} name={!r} role={}", user_id, email, name, role)
+
+        # Generate an invite token so the user can log in
+        token = generate_token()
+        await storage.create_invite_token(token, email, role, user_id, invite_expires_at())
+        base = os.environ.get("PUBLIC_URL", f"http://localhost:{os.environ.get('WEB_PORT', '3002')}")
+        login_url = f"{base}/login?token={token}"
+        logger.info("Login link (expires in 7 days):\n  {}", login_url)
     finally:
         await storage.close()
 
