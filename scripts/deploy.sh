@@ -181,4 +181,4 @@ sudo systemctl restart j105-logger
 
 echo ""
 echo "==> Deploy complete."
-sudo systemctl is-active j105-logger && echo "    j105-logger is running." || echo "    WARNING: j105-logger is NOT running."
+systemctl is-active j105-logger && echo "    j105-logger is running." || echo "    WARNING: j105-logger is NOT running."
