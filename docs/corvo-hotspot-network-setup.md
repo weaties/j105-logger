@@ -1,8 +1,8 @@
 # Corvo Hotspot & Network Setup
 
-Raspberry Pi as a WiFi hotspot backed by iPhone USB tethering, with split-horizon
-DNS so `corvo.live.saillog.io` resolves locally on the hotspot and publicly
-everywhere else.
+Raspberry Pi as a cellular-backed WiFi hotspot using iPhone USB tethering, with
+split-horizon DNS so `corvo.saillog.io` resolves locally on the hotspot and
+publicly via Cloudflare Tunnel everywhere else.
 
 ---
 
@@ -12,65 +12,63 @@ everywhere else.
 ┌─────────────────────────────────────────────────────────┐
 │  Raspberry Pi (corvo)                                   │
 │                                                         │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐             │
-│  │ hostapd  │  │ dnsmasq  │  │ j105-     │             │
-│  │ (wlan0)  │  │ DHCP+DNS │  │ logger    │             │
-│  └──────────┘  └──────────┘  │ :3002     │             │
-│        │              │      └───────────┘             │
-│        └──────────────┘            │                    │
-│                │                   │                    │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐             │
-│  │  eth1    │  │ tailscale│  │ Signal K  │             │
-│  │ (iPhone) │  │ (tailnet)│  │ :3000     │             │
-│  └──────────┘  └──────────┘  └───────────┘             │
-└─────────────────────────────────────────────────────────┘
+│  ┌──────────┐  ┌──────────┐  ┌────────────┐            │
+│  │ hostapd  │  │ dnsmasq  │  │  nginx     │            │
+│  │ (wlan0)  │  │ DHCP+DNS │  │  TLS proxy │            │
+│  └──────────┘  └──────────┘  └────────────┘            │
+│        │              │              │                   │
+│        └──────────────┴──────────────┘                  │
+│                       │                                  │
+│  ┌──────────┐   ┌───────────┐   ┌───────────┐          │
+│  │ eth1     │   │cloudflared│   │ web app   │          │
+│  │ (iPhone) │   │ (tunnel)  │   │ :3002     │          │
+│  └──────────┘   └───────────┘   └───────────┘          │
+│        │              │                                  │
+│  ┌──────────┐         │                                  │
+│  │ tailscale│         │                                  │
+│  │ (tailnet)│         │                                  │
+│  └──────────┘         │                                  │
+└───────────────────────┘─────────────────────────────────┘
 
-iPhone USB tethering → eth1 (ipheth driver, auto-detected)
-Hotspot clients connect to wlan0 → 192.168.4.0/24
-NAT forwards hotspot traffic through eth1 to the internet
-Tailscale stays up through any internet path (iPhone or WiFi)
+Hotspot clients:  corvo.saillog.io → 192.168.4.1 (local, via dnsmasq)
+Remote users:     corvo.saillog.io → Cloudflare edge → tunnel → Pi :3002
 ```
+
+> **Why Cloudflare Tunnel?** Mint Mobile (T-Mobile MVNO) uses CGNAT — inbound
+> connections to the cellular IP are blocked. The tunnel creates an outbound
+> connection from the Pi to Cloudflare's edge, so no inbound ports are needed.
 
 ---
 
-## Step 1 — iPhone USB Tethering
-
-The iPhone connects via a Lightning-to-USB-A cable (with USB-C adapter for Pi 5).
-The `ipheth` kernel driver creates an ethernet interface (typically `eth1`).
-
-### Prerequisites
+## Prerequisites
 
 ```bash
 sudo apt install usbmuxd libimobiledevice-utils
 ```
 
-These handle the USB multiplexing protocol that iPhones use. `usbmuxd` starts
-automatically when an iPhone is plugged in.
+These are needed for the Pi to communicate with the iPhone over USB.
 
-### Usage
+---
 
-1. Plug the iPhone into a USB 3.0 port on the Pi
-2. On the iPhone: tap **Trust** when prompted
-3. Enable **Personal Hotspot** on the iPhone (Settings → Personal Hotspot)
-4. The Pi should get an IP automatically via DHCP:
+## Step 1 — iPhone USB Tethering
 
-```bash
-ip addr show eth1          # Should have a 172.20.10.x address
-ping -I eth1 8.8.8.8       # Verify internet works
-```
+Plug the iPhone into the Pi via a **data-capable** USB cable (not charge-only).
 
-> The iPhone always assigns addresses in the `172.20.10.0/28` range for USB
-> tethering. The interface name is `eth1` because `eth0` is the built-in
-> ethernet port (which may or may not be connected).
-
-### Pairing (first time only)
-
-If the iPhone doesn't show up, pair it manually:
+1. On the iPhone: **Settings → Personal Hotspot → On**
+2. Tap **Trust This Computer** when prompted
+3. Verify the interface:
 
 ```bash
-idevicepair pair           # Accept the trust prompt on the iPhone
-idevice_id -l              # Should show the device UUID
+ip link          # look for eth1
+ip addr show eth1  # should show 172.20.10.x/28
+ping -I eth1 8.8.8.8
 ```
+
+> The iPhone presents as `eth1` via the `ipheth` kernel driver (not `usb0`).
+> If `idevicepair pair` says "No device found", try a different cable —
+> many charging cables don't support data.
+
+The iPhone stays plugged in and charges from the Pi's USB port.
 
 ---
 
@@ -142,9 +140,9 @@ echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd
 
 ## Step 4 — dnsmasq (DHCP + Split-Horizon DNS)
 
-Hotspot clients get the Pi as their DNS server via DHCP. dnsmasq resolves
-`corvo.live.saillog.io` to the Pi's local IP, so web app traffic stays on the
-LAN. No client modification needed.
+This is the key piece. Hotspot clients get the Pi as their DNS server via DHCP.
+dnsmasq resolves `corvo.saillog.io` to the Pi's local IP, so web app traffic
+stays on the LAN. No client modification needed.
 
 ```bash
 sudo apt install dnsmasq
@@ -163,9 +161,9 @@ dhcp-range=192.168.4.10,192.168.4.150,255.255.255.0,24h
 # ============================================
 # SPLIT-HORIZON DNS
 # Hotspot clients resolve this to the Pi.
-# Everyone else hits Cloudflare normally.
+# Everyone else hits Cloudflare Tunnel.
 # ============================================
-address=/corvo.live.saillog.io/192.168.4.1
+address=/corvo.saillog.io/192.168.4.1
 
 # Upstream DNS for everything else
 server=8.8.8.8
@@ -204,12 +202,13 @@ sudo netfilter-persistent save
 
 ## Step 6 — TLS Certificate (Let's Encrypt + Cloudflare DNS-01)
 
-> **Optional** — only needed if you want `https://corvo.live.saillog.io` to work
+> **Optional** — only needed if you want `https://corvo.saillog.io` to work
 > with a real TLS certificate. For hotspot-only use, the j105-logger web UI at
 > `http://192.168.4.1:3002` works without TLS.
 
 DNS-01 challenges work even when the Pi isn't publicly reachable on port 80.
 Certbot creates a TXT record via the Cloudflare API to prove ownership.
+This cert is used by nginx for hotspot clients hitting the Pi directly.
 
 ```bash
 sudo apt install certbot python3-certbot-dns-cloudflare
@@ -232,8 +231,11 @@ Create the token at https://dash.cloudflare.com/profile/api-tokens with
 sudo certbot certonly \
   --dns-cloudflare \
   --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \
-  -d corvo.live.saillog.io \
-  --preferred-challenges dns-01
+  -d corvo.saillog.io \
+  --preferred-challenges dns-01 \
+  --non-interactive \
+  --agree-tos \
+  -m weaties@gmail.com
 ```
 
 Verify auto-renewal: `sudo systemctl status certbot.timer`
@@ -242,7 +244,9 @@ Verify auto-renewal: `sudo systemctl status certbot.timer`
 
 ## Step 7 — nginx Reverse Proxy
 
-> **Optional** — only needed if using TLS (Step 6).
+nginx serves TLS for hotspot clients hitting `corvo.saillog.io` locally.
+It binds only to `192.168.4.1` to avoid conflicting with Tailscale Funnel
+on the Tailscale IP.
 
 ```bash
 sudo apt install nginx
@@ -252,17 +256,17 @@ Create `/etc/nginx/sites-available/corvo`:
 
 ```nginx
 server {
-    listen 80;
-    server_name corvo.live.saillog.io;
+    listen 192.168.4.1:80;
+    server_name corvo.saillog.io;
     return 301 https://$host$request_uri;
 }
 
 server {
-    listen 443 ssl;
-    server_name corvo.live.saillog.io;
+    listen 192.168.4.1:443 ssl;
+    server_name corvo.saillog.io;
 
-    ssl_certificate     /etc/letsencrypt/live/corvo.live.saillog.io/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/corvo.live.saillog.io/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/corvo.saillog.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/corvo.saillog.io/privkey.pem;
 
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
@@ -282,7 +286,7 @@ server {
 ```
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/corvo /etc/nginx/sites-enabled/
+sudo ln -sf /etc/nginx/sites-available/corvo /etc/nginx/sites-enabled/
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 sudo systemctl enable nginx
@@ -301,71 +305,78 @@ systemctl reload nginx
 sudo chmod +x /etc/letsencrypt/renewal-hooks/post/reload-nginx.sh
 ```
 
+> **Why bind to `192.168.4.1` only?** Tailscale Funnel already binds to
+> port 443 on the Tailscale IP. Binding nginx to the hotspot IP avoids
+> the conflict.
+
 ---
 
-## Step 8 — Cloudflare DNS (Public Side)
+## Step 8 — Cloudflare Tunnel (Public Access)
 
-> **Optional** — only needed for public access via `corvo.live.saillog.io`.
+Cloudflare Tunnel creates an outbound connection from the Pi to Cloudflare's
+edge network. This bypasses CGNAT — no inbound ports needed on the cellular
+connection.
 
-In the Cloudflare dashboard for `saillog.io`, add an **A record**:
-`corvo.live` → iPhone's public IP. Use **DNS only** (grey cloud) for direct
-connections or **Proxied** (orange cloud) for DDoS protection.
-
-### Dynamic DNS Script
-
-iPhone cellular IPs change frequently. Create `/usr/local/bin/cloudflare-ddns.sh`:
+### Install cloudflared
 
 ```bash
-#!/bin/bash
-CF_API_TOKEN="YOUR_CLOUDFLARE_API_TOKEN"
-ZONE_ID="YOUR_ZONE_ID"
-RECORD_NAME="corvo.live.saillog.io"
-UPLINK_IF="eth1"
-
-CURRENT_IP=$(curl -s --interface "$UPLINK_IF" https://api.ipify.org)
-[ -z "$CURRENT_IP" ] && echo "$(date): No IP" >&2 && exit 1
-
-CACHE_FILE="/tmp/ddns-last-ip"
-LAST_IP=$(cat "$CACHE_FILE" 2>/dev/null)
-[ "$CURRENT_IP" = "$LAST_IP" ] && exit 0
-
-RECORD_ID=$(curl -s -X GET \
-  "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records?name=${RECORD_NAME}" \
-  -H "Authorization: Bearer ${CF_API_TOKEN}" \
-  -H "Content-Type: application/json" | jq -r '.result[0].id')
-
-[ -z "$RECORD_ID" ] || [ "$RECORD_ID" = "null" ] && echo "$(date): No record ID" >&2 && exit 1
-
-RESULT=$(curl -s -X PUT \
-  "https://api.cloudflare.com/client/v4/zones/${ZONE_ID}/dns_records/${RECORD_ID}" \
-  -H "Authorization: Bearer ${CF_API_TOKEN}" \
-  -H "Content-Type: application/json" \
-  --data "{\"type\":\"A\",\"name\":\"${RECORD_NAME}\",\"content\":\"${CURRENT_IP}\",\"ttl\":300}")
-
-if [ "$(echo "$RESULT" | jq -r '.success')" = "true" ]; then
-    echo "$CURRENT_IP" > "$CACHE_FILE"
-    echo "$(date): Updated to ${CURRENT_IP}"
-else
-    echo "$(date): Failed: $RESULT" >&2 && exit 1
-fi
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb \
+  -o /tmp/cloudflared.deb && sudo dpkg -i /tmp/cloudflared.deb
 ```
+
+### Authenticate and create the tunnel
 
 ```bash
-sudo chmod +x /usr/local/bin/cloudflare-ddns.sh
-(crontab -l 2>/dev/null; echo "*/5 * * * * /usr/local/bin/cloudflare-ddns.sh >> /var/log/ddns.log 2>&1") | crontab -
+cloudflared tunnel login
+# Opens a URL — authorize for saillog.io in your browser
+
+cloudflared tunnel create corvo
+# Note the tunnel ID (e.g., 0e036eca-49cc-41f1-9cdb-f2f3fd340fe3)
 ```
+
+### Configure the tunnel
+
+Create `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /home/weaties/.cloudflared/YOUR_TUNNEL_ID.json
+protocol: http2
+
+ingress:
+  - hostname: corvo.saillog.io
+    service: http://127.0.0.1:3002
+  - service: http_status:404
+```
+
+> **Why `protocol: http2`?** Cellular carriers (T-Mobile/Mint) often
+> throttle or block UDP, which breaks the default QUIC protocol.
+> HTTP/2 over TCP works reliably on cellular connections.
+
+### Route DNS and install as service
+
+```bash
+# Create the CNAME record in Cloudflare
+cloudflared tunnel route dns corvo corvo.saillog.io
+
+# Install as a system service
+sudo cloudflared --config /home/weaties/.cloudflared/config.yml service install
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+```
+
+> **Note on subdomain depth:** `corvo.saillog.io` (one level deep) is covered
+> by Cloudflare's free Universal SSL certificate (`*.saillog.io`). A deeper
+> subdomain like `corvo.live.saillog.io` would require Cloudflare's paid
+> Advanced Certificate Manager ($10/mo).
 
 ---
 
 ## Step 9 — Tailscale Considerations
 
-Tailscale uses its own `tailscale0` interface and routing table — it doesn't
-interfere with the hotspot. SSH access via the Tailscale IP works regardless of
-hotspot or iPhone state.
-
-The web app is reachable at both:
-- `http://192.168.4.1:3002` (from hotspot clients)
-- `https://corvopi.taileb1513.ts.net/` (via Tailscale Funnel)
+Tailscale won't interfere — it uses its own `tailscale0` interface and routing
+table. SSH access via the Tailscale IP works regardless of hotspot/modem state.
+The web app is also reachable at the Tailscale Funnel URL with no extra config.
 
 If Tailscale DNS overrides local resolution:
 
@@ -377,43 +388,34 @@ sudo tailscale set --accept-dns=false
 
 ## Automation
 
-Steps 1–5 are automated in `scripts/setup.sh` (section a.2). The script:
-- Installs `usbmuxd`, `libimobiledevice-utils`, `hostapd`, `dnsmasq`, `iptables-persistent`
+Steps 1–8 are automated in `scripts/setup.sh` (section a.2). The script:
+- Installs `usbmuxd`, `libimobiledevice-utils`, `hostapd`, `dnsmasq`, `iptables-persistent`, `nginx`, `certbot`, `cloudflared`
 - Configures NetworkManager to leave wlan0 unmanaged
 - Sets the static IP via systemd-networkd
 - Writes the dnsmasq hotspot config
 - Enables IP forwarding and NAT rules
+- Configures nginx TLS reverse proxy for hotspot clients
+- Installs cloudflared for Cloudflare Tunnel public access
 - Enables all services for boot
 
-The only manual step is creating `/etc/hostapd/hostapd.conf` with your chosen
-SSID and password (setup.sh warns if it's missing).
+The only manual steps are:
+- Creating `/etc/hostapd/hostapd.conf` with your chosen SSID and password (setup.sh warns if it's missing)
+- Running `cloudflared tunnel login` and `cloudflared tunnel create corvo` (interactive auth required)
+- Creating the initial TLS certificate via certbot (setup.sh warns if missing)
 
 ---
 
 ## Verification Checklist
 
 ```bash
-# iPhone tethering
-ip addr show eth1                                    # 172.20.10.x address
-ping -I eth1 8.8.8.8                                 # internet works
-
-# Hotspot
+ip addr show eth1 && ping -I eth1 8.8.8.8          # iPhone tethering works
 sudo systemctl status hostapd                        # AP running
 sudo systemctl status dnsmasq                        # DHCP+DNS running
-iw dev wlan0 info                                    # type AP, ssid Corvo
-
-# From a device connected to the Corvo hotspot:
-# ping 192.168.4.1                                   # Pi reachable
-# open http://192.168.4.1:3002                       # j105-logger web UI
-
-# DNS (optional, if using corvo.live.saillog.io)
-dig @192.168.4.1 corvo.live.saillog.io               # → 192.168.4.1
-
-# NAT
-sudo iptables -t nat -L -v                           # MASQUERADE on eth1
-sysctl net.ipv4.ip_forward                           # = 1
-
-# Tailscale (always works independently)
+nslookup corvo.saillog.io 192.168.4.1               # → 192.168.4.1
+sudo certbot certificates                            # cert valid
+curl -k https://192.168.4.1                          # nginx proxying locally
+sudo systemctl status cloudflared                    # tunnel running
+curl https://corvo.saillog.io                        # tunnel proxying publicly
 tailscale status                                     # tailscale up
 ```
 
@@ -423,14 +425,15 @@ tailscale status                                     # tailscale up
 
 | Problem | Check |
 |---|---|
-| iPhone not detected | `lsusb` for Apple device; `dmesg \| grep ipheth`; is usbmuxd running? |
-| No internet for hotspot clients | `iptables -t nat -L` for MASQUERADE on eth1; `sysctl net.ipv4.ip_forward` = 1 |
-| eth1 has no IP | iPhone Personal Hotspot enabled? Tap **Trust** on phone? Try `sudo usbmuxd -f -v` |
-| hostapd fails to start | `journalctl -u hostapd` — check for driver/channel conflict; is NM still managing wlan0? |
+| No `eth1` interface | Unplug/replug iPhone; tap Trust; check cable supports data (`lsusb \| grep Apple`) |
+| No internet for hotspot clients | `iptables -t nat -L` for MASQUERADE on `eth1`; `sysctl net.ipv4.ip_forward` = 1 |
+| Domain doesn't resolve locally | `nslookup corvo.saillog.io 192.168.4.1` should return `192.168.4.1` |
+| TLS errors on hotspot | `certbot certificates`; nginx paths match cert location? |
+| Tunnel won't connect (QUIC timeout) | Set `protocol: http2` in `~/.cloudflared/config.yml` |
+| Tunnel connected but TLS error publicly | Ensure hostname is one level deep (`*.saillog.io`); check Cloudflare SSL mode = Full |
+| hostapd fails | `journalctl -u hostapd` — driver/channel conflict |
 | dnsmasq won't start | `ss -tlnp \| grep :53` — port 53 conflict (systemd-resolved?) |
-| Domain doesn't resolve locally | `dig @192.168.4.1 corvo.live.saillog.io` should return `192.168.4.1` |
-| wlan0 has wrong IP | Check `/etc/systemd/network/10-wlan0-hotspot.network`; restart systemd-networkd |
-| DDNS not updating | `/var/log/ddns.log`; verify Cloudflare token + zone ID |
+| nginx won't start (port 443 conflict) | Bind to `192.168.4.1:443` only — Tailscale Funnel holds `443` on the Tailscale IP |
 
 ---
 
@@ -442,9 +445,10 @@ tailscale status                                     # tailscale up
 | `/etc/default/hostapd` | Points to hostapd.conf |
 | `/etc/dnsmasq.d/hotspot.conf` | DHCP + split-horizon DNS |
 | `/etc/sysctl.d/90-hotspot.conf` | IP forwarding |
-| `/etc/systemd/network/10-wlan0-hotspot.network` | Static IP for wlan0 |
-| `/etc/NetworkManager/conf.d/unmanaged-wlan0.conf` | Keeps NM off wlan0 |
-| `/etc/iptables/rules.v4` | Persisted NAT/forwarding rules |
-| `/etc/nginx/sites-available/corvo` | TLS + reverse proxy (optional) |
-| `/etc/letsencrypt/cloudflare.ini` | Cloudflare API creds for certbot (optional) |
-| `/usr/local/bin/cloudflare-ddns.sh` | Dynamic DNS updater (optional) |
+| `/etc/nginx/sites-available/corvo` | TLS + reverse proxy (hotspot clients) |
+| `/etc/letsencrypt/cloudflare.ini` | Cloudflare API creds for certbot |
+| `/etc/letsencrypt/renewal-hooks/post/reload-nginx.sh` | Reload nginx on cert renewal |
+| `~/.cloudflared/config.yml` | Cloudflare Tunnel config |
+| `~/.cloudflared/cert.pem` | Cloudflare Tunnel auth cert |
+| `~/.cloudflared/<tunnel-id>.json` | Tunnel credentials |
+| `/etc/systemd/system/cloudflared.service` | Tunnel systemd service (auto-created) |

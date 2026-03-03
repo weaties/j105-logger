@@ -11,7 +11,7 @@
 # What this script does:
 #   a)   System prerequisites (git, curl, audio libs, unattended-upgrades)
 #   a.1) Security hardening (auto-updates, mask unused services, SSH hardening)
-#   a.2) WiFi hotspot (hostapd + dnsmasq + NAT via iPhone USB tethering)
+#   a.2) Hotspot infrastructure (hostapd, dnsmasq, NAT, nginx, cloudflared)
 #   b)   Node.js 24 LTS
 #   c)   Signal K Server + plugins
 #   d)   InfluxDB 2.7.11 (pinned; loopback-only binding)
@@ -64,7 +64,8 @@ sudo apt-get install -y \
     libportaudio2 libsndfile1 \
     unattended-upgrades apt-listchanges \
     usbmuxd libimobiledevice-utils \
-    hostapd dnsmasq
+    hostapd dnsmasq \
+    nginx certbot python3-certbot-dns-cloudflare
 
 # iptables-persistent asks interactive questions — pre-seed answers
 echo iptables-persistent iptables-persistent/autosave_v4 boolean true | sudo debconf-set-selections
@@ -139,61 +140,58 @@ fi
 # automated script should do.  See docs/incident-ssh-lockout-2026-03-01.md.
 
 # ---------------------------------------------------------------------------
-# a.2) WiFi hotspot — hostapd + dnsmasq + NAT
-#      The Pi creates a WiFi access point on wlan0 (SSID: Corvo).
-#      Internet uplink is via iPhone USB tethering (ipheth driver → eth1).
-#      Crew devices connect to the hotspot; dnsmasq provides DHCP + DNS.
-#      NAT forwards hotspot traffic to the iPhone for internet access.
+# a.2) Hotspot infrastructure — WiFi AP, split-horizon DNS, NAT, nginx, tunnel
+#      iPhone USB tethering provides internet via eth1 (ipheth driver).
+#      Cloudflare Tunnel provides public access (bypasses cellular CGNAT).
+#      See docs/corvo-hotspot-network-setup.md for full details.
 # ---------------------------------------------------------------------------
 
-step "Configuring WiFi hotspot..."
+step "Configuring hotspot infrastructure..."
 
-# Tell NetworkManager to leave wlan0 alone (hostapd manages it)
-sudo mkdir -p /etc/NetworkManager/conf.d
-if [[ ! -f /etc/NetworkManager/conf.d/unmanaged-wlan0.conf ]]; then
-    sudo tee /etc/NetworkManager/conf.d/unmanaged-wlan0.conf > /dev/null << 'EOF'
+# -- NetworkManager: keep hands off wlan0 (hostapd manages it) --
+UNMANAGED_CONF="/etc/NetworkManager/conf.d/unmanaged.conf"
+if [[ ! -f "$UNMANAGED_CONF" ]] || ! grep -q 'wlan0' "$UNMANAGED_CONF" 2>/dev/null; then
+    sudo mkdir -p /etc/NetworkManager/conf.d
+    sudo tee "$UNMANAGED_CONF" > /dev/null << 'EOF'
 [keyfile]
 unmanaged-devices=interface-name:wlan0
 EOF
-    info "NetworkManager: wlan0 set to unmanaged."
-else
-    info "NetworkManager: wlan0 already unmanaged."
+    info "NetworkManager told to ignore wlan0."
 fi
 
-# Static IP for wlan0 via systemd-networkd (persists across reboots)
-sudo tee /etc/systemd/network/10-wlan0-hotspot.network > /dev/null << 'EOF'
-[Match]
-Name=wlan0
-
-[Network]
-Address=192.168.4.1/24
+# -- hostapd (WiFi access point) --
+sudo systemctl unmask hostapd 2>/dev/null || true
+HOSTAPD_CONF="/etc/hostapd/hostapd.conf"
+if [[ ! -f "$HOSTAPD_CONF" ]]; then
+    warn "hostapd.conf not found — writing template."
+    warn "Edit $HOSTAPD_CONF to set your WiFi password before enabling."
+    sudo tee "$HOSTAPD_CONF" > /dev/null << 'EOF'
+interface=wlan0
+driver=nl80211
+ssid=Corvo
+hw_mode=g
+channel=7
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=2
+wpa_passphrase=CHANGE_ME
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP
 EOF
-sudo systemctl enable systemd-networkd
-
-# hostapd — WiFi access point
-# 2.4 GHz (hw_mode=g) for better range on the water.
-# Change ssid and wpa_passphrase as needed.
-if [[ ! -f /etc/hostapd/hostapd.conf ]]; then
-    warn "No /etc/hostapd/hostapd.conf found."
-    warn "Create one with your SSID and password. Example:"
-    warn "  interface=wlan0"
-    warn "  driver=nl80211"
-    warn "  ssid=Corvo"
-    warn "  hw_mode=g"
-    warn "  channel=7"
-    warn "  wpa=2"
-    warn "  wpa_passphrase=YOUR_PASSWORD"
-    warn "  wpa_key_mgmt=WPA-PSK"
-    warn "  rsn_pairwise=CCMP"
 else
     info "hostapd.conf already exists — leaving untouched."
 fi
 echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd > /dev/null
-sudo systemctl unmask hostapd 2>/dev/null || true
 sudo systemctl enable hostapd
+info "hostapd enabled."
 
-# dnsmasq — DHCP + split-horizon DNS for hotspot clients
-sudo tee /etc/dnsmasq.d/hotspot.conf > /dev/null << 'EOF'
+# -- dnsmasq (DHCP + split-horizon DNS for hotspot) --
+DNSMASQ_HOTSPOT="/etc/dnsmasq.d/hotspot.conf"
+if [[ ! -f "$DNSMASQ_HOTSPOT" ]]; then
+    sudo tee "$DNSMASQ_HOTSPOT" > /dev/null << 'EOF'
 # Only listen on the hotspot interface
 interface=wlan0
 bind-interfaces
@@ -201,40 +199,141 @@ bind-interfaces
 # DHCP range for hotspot clients
 dhcp-range=192.168.4.10,192.168.4.150,255.255.255.0,24h
 
-# Split-horizon DNS: hotspot clients resolve to the Pi locally
-address=/corvo.live.saillog.io/192.168.4.1
+# Split-horizon DNS: hotspot clients resolve to the Pi
+address=/corvo.saillog.io/192.168.4.1
 
 # Upstream DNS for everything else
 server=8.8.8.8
 server=8.8.4.4
 EOF
+    info "dnsmasq hotspot config written."
+else
+    info "dnsmasq hotspot.conf already exists — leaving untouched."
+fi
 sudo systemctl enable dnsmasq
 
-# IP forwarding (persistent)
-echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/90-hotspot.conf > /dev/null
-sudo sysctl -p /etc/sysctl.d/90-hotspot.conf
-
-# NAT — masquerade hotspot traffic via the iPhone tethering interface (eth1).
-# The ipheth kernel driver creates eth1 when an iPhone is plugged in via USB.
-# These rules are idempotent (check before adding).
-sudo iptables -t nat -C POSTROUTING -o eth1 -j MASQUERADE 2>/dev/null || \
-    sudo iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
-sudo iptables -C FORWARD -i wlan0 -o eth1 -j ACCEPT 2>/dev/null || \
-    sudo iptables -A FORWARD -i wlan0 -o eth1 -j ACCEPT
-sudo iptables -C FORWARD -i eth1 -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-    sudo iptables -A FORWARD -i eth1 -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-sudo netfilter-persistent save
-
-# Start services if wlan0 is available
-if ip link show wlan0 &>/dev/null; then
-    sudo systemctl restart NetworkManager
-    sudo systemctl restart systemd-networkd
-    sudo systemctl restart hostapd
-    sudo systemctl restart dnsmasq
-    info "WiFi hotspot started (SSID configured in /etc/hostapd/hostapd.conf)."
-else
-    warn "wlan0 not found — hotspot services enabled but not started."
+# Disable systemd-resolved if it's holding port 53
+if systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    sudo systemctl disable systemd-resolved
+    sudo systemctl stop systemd-resolved
+    sudo rm -f /etc/resolv.conf
+    echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf > /dev/null
+    info "systemd-resolved disabled; dnsmasq owns port 53."
 fi
+
+# -- IP forwarding --
+SYSCTL_FWD="/etc/sysctl.d/90-hotspot.conf"
+if [[ ! -f "$SYSCTL_FWD" ]]; then
+    echo "net.ipv4.ip_forward=1" | sudo tee "$SYSCTL_FWD" > /dev/null
+    sudo sysctl -p "$SYSCTL_FWD"
+    info "IP forwarding enabled."
+else
+    info "IP forwarding already configured."
+fi
+
+# -- NAT rules (iPhone tethering on eth1) --
+if ! sudo iptables -t nat -C POSTROUTING -o eth1 -j MASQUERADE 2>/dev/null; then
+    sudo iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+    sudo iptables -A FORWARD -i wlan0 -o eth1 -j ACCEPT
+    sudo iptables -A FORWARD -i eth1 -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+    sudo netfilter-persistent save
+    info "NAT rules added and saved."
+else
+    info "NAT rules already present."
+fi
+
+# -- nginx (TLS reverse proxy for hotspot clients) --
+# Binds to 192.168.4.1 only to avoid conflict with Tailscale Funnel on port 443.
+NGINX_SITE="/etc/nginx/sites-available/corvo"
+if [[ ! -f "$NGINX_SITE" ]]; then
+    sudo tee "$NGINX_SITE" > /dev/null << 'EOF'
+server {
+    listen 192.168.4.1:80;
+    server_name corvo.saillog.io;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 192.168.4.1:443 ssl;
+    server_name corvo.saillog.io;
+
+    ssl_certificate     /etc/letsencrypt/live/corvo.saillog.io/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/corvo.saillog.io/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+EOF
+    sudo ln -sf "$NGINX_SITE" /etc/nginx/sites-enabled/
+    sudo rm -f /etc/nginx/sites-enabled/default
+    info "nginx site config written."
+else
+    info "nginx corvo site already exists — leaving untouched."
+fi
+sudo systemctl enable nginx
+
+# cert renewal hook
+RENEWAL_HOOK="/etc/letsencrypt/renewal-hooks/post/reload-nginx.sh"
+if [[ ! -f "$RENEWAL_HOOK" ]]; then
+    sudo mkdir -p /etc/letsencrypt/renewal-hooks/post
+    sudo tee "$RENEWAL_HOOK" > /dev/null << 'EOF'
+#!/bin/bash
+systemctl reload nginx
+EOF
+    sudo chmod +x "$RENEWAL_HOOK"
+    info "certbot renewal hook installed."
+fi
+
+# -- cloudflared (Cloudflare Tunnel) --
+if ! command -v cloudflared &>/dev/null; then
+    info "Installing cloudflared..."
+    curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-arm64.deb \
+        -o /tmp/cloudflared.deb && sudo dpkg -i /tmp/cloudflared.deb
+    rm -f /tmp/cloudflared.deb
+fi
+if ! cloudflared tunnel list 2>/dev/null | grep -q corvo; then
+    warn "Cloudflare Tunnel 'corvo' not found."
+    warn "Manual steps required (see docs/corvo-hotspot-network-setup.md):"
+    warn "  cloudflared tunnel login"
+    warn "  cloudflared tunnel create corvo"
+    warn "  # Edit ~/.cloudflared/config.yml"
+    warn "  cloudflared tunnel route dns corvo corvo.saillog.io"
+    warn "  sudo cloudflared --config ~/.cloudflared/config.yml service install"
+else
+    info "Cloudflare Tunnel 'corvo' exists."
+    if sudo systemctl is-enabled cloudflared &>/dev/null; then
+        info "cloudflared service is enabled."
+    else
+        warn "cloudflared service not installed — run:"
+        warn "  sudo cloudflared --config ~/.cloudflared/config.yml service install"
+    fi
+fi
+
+# -- TLS cert check --
+if sudo test -f /etc/letsencrypt/live/corvo.saillog.io/fullchain.pem 2>/dev/null; then
+    info "TLS cert for corvo.saillog.io exists."
+else
+    warn "No TLS cert found for corvo.saillog.io."
+    warn "Create /etc/letsencrypt/cloudflare.ini with your API token, then run:"
+    warn "  sudo certbot certonly --dns-cloudflare \\"
+    warn "    --dns-cloudflare-credentials /etc/letsencrypt/cloudflare.ini \\"
+    warn "    -d corvo.saillog.io --preferred-challenges dns-01 \\"
+    warn "    --non-interactive --agree-tos -m weaties@gmail.com"
+fi
+
+info "Hotspot infrastructure configured."
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -902,6 +1001,26 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop dnsmasq.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dnsmasq.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status dnsmasq.service
 
+# Hotspot services (cloudflared, nginx)
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status cloudflared
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start cloudflared.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop cloudflared.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart cloudflared.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status cloudflared.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start nginx
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop nginx
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start nginx.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop nginx.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
+
 # Log access
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/journalctl
 
@@ -976,7 +1095,8 @@ echo "  4. Reboot:"
 echo "       sudo reboot"
 echo ""
 echo "  After reboot, check service status:"
-echo "    sudo systemctl status can-interface signalk influxd grafana-server loki promtail hostapd dnsmasq j105-logger"
+echo "    sudo systemctl status can-interface signalk influxd grafana-server loki promtail j105-logger"
+echo "    sudo systemctl status hostapd dnsmasq nginx cloudflared"
 echo ""
 echo "  View logger output:"
 echo "    sudo journalctl -fu j105-logger"
