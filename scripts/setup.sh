@@ -499,8 +499,14 @@ influx setup \
 # Capture token for downstream configs
 INFLUX_TOKEN="$(influx auth list --json 2>/dev/null | jq -r '.[0].token' || echo '')"
 if [[ -z "$INFLUX_TOKEN" || "$INFLUX_TOKEN" == "null" ]]; then
-    warn "Could not retrieve InfluxDB token. Plugin config will need manual token update."
-    INFLUX_TOKEN="REPLACE_WITH_INFLUX_TOKEN"
+    # Fall back to saved token file if `influx` CLI can't retrieve it
+    if [[ -f "$INFLUX_TOKEN_FILE" ]]; then
+        INFLUX_TOKEN="$(cat "$INFLUX_TOKEN_FILE")"
+        info "InfluxDB token read from: $INFLUX_TOKEN_FILE"
+    else
+        warn "Could not retrieve InfluxDB token. Plugin config will need manual token update."
+        INFLUX_TOKEN="REPLACE_WITH_INFLUX_TOKEN"
+    fi
 else
     echo "$INFLUX_TOKEN" > "$INFLUX_TOKEN_FILE"
     chmod 600 "$INFLUX_TOKEN_FILE"
