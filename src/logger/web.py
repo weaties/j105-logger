@@ -36,33 +36,90 @@ if TYPE_CHECKING:
 
 
 def _get_git_info() -> str:
-    """Return 'branch @ shortsha' from the current git repo, or '' on failure."""
+    """Return 'branch @ shortsha · clean/dirty' from the current git repo."""
     import subprocess
 
     try:
-        # Resolve the repo root from this file's location so the path isn't
-        # hardcoded.  The service account (j105logger) doesn't own the repo,
-        # so we must add it to safe.directory to pass git's ownership check.
         _repo = str(Path(__file__).resolve().parents[2])
         _git = ["git", "-c", f"safe.directory={_repo}"]
-        branch = subprocess.check_output(
-            [*_git, "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=_repo,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        sha = subprocess.check_output(
-            [*_git, "rev-parse", "--short=7", "HEAD"],
-            cwd=_repo,
-            stderr=subprocess.DEVNULL,
-            text=True,
-        ).strip()
-        return f"{branch} @ {sha}"
+        def _run(args: list[str]) -> str:
+            return subprocess.check_output(
+                [*_git, *args], cwd=_repo, stderr=subprocess.DEVNULL, text=True
+            ).strip()
+
+        branch = _run(["rev-parse", "--abbrev-ref", "HEAD"])
+        sha = _run(["rev-parse", "--short=7", "HEAD"])
+
+        # Check for uncommitted changes
+        dirty = bool(_run(["status", "--porcelain"]))
+
+        # Check for unpushed commits (best-effort; skip if no upstream)
+        if not dirty:
+            try:
+                unpushed = _run(["rev-list", "@{upstream}..HEAD", "--count"])
+                if int(unpushed) > 0:
+                    dirty = True
+            except Exception:  # noqa: BLE001
+                pass  # no upstream configured
+
+        status = "dirty" if dirty else "clean"
+        return f"{branch} @ {sha} · {status}"
     except Exception:  # noqa: BLE001
         return ""
 
 
 _GIT_INFO: str = _get_git_info()
+
+# ---------------------------------------------------------------------------
+# Shared nav bar + footer
+# ---------------------------------------------------------------------------
+
+_NAV_CSS = """\
+nav.site-nav{display:flex;gap:6px;flex-wrap:wrap;align-items:center;padding:8px 0;margin-bottom:8px;border-bottom:1px solid #1e3a5f}
+nav.site-nav a{color:#8892a4;text-decoration:none;font-size:.82rem;padding:4px 8px;border-radius:6px}
+nav.site-nav a:hover{color:#e8eaf0;background:#1e3a5f}
+nav.site-nav a.active{color:#7eb8f7;font-weight:600}
+nav.site-nav .spacer{flex:1}
+nav.site-nav .admin-link{display:none}
+nav.site-nav .profile-link{display:none}
+"""
+
+
+def _nav_html(current: str = "/") -> str:
+    """Return the shared navigation bar HTML.
+
+    *current* is the path of the active page (e.g. "/", "/history").
+    Admin-only links are hidden by default and revealed via JS /api/me check.
+    """
+
+    def _cls(path: str) -> str:
+        return ' class="active"' if path == current else ""
+
+    return f"""\
+<nav class="site-nav" id="site-nav">
+  <a href="/"{_cls("/")}>Home</a>
+  <a href="/history"{_cls("/history")}>History</a>
+  <a href="/admin/boats"{_cls("/admin/boats")}>Boats</a>
+  <a href="/admin/users" class="admin-link{" active" if current == "/admin/users" else ""}">Users</a>
+  <a href="/admin/audit" class="admin-link{" active" if current == "/admin/audit" else ""}">Audit</a>
+  <span class="spacer"></span>
+  <a href="/profile" class="profile-link" id="nav-profile"{_cls("/profile")}>\
+<img id="nav-avatar" src="" alt="" \
+style="width:18px;height:18px;border-radius:50%;vertical-align:middle;margin-right:3px">\
+<span id="nav-profile-name">Profile</span></a>
+</nav>
+<script>
+fetch('/api/me').then(r=>r.json()).then(u=>{{
+  if(u.role==='admin')document.querySelectorAll('.admin-link').forEach(el=>el.style.setProperty('display','inline','important'));
+  if(u.id){{const p=document.getElementById('nav-profile');if(p){{p.style.display='';document.getElementById('nav-avatar').src='/avatars/'+u.id+'.jpg';document.getElementById('nav-profile-name').textContent=u.name||'Profile';}}}}
+}}).catch(()=>{{}});
+</script>"""
+
+
+_FOOTER_HTML = (
+    '<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">'
+    "__GIT_INFO__</footer>"
+)
 
 # ---------------------------------------------------------------------------
 # HTML — inline mobile-first single-page app
@@ -78,6 +135,7 @@ _HTML = """\
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+__NAV_CSS__
 .page{max-width:480px;margin:0 auto;padding:16px 12px}
 @media(min-width:768px){.page{max-width:720px}}
 @media(min-width:1200px){.page{max-width:900px}}
@@ -163,11 +221,10 @@ background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:
 <body>
 <div class="page">
 <div id="health-banner" style="display:none;background:#7f1d1d;color:#fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
+__NAV__
 <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:2px">
   <h1>J105 Logger</h1>
   <div style="display:flex;gap:6px;margin-top:2px">
-    <a class="btn-export" href="/history">📋 History</a>
-    <a class="btn-export" href="/admin/boats">⚓ Boats</a>
     <a id="grafana-nav" class="btn-export btn-grafana" href="#" target="_blank">📊 Grafana</a>
     <a id="signalk-nav" class="btn-export" href="#" target="_blank" style="display:none">⚙ Signal K</a>
   </div>
@@ -364,12 +421,16 @@ function fmt(s) {
   return `${m}:${String(ss).padStart(2,'0')}`;
 }
 
+let _tz = 'UTC';
 function fmtTime(iso) {
   if(!iso) return '—';
-  return new Date(iso).toISOString().substring(11,19) + ' UTC';
+  try {
+    return new Date(iso).toLocaleTimeString('en-US',{timeZone:_tz,hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+  } catch(e) { return new Date(iso).toISOString().substring(11,19) + ' UTC'; }
 }
 
 function render(s) {
+  if(s.timezone) _tz = s.timezone;
   document.getElementById('header-sub').textContent =
     `${s.weekday} · ${s.event || '(no event)'}`;
 
@@ -1288,7 +1349,7 @@ document.querySelectorAll('.crew-input').forEach(inp => {
   inp.addEventListener('focus', () => { focusedCrewInput = inp; });
 });
 </script>
-<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+__FOOTER__
 </div>
 </body>
 </html>
@@ -1309,6 +1370,7 @@ _HISTORY_HTML = """\
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+__NAV_CSS__
 .page{max-width:600px;margin:0 auto;padding:16px 12px}
 @media(min-width:768px){.page{max-width:860px}}
 @media(min-width:1200px){.page{max-width:1100px}}
@@ -1357,10 +1419,8 @@ background:#0a1628;color:#7eb8f7;font-size:.8rem;cursor:pointer}
 </head>
 <body>
 <div class="page">
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-  <a href="/" class="btn-export" style="padding:8px 14px">← Back</a>
-  <h1>Session History</h1>
-</div>
+__NAV__
+<h1 style="margin-bottom:12px">Session History</h1>
 
 <div class="card">
   <input id="q" class="event-input" placeholder="Search by name or event…"
@@ -1428,9 +1488,12 @@ async function load() {
   render(data);
 }
 
+let _tz = 'UTC';
 function fmtTime(iso) {
   if (!iso) return '—';
-  return new Date(iso).toISOString().substring(11,16) + ' UTC';
+  try {
+    return new Date(iso).toLocaleTimeString('en-US',{timeZone:_tz,hour:'2-digit',minute:'2-digit',hour12:false});
+  } catch(e) { return new Date(iso).toISOString().substring(11,16) + ' UTC'; }
 }
 
 function fmtDur(s) {
@@ -1958,9 +2021,9 @@ const now = new Date();
 const past = new Date(now - 30 * 86400000);
 document.getElementById('to-date').value = now.toISOString().substring(0,10);
 document.getElementById('from-date').value = past.toISOString().substring(0,10);
-load();
+fetch('/api/state').then(r=>r.json()).then(s=>{if(s.timezone)_tz=s.timezone;}).catch(()=>{}).finally(()=>load());
 </script>
-<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+__FOOTER__
 </div>
 </body>
 </html>
@@ -1981,6 +2044,7 @@ _ADMIN_BOATS_HTML = """\
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;font-size:clamp(.85rem,2vw,1rem)}
+__NAV_CSS__
 .page{max-width:640px;margin:0 auto;padding:16px 12px}
 @media(min-width:768px){.page{max-width:860px}}
 @media(min-width:1200px){.page{max-width:1100px}}
@@ -2010,10 +2074,8 @@ tr:last-child td{border-bottom:none}
 </head>
 <body>
 <div class="page">
-<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-  <a href="/" class="btn-export" style="padding:8px 14px">← Back</a>
-  <h1>Boat Registry</h1>
-</div>
+__NAV__
+<h1 style="margin-bottom:12px">Boat Registry</h1>
 
 <div class="card">
   <div class="label">Add Boat</div>
@@ -2123,7 +2185,7 @@ async function deleteBoat(id) {
 
 loadBoats();
 </script>
-<footer style="text-align:center;padding:12px 0 8px;font-size:.7rem;color:#4a5568">__GIT_INFO__</footer>
+__FOOTER__
 </div>
 </body>
 </html>
@@ -2252,6 +2314,23 @@ font-size:1rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
 
 def _render_admin_users_html(users: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> str:
     """Render a simple admin users management page."""
+    from logger.races import configured_tz
+
+    tz = configured_tz()
+
+    def _local_ts(utc_str: str | None) -> str:
+        if not utc_str:
+            return "—"
+        try:
+            from datetime import datetime as _dt
+
+            dt = _dt.fromisoformat(utc_str).astimezone(tz)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:  # noqa: BLE001
+            return utc_str[:19]
+
+    nav = _nav_html("/admin/users")
+    footer = _FOOTER_HTML.replace("__GIT_INFO__", _GIT_INFO)
     role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
 
     def _badge(role: str) -> str:
@@ -2261,7 +2340,7 @@ def _render_admin_users_html(users: list[dict[str, Any]], sessions: list[dict[st
     rows = "".join(
         f"<tr><td>{u['email']}</td><td>{u['name'] or '—'}</td>"
         f"<td>{_badge(u['role'])}</td>"
-        f"<td>{(u['last_seen'] or '—')[:19]}</td>"
+        f"<td>{_local_ts(u['last_seen'])}</td>"
         f'<td><button onclick="changeRole({u["id"]})" style="cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem">Change role</button></td>'
         f"</tr>"
         for u in users
@@ -2269,8 +2348,8 @@ def _render_admin_users_html(users: list[dict[str, Any]], sessions: list[dict[st
     sess_rows = "".join(
         f"<tr><td>{s.get('email', '')}</td><td>{s.get('role', '')}</td>"
         f"<td>{s.get('ip', '—')}</td>"
-        f"<td>{s['created_at'][:19]}</td>"
-        f"<td>{s['expires_at'][:19]}</td>"
+        f"<td>{_local_ts(s['created_at'])}</td>"
+        f"<td>{_local_ts(s['expires_at'])}</td>"
         f'<td><button onclick="revokeSession(\'{s["session_id"]}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'
         f"</tr>"
         for s in sessions
@@ -2284,6 +2363,7 @@ def _render_admin_users_html(users: list[dict[str, Any]], sessions: list[dict[st
 body{{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;padding:16px;max-width:900px;margin:0 auto}}
 h1{{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:4px}}
 h2{{font-size:1rem;font-weight:600;color:#e8eaf0;margin:20px 0 10px}}
+{_NAV_CSS}
 .card{{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}}
 table{{width:100%;border-collapse:collapse;font-size:.85rem}}
 th{{text-align:left;padding:6px 8px;color:#8892a4;font-weight:500;border-bottom:1px solid #1e3a5f}}
@@ -2295,6 +2375,7 @@ input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padd
 </style>
 </head>
 <body>
+{nav}
 <h1>Admin — Users &amp; Sessions</h1>
 <div class="card">
 <h2>Users</h2>
@@ -2306,6 +2387,7 @@ input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padd
 <h2>Invite a user</h2>
 <form id="invite-form">
 <label>Email</label><input type="email" id="inv-email" required/>
+<label>Name</label><input type="text" id="inv-name" placeholder="Optional"/>
 <label>Role</label>
 <select id="inv-role"><option value="viewer">viewer</option><option value="crew">crew</option><option value="admin">admin</option></select><br/>
 <button class="btn" type="submit">Generate invite link</button>
@@ -2322,9 +2404,11 @@ input,select{{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padd
 document.getElementById('invite-form').addEventListener('submit', async e => {{
   e.preventDefault();
   const email = document.getElementById('inv-email').value;
+  const name = document.getElementById('inv-name').value;
   const role = document.getElementById('inv-role').value;
   const fd = new FormData();
   fd.append('email', email);
+  fd.append('name', name);
   fd.append('role', role);
   const r = await fetch('/admin/users/invite', {{method:'POST', body:fd}});
   const d = await r.json();
@@ -2341,6 +2425,122 @@ async function revokeSession(sid) {{
   location.reload();
 }}
 </script>
+{footer}
+</body></html>"""
+
+
+def _render_profile_html(user: dict[str, Any]) -> str:
+    """Render the self-service profile page."""
+    import time
+
+    nav = _nav_html("/profile")
+    footer = _FOOTER_HTML.replace("__GIT_INFO__", _GIT_INFO)
+    user_id = user.get("id") or 0
+    name = user.get("name") or user.get("email") or "Unknown"
+    email = user.get("email") or ""
+    role = user.get("role", "viewer")
+    role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
+    rc = role_colors.get(role, "#8892a4")
+    cache_bust = int(time.time())
+    avatar_url = f"/avatars/{user_id}.jpg?v={cache_bust}" if user_id else ""
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>J105 Logger — Profile</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;padding:16px;max-width:500px;margin:0 auto}}
+h1{{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}}
+.card{{background:#131f35;border-radius:12px;padding:24px;text-align:center}}
+.avatar{{width:128px;height:128px;border-radius:50%;object-fit:cover;cursor:pointer;border:3px solid {rc};margin-bottom:16px}}
+.name{{font-size:1.2rem;font-weight:600;margin-bottom:4px}}
+.email{{color:#8892a4;font-size:.85rem;margin-bottom:8px}}
+.role{{background:{rc}22;color:{rc};padding:2px 10px;border-radius:4px;font-size:.8rem;display:inline-block}}
+a{{color:#7eb8f7;text-decoration:none}}
+{_NAV_CSS}
+</style>
+</head>
+<body>
+{nav}
+<h1 style="margin-bottom:12px">Profile</h1>
+<div class="card">
+  <img class="avatar" id="avatar" src="{avatar_url}" alt="avatar" onclick="document.getElementById('file').click()"/>
+  <input type="file" id="file" accept="image/*" style="display:none"/>
+  <div class="name">{name}</div>
+  <div class="email">{email}</div>
+  <div class="role">{role}</div>
+</div>
+<script>
+document.getElementById('file').addEventListener('change', async e => {{
+  const f = e.target.files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append('file', f);
+  const r = await fetch('/profile/avatar', {{method:'POST', body:fd}});
+  if (r.ok) {{
+    window.location.reload();
+  }} else {{
+    const d = await r.json();
+    alert(d.detail || 'Upload failed');
+  }}
+}});
+</script>
+{footer}
+</body></html>"""
+
+
+def _render_admin_audit_html(entries: list[dict[str, Any]]) -> str:
+    """Render the audit log page."""
+    from logger.races import configured_tz
+
+    tz = configured_tz()
+
+    def _local_ts(utc_str: str) -> str:
+        try:
+            from datetime import datetime as _dt
+
+            dt = _dt.fromisoformat(utc_str).astimezone(tz)
+            return dt.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:  # noqa: BLE001
+            return utc_str[:19]
+
+    nav = _nav_html("/admin/audit")
+    footer = _FOOTER_HTML.replace("__GIT_INFO__", _GIT_INFO)
+    rows = "".join(
+        f"<tr><td>{_local_ts(e['ts'])}</td>"
+        f"<td>{e.get('user_name') or e.get('user_email') or '—'}</td>"
+        f"<td><code>{e['action']}</code></td>"
+        f'<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{e.get("detail") or ""}</td>'  # noqa: E501
+        f'<td style="font-size:.7rem">{e.get("ip_address") or ""}</td></tr>'
+        for e in entries
+    )
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>J105 Logger — Audit Log</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;padding:16px;max-width:1000px;margin:0 auto}}
+h1{{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}}
+.card{{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}}
+table{{width:100%;border-collapse:collapse;font-size:.82rem}}
+th{{text-align:left;padding:6px 8px;color:#8892a4;font-weight:500;border-bottom:1px solid #1e3a5f}}
+td{{padding:6px 8px;border-bottom:1px solid #0d1a2e}}
+code{{background:#1e3a5f;padding:1px 5px;border-radius:3px;font-size:.78rem}}
+a{{color:#7eb8f7;text-decoration:none}}
+{_NAV_CSS}
+</style>
+</head>
+<body>
+{nav}
+<h1 style="margin-bottom:12px">Audit Log</h1>
+<div class="card">
+<table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+<tbody>{rows}</tbody>
+</table>
+{('<p style="text-align:center;color:#8892a4;padding:20px">No audit entries yet.</p>' if not entries else "")}
+</div>
+{footer}
 </body></html>"""
 
 
@@ -2372,18 +2572,28 @@ def create_app(
     from logger.races import RaceConfig
 
     cfg = RaceConfig()
-    _page = (
+
+    def _inject_shared(html: str, current: str) -> str:
+        return (
+            html.replace("__NAV_CSS__", _NAV_CSS)
+            .replace("__NAV__", _nav_html(current))
+            .replace("__FOOTER__", _FOOTER_HTML)
+            .replace("__GIT_INFO__", _GIT_INFO)
+        )
+
+    _page = _inject_shared(
         _HTML.replace("__GRAFANA_PORT__", cfg.grafana_port)
         .replace("__GRAFANA_UID__", cfg.grafana_uid)
-        .replace("__SK_PORT__", cfg.sk_port)
-        .replace("__GIT_INFO__", _GIT_INFO)
+        .replace("__SK_PORT__", cfg.sk_port),
+        "/",
     )
-    _history_page = (
-        _HISTORY_HTML.replace("__GRAFANA_PORT__", cfg.grafana_port)
-        .replace("__GRAFANA_UID__", cfg.grafana_uid)
-        .replace("__GIT_INFO__", _GIT_INFO)
+    _history_page = _inject_shared(
+        _HISTORY_HTML.replace("__GRAFANA_PORT__", cfg.grafana_port).replace(
+            "__GRAFANA_UID__", cfg.grafana_uid
+        ),
+        "/history",
     )
-    _admin_page = _ADMIN_BOATS_HTML.replace("__GIT_INFO__", _GIT_INFO)
+    _admin_page = _inject_shared(_ADMIN_BOATS_HTML, "/admin/boats")
 
     from logger.auth import (
         _is_auth_disabled,
@@ -2404,8 +2614,19 @@ def create_app(
             )
             raise SystemExit(1)
         logger.warning("Auth is disabled — all requests treated as admin.")
+    _PUBLIC_PATHS = {"/login", "/logout", "/healthz", "/avatars"}
 
-    _PUBLIC_PATHS = {"/login", "/logout", "/healthz"}
+    async def _audit(
+        request: Request,
+        action: str,
+        detail: str | None = None,
+        user: dict[str, Any] | None = None,
+    ) -> None:
+        """Fire-and-forget audit log entry."""
+        uid = user.get("id") if user else None
+        ip = request.client.host if request.client else None
+        ua = request.headers.get("user-agent")
+        await storage.log_action(action, detail=detail, user_id=uid, ip_address=ip, user_agent=ua)
 
     @app.middleware("http")
     async def auth_middleware(  # type: ignore[no-untyped-def]
@@ -2413,7 +2634,12 @@ def create_app(
         call_next,  # noqa: ANN001
     ) -> Response:
         path = request.url.path
-        if _is_auth_disabled() or path in _PUBLIC_PATHS:
+        if _is_auth_disabled():
+            from logger.auth import _MOCK_ADMIN
+
+            request.state.user = _MOCK_ADMIN
+            return await call_next(request)  # type: ignore[no-any-return]
+        if path in _PUBLIC_PATHS or path.startswith("/notes/"):
             return await call_next(request)  # type: ignore[no-any-return]
         from http.cookies import SimpleCookie
 
@@ -2441,6 +2667,22 @@ def create_app(
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    @app.get("/api/me")
+    async def api_me(request: Request) -> JSONResponse:
+        """Return the current user's identity and role."""
+        user: dict[str, Any] | None = getattr(request.state, "user", None)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        return JSONResponse(
+            {
+                "id": user.get("id"),
+                "email": user.get("email"),
+                "name": user.get("name"),
+                "role": user.get("role"),
+                "avatar_path": user.get("avatar_path"),
+            }
+        )
 
     @app.get("/login", response_class=HTMLResponse, include_in_schema=False)
     async def login_page(next: str = "/", token: str = "") -> HTMLResponse:
@@ -2516,6 +2758,19 @@ def create_app(
             samesite="lax",
             max_age=int(os.getenv("AUTH_SESSION_TTL_DAYS", "90")) * 86400,
         )
+
+        # Best-effort new-device alert email
+        from logger.email import send_device_alert, smtp_configured
+
+        if smtp_configured():
+            asyncio.ensure_future(
+                send_device_alert(
+                    row["email"],
+                    request.client.host if request.client else None,
+                    request.headers.get("user-agent"),
+                )
+            )
+
         return response
 
     @app.post("/logout", include_in_schema=False)
@@ -2562,6 +2817,7 @@ def create_app(
         request: Request,
         email: str = Form(...),
         role: str = Form(...),
+        name: str = Form(default=""),
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> JSONResponse:
         if role not in ("admin", "crew", "viewer"):
@@ -2569,14 +2825,27 @@ def create_app(
         email = email.strip().lower()
         if not email:
             raise HTTPException(status_code=422, detail="email must not be blank")
+        clean_name = name.strip() or None
         token = generate_token()
         base = str(request.base_url).rstrip("/")
         await storage.create_invite_token(token, email, role, _user["id"], invite_expires_at())
         invite_url = f"{base}/login?token={token}"
-        return JSONResponse({"invite_url": invite_url, "token": token}, status_code=201)
+        await _audit(request, "user.invite", detail=f"{email} as {role}", user=_user)
+
+        from logger.email import send_welcome_email, smtp_configured
+
+        email_sent = False
+        if smtp_configured() and email:
+            email_sent = await send_welcome_email(clean_name, email, role, invite_url)
+
+        return JSONResponse(
+            {"invite_url": invite_url, "token": token, "email_sent": email_sent},
+            status_code=201,
+        )
 
     @app.put("/admin/users/{user_id}/role", status_code=204, include_in_schema=False)
     async def admin_update_role(
+        request: Request,
         user_id: int,
         body: dict[str, Any],
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
@@ -2588,13 +2857,36 @@ def create_app(
         if user is None:
             raise HTTPException(status_code=404, detail="User not found")
         await storage.update_user_role(user_id, role)
+        await _audit(request, "user.role", detail=f"user={user_id} role={role}", user=_user)
 
     @app.delete("/admin/sessions/{session_id}", status_code=204, include_in_schema=False)
     async def admin_revoke_session(
+        request: Request,
         session_id: str,
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> None:
         await storage.delete_session(session_id)
+        await _audit(request, "session.revoke", detail=session_id[:16], user=_user)
+
+    # ------------------------------------------------------------------
+    # /admin/audit (#93)
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/audit", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_audit_page(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> HTMLResponse:
+        entries = await storage.list_audit_log(limit=200)
+        return HTMLResponse(_render_admin_audit_html(entries))
+
+    @app.get("/api/audit")
+    async def api_audit_log(
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        entries = await storage.list_audit_log(limit=limit, offset=offset)
+        return JSONResponse(entries)
 
     # ------------------------------------------------------------------
     # /api/state
@@ -2603,12 +2895,12 @@ def create_app(
     @app.get("/api/state")
     async def api_state() -> JSONResponse:
         from logger.races import Race as _Race
-        from logger.races import default_event_for_date
+        from logger.races import configured_tz, default_event_for_date, local_today, local_weekday
 
         now = datetime.now(UTC)
-        today = now.date()
+        today = local_today()
         date_str = today.isoformat()
-        weekday = today.strftime("%A")
+        weekday = local_weekday()
 
         default_event = default_event_for_date(today)
         custom_event = await storage.get_daily_event(date_str)
@@ -2670,6 +2962,7 @@ def create_app(
             {
                 "date": date_str,
                 "weekday": weekday,
+                "timezone": str(configured_tz()),
                 "event": event,
                 "event_is_default": event_is_default,
                 "current_race": current_dict,
@@ -2735,14 +3028,18 @@ def create_app(
 
     @app.post("/api/event", status_code=204)
     async def api_set_event(
+        request: Request,
         body: EventRequest,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
         event_name = body.event_name.strip()
         if not event_name:
             raise HTTPException(status_code=422, detail="event_name must not be blank")
-        date_str = datetime.now(UTC).date().isoformat()
+        from logger.races import local_today
+
+        date_str = local_today().isoformat()
         await storage.set_daily_event(date_str, event_name)
+        await _audit(request, "event.set", detail=event_name, user=_user)
 
     # ------------------------------------------------------------------
     # /api/races/start
@@ -2750,6 +3047,7 @@ def create_app(
 
     @app.post("/api/races/start", status_code=201)
     async def api_start_race(
+        request: Request,
         session_type: str = Query(default="race"),
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
@@ -2767,8 +3065,10 @@ def create_app(
                 detail="session_type must be 'race' or 'practice'",
             )
 
+        from logger.races import local_today
+
         now = datetime.now(UTC)
-        today = now.date()
+        today = local_today()
         date_str = today.isoformat()
 
         default_event = default_event_for_date(today)
@@ -2817,6 +3117,7 @@ def create_app(
             except AudioDeviceNotFoundError as exc:
                 logger.warning("Audio unavailable for race {}: {}", race.name, exc)
 
+        await _audit(request, "race.start", detail=race.name, user=_user)
         return JSONResponse(
             {
                 "id": race.id,
@@ -2835,12 +3136,14 @@ def create_app(
 
     @app.post("/api/races/{race_id}/end", status_code=204)
     async def api_end_race(
+        request: Request,
         race_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
         nonlocal _audio_session_id
         now = datetime.now(UTC)
         await storage.end_race(race_id, now)
+        await _audit(request, "race.end", detail=str(race_id), user=_user)
 
         if recorder is not None and _audio_session_id is not None:
             completed = await recorder.stop()
@@ -2855,6 +3158,7 @@ def create_app(
 
     @app.post("/api/races/{race_id}/debrief/start", status_code=201)
     async def api_start_debrief(
+        request: Request,
         race_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
@@ -2906,6 +3210,7 @@ def create_app(
         _debrief_start_utc = now
         logger.info("Debrief recording started: {}", session.file_path)
 
+        await _audit(request, "debrief.start", detail=row["name"], user=_user)
         return JSONResponse(
             {"race_id": race_id, "race_name": row["name"], "start_utc": now.isoformat()},
             status_code=201,
@@ -2917,6 +3222,7 @@ def create_app(
 
     @app.post("/api/debrief/stop", status_code=204)
     async def api_stop_debrief(
+        request: Request,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
         nonlocal _debrief_audio_session_id, _debrief_race_id, _debrief_race_name, _debrief_start_utc
@@ -2929,6 +3235,7 @@ def create_app(
         await storage.update_audio_session_end(_debrief_audio_session_id, completed.end_utc)
         logger.info("Debrief recording saved: {}", completed.file_path)
 
+        await _audit(request, "debrief.stop", user=_user)
         _debrief_audio_session_id = None
         _debrief_race_id = None
         _debrief_race_name = None
@@ -2943,7 +3250,9 @@ def create_app(
         if fmt not in ("csv", "gpx", "json"):
             raise HTTPException(status_code=400, detail="fmt must be csv, gpx, or json")
 
-        races = await storage.list_races_for_date(datetime.now(UTC).date().isoformat())
+        from logger.races import local_today
+
+        races = await storage.list_races_for_date(local_today().isoformat())
         # Also search across all dates by fetching by id directly
         race = None
         for r in races:
@@ -3036,7 +3345,9 @@ def create_app(
     @app.get("/api/races")
     async def api_list_races(date: str | None = None) -> JSONResponse:
         if date is None:
-            date = datetime.now(UTC).date().isoformat()
+            from logger.races import local_today
+
+            date = local_today().isoformat()
         races = await storage.list_races_for_date(date)
         result = []
         for r in races:
@@ -3063,6 +3374,7 @@ def create_app(
 
     @app.post("/api/races/{race_id}/crew", status_code=204)
     async def api_set_crew(
+        request: Request,
         race_id: int,
         body: list[CrewEntry],
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3080,6 +3392,7 @@ def create_app(
 
         crew = [{"position": e.position, "sailor": e.sailor} for e in body if e.sailor.strip()]
         await storage.set_race_crew(race_id, crew)
+        await _audit(request, "crew.set", detail=str(race_id), user=_user)
 
     @app.get("/api/races/{race_id}/crew")
     async def api_get_crew(race_id: int) -> JSONResponse:
@@ -3114,6 +3427,7 @@ def create_app(
 
     @app.post("/api/boats", status_code=201)
     async def api_create_boat(
+        request: Request,
         body: BoatCreate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
@@ -3121,10 +3435,12 @@ def create_app(
         if not sail:
             raise HTTPException(status_code=422, detail="sail_number must not be blank")
         boat_id = await storage.add_boat(sail, body.name, body.class_name)
+        await _audit(request, "boat.add", detail=sail, user=_user)
         return JSONResponse({"id": boat_id}, status_code=201)
 
     @app.patch("/api/boats/{boat_id}", status_code=204)
     async def api_update_boat(
+        request: Request,
         boat_id: int,
         body: BoatUpdate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3139,9 +3455,11 @@ def create_app(
         name = body.name if body.name is not None else row["name"]
         class_name = body.class_name if body.class_name is not None else row["class"]
         await storage.update_boat(boat_id, sail, name, class_name)
+        await _audit(request, "boat.update", detail=str(boat_id), user=_user)
 
     @app.delete("/api/boats/{boat_id}", status_code=204)
     async def api_delete_boat(
+        request: Request,
         boat_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
@@ -3149,6 +3467,7 @@ def create_app(
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Boat not found")
         await storage.delete_boat(boat_id)
+        await _audit(request, "boat.delete", detail=str(boat_id), user=_user)
 
     # ------------------------------------------------------------------
     # /api/sessions/{race_id}/results
@@ -3161,6 +3480,7 @@ def create_app(
 
     @app.post("/api/sessions/{race_id}/results", status_code=201)
     async def api_upsert_result(
+        request: Request,
         race_id: int,
         body: RaceResultEntry,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3192,6 +3512,9 @@ def create_app(
             dns=body.dns,
             notes=body.notes,
         )
+        await _audit(
+            request, "result.upsert", detail=f"race={race_id} place={body.place}", user=_user
+        )
         return JSONResponse({"id": result_id}, status_code=201)
 
     # ------------------------------------------------------------------
@@ -3200,6 +3523,7 @@ def create_app(
 
     @app.delete("/api/results/{result_id}", status_code=204)
     async def api_delete_result(
+        request: Request,
         result_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
@@ -3209,6 +3533,7 @@ def create_app(
         if await cur.fetchone() is None:
             raise HTTPException(status_code=404, detail="Result not found")
         await storage.delete_race_result(result_id)
+        await _audit(request, "result.delete", detail=str(result_id), user=_user)
 
     # ------------------------------------------------------------------
     # /api/sessions/{session_id}/notes  &  /api/notes/{note_id}
@@ -3228,6 +3553,7 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/notes", status_code=201)
     async def api_create_note(
+        request: Request,
         session_id: int,
         body: NoteCreate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3270,10 +3596,12 @@ def create_app(
             race_id=race_id,
             note_id=note_id,
         )
+        await _audit(request, "note.add", detail=body.note_type, user=_user)
         return JSONResponse({"id": note_id, "ts": ts}, status_code=201)
 
     @app.post("/api/sessions/{session_id}/notes/photo", status_code=201)
     async def api_create_photo_note(
+        request: Request,
         session_id: int,
         file: UploadFile,
         ts: str = Form(default=""),
@@ -3315,6 +3643,7 @@ def create_app(
             race_id=race_id,
             note_id=note_id,
         )
+        await _audit(request, "note.photo", detail=photo_path, user=_user)
         return JSONResponse(
             {"id": note_id, "ts": actual_ts, "photo_path": photo_path}, status_code=201
         )
@@ -3351,12 +3680,14 @@ def create_app(
 
     @app.delete("/api/notes/{note_id}", status_code=204)
     async def api_delete_note(
+        request: Request,
         note_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
         found = await storage.delete_note(note_id)
         if not found:
             raise HTTPException(status_code=404, detail="Note not found")
+        await _audit(request, "note.delete", detail=str(note_id), user=_user)
 
     @app.get("/api/notes/settings-keys")
     async def api_settings_keys() -> JSONResponse:
@@ -3504,6 +3835,7 @@ def create_app(
 
     @app.post("/api/sessions/{session_id}/videos", status_code=201)
     async def api_add_video(
+        request: Request,
         session_id: int,
         body: VideoCreate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3561,10 +3893,12 @@ def create_app(
         )
         rows = await storage.list_race_videos(session_id)
         row = next(r for r in rows if r["id"] == row_id)
+        await _audit(request, "video.add", detail=body.youtube_url, user=_user)
         return JSONResponse(_video_deep_link(row), status_code=201)
 
     @app.patch("/api/videos/{video_id}", status_code=200)
     async def api_update_video(
+        request: Request,
         video_id: int,
         body: VideoUpdate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3586,10 +3920,12 @@ def create_app(
         )
         if not found:
             raise HTTPException(status_code=404, detail="Video not found")
+        await _audit(request, "video.update", detail=str(video_id), user=_user)
         return JSONResponse({"id": video_id, "updated": True})
 
     @app.delete("/api/videos/{video_id}", status_code=204)
     async def api_delete_video(
+        request: Request,
         video_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> None:
@@ -3597,6 +3933,7 @@ def create_app(
         found = await storage.delete_race_video(video_id)
         if not found:
             raise HTTPException(status_code=404, detail="Video not found")
+        await _audit(request, "video.delete", detail=str(video_id), user=_user)
 
     # ------------------------------------------------------------------
     # /api/grafana/annotations
@@ -3662,6 +3999,7 @@ def create_app(
 
     @app.post("/api/sails", status_code=201)
     async def api_add_sail(
+        request: Request,
         body: SailCreate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
@@ -3680,12 +4018,14 @@ def create_app(
                 status_code=409,
                 detail=f"Sail already exists: type={body.type!r} name={body.name!r}",
             ) from exc
+        await _audit(request, "sail.add", detail=f"{body.type}/{body.name}", user=_user)
         return JSONResponse(
             {"id": sail_id, "type": body.type, "name": body.name.strip()}, status_code=201
         )
 
     @app.patch("/api/sails/{sail_id}", status_code=200)
     async def api_update_sail(
+        request: Request,
         sail_id: int,
         body: SailUpdate,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3696,6 +4036,7 @@ def create_app(
         )
         if not found:
             raise HTTPException(status_code=404, detail="Sail not found")
+        await _audit(request, "sail.update", detail=str(sail_id), user=_user)
         return JSONResponse({"id": sail_id, "updated": True})
 
     @app.get("/api/sessions/{session_id}/sails")
@@ -3709,6 +4050,7 @@ def create_app(
 
     @app.put("/api/sessions/{session_id}/sails", status_code=200)
     async def api_set_session_sails(
+        request: Request,
         session_id: int,
         body: RaceSailsSet,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
@@ -3743,6 +4085,7 @@ def create_app(
             spinnaker_id=body.spinnaker_id,
         )
         sails = await storage.get_race_sails(session_id)
+        await _audit(request, "sails.set", detail=str(session_id), user=_user)
         return JSONResponse(sails)
 
     # ------------------------------------------------------------------
@@ -3811,6 +4154,7 @@ def create_app(
 
     @app.post("/api/audio/{session_id}/transcribe", status_code=202)
     async def api_transcribe(
+        request: Request,
         session_id: int,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
     ) -> JSONResponse:
@@ -3837,6 +4181,7 @@ def create_app(
                 storage, session_id, transcript_id, model_size=model, diarize=diarize
             )
         )
+        await _audit(request, "transcribe.start", detail=str(session_id), user=_user)
         return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
 
     @app.get("/api/audio/{session_id}/transcript")
@@ -3851,5 +4196,218 @@ def create_app(
             t["segments"] = _json.loads(t["segments_json"])
         del t["segments_json"]
         return JSONResponse(t)
+
+    # ------------------------------------------------------------------
+    # Tags (#99)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/tags")
+    async def api_list_tags() -> JSONResponse:
+        tags = await storage.list_tags()
+        return JSONResponse(tags)
+
+    @app.post("/api/tags", status_code=201)
+    async def api_create_tag(
+        request: Request,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        name = (body.get("name") or "").strip().lower()
+        if not name:
+            raise HTTPException(status_code=422, detail="name is required")
+        color = body.get("color")
+        tag = await storage.get_tag_by_name(name)
+        if tag:
+            raise HTTPException(status_code=409, detail="Tag already exists")
+        tag_id = await storage.create_tag(name, color)
+        await _audit(request, "tag.create", detail=name, user=_user)
+        return JSONResponse({"id": tag_id, "name": name, "color": color}, status_code=201)
+
+    @app.patch("/api/tags/{tag_id}", status_code=200)
+    async def api_update_tag(
+        request: Request,
+        tag_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        found = await storage.update_tag(tag_id, name=body.get("name"), color=body.get("color"))
+        if not found:
+            raise HTTPException(status_code=404, detail="Tag not found")
+        await _audit(request, "tag.update", detail=str(tag_id), user=_user)
+        return JSONResponse({"id": tag_id, "updated": True})
+
+    @app.delete("/api/tags/{tag_id}", status_code=204)
+    async def api_delete_tag(
+        request: Request,
+        tag_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        found = await storage.delete_tag(tag_id)
+        if not found:
+            raise HTTPException(status_code=404, detail="Tag not found")
+        await _audit(request, "tag.delete", detail=str(tag_id), user=_user)
+
+    @app.post("/api/sessions/{session_id}/tags", status_code=201)
+    async def api_add_session_tag(
+        request: Request,
+        session_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        tag_id = body.get("tag_id")
+        tag_name = body.get("tag_name")
+        if tag_id is None and not tag_name:
+            raise HTTPException(status_code=422, detail="tag_id or tag_name is required")
+        if tag_id is None:
+            assert isinstance(tag_name, str)
+            tag_id = await storage.get_or_create_tag(tag_name)
+        await storage.add_session_tag(session_id, tag_id)
+        await _audit(
+            request, "session.tag.add", detail=f"session={session_id} tag={tag_id}", user=_user
+        )
+        return JSONResponse({"session_id": session_id, "tag_id": tag_id}, status_code=201)
+
+    @app.delete("/api/sessions/{session_id}/tags/{tag_id}", status_code=204)
+    async def api_remove_session_tag(
+        request: Request,
+        session_id: int,
+        tag_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
+        await storage.remove_session_tag(session_id, tag_id)
+        await _audit(
+            request, "session.tag.remove", detail=f"session={session_id} tag={tag_id}", user=_user
+        )
+
+    @app.get("/api/sessions/{session_id}/tags")
+    async def api_get_session_tags(session_id: int) -> JSONResponse:
+        tags = await storage.get_session_tags(session_id)
+        return JSONResponse(tags)
+
+    @app.post("/api/notes/{note_id}/tags", status_code=201)
+    async def api_add_note_tag(
+        request: Request,
+        note_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        tag_id = body.get("tag_id")
+        tag_name = body.get("tag_name")
+        if tag_id is None and not tag_name:
+            raise HTTPException(status_code=422, detail="tag_id or tag_name is required")
+        if tag_id is None:
+            assert isinstance(tag_name, str)
+            tag_id = await storage.get_or_create_tag(tag_name)
+        await storage.add_note_tag(note_id, tag_id)
+        await _audit(request, "note.tag.add", detail=f"note={note_id} tag={tag_id}", user=_user)
+        return JSONResponse({"note_id": note_id, "tag_id": tag_id}, status_code=201)
+
+    @app.delete("/api/notes/{note_id}/tags/{tag_id}", status_code=204)
+    async def api_remove_note_tag(
+        request: Request,
+        note_id: int,
+        tag_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
+        await storage.remove_note_tag(note_id, tag_id)
+        await _audit(request, "note.tag.remove", detail=f"note={note_id} tag={tag_id}", user=_user)
+
+    @app.get("/api/notes/{note_id}/tags")
+    async def api_get_note_tags(note_id: int) -> JSONResponse:
+        tags = await storage.get_note_tags(note_id)
+        return JSONResponse(tags)
+
+    # ------------------------------------------------------------------
+    # Profile & Avatars (#100)
+    # ------------------------------------------------------------------
+
+    @app.get("/profile", response_class=HTMLResponse, include_in_schema=False)
+    async def profile_page(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> HTMLResponse:
+        return HTMLResponse(_render_profile_html(_user))
+
+    @app.post("/profile/avatar", status_code=200, include_in_schema=False)
+    async def upload_avatar(
+        request: Request,
+        file: UploadFile,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        user_id = _user.get("id")
+        if user_id is None:
+            raise HTTPException(status_code=400, detail="Cannot set avatar for mock user")
+
+        # Validate content type
+        ct = (file.content_type or "").lower()
+        if ct not in ("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"):
+            raise HTTPException(status_code=422, detail="Unsupported image type")
+
+        data = await file.read()
+        if len(data) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=422, detail="File too large (max 10 MB)")
+
+        avatar_dir = Path(os.environ.get("AVATAR_DIR", "data/avatars"))
+        await asyncio.to_thread(avatar_dir.mkdir, parents=True, exist_ok=True)
+        dest = avatar_dir / f"{user_id}.jpg"
+
+        try:
+            import io
+
+            from PIL import Image  # noqa: PLC0415
+
+            opened = Image.open(io.BytesIO(data))
+            rgb = opened.convert("RGB")
+            # Centre-crop to square
+            w, h = rgb.size
+            side = min(w, h)
+            left = (w - side) // 2
+            top = (h - side) // 2
+            cropped = rgb.crop((left, top, left + side, top + side))
+            resized = cropped.resize((256, 256), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            resized.save(buf, format="JPEG", quality=85)
+            await asyncio.to_thread(dest.write_bytes, buf.getvalue())
+        except ImportError:
+            # Pillow not installed — save raw bytes as fallback
+            await asyncio.to_thread(dest.write_bytes, data)
+
+        rel_path = f"{user_id}.jpg"
+        await storage.set_avatar_path(user_id, rel_path)
+        await _audit(request, "avatar.upload", user=_user)
+        return JSONResponse({"avatar_path": rel_path})
+
+    @app.get("/avatars/{user_id}.jpg", include_in_schema=False)
+    async def serve_avatar(user_id: int) -> Response:
+        avatar_dir = Path(os.environ.get("AVATAR_DIR", "data/avatars"))
+        path = avatar_dir / f"{user_id}.jpg"
+        if path.exists():
+            mtime = int(path.stat().st_mtime)
+            return FileResponse(
+                path,
+                media_type="image/jpeg",
+                headers={"Cache-Control": "public, max-age=60", "ETag": f'"{user_id}-{mtime}"'},
+            )
+        # Generate initials SVG fallback
+        user = await storage.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        name = user.get("name") or user.get("email") or "?"
+        parts = name.split()
+        initials = (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
+        role = user.get("role", "viewer")
+        colors = {"admin": "#2563eb", "crew": "#059669", "viewer": "#6b7280"}
+        bg = colors.get(role, "#6b7280")
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">'
+            f'<rect width="256" height="256" rx="128" fill="{bg}"/>'
+            f'<text x="128" y="128" text-anchor="middle" dy=".35em"'
+            f' font-family="system-ui,sans-serif" font-size="96" font-weight="700"'
+            f' fill="white">{initials}</text></svg>'
+        )
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     return app
