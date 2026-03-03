@@ -182,3 +182,5 @@ sudo systemctl restart j105-logger
 echo ""
 echo "==> Deploy complete."
 systemctl is-active j105-logger && echo "    j105-logger is running." || echo "    WARNING: j105-logger is NOT running."
+systemctl is-active cloudflared 2>/dev/null && echo "    cloudflared tunnel is running." || echo "    WARNING: cloudflared tunnel is NOT running."
+systemctl is-active nginx 2>/dev/null && echo "    nginx is running." || echo "    WARNING: nginx is NOT running."
