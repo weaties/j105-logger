@@ -11,6 +11,7 @@
 # What this script does:
 #   a)   System prerequisites (git, curl, audio libs, unattended-upgrades)
 #   a.1) Security hardening (auto-updates, mask unused services, SSH hardening)
+#   a.2) WiFi hotspot (hostapd + dnsmasq + NAT via iPhone USB tethering)
 #   b)   Node.js 24 LTS
 #   c)   Signal K Server + plugins
 #   d)   InfluxDB 2.7.11 (pinned; loopback-only binding)
@@ -61,7 +62,14 @@ sudo apt-get install -y \
     git can-utils curl gnupg2 apt-transport-https \
     ca-certificates lsb-release jq \
     libportaudio2 libsndfile1 \
-    unattended-upgrades apt-listchanges
+    unattended-upgrades apt-listchanges \
+    usbmuxd libimobiledevice-utils \
+    hostapd dnsmasq
+
+# iptables-persistent asks interactive questions — pre-seed answers
+echo iptables-persistent iptables-persistent/autosave_v4 boolean true | sudo debconf-set-selections
+echo iptables-persistent iptables-persistent/autosave_v6 boolean true | sudo debconf-set-selections
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y iptables-persistent
 
 # Apply all pending security updates now
 sudo apt-get upgrade -y
@@ -129,6 +137,104 @@ fi
 # SAFETY: setup.sh must NEVER modify the contents of authorized_keys.
 # Adding or removing keys is an operator action — not something an
 # automated script should do.  See docs/incident-ssh-lockout-2026-03-01.md.
+
+# ---------------------------------------------------------------------------
+# a.2) WiFi hotspot — hostapd + dnsmasq + NAT
+#      The Pi creates a WiFi access point on wlan0 (SSID: Corvo).
+#      Internet uplink is via iPhone USB tethering (ipheth driver → eth1).
+#      Crew devices connect to the hotspot; dnsmasq provides DHCP + DNS.
+#      NAT forwards hotspot traffic to the iPhone for internet access.
+# ---------------------------------------------------------------------------
+
+step "Configuring WiFi hotspot..."
+
+# Tell NetworkManager to leave wlan0 alone (hostapd manages it)
+sudo mkdir -p /etc/NetworkManager/conf.d
+if [[ ! -f /etc/NetworkManager/conf.d/unmanaged-wlan0.conf ]]; then
+    sudo tee /etc/NetworkManager/conf.d/unmanaged-wlan0.conf > /dev/null << 'EOF'
+[keyfile]
+unmanaged-devices=interface-name:wlan0
+EOF
+    info "NetworkManager: wlan0 set to unmanaged."
+else
+    info "NetworkManager: wlan0 already unmanaged."
+fi
+
+# Static IP for wlan0 via systemd-networkd (persists across reboots)
+sudo tee /etc/systemd/network/10-wlan0-hotspot.network > /dev/null << 'EOF'
+[Match]
+Name=wlan0
+
+[Network]
+Address=192.168.4.1/24
+EOF
+sudo systemctl enable systemd-networkd
+
+# hostapd — WiFi access point
+# 2.4 GHz (hw_mode=g) for better range on the water.
+# Change ssid and wpa_passphrase as needed.
+if [[ ! -f /etc/hostapd/hostapd.conf ]]; then
+    warn "No /etc/hostapd/hostapd.conf found."
+    warn "Create one with your SSID and password. Example:"
+    warn "  interface=wlan0"
+    warn "  driver=nl80211"
+    warn "  ssid=Corvo"
+    warn "  hw_mode=g"
+    warn "  channel=7"
+    warn "  wpa=2"
+    warn "  wpa_passphrase=YOUR_PASSWORD"
+    warn "  wpa_key_mgmt=WPA-PSK"
+    warn "  rsn_pairwise=CCMP"
+else
+    info "hostapd.conf already exists — leaving untouched."
+fi
+echo 'DAEMON_CONF="/etc/hostapd/hostapd.conf"' | sudo tee /etc/default/hostapd > /dev/null
+sudo systemctl unmask hostapd 2>/dev/null || true
+sudo systemctl enable hostapd
+
+# dnsmasq — DHCP + split-horizon DNS for hotspot clients
+sudo tee /etc/dnsmasq.d/hotspot.conf > /dev/null << 'EOF'
+# Only listen on the hotspot interface
+interface=wlan0
+bind-interfaces
+
+# DHCP range for hotspot clients
+dhcp-range=192.168.4.10,192.168.4.150,255.255.255.0,24h
+
+# Split-horizon DNS: hotspot clients resolve to the Pi locally
+address=/corvo.live.saillog.io/192.168.4.1
+
+# Upstream DNS for everything else
+server=8.8.8.8
+server=8.8.4.4
+EOF
+sudo systemctl enable dnsmasq
+
+# IP forwarding (persistent)
+echo "net.ipv4.ip_forward=1" | sudo tee /etc/sysctl.d/90-hotspot.conf > /dev/null
+sudo sysctl -p /etc/sysctl.d/90-hotspot.conf
+
+# NAT — masquerade hotspot traffic via the iPhone tethering interface (eth1).
+# The ipheth kernel driver creates eth1 when an iPhone is plugged in via USB.
+# These rules are idempotent (check before adding).
+sudo iptables -t nat -C POSTROUTING -o eth1 -j MASQUERADE 2>/dev/null || \
+    sudo iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+sudo iptables -C FORWARD -i wlan0 -o eth1 -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i wlan0 -o eth1 -j ACCEPT
+sudo iptables -C FORWARD -i eth1 -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+    sudo iptables -A FORWARD -i eth1 -o wlan0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+sudo netfilter-persistent save
+
+# Start services if wlan0 is available
+if ip link show wlan0 &>/dev/null; then
+    sudo systemctl restart NetworkManager
+    sudo systemctl restart systemd-networkd
+    sudo systemctl restart hostapd
+    sudo systemctl restart dnsmasq
+    info "WiFi hotspot started (SSID configured in /etc/hostapd/hostapd.conf)."
+else
+    warn "wlan0 not found — hotspot services enabled but not started."
+fi
 
 # ---------------------------------------------------------------------------
 # b) Node.js 24 LTS
@@ -779,6 +885,22 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active j105-logger
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active j105-logger.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start hostapd
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop hostapd
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart hostapd
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status hostapd
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start hostapd.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop hostapd.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart hostapd.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status hostapd.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start dnsmasq
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop dnsmasq
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dnsmasq
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status dnsmasq
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start dnsmasq.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop dnsmasq.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart dnsmasq.service
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status dnsmasq.service
 
 # Log access
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/journalctl
@@ -826,6 +948,7 @@ echo "  Grafana:     http://corvopi:3001   (admin / changeme123 — change after
 echo "  Loki:        http://corvopi:3100   (loopback-only — log aggregation for Grafana)"
 echo "  InfluxDB:    http://corvopi:8086   (loopback-only — access via SSH tunnel or Tailscale)"
 echo "  Race marker: http://corvopi:3002   (login required — see below)"
+echo "  WiFi hotspot: SSID from /etc/hostapd/hostapd.conf (iPhone USB tethering uplink)"
 if [[ -n "${TS_HOSTNAME:-}" ]]; then
     echo ""
     echo "  Public (Tailscale Funnel — authentication required):"
@@ -853,7 +976,7 @@ echo "  4. Reboot:"
 echo "       sudo reboot"
 echo ""
 echo "  After reboot, check service status:"
-echo "    sudo systemctl status can-interface signalk influxd grafana-server loki promtail j105-logger"
+echo "    sudo systemctl status can-interface signalk influxd grafana-server loki promtail hostapd dnsmasq j105-logger"
 echo ""
 echo "  View logger output:"
 echo "    sudo journalctl -fu j105-logger"
