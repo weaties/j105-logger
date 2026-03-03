@@ -2,6 +2,19 @@
 
 ## Unreleased (main, 2026-03-02)
 
+### Centralized log management with Loki + Promtail (#132)
+
+Service logs are now searchable from Grafana — no more SSH + `journalctl` grepping:
+
+- **Loki** log aggregation server installed on the Pi (loopback-only, port 3100)
+- **Promtail** scrapes journald for the 5 managed services: `j105-logger`,
+  `signalk`, `grafana-server`, `influxdb`, `can-interface`
+- **Service Logs dashboard** in Grafana with service filter, text search, and
+  log volume bar chart (`/d/service-logs/`)
+- 30-day retention; ~54 MB disk budget (negligible on Pi 4)
+- Fully automated: `setup.sh` installs, configures, and starts both services
+- Scoped sudoers entries for `loki` and `promtail` service management
+
 ### Shared navigation, version footer, timezone support (#129, #130)
 
 Consistent navigation and timezone-aware timestamps across all pages:
