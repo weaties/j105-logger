@@ -389,10 +389,13 @@ sudo mkdir -p /var/cache/j105-logger
 sudo chown j105logger:j105logger /var/cache/j105-logger
 info "uv cache: /var/cache/j105-logger"
 
-# Make the Pi user's home and .local traversable so j105logger can exec the venv
+# Make the Pi user's home, .local, and uv's Python store traversable so
+# j105logger can follow the .venv/bin/python3 symlink chain.
 chmod 711 "$HOME"
 chmod -f 711 "$HOME/.local" 2>/dev/null || true
 chmod -f 711 "$HOME/.local/bin" 2>/dev/null || true
+chmod -f 711 "$HOME/.local/share" 2>/dev/null || true
+chmod -f 711 "$HOME/.local/share/uv" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # f) Signal K → InfluxDB plugin config (with captured token)
