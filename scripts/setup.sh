@@ -534,6 +534,17 @@ else
     info ".env already exists — leaving untouched."
 fi
 
+# Populate InfluxDB connection if we have a token and it's still commented out
+if [[ -n "$INFLUX_TOKEN" && "$INFLUX_TOKEN" != "REPLACE_WITH_INFLUX_TOKEN" ]]; then
+    if grep -q '^# INFLUX_URL=' "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^# INFLUX_URL=.*|INFLUX_URL=http://localhost:8086|" "$ENV_FILE"
+        sed -i "s|^# INFLUX_TOKEN=.*|INFLUX_TOKEN=${INFLUX_TOKEN}|" "$ENV_FILE"
+        sed -i "s|^# INFLUX_ORG=.*|INFLUX_ORG=j105|" "$ENV_FILE"
+        sed -i "s|^# INFLUX_BUCKET=.*|INFLUX_BUCKET=signalk|" "$ENV_FILE"
+        info "InfluxDB connection configured in .env"
+    fi
+fi
+
 # Restrict .env so only weaties (and root via systemd EnvironmentFile) can read it
 chmod 600 "$ENV_FILE"
 info ".env permissions set to 600."
