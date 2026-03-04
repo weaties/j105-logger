@@ -43,18 +43,6 @@ B&G instrument system (via NMEA 2000) and gives the crew tools to:
 2. Open your browser and go to: **`http://corvopi:3002`**
 3. Bookmark this address — you'll open it at the start line.
 
-**From anywhere over the internet:**
-
-The logger, Grafana, and Signal K are accessible publicly via two paths:
-
-| Interface | Cloudflare Tunnel | Tailscale Funnel |
-|---|---|---|
-| Race marker / history | `https://corvo.saillog.io/` | `https://corvopi.taileb1513.ts.net/` |
-| Grafana dashboards | `https://corvo.saillog.io/grafana/` | `https://corvopi.taileb1513.ts.net/grafana/` |
-| Signal K explorer | `https://corvo.saillog.io/signalk/` | `https://corvopi.taileb1513.ts.net/signalk/` |
-
-These URLs work from any device — no Tailscale app required.
-
 The page refreshes itself. You do not need to reload it manually.
 
 ---
