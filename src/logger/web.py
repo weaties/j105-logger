@@ -104,6 +104,7 @@ def _nav_html(current: str = "/") -> str:
   <a href="/admin/users" class="admin-link{" active" if current == "/admin/users" else ""}">Users</a>
   <a href="/admin/audit" class="admin-link{" active" if current == "/admin/audit" else ""}">Audit</a>
   <a href="/admin/cameras" class="admin-link{" active" if current == "/admin/cameras" else ""}">Cameras</a>
+  <a href="/admin/events" class="admin-link{" active" if current == "/admin/events" else ""}">Events</a>
   <span class="spacer"></span>
   <a href="/profile" class="profile-link" id="nav-profile"{_cls("/profile")}>\
 <img id="nav-avatar" src="" alt="" \
@@ -2732,6 +2733,86 @@ loadCameras();loadSessions();
 __FOOTER__
 </body></html>"""
 
+# ---------------------------------------------------------------------------
+# Admin: Events (day-of-week rules)
+# ---------------------------------------------------------------------------
+
+_ADMIN_EVENTS_HTML = """\
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Event Rules — J105 Logger</title>
+<style>
+*{box-sizing:border-box}
+__NAV_CSS__
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;margin:0;padding:16px}
+.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid #0d1a2e}
+.btn-sm{padding:6px 12px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.78rem;cursor:pointer}
+.btn-add{color:#4ade80;border-color:#16a34a}
+.btn-del{color:#ef4444;border-color:#7f1d1d}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
+.form-row input::placeholder{color:#586578}
+#add-err{color:#ef4444;font-size:.8rem;margin-top:4px}
+</style></head><body>
+__NAV__
+<h1>Event Rules</h1>
+<div class="card">
+<div class="label">Day-of-Week Rules</div>
+<p style="color:#8892a4;font-size:.85rem;margin-top:0">
+Auto-fill the event name when starting a race. A custom event set on the home page overrides these.
+</p>
+<div id="rules-table">Loading…</div>
+<div class="form-row" style="margin-top:16px">
+<select id="add-weekday">
+<option value="0">Monday</option><option value="1">Tuesday</option>
+<option value="2">Wednesday</option><option value="3">Thursday</option>
+<option value="4">Friday</option><option value="5">Saturday</option>
+<option value="6">Sunday</option>
+</select>
+<input id="add-event" placeholder="Event name" maxlength="40"/>
+<button class="btn-sm btn-add" onclick="addRule()">+ Add Rule</button>
+</div>
+<div id="add-err"></div>
+</div>
+<script>
+const DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
+async function loadRules(){
+  const r=await fetch('/api/event-rules');
+  if(!r.ok){document.getElementById('rules-table').textContent='Failed to load';return}
+  const rules=await r.json();
+  if(!rules.length){document.getElementById('rules-table').innerHTML='<p style="color:#8892a4">No rules configured. Races will require a manual event name.</p>';return}
+  let h='<table><thead><tr><th>Day</th><th>Event Name</th><th></th></tr></thead><tbody>';
+  for(const rule of rules){
+    h+=`<tr><td>${DAYS[rule.weekday]}</td><td>${rule.event_name}</td>`;
+    h+=`<td><button class="btn-sm btn-del" onclick="delRule(${rule.weekday})">Delete</button></td></tr>`;
+  }
+  h+='</tbody></table>';
+  document.getElementById('rules-table').innerHTML=h;
+}
+async function addRule(){
+  const weekday=parseInt(document.getElementById('add-weekday').value);
+  const event_name=document.getElementById('add-event').value.trim();
+  if(!event_name){document.getElementById('add-err').textContent='Event name is required';return}
+  const r=await fetch('/api/event-rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekday,event_name})});
+  if(!r.ok){const d=await r.json();document.getElementById('add-err').textContent=d.detail||'Failed';return}
+  document.getElementById('add-event').value='';
+  document.getElementById('add-err').textContent='';
+  loadRules();
+}
+async function delRule(weekday){
+  if(!confirm('Delete rule for '+DAYS[weekday]+'?'))return;
+  await fetch('/api/event-rules/'+weekday,{method:'DELETE'});
+  loadRules();
+}
+loadRules();
+</script>
+__FOOTER__
+</body></html>"""
+
 
 def create_app(
     storage: Storage,
@@ -2785,6 +2866,7 @@ def create_app(
     )
     _admin_page = _inject_shared(_ADMIN_BOATS_HTML, "/admin/boats")
     _admin_cameras_page = _inject_shared(_ADMIN_CAMERAS_HTML, "/admin/cameras")
+    _admin_events_page = _inject_shared(_ADMIN_EVENTS_HTML, "/admin/events")
 
     from logger.auth import (
         _is_auth_disabled,
@@ -3150,6 +3232,12 @@ def create_app(
     ) -> HTMLResponse:
         return HTMLResponse(_admin_cameras_page)
 
+    @app.get("/admin/events", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_events_page(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> HTMLResponse:
+        return HTMLResponse(_admin_events_page)
+
     @app.get("/api/cameras")
     async def api_list_cameras(
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
@@ -3349,7 +3437,8 @@ def create_app(
         date_str = today.isoformat()
         weekday = local_weekday()
 
-        default_event = default_event_for_date(today)
+        rules = {r["weekday"]: r["event_name"] for r in await storage.list_event_rules()}
+        default_event = default_event_for_date(today, rules)
         custom_event = await storage.get_daily_event(date_str)
 
         if default_event is not None:
@@ -3489,6 +3578,50 @@ def create_app(
         await _audit(request, "event.set", detail=event_name, user=_user)
 
     # ------------------------------------------------------------------
+    # /api/event-rules (day-of-week → event name)
+    # ------------------------------------------------------------------
+
+    _WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    @app.get("/api/event-rules")
+    async def api_list_event_rules(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        rules = await storage.list_event_rules()
+        for r in rules:
+            r["weekday_name"] = _WEEKDAY_NAMES[r["weekday"]]
+        return JSONResponse(rules)
+
+    @app.post("/api/event-rules", status_code=201)
+    async def api_set_event_rule(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        body = await request.json()
+        weekday = body.get("weekday")
+        event_name = str(body.get("event_name", "")).strip()
+        if weekday is None or not isinstance(weekday, int) or not (0 <= weekday <= 6):
+            raise HTTPException(400, detail="weekday must be an integer 0 (Mon) – 6 (Sun)")
+        if not event_name:
+            raise HTTPException(400, detail="event_name is required")
+        await storage.set_event_rule(weekday, event_name)
+        await _audit(request, "event_rule.set", detail=f"{_WEEKDAY_NAMES[weekday]}={event_name}", user=_user)
+        return JSONResponse({"weekday": weekday, "event_name": event_name})
+
+    @app.delete("/api/event-rules/{weekday}", status_code=204)
+    async def api_delete_event_rule(
+        weekday: int,
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        if not (0 <= weekday <= 6):
+            raise HTTPException(400, detail="weekday must be 0–6")
+        ok = await storage.delete_event_rule(weekday)
+        if not ok:
+            raise HTTPException(404, detail="No rule for that weekday")
+        await _audit(request, "event_rule.delete", detail=_WEEKDAY_NAMES[weekday], user=_user)
+
+    # ------------------------------------------------------------------
     # /api/races/start
     # ------------------------------------------------------------------
 
@@ -3518,7 +3651,8 @@ def create_app(
         today = local_today()
         date_str = today.isoformat()
 
-        default_event = default_event_for_date(today)
+        rules = {r["weekday"]: r["event_name"] for r in await storage.list_event_rules()}
+        default_event = default_event_for_date(today, rules)
         custom_event = await storage.get_daily_event(date_str)
         event = custom_event or default_event
         if event is None:
