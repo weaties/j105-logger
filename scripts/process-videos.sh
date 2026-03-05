@@ -189,7 +189,9 @@ async def main():
     )
 
     # Fetch sessions from the Pi for matching
-    sessions = await fetch_sessions_from_pi(cfg.pi_api_url)
+    sessions = await fetch_sessions_from_pi(
+        cfg.pi_api_url, session_cookie=cfg.pi_session_cookie,
+    )
     print(f'  Fetched {len(sessions)} sessions from Pi')
 
     results = []

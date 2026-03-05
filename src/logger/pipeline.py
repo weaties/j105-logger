@@ -59,6 +59,7 @@ class ProcessResult:
 async def fetch_sessions_from_pi(
     pi_api_url: str,
     *,
+    session_cookie: str = "",
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """Fetch recent sessions from the J105 Logger API.
@@ -67,7 +68,8 @@ async def fetch_sessions_from_pi(
     so the caller can still proceed with generic metadata.
     """
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        cookies = {"session": session_cookie} if session_cookie else {}
+        async with httpx.AsyncClient(timeout=15, cookies=cookies) as client:
             resp = await client.get(f"{pi_api_url}/api/sessions", params={"limit": limit})
             if resp.status_code != 200:
                 logger.warning("Could not fetch sessions (HTTP {})", resp.status_code)
