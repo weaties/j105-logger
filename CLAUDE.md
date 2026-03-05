@@ -150,14 +150,15 @@ is `.env.example` — read it for the full list of available settings.
 **Do:**
 - **All changes to `main` must come through merged PRs** — never push directly to `main`
 - **Follow TDD** — write a failing test before implementing new functionality (see `/tdd` skill)
-- **Commit and push every change** — don't leave work uncommitted, especially on the Pi
+- **Commit and push every change** — after editing any file (code, config, scripts), always commit and push to the current branch immediately. This is especially critical for hotfixes on the Pi — uncommitted changes on the device will be lost on the next deploy. Never leave work uncommitted.
 - Write tests for all decoding and export logic
 - Use `uv add <package>` to add dependencies — never edit `pyproject.toml` manually for deps
 - Keep the SQLite schema versioned with simple integer migrations in `storage.py`
 - Log every read error and decode failure with `loguru` at `WARNING` or above
 
 **Don't:**
-- **Never push directly to `main`** — always use feature branches and merge via PR
+- **Never push directly to `main`** — `main` is sacrosanct. Always work on a feature branch and merge via PR. If on the Pi and a hotfix is needed, create or use an existing branch, commit and push there, then merge through GitHub.
+- Don't parse NMEA 2000 PGNs manually from scratch — use `canboat` or a library; only write custom decoders when necessary
 - Don't store data in memory across long runs — flush to SQLite frequently to survive crashes/reboots
 - Don't hardcode device paths (e.g., `/dev/can0`) — use config or environment variables
 - Don't mix business logic into `main.py` — it should only wire things together and start the loop
