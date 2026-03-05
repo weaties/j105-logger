@@ -2738,33 +2738,35 @@ __FOOTER__
 # ---------------------------------------------------------------------------
 
 _ADMIN_EVENTS_HTML = """\
-<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Event Rules — J105 Logger</title>
-__HEAD__
 <style>
+*{box-sizing:border-box}
+__NAV_CSS__
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;margin:0;padding:16px}
+.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
 table{width:100%;border-collapse:collapse;font-size:.87rem}
-th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #1e293b}
-th{color:#94a3b8;font-weight:600;font-size:.75rem;text-transform:uppercase}
-.btn-sm{padding:4px 10px;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;color:#fff}
-.btn-add{background:#2563eb}.btn-del{background:#dc2626}
-.btn-save{background:#16a34a}
-select,input{background:#0a1628;border:1px solid #2563eb;border-radius:6px;color:#e2e8f0;padding:6px 10px;font-size:.85rem}
-.form-row{display:flex;gap:8px;align-items:center;margin:10px 0}
-#add-err{color:#ef4444;font-size:.8rem}
-</style>
-</head><body>
+th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid #0d1a2e}
+.btn-sm{padding:6px 12px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.78rem;cursor:pointer}
+.btn-add{color:#4ade80;border-color:#16a34a}
+.btn-del{color:#ef4444;border-color:#7f1d1d}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
+.form-row input::placeholder{color:#586578}
+#add-err{color:#ef4444;font-size:.8rem;margin-top:4px}
+</style></head><body>
 __NAV__
-<h1 style="font-size:1.3rem;margin-bottom:4px">Event Rules</h1>
+<h1>Event Rules</h1>
+<div class="card">
+<div class="label">Day-of-Week Rules</div>
 <p style="color:#8892a4;font-size:.85rem;margin-top:0">
-  Day-of-week rules auto-fill the event name when starting a race.
-  A custom event set on the home page overrides these rules for that day.
+Auto-fill the event name when starting a race. A custom event set on the home page overrides these.
 </p>
 <div id="rules-table">Loading…</div>
-
-<div style="margin-top:16px">
-<h3 style="font-size:1rem;margin-bottom:8px">Add Rule</h3>
-<div class="form-row">
+<div class="form-row" style="margin-top:16px">
 <select id="add-weekday">
 <option value="0">Monday</option><option value="1">Tuesday</option>
 <option value="2">Wednesday</option><option value="3">Thursday</option>
@@ -2772,11 +2774,10 @@ __NAV__
 <option value="6">Sunday</option>
 </select>
 <input id="add-event" placeholder="Event name" maxlength="40"/>
-<button class="btn-sm btn-save" onclick="addRule()">Save</button>
+<button class="btn-sm btn-add" onclick="addRule()">+ Add Rule</button>
 </div>
 <div id="add-err"></div>
 </div>
-
 <script>
 const DAYS=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
 async function loadRules(){
