@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 19
+_CURRENT_VERSION: int = 20
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -408,6 +408,11 @@ _MIGRATIONS: dict[int, str] = {
 
         -- Headshots (#100)
         ALTER TABLE users ADD COLUMN avatar_path TEXT;
+    """,
+    20: """
+        -- Local video support (#98)
+        ALTER TABLE race_videos ADD COLUMN source TEXT NOT NULL DEFAULT 'youtube';
+        ALTER TABLE race_videos ADD COLUMN local_path TEXT;
     """,
 }
 
@@ -1104,6 +1109,35 @@ class Storage:
             for row in rows
         ]
 
+    async def list_races_in_range(self, start_utc: datetime, end_utc: datetime) -> list[Race]:
+        """Return all races whose time window overlaps ``[start_utc, end_utc]``."""
+        from datetime import datetime as _datetime
+
+        from logger.races import Race as _Race
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
+            " FROM races"
+            " WHERE start_utc < ? AND (end_utc IS NULL OR end_utc > ?)"
+            " ORDER BY start_utc ASC",
+            (end_utc.isoformat(), start_utc.isoformat()),
+        )
+        rows = await cur.fetchall()
+        return [
+            _Race(
+                id=row["id"],
+                name=row["name"],
+                event=row["event"],
+                race_num=row["race_num"],
+                date=row["date"],
+                start_utc=_datetime.fromisoformat(row["start_utc"]),
+                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+                session_type=row["session_type"],
+            )
+            for row in rows
+        ]
+
     async def count_sessions_for_date(self, date_str: str, session_type: str) -> int:
         """Return the count of sessions of the given type for a UTC date string."""
         db = self._conn()
@@ -1673,8 +1707,10 @@ class Storage:
         sync_offset_s: float,
         duration_s: float | None = None,
         user_id: int | None = None,
+        source: str = "youtube",
+        local_path: str | None = None,
     ) -> int:
-        """Add a YouTube video linked to a race.  Returns the new row id."""
+        """Add a video linked to a race.  Returns the new row id."""
         from datetime import UTC
         from datetime import datetime as _datetime
 
@@ -1683,8 +1719,9 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO race_videos"
             " (race_id, youtube_url, video_id, title, label,"
-            " sync_utc, sync_offset_s, duration_s, created_at, user_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " sync_utc, sync_offset_s, duration_s, created_at, user_id,"
+            " source, local_path)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 race_id,
                 youtube_url,
@@ -1696,13 +1733,19 @@ class Storage:
                 duration_s,
                 now_str,
                 user_id,
+                source,
+                local_path,
             ),
         )
         await db.commit()
         assert cur.lastrowid is not None
         logger.info(
-            "Race video added: id={} race_id={} video_id={}", cur.lastrowid, race_id, video_id
-        )  # noqa: E501
+            "Race video added: id={} race_id={} source={} video_id={}",
+            cur.lastrowid,
+            race_id,
+            source,
+            video_id,
+        )
         return cur.lastrowid
 
     async def list_race_videos(self, race_id: int) -> list[dict[str, Any]]:
@@ -1710,7 +1753,7 @@ class Storage:
         db = self._conn()
         cur = await db.execute(
             "SELECT id, race_id, youtube_url, video_id, title, label,"
-            " sync_utc, sync_offset_s, duration_s, created_at"
+            " sync_utc, sync_offset_s, duration_s, created_at, source, local_path"
             " FROM race_videos WHERE race_id = ? ORDER BY created_at ASC",
             (race_id,),
         )

@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v18) |
+| Storage | SQLite via `aiosqlite` (schema v20) |
 | Web interface | `fastapi` + `uvicorn` |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -49,14 +49,15 @@ j105-logger/
 │       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
 │       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
+│       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
 │       ├── races.py        # Race naming logic + RaceConfig dataclass
 │       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
 │       ├── polar.py        # Polar performance baseline builder
 │       ├── sk_reader.py    # Signal K WebSocket reader — primary data source
-│       ├── storage.py      # SQLite read/write; schema migrations (currently v18)
-│       ├── transcribe.py   # faster-whisper transcription + pyannote diarisation
+│       ├── storage.py      # SQLite read/write; schema migrations (currently v20)
+│       ├── transcribe.py   # faster-whisper transcription + diarisation + remote offload
 │       ├── video.py        # YouTube video metadata / sync-point logic
 │       └── web.py          # FastAPI app — race marker, history, boats, admin UI
 │
@@ -65,6 +66,7 @@ j105-logger/
 │   ├── test_audio.py
 │   ├── test_export.py
 │   ├── test_external.py
+│   ├── test_insta360.py
 │   ├── test_nmea2000.py
 │   ├── test_races.py
 │   ├── test_sk_reader.py
@@ -74,7 +76,10 @@ j105-logger/
 │   └── test_web.py
 │
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
-├── scripts/                # deploy.sh, setup.sh, grafana provisioning
+├── scripts/
+│   ├── deploy.sh           # Pull, sync deps, restart service on Pi
+│   ├── setup.sh            # Idempotent Pi bootstrap (packages, users, services)
+│   └── transcribe_worker.py  # Standalone FastAPI transcription server (Mac)
 └── docs/                   # Architecture notes, PGN mappings, guides
 ```
 
@@ -101,6 +106,7 @@ j105-logger list-videos       # list linked YouTube videos
 j105-logger link-video --url <url> --sync-utc <utc> --sync-offset <seconds>
 j105-logger add-user --email <email> --name <name> --role admin|crew|viewer  # create user (no email required)
 j105-logger build-polar --min-sessions 3  # rebuild polar performance baseline
+j105-logger scan-videos --dir /path/to/videos [--dry-run] [--label "Bow cam"]  # auto-link local videos
 j105-logger --help            # full subcommand list
 
 # Run tests (coverage report printed by default via pyproject.toml addopts)

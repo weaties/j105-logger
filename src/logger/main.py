@@ -357,6 +357,89 @@ async def _list_videos() -> None:
 
 
 # ---------------------------------------------------------------------------
+# scan-videos
+# ---------------------------------------------------------------------------
+
+
+async def _scan_videos(directory: str, dry_run: bool, label: str) -> None:
+    """Scan a directory for video files and auto-link them to races."""
+    from logger.insta360 import (
+        compute_sync_point,
+        find_matching_races,
+        scan_video_directory,
+    )
+    from logger.storage import Storage, StorageConfig
+
+    videos = await scan_video_directory(directory)
+    if not videos:
+        print("No video files found.")
+        return
+
+    # Determine the overall time range of all video files
+    earliest = min(v.creation_utc for v in videos)
+    latest = max(v.end_utc for v in videos)
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        races = await storage.list_races_in_range(earliest, latest)
+    except Exception:
+        await storage.close()
+        raise
+
+    if not races:
+        print(f"No races found in range {earliest.isoformat()} — {latest.isoformat()}")
+        await storage.close()
+        return
+
+    # Build match table
+    linked = 0
+    print(f"\n{'Video':<35} {'Created (UTC)':<22} {'Race':<30} {'Action'}")
+    print("-" * 110)
+
+    try:
+        for video in videos:
+            matched = find_matching_races(video, races)
+            if not matched:
+                print(f"{video.filename:<35} {video.creation_utc.isoformat():<22} (no match)")
+                continue
+            for race in matched:
+                sync_utc, sync_offset = compute_sync_point(video)
+                action = "would link" if dry_run else "linked"
+
+                if not dry_run:
+                    await storage.add_race_video(
+                        race_id=race.id,
+                        youtube_url="",
+                        video_id=f"local-{video.filename}",
+                        title=video.filename,
+                        label=label,
+                        sync_utc=sync_utc,
+                        sync_offset_s=sync_offset,
+                        duration_s=video.duration_s,
+                        source="local",
+                        local_path=video.file_path,
+                    )
+                    linked += 1
+
+                race_name = race.name[:30]
+                print(
+                    f"{video.filename:<35} {video.creation_utc.isoformat():<22}"
+                    f" {race_name:<30} {action}"
+                )
+    finally:
+        await storage.close()
+
+    if dry_run:
+        print(
+            f"\nDry run — {sum(1 for v in videos for _ in find_matching_races(v, races))} "
+            "match(es) found. Re-run without --dry-run to write to DB."
+        )
+    else:
+        print(f"\n{linked} video(s) linked to races.")
+
+
+# ---------------------------------------------------------------------------
 # list-audio
 # ---------------------------------------------------------------------------
 
@@ -424,7 +507,9 @@ async def _add_user(email: str, name: str | None, role: str) -> None:
         # Generate an invite token so the user can log in
         token = generate_token()
         await storage.create_invite_token(token, email, role, user_id, invite_expires_at())
-        base = os.environ.get("PUBLIC_URL", f"http://localhost:{os.environ.get('WEB_PORT', '3002')}").rstrip(".")
+        base = os.environ.get(
+            "PUBLIC_URL", f"http://localhost:{os.environ.get('WEB_PORT', '3002')}"
+        ).rstrip(".")
         login_url = f"{base}/login?token={token}"
         logger.info("Login link (expires in 7 days):\n  {}", login_url)
 
@@ -593,6 +678,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list-videos", help="List linked YouTube videos")
 
+    sv = sub.add_parser(
+        "scan-videos",
+        help="Scan a directory for video files and auto-link them to races",
+    )
+    sv.add_argument("--dir", required=True, metavar="PATH", help="Directory to scan")
+    sv.add_argument("--dry-run", action="store_true", help="Show matches without writing to DB")
+    sv.add_argument("--label", default="", metavar="LABEL", help="Label for linked videos")
+
     sub.add_parser("list-audio", help="List recorded audio sessions")
     sub.add_parser("list-devices", help="List available audio input devices")
 
@@ -643,6 +736,8 @@ def main() -> None:
                 asyncio.run(_link_video(args.url, sync_utc_iso, sync_offset))
             case "list-videos":
                 asyncio.run(_list_videos())
+            case "scan-videos":
+                asyncio.run(_scan_videos(args.dir, args.dry_run, args.label))
             case "list-audio":
                 asyncio.run(_list_audio())
             case "list-devices":

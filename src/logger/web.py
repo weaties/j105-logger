@@ -42,6 +42,7 @@ def _get_git_info() -> str:
     try:
         _repo = str(Path(__file__).resolve().parents[2])
         _git = ["git", "-c", f"safe.directory={_repo}"]
+
         def _run(args: list[str]) -> str:
             return subprocess.check_output(
                 [*_git, *args], cwd=_repo, stderr=subprocess.DEVNULL, text=True
@@ -3694,17 +3695,26 @@ def create_app(
     # ------------------------------------------------------------------
 
     def _video_deep_link(row: dict[str, Any], at_utc: datetime | None = None) -> dict[str, Any]:
-        """Augment a race_videos row with a computed YouTube deep-link.
+        """Augment a race_videos row with a computed deep-link.
 
         If *at_utc* is supplied the link jumps to that moment in the video.
         Otherwise the link just opens the video from the beginning.
+        Local videos (``source='local'``) have no deep-link but include
+        ``local_path`` for the UI.
         """
+        out = dict(row)
+        source = row.get("source", "youtube")
+
+        if source == "local":
+            # Local files have no web deep-link; UI can handle local_path
+            out["deep_link"] = None
+            return out
+
         from logger.video import VideoSession  # local import to avoid circular deps
 
         sync_utc = datetime.fromisoformat(row["sync_utc"])
         duration_s = row["duration_s"]
 
-        out = dict(row)
         if at_utc is not None and duration_s is not None:
             vs = VideoSession(
                 url=row["youtube_url"],
