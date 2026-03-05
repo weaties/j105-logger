@@ -9,7 +9,7 @@ disable-model-invocation: true
 ## Quick Deploy (after PR merges to main)
 
 ```bash
-ssh weaties@corvopi
+ssh <pi-user>@<pi-host>
 cd ~/j105-logger
 ./scripts/deploy.sh
 ```
@@ -20,30 +20,27 @@ routes, updates `PUBLIC_URL` in `.env`, restarts `j105-logger`, prints status.
 ## Full Setup (if systemd units or apt packages changed)
 
 ```bash
-ssh weaties@corvopi
+ssh <pi-user>@<pi-host>
 cd ~/j105-logger
 ./scripts/setup.sh && sudo systemctl daemon-reload && sudo systemctl restart j105-logger
 ```
 
 ## Service Architecture
 
-The service runs as a dedicated `j105logger` system account (not `weaties`):
+The service runs as a dedicated `j105logger` system account (not the login user):
 
 - **systemd unit**: `User=j105logger`, `UV_CACHE_DIR=/var/cache/j105-logger`, `--no-sync`
 - **data/**: owned by `j105logger:j105logger`; rest of project tree is read-only
-- **.env**: `chmod 600 weaties:weaties`; systemd reads as root before dropping privileges
-- **sudo**: `weaties` has scoped access via `/etc/sudoers.d/j105-logger-allowed`
+- **.env**: `chmod 600 <pi-user>:<pi-user>`; systemd reads as root before dropping privileges
+- **sudo**: `<pi-user>` has scoped access via `/etc/sudoers.d/j105-logger-allowed`
 
 ## Networking
 
-- **Signal K**: `*:3000` — exposed via Tailscale Funnel at `/signalk/`
+- **Signal K**: `127.0.0.1:3000` — exposed publicly via Tailscale Funnel at `/signalk/`
 - **InfluxDB**: `127.0.0.1:8086` only
 - **Grafana**: `127.0.0.1:3001` only
 - **j105-logger web**: `0.0.0.0:3002`
-- **Two public ingress paths**:
-  - Tailscale Funnel (path stripping built-in)
-  - Cloudflare Tunnel via nginx on `127.0.0.1:8080` (strips `/grafana/` and `/signalk/` prefixes)
-- **nginx config**: `/etc/nginx/conf.d/cloudflare-tunnel.conf` (managed by `deploy.sh`)
+- **Public ingress**: Tailscale Funnel (path stripping built-in)
 
 ## Auth
 
