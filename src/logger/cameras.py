@@ -4,13 +4,17 @@ Hardware isolation: all camera HTTP communication lives in this module so
 the rest of the codebase can be tested without physical cameras on the
 network.  Only ``main.py`` imports this module directly.
 
-Cameras must be in STA mode (connected to boat WiFi).  The Pi sends
-``POST http://<camera-ip>/osc/commands/execute`` commands to start/stop
-recording and query status.
+The X4 runs as a WiFi **access point** (AP) — it cannot join an existing
+network.  The Pi connects to each camera's hotspot via a dedicated WiFi
+interface and reaches the camera at its AP gateway IP (default
+``192.168.42.1``).  See ``docs/camera-setup.md`` for wiring details.
+
+The Pi sends ``POST http://<camera-ip>/osc/commands/execute`` commands to
+start/stop recording and query status.
 
 Configuration via environment variable::
 
-    CAMERAS=port-side:192.168.8.50,starboard:192.168.8.51
+    CAMERAS=main:192.168.42.1
     CAMERA_START_TIMEOUT=10
 """
 
@@ -35,6 +39,7 @@ if TYPE_CHECKING:
 
 _DEFAULT_TIMEOUT: float = float(os.environ.get("CAMERA_START_TIMEOUT", "10"))
 _OSC_PATH = "/osc/commands/execute"
+_OSC_HEADERS = {"X-XSRF-Protected": "1"}
 
 
 @dataclass(frozen=True)
@@ -111,6 +116,7 @@ async def start_camera(
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 _osc_url(camera),
+                headers=_OSC_HEADERS,
                 json={"name": "camera.startCapture"},
                 timeout=timeout,
             )
@@ -137,6 +143,7 @@ async def stop_camera(
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 _osc_url(camera),
+                headers=_OSC_HEADERS,
                 json={"name": "camera.stopCapture"},
                 timeout=timeout,
             )
@@ -158,6 +165,7 @@ async def get_status(
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 _osc_url(camera),
+                headers=_OSC_HEADERS,
                 json={
                     "name": "camera.getOptions",
                     "parameters": {"optionNames": ["captureStatus"]},
