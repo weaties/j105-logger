@@ -386,7 +386,7 @@ __NAV__
 const _GRAFANA_PORT = '__GRAFANA_PORT__';
 const _GRAFANA_UID = '__GRAFANA_UID__';
 const _SK_PORT = '__SK_PORT__';
-// When served via Tailscale Funnel (default HTTPS/HTTP port), use path-based
+// When served behind a reverse proxy (default HTTPS/HTTP port), use path-based
 // routing (/grafana/, /signalk/).  On the LAN use direct hostname:port.
 const _isDefaultPort = !location.port || location.port === '443' || location.port === '80';
 const GRAFANA_BASE = _isDefaultPort

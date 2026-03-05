@@ -43,19 +43,6 @@ B&G instrument system (via NMEA 2000) and gives the crew tools to:
 2. Open your browser and go to: **`http://<pi-hostname>:3002`**
 3. Bookmark this address — you'll open it at the start line.
 
-**From anywhere over the internet (Tailscale Funnel):**
-
-The logger, Grafana, and Signal K are also accessible publicly via Tailscale Funnel:
-
-| Interface | Public URL |
-|---|---|
-| Race marker / history | `https://<pi-hostname>.<tailnet>.ts.net/` |
-| Grafana dashboards | `https://<pi-hostname>.<tailnet>.ts.net/grafana/` |
-| Signal K explorer | `https://<pi-hostname>.<tailnet>.ts.net/signalk/` |
-
-These URLs work from any device — no Tailscale app required.
-Ask the navigator for the exact URL for your tailnet.
-
 The page refreshes itself. You do not need to reload it manually.
 
 ---
