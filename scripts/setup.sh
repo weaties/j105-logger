@@ -40,6 +40,7 @@ ENV_FILE="$PROJECT_DIR/.env"
 INFLUX_TOKEN_FILE="$HOME/influx-token.txt"
 
 INFLUX_VERSION="2.7.11"
+PI_HOSTNAME="$(hostname)"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -160,9 +161,9 @@ mkdir -p "$HOME/.signalk"
 # existing vessel/security config but ensure the security strategy is present.
 if [[ ! -f "$HOME/.signalk/settings.json" ]]; then
     info "Writing ~/.signalk/settings.json..."
-    cat > "$HOME/.signalk/settings.json" << 'EOF'
+    cat > "$HOME/.signalk/settings.json" << EOF
 {
-  "vessel": { "name": "corvopi" },
+  "vessel": { "name": "${PI_HOSTNAME}" },
   "pipedProviders": [{
     "id": "n2k-canbus",
     "pipeElements": [
@@ -759,10 +760,10 @@ echo -e "${GREEN}═════════════════════
 echo -e "${GREEN}  Setup complete. Reboot, then verify:${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
 echo ""
-echo "  Signal K:    http://corvopi:3000   (admin password in ~/.signalk-admin-pass.txt)"
-echo "  Grafana:     http://corvopi:3001   (admin / changeme123 — change after first login)"
-echo "  InfluxDB:    http://corvopi:8086   (loopback-only — access via SSH tunnel or Tailscale)"
-echo "  Race marker: http://corvopi:3002   (login required — see below)"
+echo "  Signal K:    http://${PI_HOSTNAME}:3000   (admin password in ~/.signalk-admin-pass.txt)"
+echo "  Grafana:     http://${PI_HOSTNAME}:3001   (admin / changeme123 — change after first login)"
+echo "  InfluxDB:    http://${PI_HOSTNAME}:8086   (loopback-only — access via SSH tunnel or Tailscale)"
+echo "  Race marker: http://${PI_HOSTNAME}:3002   (login required — see below)"
 if [[ -n "${TS_HOSTNAME:-}" ]]; then
     echo ""
     echo "  Public (Tailscale Funnel — authentication required):"
@@ -781,7 +782,7 @@ echo "  1. Create your admin user for the race-marker web app:"
 echo "       j105-logger add-user --email you@example.com --name 'Your Name' --role admin"
 echo ""
 echo "  2. Change the Grafana password:"
-echo "       Open http://corvopi:3001 and change the admin password from 'changeme123'."
+echo "       Open http://${PI_HOSTNAME}:3001 and change the admin password from 'changeme123'."
 echo ""
 echo "  3. Find the Signal K admin password:"
 echo "       cat ~/.signalk-admin-pass.txt"

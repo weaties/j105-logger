@@ -120,7 +120,9 @@ for the full implementation plan.
 ## Daily use
 
 > These commands assume the Pi is already set up. SSH in via Tailscale
-> (`ssh weaties@corvopi`) and run from the project directory.
+> (`ssh <pi-user>@<pi-hostname>`) and run from the project directory.
+> Replace `<pi-user>` and `<pi-hostname>` with the values you chose during
+> [SD card setup](#fresh-sd-card-setup) — e.g. `weaties@corvopi`.
 
 ### Check what's in the database
 
@@ -230,14 +232,14 @@ ip -details link show can0
 ## Web interfaces
 
 All interfaces are available locally over Tailscale and — after `setup.sh` configures
-Tailscale Funnel — publicly via `https://corvopi.<tailnet>.ts.net`:
+Tailscale Funnel — publicly via `https://<pi-hostname>.<tailnet>.ts.net`:
 
 | Interface | Local URL | Public URL (Funnel) | Purpose |
 |---|---|---|---|
-| j105-logger | `http://corvopi:3002` | `https://corvopi.<tailnet>.ts.net/` | Race marker, history, exports |
-| Grafana | `http://corvopi:3001` | `https://corvopi.<tailnet>.ts.net/grafana/` | Real-time sailing dashboards |
-| Signal K | `http://corvopi:3000` | `https://corvopi.<tailnet>.ts.net/signalk/` | NMEA 2000 data explorer, plugin management |
-| InfluxDB | `http://corvopi:8086` | — (not exposed) | Time-series data explorer, query UI |
+| j105-logger | `http://<pi-hostname>:3002` | `https://<pi-hostname>.<tailnet>.ts.net/` | Race marker, history, exports |
+| Grafana | `http://<pi-hostname>:3001` | `https://<pi-hostname>.<tailnet>.ts.net/grafana/` | Real-time sailing dashboards |
+| Signal K | `http://<pi-hostname>:3000` | `https://<pi-hostname>.<tailnet>.ts.net/signalk/` | NMEA 2000 data explorer, plugin management |
+| InfluxDB | `http://<pi-hostname>:8086` | — (not exposed) | Time-series data explorer, query UI |
 
 `setup.sh` configures all three public routes automatically when Tailscale is connected.
 The public URL is written to `PUBLIC_URL` in `.env` so the webapp generates correct
@@ -250,7 +252,7 @@ InfluxDB is bound to loopback only (127.0.0.1:8086) — access it via SSH tunnel
 
 ## Race marking
 
-The race-marker web page at `http://corvopi:3002` gives any crew device on
+The race-marker web page at `http://<pi-hostname>:3002` gives any crew device on
 Tailscale a one-tap way to mark the start and end of each race. Race names tie
 together instrument data, audio, and video for that window so exports can be
 scoped to a specific race rather than a hand-entered time range.
@@ -258,7 +260,7 @@ scoped to a specific race rather than a hand-entered time range.
 ### Opening the page
 
 On any phone or tablet joined to your Tailscale network:
-open `http://corvopi:3002` in a browser. Bookmark it for quick access at the
+open `http://<pi-hostname>:3002` in a browser. Bookmark it for quick access at the
 start line.
 
 ### Race naming
@@ -316,7 +318,7 @@ Tailscale Funnel is active** — the web app would be publicly accessible withou
 
 ## Sail tracking
 
-The **Boats** page (`http://corvopi:3002` → Boats tab) maintains a sail inventory
+The **Boats** page (`http://<pi-hostname>:3002` → Boats tab) maintains a sail inventory
 for the boat. Each sail has a type, name, and optional notes.
 
 ### Managing the sail inventory
@@ -588,7 +590,7 @@ time you visit; once accepted, access is granted immediately.
 
 1. Go to [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens).
 2. Click **New token**.
-3. Give it a name (e.g. `corvopi`) and set **Type** to **Read**.
+3. Give it a name (e.g. your Pi hostname) and set **Type** to **Read**.
 4. Click **Generate a token** and copy the value — it starts with `hf_`.
 
 Keep this token private. It grants read access to any public or gated model
@@ -597,7 +599,7 @@ your account has accepted terms for.
 #### 4. Add the token to `.env` on the Pi
 
 ```bash
-ssh weaties@corvopi
+ssh <pi-user>@<pi-hostname>
 nano ~/j105-logger/.env
 ```
 
@@ -805,10 +807,10 @@ Click the gear icon (⚙) before writing to pre-configure:
 
 | Setting | Value |
 |---|---|
-| Hostname | `corvopi` (or whatever you like) |
+| Hostname | your choice (e.g. `corvopi`, `testpi`) — referred to as `<pi-hostname>` below |
 | Enable SSH | Yes — "Allow public-key authentication only" |
 | SSH public key | paste your Mac's `~/.ssh/id_ed25519.pub` |
-| Username | `weaties` |
+| Username | your choice (e.g. `weaties`) — referred to as `<pi-user>` below |
 | Password | set one (used for sudo) |
 | Wi-Fi | your home network SSID/password |
 | Locale | your timezone |
@@ -820,7 +822,7 @@ Write the card, insert it into the Pi, and power on.
 Find the Pi on your local network and connect:
 
 ```bash
-ssh weaties@corvopi.local
+ssh <pi-user>@<pi-hostname>.local
 ```
 
 If `.local` doesn't resolve, check your router's DHCP table for the IP.
@@ -854,7 +856,7 @@ After joining, approve the machine in the [Tailscale admin console](https://logi
 From then on, SSH from anywhere with:
 
 ```bash
-ssh weaties@corvopi
+ssh <pi-user>@<pi-hostname>
 ```
 
 Pin the Pi's Tailscale IP if you want a stable address — check it with
@@ -964,14 +966,14 @@ j105-logger add-user --email you@example.com --name "Your Name" --role admin
 ```
 
 This uses the SQLite DB directly — no running service needed. After this you can
-log in at `http://corvopi:3002` and generate invite links for crew.
+log in at `http://<pi-hostname>:3002` and generate invite links for crew.
 
 Also change the Grafana admin password from the default `changeme123`:
 
 ```bash
 # Open in a browser and change the password via the UI
-open http://corvopi:3001   # Mac
-# or: xdg-open http://corvopi:3001   (Linux)
+open http://<pi-hostname>:3001   # Mac
+# or: xdg-open http://<pi-hostname>:3001   (Linux)
 ```
 
 ### 10. Reboot and verify
@@ -990,13 +992,13 @@ sudo systemctl status can-interface signalk influxd grafana-server j105-logger
 j105-logger status
 
 # Signal K dashboard (login with admin password from ~/.signalk-admin-pass.txt)
-# Open http://corvopi:3000 in a browser
+# Open http://<pi-hostname>:3000 in a browser
 
 # Grafana dashboards (login required — admin / your-new-password)
-# Open http://corvopi:3001 in a browser
+# Open http://<pi-hostname>:3001 in a browser
 
 # Race marker (login required — use the account created in step 9)
-# Open http://corvopi:3002 in a browser
+# Open http://<pi-hostname>:3002 in a browser
 ```
 
 ---
@@ -1008,7 +1010,7 @@ j105-logger status
 After a PR merges to `main`, SSH into the Pi and run:
 
 ```bash
-ssh weaties@corvopi
+ssh <pi-user>@<pi-hostname>
 cd ~/j105-logger
 ./scripts/deploy.sh
 ```
@@ -1059,10 +1061,10 @@ WHISPER_MODEL=base      # faster-whisper model: tiny, base, small, medium, large
 NOTES_DIR=data/notes    # directory where uploaded photo notes are stored
 # Web interface (race marker)
 WEB_HOST=0.0.0.0        # bind address
-WEB_PORT=3002           # http://corvopi:3002 on Tailscale
+WEB_PORT=3002           # http://<pi-hostname>:3002 on Tailscale
 # WEB_PIN=             # optional PIN (reserved, not yet implemented)
 # Grafana deep-link buttons in the web UI
-GRAFANA_URL=http://corvopi:3001
+GRAFANA_URL=http://<pi-hostname>:3001
 GRAFANA_DASHBOARD_UID=j105-sailing
 # Timezone — controls weekday event naming and UI timestamp display (default: UTC)
 # TIMEZONE=America/Los_Angeles
@@ -1077,7 +1079,7 @@ GRAFANA_DASHBOARD_UID=j105-sailing
 AUTH_SESSION_TTL_DAYS=90      # session cookie lifetime in days
 # ADMIN_EMAIL=you@example.com # if set, this user is auto-created as admin on first startup
 # Public URL — set by setup.sh/deploy.sh from Tailscale hostname; used for Grafana deep-links
-# PUBLIC_URL=https://corvopi.<tailnet>.ts.net
+# PUBLIC_URL=https://<pi-hostname>.<tailnet>.ts.net
 # InfluxDB — required only for system health metrics; omit if not using InfluxDB
 # INFLUX_URL=http://localhost:8086
 # INFLUX_TOKEN=<token from ~/influx-token.txt>
