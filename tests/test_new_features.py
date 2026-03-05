@@ -511,22 +511,24 @@ def test_local_today_uses_tz(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_weekday_event_uses_local_date() -> None:
-    """Verify default_event_for_date works with any date."""
+    """Verify default_event_for_date works with rules dict."""
     from datetime import date
 
     from logger.races import default_event_for_date
 
+    rules = {0: "BallardCup", 2: "CYC"}
+
     # Monday = BallardCup
     monday = date(2026, 3, 2)  # 2026-03-02 is a Monday
-    assert default_event_for_date(monday) == "BallardCup"
+    assert default_event_for_date(monday, rules) == "BallardCup"
 
     # Wednesday = CYC
     wednesday = date(2026, 3, 4)
-    assert default_event_for_date(wednesday) == "CYC"
+    assert default_event_for_date(wednesday, rules) == "CYC"
 
     # Tuesday = None
     tuesday = date(2026, 3, 3)
-    assert default_event_for_date(tuesday) is None
+    assert default_event_for_date(tuesday, rules) is None
 
 
 # ---------------------------------------------------------------------------

@@ -43,16 +43,24 @@ def test_race_config_signalk_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.sk_port == "4000"
 
 
+_RULES = {0: "BallardCup", 2: "CYC"}
+
+
 def test_default_event_monday() -> None:
-    assert default_event_for_date(date(2025, 8, 11)) == "BallardCup"  # Monday
+    assert default_event_for_date(date(2025, 8, 11), _RULES) == "BallardCup"  # Monday
 
 
 def test_default_event_wednesday() -> None:
-    assert default_event_for_date(date(2025, 8, 13)) == "CYC"  # Wednesday
+    assert default_event_for_date(date(2025, 8, 13), _RULES) == "CYC"  # Wednesday
 
 
 def test_default_event_saturday() -> None:
-    assert default_event_for_date(date(2025, 8, 9)) is None  # Saturday
+    assert default_event_for_date(date(2025, 8, 9), _RULES) is None  # Saturday
+
+
+def test_default_event_no_rules() -> None:
+    assert default_event_for_date(date(2025, 8, 11)) is None
+    assert default_event_for_date(date(2025, 8, 11), {}) is None
 
 
 def test_build_race_name() -> None:

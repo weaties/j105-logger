@@ -74,20 +74,15 @@ def local_weekday() -> str:
     return datetime.now(configured_tz()).strftime("%A")
 
 
-_WEEKDAY_EVENTS: dict[int, str] = {
-    0: "BallardCup",  # Monday
-    2: "CYC",  # Wednesday
-}
+def default_event_for_date(d: date, rules: dict[int, str] | None = None) -> str | None:
+    """Return the default event name for a given date using day-of-week rules.
 
-
-def default_event_for_date(d: date) -> str | None:
-    """Return the default event name for a given UTC date, or None.
-
-    Monday  → "BallardCup"
-    Wednesday → "CYC"
-    Any other day → None (user must supply the event name)
+    *rules* maps weekday integers (0=Mon … 6=Sun) to event names.
+    Returns ``None`` if no rule matches or *rules* is empty/None.
     """
-    return _WEEKDAY_EVENTS.get(d.weekday())
+    if not rules:
+        return None
+    return rules.get(d.weekday())
 
 
 def build_race_name(event: str, d: date, race_num: int, session_type: str = "race") -> str:

@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 22
+_CURRENT_VERSION: int = 23
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -437,6 +437,16 @@ _MIGRATIONS: dict[int, str] = {
         -- WiFi credentials for camera AP networks (#147)
         ALTER TABLE cameras ADD COLUMN wifi_ssid TEXT;
         ALTER TABLE cameras ADD COLUMN wifi_password TEXT;
+    """,
+    23: """
+        -- Configurable day-of-week event rules (#154)
+        CREATE TABLE IF NOT EXISTS event_rules (
+            weekday     INTEGER PRIMARY KEY CHECK(weekday BETWEEN 0 AND 6),
+            event_name  TEXT NOT NULL
+        );
+        -- Seed with existing hardcoded defaults
+        INSERT OR IGNORE INTO event_rules (weekday, event_name) VALUES (0, 'BallardCup');
+        INSERT OR IGNORE INTO event_rules (weekday, event_name) VALUES (2, 'CYC');
     """,
 }
 
@@ -1329,6 +1339,42 @@ class Storage:
         )
         await db.commit()
         logger.debug("Daily event set: {} → {}", date_str, event_name)
+
+    # ------------------------------------------------------------------
+    # Event rules (day-of-week → event name)
+    # ------------------------------------------------------------------
+
+    async def list_event_rules(self) -> list[dict[str, Any]]:
+        """Return all day-of-week event rules, ordered by weekday."""
+        db = self._conn()
+        cur = await db.execute("SELECT weekday, event_name FROM event_rules ORDER BY weekday")
+        return [dict(row) for row in await cur.fetchall()]
+
+    async def get_event_rule(self, weekday: int) -> str | None:
+        """Return the event name for a weekday (0=Mon … 6=Sun), or None."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT event_name FROM event_rules WHERE weekday = ?", (weekday,)
+        )
+        row = await cur.fetchone()
+        return row["event_name"] if row else None
+
+    async def set_event_rule(self, weekday: int, event_name: str) -> None:
+        """Upsert a day-of-week event rule."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO event_rules (weekday, event_name) VALUES (?, ?)"
+            " ON CONFLICT(weekday) DO UPDATE SET event_name = excluded.event_name",
+            (weekday, event_name),
+        )
+        await db.commit()
+
+    async def delete_event_rule(self, weekday: int) -> bool:
+        """Delete a day-of-week event rule. Returns True if a row was deleted."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM event_rules WHERE weekday = ?", (weekday,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
 
     # ------------------------------------------------------------------
     # Race crew
