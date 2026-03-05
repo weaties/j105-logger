@@ -1,0 +1,157 @@
+# Insta360 X4 Video Pipeline
+
+Automated pipeline that processes Insta360 X4 recordings into 360° YouTube
+videos linked to J105 Logger race/practice sessions.
+
+## Overview
+
+```
+SD card inserted into Mac
+        │
+        ▼
+  launchd detects /Volumes change
+        │
+        ▼
+  macOS dialog: "Process race videos?"
+        │ Yes
+        ▼
+  Discover .insv files → group by recording
+        │
+        ▼
+  Stitch via Docker + insta360-cli-utils
+        │
+        ▼
+  Inject 360° spatial metadata (exiftool)
+        │
+        ▼
+  Upload to YouTube (unlisted)
+        │
+        ▼
+  Match to race/practice session (Pi API)
+        │
+        ▼
+  Link video in J105 Logger
+```
+
+## Prerequisites
+
+Install on your Mac:
+
+```bash
+# Docker Desktop (for stitching)
+# Download from https://docker.com/get-started
+
+# exiftool (for 360° metadata injection)
+brew install exiftool
+
+# uv (Python package manager — already installed if you develop j105-logger)
+```
+
+## YouTube API Setup
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
+2. Create a project (or use an existing one)
+3. Enable the **YouTube Data API v3**
+4. Create an **OAuth 2.0 Client ID** (type: Desktop app)
+5. Download the JSON and save as `~/.j105-youtube-client-secrets.json`
+6. **Important**: Set the OAuth consent screen to **Production** mode so refresh
+   tokens don't expire after 7 days
+
+First upload will open a browser for authorization. After that, the token is
+cached and refreshes automatically.
+
+## Installation
+
+```bash
+cd ~/src/j105-logger  # or wherever your clone is
+./scripts/setup-video-mac.sh
+```
+
+This will:
+- Verify Docker, exiftool, and uv are available
+- Create `~/Videos/j105/` for output files
+- Check YouTube credentials
+- Install the launchd agent to watch for SD card mounts
+
+## Usage
+
+### Automatic (recommended)
+
+Insert the Insta360 X4 SD card. A macOS dialog will ask if you want to
+process the videos. Click **Process**.
+
+### Manual
+
+```bash
+# Auto-detect SD card
+./scripts/process-videos.sh
+
+# Explicit mount point
+./scripts/process-videos.sh /Volumes/Insta360\ X4
+```
+
+## Configuration
+
+All via environment variables (or set in `~/.zshrc`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VIDEO_OUTPUT_DIR` | `~/Videos/j105` | Where stitched MP4s are saved |
+| `VIDEO_RESOLUTION` | `3840x1920` | Output resolution (4K) |
+| `DOCKER_IMAGE` | `insta360-cli-utils` | Docker image for stitching |
+| `PI_API_URL` | `http://corvopi:3002` | J105 Logger API on the Pi |
+| `VIDEO_PRIVACY` | `unlisted` | YouTube privacy (private/unlisted/public) |
+| `TIMEZONE` | `America/Los_Angeles` | Camera's local timezone |
+| `YOUTUBE_CLIENT_SECRETS` | `~/.j105-youtube-client-secrets.json` | OAuth2 client secrets |
+| `YOUTUBE_TOKEN_FILE` | `~/.j105-youtube-token.json` | Cached OAuth2 token |
+
+## SD Card File Structure
+
+The Insta360 X4 stores recordings in:
+
+```
+DCIM/Camera01/
+  VID_20260810_140530_00_000.insv   (back lens, segment 0)
+  VID_20260810_140530_10_000.insv   (front lens, segment 0)
+  VID_20260810_140530_00_001.insv   (back lens, segment 1)
+  LRV_20260810_140530_01_000.mp4    (low-res preview)
+```
+
+The pipeline groups files by timestamp and only uses back-lens (`_00_`) files —
+the stitcher pairs front+back automatically.
+
+## Logs
+
+```bash
+# View pipeline logs
+tail -f ~/Videos/j105/video-pipeline.log
+
+# Trigger manually via launchd
+launchctl start com.j105.video
+
+# Check agent status
+launchctl list com.j105.video
+```
+
+## Uninstall
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.j105.video.plist
+rm ~/Library/LaunchAgents/com.j105.video.plist
+```
+
+## Troubleshooting
+
+**"Docker is not running"** — Start Docker Desktop.
+
+**"No Insta360 SD card detected"** — Ensure the card is mounted and has
+`DCIM/Camera01/VID_*.insv` files.
+
+**YouTube upload fails with 403** — Your API quota may be exhausted (default:
+~6 uploads/day). Check [Google Cloud Console](https://console.cloud.google.com/apis/dashboard).
+
+**Video not recognized as 360° on YouTube** — Ensure exiftool is installed
+(`brew install exiftool`). The pipeline injects spherical metadata automatically.
+
+**Refresh token expired** — Set your Google Cloud project's OAuth consent screen
+to Production mode (not Testing). Testing mode tokens expire after 7 days.
