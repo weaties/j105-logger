@@ -298,7 +298,7 @@ fi
 sudo systemctl restart influxdb
 
 # ---------------------------------------------------------------------------
-# e) Grafana OSS (loopback-only; login required; no anonymous access)
+# e) Grafana OSS (loopback-only; login required)
 #    Port 3001 to avoid clash with Signal K on 3000.
 #    Auth is managed via systemd env vars so service.d/port.conf controls both
 #    network binding and auth — no need to modify /etc/grafana/grafana.ini.
@@ -342,7 +342,8 @@ Environment=GF_SERVER_HTTP_ADDR=0.0.0.0
 Environment=GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/
 Environment=GF_SERVER_SERVE_FROM_SUB_PATH=true
 Environment=GF_AUTH_DISABLE_LOGIN_FORM=false
-Environment=GF_AUTH_ANONYMOUS_ENABLED=false
+Environment=GF_AUTH_ANONYMOUS_ENABLED=true
+Environment=GF_AUTH_ANONYMOUS_ORG_ROLE=None
 EOF
 
 sudo systemctl daemon-reload
