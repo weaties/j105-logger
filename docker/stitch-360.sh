@@ -87,13 +87,13 @@ case "$STITCHER" in
       -enable_denoise
     ;;
   ffmpeg)
-    # Fallback: .insv is essentially an MP4 container. Stream-copy the video
-    # and audio tracks without re-encoding. The result is a dual-fisheye
-    # video — YouTube won't render it as 360° but the pipeline is testable.
-    echo "==> Stream-copying with ffmpeg (dual-fisheye fallback)..."
+    # Fallback: .insv contains dual-fisheye (two video streams). Stream-copy
+    # only the first video stream + audio so YouTube accepts a single-lens
+    # wide-angle view. Not 360° but watchable and the pipeline is testable.
+    echo "==> Stream-copying with ffmpeg (single-lens fallback)..."
     if [ ${#INPUTS[@]} -eq 1 ]; then
       ffmpeg -y -i "${INPUTS[0]}" \
-        -map 0:v -map 0:a -c copy -movflags +faststart "$TEMP_OUTPUT"
+        -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart "$TEMP_OUTPUT"
     else
       # Multiple segments: concatenate then stream-copy
       CONCAT_FILE=$(mktemp /tmp/concat_XXXXXX.txt)
@@ -101,7 +101,7 @@ case "$STITCHER" in
         echo "file '$inp'" >> "$CONCAT_FILE"
       done
       ffmpeg -y -f concat -safe 0 -i "$CONCAT_FILE" \
-        -map 0:v -map 0:a -c copy -movflags +faststart "$TEMP_OUTPUT"
+        -map 0:v:0 -map 0:a:0 -c copy -movflags +faststart "$TEMP_OUTPUT"
       rm -f "$CONCAT_FILE"
     fi
     ;;
