@@ -142,8 +142,9 @@ async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Came
     """Send ``camera.stopCapture`` to a single camera.
 
     The X4 firmware rejects ``stopCapture`` for recordings started via the
-    physical shutter button (400 / ``disabledCommand``).  When this happens
-    we return a user-friendly error instead of the raw HTTP message.
+    physical shutter button (400 / ``disabledCommand``).  Sending a
+    ``startCapture`` first "claims" the session for OSC, after which
+    ``stopCapture`` succeeds.
     """
     try:
         async with httpx.AsyncClient() as client:
@@ -157,10 +158,19 @@ async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Came
                 body = resp.json()
                 code = body.get("error", {}).get("code", "")
                 if code == "disabledCommand":
-                    msg = "Recording was started on-camera; stop it with the physical button"
-                    logger.warning("Camera {} stopCapture rejected: {}", camera.name, msg)
-                    return CameraStatus(
-                        name=camera.name, ip=camera.ip, recording=True, error=msg
+                    # Claim the session via startCapture, then retry stop
+                    logger.debug("Camera {} stopCapture rejected, claiming via startCapture", camera.name)
+                    await client.post(
+                        _osc_url(camera),
+                        headers=_OSC_HEADERS,
+                        json={"name": "camera.startCapture"},
+                        timeout=timeout,
+                    )
+                    resp = await client.post(
+                        _osc_url(camera),
+                        headers=_OSC_HEADERS,
+                        json={"name": "camera.stopCapture"},
+                        timeout=timeout,
                     )
             resp.raise_for_status()
             logger.debug("Camera {} stopCapture response: {}", camera.name, resp.text)
