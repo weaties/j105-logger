@@ -105,6 +105,14 @@ def _osc_url(camera: Camera) -> str:
     return f"http://{camera.ip}{_OSC_PATH}"
 
 
+def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
+    """Build a human-readable error string, even when ``str(exc)`` is empty."""
+    msg = str(exc).strip()
+    if msg:
+        return msg
+    return f"Camera {camera.name} unreachable ({type(exc).__name__} during {action})"
+
+
 async def start_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> CameraStatus:
     """Send ``camera.startCapture`` to a single camera.
 
@@ -128,12 +136,13 @@ async def start_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Cam
             )
     except (httpx.HTTPError, OSError) as exc:
         latency_ms = int((time.monotonic() - t0) * 1000)
-        logger.warning("Camera {} startCapture failed: {}", camera.name, exc)
+        err = _error_msg(exc, camera, "startCapture")
+        logger.warning("Camera {} startCapture failed: {}", camera.name, err)
         return CameraStatus(
             name=camera.name,
             ip=camera.ip,
             recording=False,
-            error=str(exc),
+            error=err,
             latency_ms=latency_ms,
         )
 
@@ -176,8 +185,9 @@ async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Came
             logger.debug("Camera {} stopCapture response: {}", camera.name, resp.text)
             return CameraStatus(name=camera.name, ip=camera.ip, recording=False)
     except (httpx.HTTPError, OSError) as exc:
-        logger.warning("Camera {} stopCapture failed: {}", camera.name, exc)
-        return CameraStatus(name=camera.name, ip=camera.ip, recording=True, error=str(exc))
+        err = _error_msg(exc, camera, "stopCapture")
+        logger.warning("Camera {} stopCapture failed: {}", camera.name, err)
+        return CameraStatus(name=camera.name, ip=camera.ip, recording=True, error=err)
 
 
 async def get_status(camera: Camera, timeout: float = 5.0) -> CameraStatus:
@@ -200,7 +210,10 @@ async def get_status(camera: Camera, timeout: float = 5.0) -> CameraStatus:
             recording = options.get("captureStatus") == "shooting"
             return CameraStatus(name=camera.name, ip=camera.ip, recording=recording)
     except (httpx.HTTPError, OSError) as exc:
-        return CameraStatus(name=camera.name, ip=camera.ip, recording=False, error=str(exc))
+        return CameraStatus(
+            name=camera.name, ip=camera.ip, recording=False,
+            error=_error_msg(exc, camera, "getStatus"),
+        )
 
 
 # ---------------------------------------------------------------------------
