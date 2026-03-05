@@ -182,7 +182,8 @@ An nginx reverse proxy on port 80 provides single-URL access to all services:
 |---|---|---|
 | `/` | j105-logger | Race marker, history, exports |
 | `/grafana/` | Grafana | Real-time sailing dashboards |
-| `/signalk/` | Signal K | NMEA 2000 data explorer (API + WebSocket) |
+| `/signalk/` | Signal K | NMEA 2000 data API + WebSocket |
+| `/admin/` | Signal K | Admin UI, plugin management |
 
 Just open `http://<pi-hostname>/` — no port numbers to remember.
 
