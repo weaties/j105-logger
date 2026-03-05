@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 19
+_CURRENT_VERSION: int = 20
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -408,6 +408,21 @@ _MIGRATIONS: dict[int, str] = {
 
         -- Headshots (#100)
         ALTER TABLE users ADD COLUMN avatar_path TEXT;
+    """,
+    20: """
+        -- Camera session tracking (#98)
+        CREATE TABLE IF NOT EXISTS camera_sessions (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id            INTEGER NOT NULL REFERENCES races(id),
+            camera_name           TEXT NOT NULL,
+            camera_ip             TEXT NOT NULL,
+            recording_started_utc TEXT,
+            recording_stopped_utc TEXT,
+            sync_offset_ms        INTEGER,
+            error                 TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_camera_sessions_session
+            ON camera_sessions(session_id);
     """,
 }
 
@@ -1104,6 +1119,35 @@ class Storage:
             for row in rows
         ]
 
+    async def list_races_in_range(self, start_utc: datetime, end_utc: datetime) -> list[Race]:
+        """Return all races whose time window overlaps ``[start_utc, end_utc]``."""
+        from datetime import datetime as _datetime
+
+        from logger.races import Race as _Race
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
+            " FROM races"
+            " WHERE start_utc < ? AND (end_utc IS NULL OR end_utc > ?)"
+            " ORDER BY start_utc ASC",
+            (end_utc.isoformat(), start_utc.isoformat()),
+        )
+        rows = await cur.fetchall()
+        return [
+            _Race(
+                id=row["id"],
+                name=row["name"],
+                event=row["event"],
+                race_num=row["race_num"],
+                date=row["date"],
+                start_utc=_datetime.fromisoformat(row["start_utc"]),
+                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+                session_type=row["session_type"],
+            )
+            for row in rows
+        ]
+
     async def count_sessions_for_date(self, date_str: str, session_type: str) -> int:
         """Return the count of sessions of the given type for a UTC date string."""
         db = self._conn()
@@ -1754,6 +1798,104 @@ class Storage:
         cur = await db.execute("DELETE FROM race_videos WHERE id = ?", (video_row_id,))
         await db.commit()
         return (cur.rowcount or 0) > 0
+
+    # ------------------------------------------------------------------
+    # Camera sessions (#98)
+    # ------------------------------------------------------------------
+
+    async def add_camera_session(
+        self,
+        session_id: int,
+        camera_name: str,
+        camera_ip: str,
+        started_utc: datetime | None,
+        sync_offset_ms: int | None,
+        error: str | None,
+    ) -> int:
+        """Record a camera session start. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO camera_sessions"
+            " (session_id, camera_name, camera_ip,"
+            "  recording_started_utc, sync_offset_ms, error)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                camera_name,
+                camera_ip,
+                started_utc.isoformat() if started_utc else None,
+                sync_offset_ms,
+                error,
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info(
+            "Camera session added: id={} session={} camera={}",
+            cur.lastrowid, session_id, camera_name,
+        )
+        return cur.lastrowid
+
+    async def update_camera_session_stop(
+        self,
+        session_id: int,
+        camera_name: str,
+        stopped_utc: datetime | None,
+        error: str | None,
+    ) -> bool:
+        """Update a camera session with stop time. Returns True if row was found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE camera_sessions"
+            " SET recording_stopped_utc = ?, error = COALESCE(?, error)"
+            " WHERE session_id = ? AND camera_name = ?"
+            " AND recording_stopped_utc IS NULL",
+            (
+                stopped_utc.isoformat() if stopped_utc else None,
+                error,
+                session_id,
+                camera_name,
+            ),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def list_camera_sessions(self, session_id: int) -> list[dict[str, Any]]:
+        """Return all camera sessions for a race, ordered by camera_name."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, session_id, camera_name, camera_ip,"
+            " recording_started_utc, recording_stopped_utc,"
+            " sync_offset_ms, error"
+            " FROM camera_sessions WHERE session_id = ?"
+            " ORDER BY camera_name ASC",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def list_unlinked_camera_sessions(self) -> list[dict[str, Any]]:
+        """Return camera sessions that have no matching race_video entry.
+
+        Used by ``sync-videos`` CLI to find recordings not yet linked to
+        a YouTube video.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT cs.id, cs.session_id, cs.camera_name, cs.camera_ip,"
+            " cs.recording_started_utc, cs.recording_stopped_utc,"
+            " cs.sync_offset_ms, cs.error,"
+            " r.name AS race_name"
+            " FROM camera_sessions cs"
+            " JOIN races r ON r.id = cs.session_id"
+            " LEFT JOIN race_videos rv"
+            "   ON rv.race_id = cs.session_id"
+            " WHERE rv.id IS NULL"
+            "   AND cs.recording_started_utc IS NOT NULL"
+            " ORDER BY cs.recording_started_utc DESC",
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------
     # Sail inventory

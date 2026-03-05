@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v18) |
+| Storage | SQLite via `aiosqlite` (schema v20) |
 | Web interface | `fastapi` + `uvicorn` |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -45,26 +45,30 @@ j105-logger/
 │       ├── __init__.py
 │       ├── main.py         # CLI entry point; wires modules together, starts async loop
 │       ├── audio.py        # USB audio recording (Gordik / any UAC device)
+│       ├── cameras.py      # Insta360 X4 camera control via OSC HTTP API
 │       ├── can_reader.py   # CAN bus interface — legacy direct-CAN path only
 │       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
 │       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
+│       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
 │       ├── races.py        # Race naming logic + RaceConfig dataclass
 │       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
 │       ├── polar.py        # Polar performance baseline builder
 │       ├── sk_reader.py    # Signal K WebSocket reader — primary data source
-│       ├── storage.py      # SQLite read/write; schema migrations (currently v18)
-│       ├── transcribe.py   # faster-whisper transcription + pyannote diarisation
+│       ├── storage.py      # SQLite read/write; schema migrations (currently v20)
+│       ├── transcribe.py   # faster-whisper transcription + diarisation + remote offload
 │       ├── video.py        # YouTube video metadata / sync-point logic
 │       └── web.py          # FastAPI app — race marker, history, boats, admin UI
 │
 ├── tests/
 │   ├── conftest.py
 │   ├── test_audio.py
+│   ├── test_cameras.py
 │   ├── test_export.py
 │   ├── test_external.py
+│   ├── test_insta360.py
 │   ├── test_nmea2000.py
 │   ├── test_races.py
 │   ├── test_sk_reader.py
@@ -74,7 +78,10 @@ j105-logger/
 │   └── test_web.py
 │
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
-├── scripts/                # deploy.sh, setup.sh, grafana provisioning
+├── scripts/
+│   ├── deploy.sh           # Pull, sync deps, restart service on Pi
+│   ├── setup.sh            # Idempotent Pi bootstrap (packages, users, services)
+│   └── transcribe_worker.py  # Standalone FastAPI transcription server (Mac)
 └── docs/                   # Architecture notes, PGN mappings, guides
 ```
 
@@ -97,10 +104,13 @@ j105-logger status            # show database row counts and last timestamps
 j105-logger export --start "2025-08-10T13:00:00" --end "2025-08-10T15:30:00" --out data/race1.csv
 j105-logger list-audio        # list recorded WAV sessions
 j105-logger list-devices      # list available audio input devices
+j105-logger list-cameras      # show configured cameras and ping status
+j105-logger sync-videos       # match YouTube uploads to camera sessions
 j105-logger list-videos       # list linked YouTube videos
 j105-logger link-video --url <url> --sync-utc <utc> --sync-offset <seconds>
 j105-logger add-user --email <email> --name <name> --role admin|crew|viewer  # create user (no email required)
 j105-logger build-polar --min-sessions 3  # rebuild polar performance baseline
+j105-logger scan-videos --dir /path/to/videos [--dry-run] [--label "Bow cam"]  # auto-link local videos
 j105-logger --help            # full subcommand list
 
 # Run tests (coverage report printed by default via pyproject.toml addopts)
@@ -210,7 +220,7 @@ the service status at the end so you can confirm everything came up cleanly.
 - **Modules are small and single-purpose** — if a module is growing beyond ~200 lines, split it.
 - **Use `loguru` for all logging** — never use `print()` for operational output.
 - **Dataclasses or `typing.TypedDict`** for structured data (e.g., decoded PGN records) — avoid raw dicts with unknown shapes.
-- **Keep hardware-dependent code isolated** — direct CAN bus access lives only in `can_reader.py`; Signal K WebSocket access only in `sk_reader.py`. All other modules work with decoded data structures and can be tested without hardware.
+- **Keep hardware-dependent code isolated** — direct CAN bus access lives only in `can_reader.py`; Signal K WebSocket access only in `sk_reader.py`; camera HTTP control only in `cameras.py`. All other modules work with decoded data structures and can be tested without hardware.
 
 ---
 
@@ -225,6 +235,8 @@ On the Pi (`corvopi`), the service runs as a dedicated `j105logger` system accou
 - `sudo` access for `weaties` is scoped to specific service commands (see `/etc/sudoers.d/j105-logger-allowed`)
 - InfluxDB binds to `127.0.0.1:8086` only; Grafana binds to `127.0.0.1:3001` only
 - Signal K is on `*:3000`; exposed publicly via Tailscale Funnel at `/signalk/`
+- **Two public ingress paths** — Tailscale Funnel (path stripping built-in) and Cloudflare Tunnel (routes via nginx on `127.0.0.1:8080` which strips `/grafana/` and `/signalk/` prefixes)
+- nginx config for Cloudflare Tunnel: `/etc/nginx/conf.d/cloudflare-tunnel.conf` (managed by `deploy.sh`)
 - Grafana auth: anonymous disabled; `GF_AUTH_ANONYMOUS_ENABLED=false` via systemd `Environment=`
 - Signal K auth: `@signalk/sk-simple-token-security`; admin password in `~/.signalk-admin-pass.txt`
 
@@ -262,6 +274,7 @@ Document any B&G-specific proprietary PGNs in `docs/pgn-notes.md` as discovered.
 ## Dos and Don'ts
 
 **Do:**
+- **Commit and push every change** — after editing any file (code, config, scripts), always commit and push to the current branch immediately. This is especially critical for hotfixes on the Pi — uncommitted changes on the device will be lost on the next deploy. Never leave work uncommitted.
 - Write tests for all decoding and export logic
 - Use `uv add <package>` to add dependencies — never edit `pyproject.toml` manually for deps
 - Keep the SQLite schema versioned with simple integer migrations in `storage.py`
@@ -269,6 +282,7 @@ Document any B&G-specific proprietary PGNs in `docs/pgn-notes.md` as discovered.
 - Export data in standard formats first (CSV with standard column names) before custom formats
 
 **Don't:**
+- **Never push directly to `main`** — `main` is sacrosanct. Always work on a feature branch and merge via PR. If on the Pi and a hotfix is needed, create or use an existing branch, commit and push there, then merge through GitHub.
 - Don't parse NMEA 2000 PGNs manually from scratch — use `canboat` or a library; only write custom decoders when necessary
 - Don't store data in memory across long runs — flush to SQLite frequently to survive crashes/reboots
 - Don't hardcode device paths (e.g., `/dev/can0`) — use config or environment variables
@@ -303,6 +317,11 @@ AUDIO_CHANNELS=1            # 1=mono, 2=stereo
 # Audio transcription
 WHISPER_MODEL=base          # faster-whisper model: tiny, base, small, medium, large
 # HF_TOKEN=hf_...           # Hugging Face token — enables speaker diarisation (optional)
+
+# Camera control (Insta360 X4 via WiFi, Open Spherical Camera API)
+# CAMERAS=main:192.168.8.50,starboard:192.168.8.51
+CAMERA_START_TIMEOUT=10       # seconds to wait for camera start response
+# YOUTUBE_CHANNEL_ID=UCxxx    # YouTube channel for sync-videos auto-association
 
 # Photo notes
 NOTES_DIR=data/notes        # where uploaded photo notes are saved
