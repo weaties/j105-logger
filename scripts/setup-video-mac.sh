@@ -119,11 +119,21 @@ fi
 
 log "Installing launchd agent..."
 
+PI_API="${PI_API_URL:-http://corvopi:3002}"
+PI_COOKIE="${PI_SESSION_COOKIE:-}"
+
 sed \
   -e "s|PROCESS_SCRIPT_PATH|$PROCESS_SCRIPT|g" \
   -e "s|VIDEO_LOG_PATH|$LOG_FILE|g" \
   -e "s|HOME_PATH|$HOME|g" \
+  -e "s|PI_API_URL_VALUE|$PI_API|g" \
+  -e "s|PI_SESSION_COOKIE_VALUE|$PI_COOKIE|g" \
   "$PLIST_SRC" > "$PLIST_DEST"
+
+if [ -z "$PI_COOKIE" ]; then
+  warn "PI_SESSION_COOKIE not set — videos won't be linked to sessions"
+  warn "Set it and re-run: PI_SESSION_COOKIE=<cookie> ./scripts/setup-video-mac.sh"
+fi
 
 log "  Plist written → $PLIST_DEST"
 
