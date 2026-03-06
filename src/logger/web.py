@@ -289,7 +289,7 @@ __NAV__
   <button class="btn btn-danger" style="margin-top:12px" onclick="stopDebrief()">⏹ STOP DEBRIEF</button>
 </div>
 
-<div class="card" id="instruments-card">
+<div class="card hidden" id="instruments-card">
   <div class="crew-header" onclick="toggleInstruments()">
     <span class="label" style="margin-bottom:0">Instruments</span>
     <span style="display:flex;align-items:center;gap:8px">
@@ -321,7 +321,7 @@ __NAV__
   </div>
 </div>
 
-<div class="card" id="crew-card">
+<div class="card hidden" id="crew-card">
   <div class="crew-header" onclick="toggleCrew()">
     <span class="label" style="margin-bottom:0">Crew</span>
     <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">▶</span>
@@ -342,49 +342,13 @@ __NAV__
 <div id="controls">
   <button class="btn btn-primary"  id="btn-start-race"     onclick="startSession('race')">▶ START RACE 1</button>
   <button class="btn btn-practice" id="btn-start-practice" onclick="startSession('practice')">▶ START PRACTICE</button>
+  <button class="btn btn-debrief hidden" id="btn-debrief-last" onclick="startDebriefLast()">🎙 DEBRIEF LAST RACE</button>
   <button class="btn btn-secondary hidden" id="btn-end" onclick="endRace()">■ END RACE</button>
 </div>
 
-<div class="card" id="history-card" style="display:none">
-  <div class="label">Today's races</div>
-  <div class="race-list" id="race-list"></div>
-</div>
-
-<div class="card" id="sails-inventory-card">
-  <div class="crew-header" onclick="toggleSailInventory()">
-    <span class="label" style="margin-bottom:0">⛵ Sail Inventory</span>
-    <span id="sails-inventory-chevron" style="color:#8892a4;font-size:.85rem">▶</span>
-  </div>
-  <div id="sails-inventory-body" style="display:none;margin-top:10px">
-    <div id="sail-inventory-list"></div>
-    <div style="margin-top:8px;padding-top:8px;border-top:1px solid #1e3a5f">
-      <div style="font-size:.78rem;color:#8892a4;margin-bottom:6px">Add sail</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <select id="new-sail-type" style="background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:5px 8px;font-size:.82rem">
-          <option value="main">Main</option>
-          <option value="jib">Jib</option>
-          <option value="spinnaker">Spinnaker</option>
-        </select>
-        <input id="new-sail-name" class="field" placeholder="Sail name" maxlength="60" style="flex:1;padding:5px 8px;font-size:.82rem"/>
-        <button class="btn btn-primary" style="font-size:.82rem;padding:5px 12px" onclick="addSail()">Add</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="card" id="polar-card">
-  <div class="label">Boatspeed vs Baseline</div>
-  <div class="instruments-grid" style="margin-top:6px">
-    <div class="inst-item"><span class="inst-label">BSP</span>
-      <span><span class="inst-value" id="pv-bsp">—</span><span class="inst-unit">kts</span></span></div>
-    <div class="inst-item"><span class="inst-label">Baseline</span>
-      <span><span class="inst-value" id="pv-baseline">—</span><span class="inst-unit">kts</span></span></div>
-    <div class="inst-item"><span class="inst-label">Delta</span>
-      <span><span class="inst-value" id="pv-delta">—</span><span class="inst-unit">kts</span></span></div>
-  </div>
-  <div id="polar-no-data" style="display:none;font-size:.78rem;color:#8892a4;margin-top:4px">
-    No baseline data for this wind condition (need ≥3 sessions)
-  </div>
+<div id="today-summary" class="card hidden" style="text-align:center">
+  <div style="font-size:.85rem;color:#8892a4" id="today-summary-text"></div>
+  <a href="/history" style="font-size:.8rem;color:#7eb8f7;text-decoration:none;margin-top:4px;display:inline-block">View history →</a>
 </div>
 
 <script>
@@ -440,7 +404,7 @@ function render(s) {
     `${s.weekday} · ${s.event || '(no event)'}`;
 
   const evSec = document.getElementById('event-section');
-  if(!s.event_is_default) {
+  if(!s.event_is_default && !s.current_debrief) {
     evSec.classList.remove('hidden');
     if(!document.getElementById('event-input').value && s.event) {
       document.getElementById('event-input').value = s.event;
@@ -455,11 +419,28 @@ function render(s) {
   const btnStartRace = document.getElementById('btn-start-race');
   const btnStartPractice = document.getElementById('btn-start-practice');
 
+  const instCard = document.getElementById('instruments-card');
+  const crewCard = document.getElementById('crew-card');
+  const btnDebriefLast = document.getElementById('btn-debrief-last');
+  const todaySummary = document.getElementById('today-summary');
+  const controlsDiv = document.getElementById('controls');
+
+  const isIdle = !cur && !s.current_debrief;
+  const isRacing = !!cur;
+  const isDebrief = !!s.current_debrief;
+
+  // --- Instruments & crew: visible only during a race ---
+  instCard.classList.toggle('hidden', !isRacing);
+  crewCard.classList.toggle('hidden', !isRacing);
+  // --- Controls: hidden during debrief ---
+  controlsDiv.classList.toggle('hidden', isDebrief);
+
   if(cur) {
     curCard.classList.remove('hidden');
     btnEnd.classList.remove('hidden');
     btnStartRace.classList.add('hidden');
     btnStartPractice.classList.add('hidden');
+    btnDebriefLast.classList.add('hidden');
     document.getElementById('cur-name').textContent = cur.name;
     document.getElementById('cur-meta').textContent =
       'Started ' + fmtTime(cur.start_utc);
@@ -487,6 +468,10 @@ function render(s) {
     debriefCard.classList.remove('hidden');
     document.getElementById('debrief-name').textContent = s.current_debrief.race_name + ' — debrief';
     debriefStartMs = new Date(s.current_debrief.start_utc).getTime();
+    // Hide start buttons during debrief
+    btnStartRace.classList.add('hidden');
+    btnStartPractice.classList.add('hidden');
+    btnDebriefLast.classList.add('hidden');
   } else {
     debriefCard.classList.add('hidden');
     debriefStartMs = null;
@@ -494,83 +479,27 @@ function render(s) {
 
   btnStartRace.textContent = `▶ START RACE ${s.next_race_num}`;
 
-  const hist = document.getElementById('history-card');
-  const list = document.getElementById('race-list');
-  if(s.today_races && s.today_races.length) {
-    hist.style.display = '';
-    // Don't re-render while the user has focus inside the race list (e.g.
-    // typing in the boat picker). Replacing innerHTML destroys the active
-    // element and fires onblur, which closes the picker prematurely (#36).
-    // Also skip if any expandable panel is open — re-rendering wipes the form.
-    const anyPanelOpen = [...list.querySelectorAll('[id^="videos-list-"],[id^="notes-list-"]')]
-      .some(el => el.style.display !== 'none');
-    if (list.contains(document.activeElement) || anyPanelOpen) return;
-    list.innerHTML = s.today_races.slice().reverse().map(r => {
-      const start = fmtTime(r.start_utc);
-      const end = r.end_utc ? fmtTime(r.end_utc) : 'in progress';
-      const dur = (r.end_utc && r.duration_s != null)
-        ? ` (${fmt(Math.round(r.duration_s))})` : '';
-      const badge = r.session_type === 'practice'
-        ? '<span class="badge badge-practice">PRACTICE</span>'
-        : '<span class="badge badge-race">RACE</span>';
-      const from = new Date(r.start_utc).getTime();
-      const to   = r.end_utc ? new Date(r.end_utc).getTime() : 'now';
-      const refresh = r.end_utc ? 'refresh=' : 'refresh=10s';
-      const grafanaBtn = `<a class="btn-export btn-grafana" href="${GRAFANA_BASE}/d/${_GRAFANA_UID}/sailing-data?from=${from}&to=${to}&orgId=1&${refresh}" target="_blank">📊 ${r.end_utc ? 'Grafana' : 'Live'}</a>`;
-      const debriefBtn = (r.end_utc && s.has_recorder && !s.current_debrief && !s.current_race)
-        ? `<button class="btn-export btn-debrief" onclick="startDebrief(${r.id})">🎙 Debrief</button>`
-        : '';
-      const wavBtn = (r.end_utc && r.has_audio && r.audio_session_id)
-        ? `<a class="btn-export" href="/api/audio/${r.audio_session_id}/download">&#8595; WAV</a>`
-        : '';
-      const exports = r.end_utc
-        ? `<div class="race-exports">
-             <a class="btn-export" href="/api/races/${r.id}/export.csv">↓ CSV</a>
-             <a class="btn-export" href="/api/races/${r.id}/export.gpx">↓ GPX</a>
-             ${grafanaBtn}
-             ${wavBtn}
-             ${debriefBtn}
-           </div>`
-        : `<div class="race-exports">${grafanaBtn}</div>`;
-      const crewLine = r.crew && r.crew.length
-        ? r.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
-        : '';
-      const crewHtml = crewLine ? `<div class="race-item-crew">${crewLine}</div>` : '';
-      const resultsHtml = renderResultsSection(r);
-      const notesHtml = r.end_utc
-        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
-          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
-          + 'onclick="toggleNotes(' + r.id + ')">Notes ▶</span>'
-          + '<div id="notes-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
-          + '</div>'
-        : '';
-      const videosHtml = r.end_utc
-        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
-          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
-          + 'onclick="toggleVideos(' + r.id + ')">🎬 Videos ▶</span>'
-          + '<div id="videos-list-' + r.id + '" data-start-utc="' + r.start_utc + '" style="display:none;margin-top:4px"></div>'
-          + '</div>'
-        : '';
-      const sailsHtml = r.end_utc
-        ? '<div style="margin-top:4px;border-top:1px solid #1e3a5f;padding-top:4px">'
-          + '<span style="font-size:.78rem;color:#8892a4;cursor:pointer" '
-          + 'onclick="toggleSails(' + r.id + ')">⛵ Sails ▶</span>'
-          + '<div id="sails-list-' + r.id + '" style="display:none;margin-top:4px"></div>'
-          + '</div>'
-        : '';
-      return `<div class="race-item">
-        <div class="race-item-name">${r.name}${badge}</div>
-        <div class="race-item-time">${start} → ${end}${dur}</div>
-        ${crewHtml}
-        ${resultsHtml}
-        ${notesHtml}
-        ${videosHtml}
-        ${sailsHtml}
-        ${exports}
-      </div>`;
-    }).join('');
+  // --- Debrief last race button: show when idle, has recorder, and finished races exist ---
+  const lastFinished = (s.today_races || []).filter(r => r.end_utc).slice(-1)[0];
+  if (isIdle && s.has_recorder && lastFinished) {
+    btnDebriefLast.classList.remove('hidden');
+    btnDebriefLast.textContent = '🎙 DEBRIEF ' + lastFinished.name;
+    btnDebriefLast.dataset.raceId = lastFinished.id;
   } else {
-    hist.style.display = 'none';
+    btnDebriefLast.classList.add('hidden');
+  }
+
+  // --- Compact today's summary (idle only) ---
+  if (isIdle && s.today_races && s.today_races.length) {
+    const finished = s.today_races.filter(r => r.end_utc);
+    const last = finished.length ? finished[finished.length - 1] : null;
+    const parts = [];
+    if (finished.length) parts.push(finished.length + ' race' + (finished.length > 1 ? 's' : '') + ' today');
+    if (last) parts.push('last: ' + last.name);
+    todaySummary.classList.remove('hidden');
+    document.getElementById('today-summary-text').textContent = parts.join(' · ');
+  } else {
+    todaySummary.classList.add('hidden');
   }
 }
 
@@ -731,6 +660,12 @@ async function endRace() {
 async function startDebrief(raceId) {
   await fetch(`/api/races/${raceId}/debrief/start`, {method: 'POST'});
   await loadState();
+}
+
+async function startDebriefLast() {
+  const btn = document.getElementById('btn-debrief-last');
+  const raceId = btn && btn.dataset.raceId;
+  if (raceId) await startDebrief(parseInt(raceId, 10));
 }
 
 async function stopDebrief() {
@@ -1349,8 +1284,6 @@ setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
 setInterval(loadInstruments, 2000);
-loadPolar();
-setInterval(loadPolar, 2000);
 loadRecentSailors();
 checkSystemHealth();
 setInterval(checkSystemHealth, 30000);
