@@ -1276,12 +1276,14 @@ def create_app(
             except AudioDeviceNotFoundError as exc:
                 logger.warning("Audio unavailable for race {}: {}", race.name, exc)
 
-        race_cameras = await _load_cameras()
-        if race_cameras:
+        async def _start_cameras(rid: int) -> None:
+            cams = await _load_cameras()
+            if not cams:
+                return
             import logger.cameras as cameras_mod
 
             try:
-                statuses = await cameras_mod.start_all(race_cameras, race.id, storage)
+                statuses = await cameras_mod.start_all(cams, rid, storage)
                 for s in statuses:
                     if s.error:
                         logger.warning("Camera {} failed to start: {}", s.name, s.error)
@@ -1290,6 +1292,7 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Camera start_all failed: {}", exc)
 
+        asyncio.ensure_future(_start_cameras(race.id))
         await _audit(request, "race.start", detail=race.name, user=_user)
         return JSONResponse(
             {
@@ -1318,12 +1321,14 @@ def create_app(
         await storage.end_race(race_id, now)
         await _audit(request, "race.end", detail=str(race_id), user=_user)
 
-        stop_cameras = await _load_cameras()
-        if stop_cameras:
+        async def _stop_cameras(rid: int) -> None:
+            cams = await _load_cameras()
+            if not cams:
+                return
             import logger.cameras as cameras_mod
 
             try:
-                statuses = await cameras_mod.stop_all(stop_cameras, race_id, storage)
+                statuses = await cameras_mod.stop_all(cams, rid, storage)
                 for s in statuses:
                     if s.error:
                         logger.warning("Camera {} failed to stop: {}", s.name, s.error)
@@ -1331,6 +1336,8 @@ def create_app(
                         logger.info("Camera {} recording stopped", s.name)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Camera stop_all failed: {}", exc)
+
+        asyncio.ensure_future(_stop_cameras(race_id))
 
         if recorder is not None and _audio_session_id is not None:
             completed = await recorder.stop()
