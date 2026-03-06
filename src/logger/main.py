@@ -185,6 +185,11 @@ async def _run() -> None:
     storage = Storage(storage_config)
     await storage.connect()
 
+    # Seed os.environ from DB-persisted settings so synchronous consumers
+    # (cameras, races, etc.) pick up admin overrides without refactoring.
+    for row in await storage.list_settings():
+        os.environ.setdefault(row["key"], row["value"])
+
     from logger.audio import AudioConfig, AudioRecorder
 
     audio_config = AudioConfig()

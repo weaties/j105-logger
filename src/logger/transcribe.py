@@ -45,13 +45,18 @@ async def _try_remote_transcribe(
     file_path: str,
     model_size: str,
     diarize: bool,
+    *,
+    transcribe_url: str = "",
 ) -> tuple[str, list[dict[str, object]]] | None:
-    """POST the WAV file to ``TRANSCRIBE_URL`` and return (text, segments).
+    """POST the WAV file to a remote worker and return (text, segments).
 
-    Returns *None* when ``TRANSCRIBE_URL`` is not set or the remote is
-    unreachable, signalling the caller to fall back to local processing.
+    *transcribe_url* is the base URL of the worker (e.g. ``http://mac:8321``).
+    Falls back to ``TRANSCRIBE_URL`` env var if not provided.
+
+    Returns *None* when no URL is configured or the remote is unreachable,
+    signalling the caller to fall back to local processing.
     """
-    url = os.environ.get("TRANSCRIBE_URL", "").rstrip("/")
+    url = (transcribe_url or os.environ.get("TRANSCRIBE_URL", "")).rstrip("/")
     if not url:
         return None
 
@@ -89,6 +94,8 @@ async def transcribe_session(
     transcript_id: int,
     model_size: str = "base",
     diarize: bool = True,
+    *,
+    transcribe_url: str = "",
 ) -> None:
     """Run transcription (and optionally diarisation) and update the transcript row.
 
@@ -96,8 +103,9 @@ async def transcribe_session(
     *transcript_id* must be an existing row (status='pending') created by
     ``storage.create_transcript_job()``.
 
-    When ``TRANSCRIBE_URL`` is set, the audio is POSTed to a remote worker.
-    On failure the local faster-whisper path runs as a fallback.
+    When *transcribe_url* (or ``TRANSCRIBE_URL`` env var) is set, the audio
+    is POSTed to a remote worker. On failure the local faster-whisper path
+    runs as a fallback.
 
     Diarisation is attempted only when *diarize* is True **and** ``HF_TOKEN``
     is present in the environment. Otherwise the plain faster-whisper path runs.
@@ -117,7 +125,9 @@ async def transcribe_session(
 
     try:
         # ----- Remote offload (preferred when TRANSCRIBE_URL is set) -----
-        remote = await _try_remote_transcribe(file_path, model_size, diarize)
+        remote = await _try_remote_transcribe(
+            file_path, model_size, diarize, transcribe_url=transcribe_url
+        )
         if remote is not None:
             text, segments = remote
             segments_json_str = json.dumps(segments) if segments else None

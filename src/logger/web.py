@@ -17,6 +17,7 @@ import json
 import os
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -105,6 +106,7 @@ def _nav_html(current: str = "/") -> str:
   <a href="/admin/audit" class="admin-link{" active" if current == "/admin/audit" else ""}">Audit</a>
   <a href="/admin/cameras" class="admin-link{" active" if current == "/admin/cameras" else ""}">Cameras</a>
   <a href="/admin/events" class="admin-link{" active" if current == "/admin/events" else ""}">Events</a>
+  <a href="/admin/settings" class="admin-link{" active" if current == "/admin/settings" else ""}">Settings</a>
   <span class="spacer"></span>
   <a href="/profile" class="profile-link" id="nav-profile"{_cls("/profile")}>\
 <img id="nav-avatar" src="" alt="" \
@@ -2814,6 +2816,173 @@ __FOOTER__
 </body></html>"""
 
 
+@dataclass(frozen=True)
+class _SettingDef:
+    """Metadata for one admin-configurable setting."""
+
+    key: str
+    label: str
+    input_type: str  # "text", "number", "select"
+    default: str
+    help_text: str = ""
+    options: tuple[str, ...] = ()
+    sensitive: bool = False
+
+
+_SETTINGS_DEFS: tuple[_SettingDef, ...] = (
+    _SettingDef(
+        key="TRANSCRIBE_URL",
+        label="Remote transcription URL",
+        input_type="text",
+        default="",
+        help_text="Base URL for the remote transcription worker (e.g. http://macbook:8321). Leave blank for local transcription.",
+    ),
+    _SettingDef(
+        key="WHISPER_MODEL",
+        label="Whisper model size",
+        input_type="select",
+        default="base",
+        options=("tiny", "base", "small", "medium", "large"),
+        help_text="Larger models are more accurate but slower.",
+    ),
+    _SettingDef(
+        key="PI_API_URL",
+        label="Pi API URL",
+        input_type="text",
+        default="http://corvopi:3002",
+        help_text="Base URL for the J105 Logger API (used by the video pipeline).",
+    ),
+    _SettingDef(
+        key="TIMEZONE",
+        label="Display timezone",
+        input_type="text",
+        default="America/Los_Angeles",
+        help_text="IANA timezone name for display (e.g. America/Los_Angeles).",
+    ),
+    _SettingDef(
+        key="VIDEO_PRIVACY",
+        label="YouTube upload privacy",
+        input_type="select",
+        default="unlisted",
+        options=("private", "unlisted", "public"),
+        help_text="Privacy status for auto-uploaded YouTube videos.",
+    ),
+    _SettingDef(
+        key="PI_SESSION_COOKIE",
+        label="Pi session cookie",
+        input_type="text",
+        default="",
+        sensitive=True,
+        help_text="Session cookie for the Pi API (used by the video pipeline to link videos to sessions).",
+    ),
+    _SettingDef(
+        key="CAMERA_START_TIMEOUT",
+        label="Camera timeout (seconds)",
+        input_type="number",
+        default="10",
+        help_text="Timeout in seconds for camera start/stop HTTP commands.",
+    ),
+)
+
+_SETTINGS_BY_KEY: dict[str, _SettingDef] = {s.key: s for s in _SETTINGS_DEFS}
+
+_ADMIN_SETTINGS_HTML = """\
+<!doctype html><html lang="en"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Settings — J105 Logger</title>
+<style>
+*{box-sizing:border-box}
+__NAV_CSS__
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;margin:0;padding:16px}
+.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
+.setting{margin-bottom:18px}
+.setting label{display:block;font-weight:600;margin-bottom:4px;font-size:.9rem}
+.setting .help{font-size:.75rem;color:#8892a4;margin-top:2px}
+.setting input,.setting select{width:100%;max-width:480px;padding:7px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
+.setting input[type=number]{max-width:120px}
+.source-badge{display:inline-block;font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border-radius:3px;margin-left:8px;vertical-align:middle}
+.source-db{background:#1e3a5f;color:#60a5fa}
+.source-env{background:#1a3329;color:#4ade80}
+.source-default{background:#2a2033;color:#c084fc}
+.btn-row{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
+.btn{padding:8px 18px;border:1px solid #374151;border-radius:6px;background:#1e293b;color:#e8eaf0;font-size:.85rem;cursor:pointer}
+.btn:hover{background:#253449}
+.btn-primary{background:#2563eb;border-color:#2563eb;color:#fff}
+.btn-primary:hover{background:#1d4ed8}
+.btn-reset{color:#f87171;border-color:#7f1d1d;font-size:.75rem;padding:4px 10px}
+.btn-reset:hover{background:#1f1215}
+.status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
+.status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
+.status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
+</style>
+__NAV__
+</head><body>
+<div class="card">
+  <div class="label">Settings</div>
+  <div id="status" class="status"></div>
+  <form id="settings-form" onsubmit="return saveAll(event)">
+    <div id="fields"></div>
+    <div class="btn-row">
+      <button type="submit" class="btn btn-primary">Save all</button>
+    </div>
+  </form>
+</div>
+<script>
+let DEFS=[], loaded={};
+async function init(){
+  const r=await fetch('/api/settings');
+  if(!r.ok){showStatus('Failed to load settings','err');return}
+  const data=await r.json();
+  DEFS=data.settings;
+  loaded=data;
+  render();
+}
+function render(){
+  const c=document.getElementById('fields');
+  c.innerHTML='';
+  for(const s of DEFS){
+    const d=document.createElement('div');
+    d.className='setting';
+    let inp='';
+    const val=esc(s.effective_value);
+    if(s.input_type==='select'){
+      const opts=s.options.map(o=>'<option value="'+esc(o)+'"'+(o===s.effective_value?' selected':'')+'>'+esc(o)+'</option>').join('');
+      inp='<select name="'+esc(s.key)+'">'+opts+'</select>';
+    } else if(s.input_type==='number'){
+      inp='<input type="number" name="'+esc(s.key)+'" value="'+val+'" step="any"/>';
+    } else {
+      const t=s.sensitive?'password':'text';
+      inp='<input type="'+t+'" name="'+esc(s.key)+'" value="'+val+'" placeholder="'+esc(s.default_value)+'"/>';
+    }
+    const badge='<span class="source-badge source-'+s.source+'">'+s.source+'</span>';
+    const reset=s.source==='db'?'<button type="button" class="btn btn-reset" onclick="resetKey(\''+esc(s.key)+'\')">Reset</button>':'';
+    d.innerHTML='<label>'+esc(s.label)+badge+' '+reset+'</label>'+inp+'<div class="help">'+esc(s.help_text)+' <code>'+esc(s.key)+'</code></div>';
+    c.appendChild(d);
+  }
+}
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+async function saveAll(e){
+  e.preventDefault();
+  const fd=new FormData(document.getElementById('settings-form'));
+  const payload={};
+  for(const [k,v] of fd.entries()) payload[k]=v;
+  const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  if(r.ok){showStatus('Settings saved','ok');setTimeout(init,800)}
+  else{const d=await r.json();showStatus(d.detail||'Save failed','err')}
+}
+async function resetKey(key){
+  const r=await fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({[key]:''})});
+  if(r.ok){showStatus(key+' reset to default','ok');setTimeout(init,600)}
+  else showStatus('Reset failed','err');
+}
+function showStatus(msg,cls){const el=document.getElementById('status');el.textContent=msg;el.className='status '+cls;setTimeout(()=>{el.className='status'},4000)}
+init();
+</script>
+__FOOTER__
+</body></html>"""
+
+
 def create_app(
     storage: Storage,
     recorder: AudioRecorder | None = None,
@@ -2867,6 +3036,7 @@ def create_app(
     _admin_page = _inject_shared(_ADMIN_BOATS_HTML, "/admin/boats")
     _admin_cameras_page = _inject_shared(_ADMIN_CAMERAS_HTML, "/admin/cameras")
     _admin_events_page = _inject_shared(_ADMIN_EVENTS_HTML, "/admin/events")
+    _admin_settings_page = _inject_shared(_ADMIN_SETTINGS_HTML, "/admin/settings")
 
     from logger.auth import (
         _is_auth_disabled,
@@ -3101,9 +3271,7 @@ def create_app(
         )
         public_url = os.getenv("PUBLIC_URL", "").rstrip("/")
         login_url = f"{public_url}/login?token={token}"
-        asyncio.ensure_future(
-            send_login_link_email(user.get("name"), email, login_url)
-        )
+        asyncio.ensure_future(send_login_link_email(user.get("name"), email, login_url))
         await _audit(request, "auth.request_link", detail=email)
         return HTMLResponse(html)
 
@@ -3237,6 +3405,80 @@ def create_app(
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> HTMLResponse:
         return HTMLResponse(_admin_events_page)
+
+    # ------------------------------------------------------------------
+    # /admin/settings (#146)
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/settings", response_class=HTMLResponse, include_in_schema=False)
+    async def admin_settings_page(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> HTMLResponse:
+        return HTMLResponse(_admin_settings_page)
+
+    @app.get("/api/settings")
+    async def api_get_settings(
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return all curated settings with effective value and source."""
+
+        db_settings = {r["key"]: r["value"] for r in await storage.list_settings()}
+        result: list[dict[str, object]] = []
+        for s in _SETTINGS_DEFS:
+            db_val = db_settings.get(s.key)
+            env_val = os.environ.get(s.key)
+            if db_val is not None:
+                source, effective = "db", db_val
+            elif env_val is not None:
+                source, effective = "env", env_val
+            else:
+                source, effective = "default", s.default
+            display = "••••••••" if s.sensitive and effective else effective
+            result.append(
+                {
+                    "key": s.key,
+                    "label": s.label,
+                    "input_type": s.input_type,
+                    "default_value": s.default,
+                    "help_text": s.help_text,
+                    "options": list(s.options),
+                    "sensitive": s.sensitive,
+                    "effective_value": display,
+                    "source": source,
+                }
+            )
+        return JSONResponse({"settings": result})
+
+    @app.put("/api/settings")
+    async def api_put_settings(
+        request: Request,
+        body: dict[str, str],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Upsert settings. Empty string deletes the override (reverts to env/default)."""
+        changed: list[str] = []
+        for key, value in body.items():
+            defn = _SETTINGS_BY_KEY.get(key)
+            if defn is None:
+                raise HTTPException(status_code=422, detail=f"Unknown setting: {key}")
+            value = str(value).strip()
+            if value == "":
+                # Delete override → revert to env/default
+                await storage.delete_setting(key)
+                # Remove from os.environ only if it came from our DB seeding
+                # (don't remove actual shell env vars)
+            else:
+                await storage.set_setting(key, value)
+                os.environ[key] = value
+            changed.append(key)
+        if changed:
+            await _audit(
+                request,
+                "settings.update",
+                detail=", ".join(changed),
+                user=_user,
+            )
+        return JSONResponse({"updated": changed})
 
     @app.get("/api/cameras")
     async def api_list_cameras(
@@ -3396,15 +3638,20 @@ def create_app(
             raise HTTPException(400, detail="ip is required")
         if new_name and new_name != camera_name:
             ok = await storage.rename_camera(
-                camera_name, new_name, ip,
+                camera_name,
+                new_name,
+                ip,
                 model=model if model else None,
-                wifi_ssid=wifi_ssid, wifi_password=wifi_password,
+                wifi_ssid=wifi_ssid,
+                wifi_password=wifi_password,
             )
         else:
             ok = await storage.update_camera(
-                camera_name, ip,
+                camera_name,
+                ip,
                 model=model if model else None,
-                wifi_ssid=wifi_ssid, wifi_password=wifi_password,
+                wifi_ssid=wifi_ssid,
+                wifi_password=wifi_password,
             )
         if not ok:
             raise HTTPException(404, detail=f"Camera {camera_name!r} not found")
@@ -3605,7 +3852,9 @@ def create_app(
         if not event_name:
             raise HTTPException(400, detail="event_name is required")
         await storage.set_event_rule(weekday, event_name)
-        await _audit(request, "event_rule.set", detail=f"{_WEEKDAY_NAMES[weekday]}={event_name}", user=_user)
+        await _audit(
+            request, "event_rule.set", detail=f"{_WEEKDAY_NAMES[weekday]}={event_name}", user=_user
+        )
         return JSONResponse({"weekday": weekday, "event_name": event_name})
 
     @app.delete("/api/event-rules/{weekday}", status_code=204)
@@ -4782,12 +5031,19 @@ def create_app(
                 status_code=409, detail="Transcript job already exists for this session"
             )
 
+        from logger.storage import get_effective_setting
         from logger.transcribe import transcribe_session
 
+        t_url = await get_effective_setting(storage, "TRANSCRIBE_URL")
         diarize = bool(os.environ.get("HF_TOKEN"))
         asyncio.create_task(
             transcribe_session(
-                storage, session_id, transcript_id, model_size=model, diarize=diarize
+                storage,
+                session_id,
+                transcript_id,
+                model_size=model,
+                diarize=diarize,
+                transcribe_url=t_url,
             )
         )
         await _audit(request, "transcribe.start", detail=str(session_id), user=_user)
