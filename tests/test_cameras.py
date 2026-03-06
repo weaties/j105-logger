@@ -118,6 +118,42 @@ async def test_start_camera_connection_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_camera_empty_error_message() -> None:
+    """httpx.ConnectError('') should produce a meaningful error, not empty string."""
+    cam = Camera(name="unreachable", ip="192.168.42.1")
+
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = httpx.ConnectError("")
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        status = await start_camera(cam, timeout=5.0)
+
+    assert status.recording is False
+    assert status.error  # must not be empty/None
+    assert "unreachable" in status.error.lower() or "connect" in status.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_stop_camera_empty_error_message() -> None:
+    """stop_camera should also produce a meaningful error on empty exception."""
+    cam = Camera(name="unreachable", ip="192.168.42.1")
+
+    mock_client = AsyncMock()
+    mock_client.post.side_effect = httpx.ConnectError("")
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        status = await stop_camera(cam, timeout=5.0)
+
+    assert status.recording is True  # assume still recording on failure
+    assert status.error
+    assert "unreachable" in status.error.lower() or "connect" in status.error.lower()
+
+
+@pytest.mark.asyncio
 async def test_stop_camera_success() -> None:
     cam = Camera(name="test", ip="192.168.8.50")
     mock_resp = MagicMock()
