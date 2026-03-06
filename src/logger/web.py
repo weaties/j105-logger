@@ -1459,36 +1459,43 @@ function render(data) {
     const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
-    const crewLine = (s.crew && s.crew.length)
-      ? s.crew.map(c => c.position.charAt(0).toUpperCase() + c.position.slice(1) + ': ' + c.sailor).join(' · ')
-      : '';
-    const crewSuffix = (s.type === 'debrief' && crewLine) ? ' <span style="color:#8892a4;font-size:.75rem">(from race)</span>' : '';
-    const crewHtml = crewLine ? '<div class="session-crew">' + crewLine + crewSuffix + '</div>' : '';
+    // --- Toggle buttons: Results, Crew, Sails, Notes, Videos, Transcript ---
+    let toggles = '';
+    if (s.type !== 'debrief') {
+      toggles += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
+      toggles += '<button class="btn-export" id="hist-crew-btn-' + s.id + '" onclick="toggleHistoryCrew(' + s.id + ')">Crew ▶</button>';
+      toggles += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">Sails ▶</button>';
+      toggles += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
+      toggles += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">Videos ▶</button>';
+    }
+    if (s.has_audio && s.audio_session_id) {
+      toggles += '<button class="btn-export" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">Transcript ▶</button>';
+    }
+    const togglesHtml = toggles ? '<div class="session-exports">' + toggles + '</div>' : '';
 
-    let exports = '';
+    // --- Download links ---
+    let downloads = '';
     if (s.type !== 'debrief' && s.end_utc) {
       const from = new Date(s.start_utc).getTime();
       const to = new Date(s.end_utc).getTime();
-      exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.csv">&#8595; CSV</a>';
-      exports += '<a class="btn-export" href="/api/races/' + s.id + '/export.gpx">&#8595; GPX</a>';
-      exports += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1&refresh=" target="_blank">&#128202; Grafana</a>';
-    }
-    if (s.type !== 'debrief') {
-      exports += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
-      exports += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
-      exports += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">🎬 Videos ▶</button>';
-      exports += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">⛵ Sails ▶</button>';
+      downloads += '<a class="btn-export" href="/api/races/' + s.id + '/export.csv">&#8595; CSV</a>';
+      downloads += '<a class="btn-export" href="/api/races/' + s.id + '/export.gpx">&#8595; GPX</a>';
+      downloads += '<a class="btn-export btn-grafana" href="' + GRAFANA_URL + '/d/' + GRAFANA_UID + '/sailing-data?from=' + from + '&to=' + to + '&orgId=1&refresh=" target="_blank">&#128202; Grafana</a>';
     }
     if (s.has_audio && s.audio_session_id) {
-      exports += '<audio controls style="width:100%;margin-top:4px">'
-        + '<source src="/api/audio/' + s.audio_session_id + '/stream" type="audio/wav">'
-        + '</audio>'
-        + '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
-      exports += '<button class="btn-export" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">📝 Transcript ▶</button>';
+      downloads += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
     }
-    const exportsHtml = exports ? '<div class="session-exports">' + exports + '</div>' : '';
+    const downloadsHtml = downloads ? '<div class="session-exports">' + downloads + '</div>' : '';
+
+    // --- Expandable panels (order matches toggle buttons) ---
     const resultsPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-results-' + s.id + '" style="display:none"></div>'
+      : '';
+    const crewPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-crew-' + s.id + '" style="display:none"></div>'
+      : '';
+    const sailsPanel = s.type !== 'debrief'
+      ? '<div class="session-results" id="hist-sails-' + s.id + '" style="display:none"></div>'
       : '';
     const notesPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
@@ -1496,16 +1503,22 @@ function render(data) {
     const videosPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
-    const sailsPanel = s.type !== 'debrief'
-      ? '<div class="session-results" id="hist-sails-' + s.id + '" style="display:none"></div>'
-      : '';
     const transcriptPanel = s.has_audio && s.audio_session_id
       ? '<div class="session-results" id="hist-transcript-' + s.id + '" style="display:none"></div>'
       : '';
 
+    // --- Audio playback at the bottom ---
+    const audioHtml = (s.has_audio && s.audio_session_id)
+      ? '<div style="margin-top:6px"><audio controls style="width:100%">'
+        + '<source src="/api/audio/' + s.audio_session_id + '/stream" type="audio/wav">'
+        + '</audio></div>'
+      : '';
+
     return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
-      + parent + crewHtml + exportsHtml + resultsPanel + notesPanel + videosPanel + sailsPanel + transcriptPanel + '</div>';
+      + parent
+      + togglesHtml + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
+      + downloadsHtml + audioHtml + '</div>';
   }).join('');
 
   const total = data.total;
@@ -1714,6 +1727,30 @@ async function _refreshHistoryNotes(sessionId) {
   el.innerHTML = notes.length
     ? notes.map(n => renderHistoryNote(n, sessionId)).join('')
     : '<span style="color:#8892a4;font-size:.8rem">No notes</span>';
+}
+
+async function toggleHistoryCrew(sessionId) {
+  const el = document.getElementById('hist-crew-' + sessionId);
+  const btn = document.getElementById('hist-crew-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = 'Crew ▶';
+    return;
+  }
+  el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">Loading…</span>';
+  const r = await fetch('/api/races/' + sessionId + '/crew');
+  const data = await r.json();
+  const crew = data.crew || [];
+  if (crew.length) {
+    el.innerHTML = '<div style="font-size:.82rem">' + crew.map(c =>
+      '<span style="color:#8892a4">' + c.position.charAt(0).toUpperCase() + c.position.slice(1) + ':</span> ' + c.sailor
+    ).join(' &nbsp;·&nbsp; ') + '</div>';
+  } else {
+    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No crew recorded</span>';
+  }
+  el.style.display = '';
+  if (btn) btn.textContent = 'Crew ▼';
 }
 
 async function toggleHistoryNotes(sessionId) {
