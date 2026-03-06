@@ -2956,7 +2956,7 @@ function render(){
       inp='<input type="'+t+'" name="'+esc(s.key)+'" value="'+val+'" placeholder="'+esc(s.default_value)+'"/>';
     }
     const badge='<span class="source-badge source-'+s.source+'">'+s.source+'</span>';
-    const reset=s.source==='db'?'<button type="button" class="btn btn-reset" onclick="resetKey(\''+esc(s.key)+'\')">Reset</button>':'';
+    const reset=s.source==='db'?'<button type="button" class="btn btn-reset" onclick="resetKey(\\''+esc(s.key)+'\\')">Reset</button>':'';
     d.innerHTML='<label>'+esc(s.label)+badge+' '+reset+'</label>'+inp+'<div class="help">'+esc(s.help_text)+' <code>'+esc(s.key)+'</code></div>';
     c.appendChild(d);
   }
