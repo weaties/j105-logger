@@ -37,7 +37,12 @@ if TYPE_CHECKING:
 # Dataclasses
 # ---------------------------------------------------------------------------
 
-_DEFAULT_TIMEOUT: float = float(os.environ.get("CAMERA_START_TIMEOUT", "10"))
+
+def _default_timeout() -> float:
+    """Read camera timeout each call so admin changes take effect without restart."""
+    return float(os.environ.get("CAMERA_START_TIMEOUT", "10"))
+
+
 _OSC_PATH = "/osc/commands/execute"
 _OSC_HEADERS = {"X-XSRF-Protected": "1"}
 
@@ -113,12 +118,13 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
     return f"Camera {camera.name} unreachable ({type(exc).__name__} during {action})"
 
 
-async def start_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> CameraStatus:
+async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
     """Send ``camera.startCapture`` to a single camera.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
     round-trip time of the HTTP request (used as ``sync_offset_ms``).
     """
+    timeout = timeout if timeout is not None else _default_timeout()
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
@@ -147,7 +153,7 @@ async def start_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Cam
         )
 
 
-async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> CameraStatus:
+async def stop_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
     """Send ``camera.stopCapture`` to a single camera.
 
     The X4 firmware rejects ``stopCapture`` for recordings started via the
@@ -155,6 +161,7 @@ async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Came
     ``startCapture`` first "claims" the session for OSC, after which
     ``stopCapture`` succeeds.
     """
+    timeout = timeout if timeout is not None else _default_timeout()
     try:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
@@ -168,7 +175,9 @@ async def stop_camera(camera: Camera, timeout: float = _DEFAULT_TIMEOUT) -> Came
                 code = body.get("error", {}).get("code", "")
                 if code == "disabledCommand":
                     # Claim the session via startCapture, then retry stop
-                    logger.debug("Camera {} stopCapture rejected, claiming via startCapture", camera.name)
+                    logger.debug(
+                        "Camera {} stopCapture rejected, claiming via startCapture", camera.name
+                    )
                     await client.post(
                         _osc_url(camera),
                         headers=_OSC_HEADERS,
@@ -211,7 +220,9 @@ async def get_status(camera: Camera, timeout: float = 5.0) -> CameraStatus:
             return CameraStatus(name=camera.name, ip=camera.ip, recording=recording)
     except (httpx.HTTPError, OSError) as exc:
         return CameraStatus(
-            name=camera.name, ip=camera.ip, recording=False,
+            name=camera.name,
+            ip=camera.ip,
+            recording=False,
             error=_error_msg(exc, camera, "getStatus"),
         )
 
@@ -225,7 +236,7 @@ async def start_all(
     cameras: list[Camera],
     session_id: int,
     storage: Storage,
-    timeout: float = _DEFAULT_TIMEOUT,
+    timeout: float | None = None,
 ) -> list[CameraStatus]:
     """Start all cameras in parallel and write ``camera_sessions`` rows.
 
@@ -263,7 +274,7 @@ async def stop_all(
     cameras: list[Camera],
     session_id: int,
     storage: Storage,
-    timeout: float = _DEFAULT_TIMEOUT,
+    timeout: float | None = None,
 ) -> list[CameraStatus]:
     """Stop all cameras in parallel and update ``camera_sessions`` rows."""
     tasks = [stop_camera(cam, timeout) for cam in cameras]

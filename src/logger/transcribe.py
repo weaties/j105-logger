@@ -3,6 +3,11 @@
 Transcription runs in a thread pool to avoid blocking the event loop.
 Results (including errors) are stored in the ``transcripts`` SQLite table.
 
+**Remote offload** — when ``TRANSCRIBE_URL`` is set (e.g.
+``http://macbook:8321``), the WAV file is POSTed to a remote worker over
+Tailscale.  The worker runs whisper + diarisation on faster hardware and
+returns JSON.  If the remote is unreachable the local path runs as fallback.
+
 Speaker diarisation is performed via pyannote.audio when ALL of the following
 are true:
   1. ``HF_TOKEN`` is set in the environment (requires accepted model licences
@@ -29,18 +34,78 @@ if TYPE_CHECKING:
     from logger.storage import Storage
 
 
+# ---------------------------------------------------------------------------
+# Remote transcription offload
+# ---------------------------------------------------------------------------
+
+_REMOTE_TIMEOUT_S = 600  # 10 minutes — long recordings on slow networks
+
+
+async def _try_remote_transcribe(
+    file_path: str,
+    model_size: str,
+    diarize: bool,
+    *,
+    transcribe_url: str = "",
+) -> tuple[str, list[dict[str, object]]] | None:
+    """POST the WAV file to a remote worker and return (text, segments).
+
+    *transcribe_url* is the base URL of the worker (e.g. ``http://mac:8321``).
+    Falls back to ``TRANSCRIBE_URL`` env var if not provided.
+
+    Returns *None* when no URL is configured or the remote is unreachable,
+    signalling the caller to fall back to local processing.
+    """
+    url = (transcribe_url or os.environ.get("TRANSCRIBE_URL", "")).rstrip("/")
+    if not url:
+        return None
+
+    import httpx
+
+    endpoint = f"{url}/transcribe"
+    logger.info("Remote transcribe: uploading {} to {}", file_path, endpoint)
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(_REMOTE_TIMEOUT_S)) as client:
+            with open(file_path, "rb") as f:
+                resp = await client.post(
+                    endpoint,
+                    files={"file": ("audio.wav", f, "audio/wav")},
+                    params={"model_size": model_size, "diarize": str(diarize).lower()},
+                )
+            resp.raise_for_status()
+        data = resp.json()
+        text: str = data["text"]
+        segments: list[dict[str, object]] = data.get("segments") or []
+        logger.info("Remote transcribe succeeded: {} chars, {} segments", len(text), len(segments))
+        return text, segments
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Remote transcribe failed (falling back to local): {}", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Main entry point
+# ---------------------------------------------------------------------------
+
+
 async def transcribe_session(
     storage: Storage,
     audio_session_id: int,
     transcript_id: int,
     model_size: str = "base",
     diarize: bool = True,
+    *,
+    transcribe_url: str = "",
 ) -> None:
     """Run transcription (and optionally diarisation) and update the transcript row.
 
     This coroutine is intended to be launched as a background task.
     *transcript_id* must be an existing row (status='pending') created by
     ``storage.create_transcript_job()``.
+
+    When *transcribe_url* (or ``TRANSCRIBE_URL`` env var) is set, the audio
+    is POSTed to a remote worker. On failure the local faster-whisper path
+    runs as a fallback.
 
     Diarisation is attempted only when *diarize* is True **and** ``HF_TOKEN``
     is present in the environment. Otherwise the plain faster-whisper path runs.
@@ -59,6 +124,25 @@ async def transcribe_session(
     use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
 
     try:
+        # ----- Remote offload (preferred when TRANSCRIBE_URL is set) -----
+        remote = await _try_remote_transcribe(
+            file_path, model_size, diarize, transcribe_url=transcribe_url
+        )
+        if remote is not None:
+            text, segments = remote
+            segments_json_str = json.dumps(segments) if segments else None
+            await storage.update_transcript(
+                transcript_id, status="done", text=text, segments_json=segments_json_str
+            )
+            logger.info(
+                "Transcription done (remote): audio_session_id={} chars={}",
+                audio_session_id,
+                len(text),
+            )
+            await _run_trigger_scan(storage, audio_session_id, row, segments)
+            return
+
+        # ----- Local processing (fallback) -----
         if use_diarize:
             text, segments_json_str = await asyncio.to_thread(
                 _run_with_diarization, file_path=file_path, model_size=model_size
@@ -71,7 +155,8 @@ async def transcribe_session(
                 audio_session_id,
                 len(text),
             )
-            segments: list[dict[str, object]] = json.loads(segments_json_str)
+            assert segments_json_str is not None  # _run_with_diarization always returns str
+            segments = json.loads(segments_json_str)
         else:
             text = await asyncio.to_thread(_run_whisper, file_path=file_path, model_size=model_size)
             await storage.update_transcript(transcript_id, status="done", text=text)

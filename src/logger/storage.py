@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 23
+_CURRENT_VERSION: int = 24
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -447,6 +447,14 @@ _MIGRATIONS: dict[int, str] = {
         -- Seed with existing hardcoded defaults
         INSERT OR IGNORE INTO event_rules (weekday, event_name) VALUES (0, 'BallardCup');
         INSERT OR IGNORE INTO event_rules (weekday, event_name) VALUES (2, 'CYC');
+    """,
+    24: """
+        -- Admin-configurable settings (#146)
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key         TEXT PRIMARY KEY,
+            value       TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        );
     """,
 }
 
@@ -1353,9 +1361,7 @@ class Storage:
     async def get_event_rule(self, weekday: int) -> str | None:
         """Return the event name for a weekday (0=Mon … 6=Sun), or None."""
         db = self._conn()
-        cur = await db.execute(
-            "SELECT event_name FROM event_rules WHERE weekday = ?", (weekday,)
-        )
+        cur = await db.execute("SELECT event_name FROM event_rules WHERE weekday = ?", (weekday,))
         row = await cur.fetchone()
         return row["event_name"] if row else None
 
@@ -1967,8 +1973,7 @@ class Storage:
         """Return all configured cameras, ordered by name."""
         db = self._conn()
         cur = await db.execute(
-            "SELECT id, name, ip, model, wifi_ssid, wifi_password"
-            " FROM cameras ORDER BY name ASC"
+            "SELECT id, name, ip, model, wifi_ssid, wifi_password FROM cameras ORDER BY name ASC"
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
@@ -2389,9 +2394,7 @@ class Storage:
         await db.execute("UPDATE invite_tokens SET used_at = ? WHERE token = ?", (now, token))
         await db.commit()
 
-    async def count_recent_tokens_for_email(
-        self, email: str, window_hours: int = 1
-    ) -> int:
+    async def count_recent_tokens_for_email(self, email: str, window_hours: int = 1) -> int:
         """Count invite tokens created for *email* in the last *window_hours* hours.
 
         Since ``invite_tokens`` has no ``created_at`` column, we derive creation
@@ -2401,9 +2404,7 @@ class Storage:
         from datetime import UTC, timedelta
         from datetime import datetime as _dt
 
-        threshold = (
-            _dt.now(UTC) + timedelta(days=7) - timedelta(hours=window_hours)
-        ).isoformat()
+        threshold = (_dt.now(UTC) + timedelta(days=7) - timedelta(hours=window_hours)).isoformat()
         cur = await self._conn().execute(
             "SELECT COUNT(*) FROM invite_tokens WHERE email = ? AND expires_at > ?",
             (email.lower().strip(), threshold),
@@ -2662,6 +2663,46 @@ class Storage:
         return row["avatar_path"] if row else None
 
     # ------------------------------------------------------------------
+    # App settings (#146)
+    # ------------------------------------------------------------------
+
+    async def get_setting(self, key: str) -> str | None:
+        """Return the stored value for *key*, or None if not set."""
+        cur = await self._conn().execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return str(row["value"]) if row else None
+
+    async def set_setting(self, key: str, value: str) -> None:
+        """Upsert a setting (insert or update)."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value,"
+            " updated_at = excluded.updated_at",
+            (key, value, now),
+        )
+        await db.commit()
+
+    async def delete_setting(self, key: str) -> bool:
+        """Delete a setting. Returns True if a row was removed."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def list_settings(self) -> list[dict[str, str]]:
+        """Return all stored settings as a list of dicts."""
+        cur = await self._conn().execute(
+            "SELECT key, value, updated_at FROM app_settings ORDER BY key"
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -2674,3 +2715,14 @@ class Storage:
 def _ts(dt: datetime) -> str:
     """Format a datetime as a UTC ISO 8601 string."""
     return dt.isoformat()
+
+
+async def get_effective_setting(storage: Storage, key: str, default: str = "") -> str:
+    """Return the effective value for a setting: DB → env → default."""
+    db_val = await storage.get_setting(key)
+    if db_val is not None:
+        return db_val
+    env_val = os.environ.get(key)
+    if env_val is not None:
+        return env_val
+    return default
