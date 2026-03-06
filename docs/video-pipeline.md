@@ -15,16 +15,17 @@ SD card inserted into Mac
   macOS dialog: "Process race videos?"
         │ Yes
         ▼
-  Discover .insv files → group by recording
+  Discover recordings (.insv + .mp4)
         │
         ▼
-  Stitch via Docker + insta360-cli-utils
-        │
-        ▼
-  Inject 360° spatial metadata (exiftool)
-        │
-        ▼
-  Upload to YouTube (unlisted)
+  .insv (360°) → Stitch via Docker     .mp4 (single-lens) → copy
+        │                                       │
+        ▼                                       │
+  Inject 360° spatial metadata (exiftool)       │
+        │                                       │
+        └───────────────┬───────────────────────┘
+                        ▼
+              Upload to YouTube (unlisted)
         │
         ▼
   Match to race/practice session (Pi API)
@@ -185,8 +186,17 @@ DCIM/Camera01/
   LRV_20260810_140530_01_000.mp4    (low-res preview)
 ```
 
-The pipeline groups files by timestamp and only uses back-lens (`_00_`) files —
-the stitcher pairs front+back automatically.
+The Insta360 X4 also records in single-lens mode as `.mp4`:
+
+```
+DCIM/Camera01/
+  VID_20260810_150000_00_001.mp4    (single-lens, segment 1)
+```
+
+The pipeline discovers both formats. `.insv` files are stitched via Docker;
+`.mp4` files are copied directly (no Docker needed). In both cases, only
+back-lens (`_00_`) files are used — the stitcher pairs front+back automatically
+for `.insv`.
 
 ## Logs
 
@@ -213,7 +223,7 @@ rm ~/Library/LaunchAgents/com.j105.video.plist
 **"Docker is not running"** — Start Docker Desktop.
 
 **"No Insta360 SD card detected"** — Ensure the card is mounted and has
-`DCIM/Camera01/VID_*.insv` files.
+`DCIM/Camera01/VID_*.insv` or `VID_*.mp4` files.
 
 **YouTube upload fails with 403** — Your API quota may be exhausted (default:
 ~6 uploads/day). Check [Google Cloud Console](https://console.cloud.google.com/apis/dashboard).
