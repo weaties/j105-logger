@@ -83,9 +83,9 @@ function render(data) {
     }
     const downloadsHtml = downloads ? '<div class="session-exports">' + downloads + '</div>' : '';
 
-    // --- Video link in header ---
+    // --- Video play button in header ---
     const videoLink = s.first_video_url
-      ? '<a class="session-video-link" href="' + s.first_video_url.replace(/&/g,'&amp;') + '" target="_blank" title="Watch video">&#9654; Video</a>'
+      ? '<button class="session-video-link" onclick="event.stopPropagation();toggleHistoryPlayer(' + s.id + ')" title="Watch video">&#9654; Video</button>'
       : '';
 
     // --- Expandable panels (order matches toggle buttons) ---
@@ -111,6 +111,11 @@ function render(data) {
       ? '<div class="session-results" id="hist-transcript-' + s.id + '" style="display:none"></div>'
       : '';
 
+    // --- Embedded video player panel ---
+    const playerPanel = s.first_video_url
+      ? '<div class="session-results" id="hist-player-' + s.id + '" style="display:none"></div>'
+      : '';
+
     // --- Audio playback at the bottom ---
     const audioHtml = (s.has_audio && s.audio_session_id)
       ? '<div style="margin-top:6px"><audio controls style="width:100%">'
@@ -122,6 +127,7 @@ function render(data) {
     return '<div class="card"><div class="session-name">' + nameLink + badge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + parent
+      + playerPanel
       + togglesHtml + trackPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
       + downloadsHtml + audioHtml + '</div>';
   }).join('');
@@ -462,6 +468,93 @@ async function deleteHistVideo(videoId, sessionId) {
   await fetch('/api/videos/' + videoId, {method: 'DELETE'});
   const el = document.getElementById('hist-videos-' + sessionId);
   await _loadVideos(sessionId, el);
+}
+
+// ---- Embedded YouTube player in history cards ----
+let _ytApiLoaded = false;
+let _ytApiReady = false;
+let _ytPendingSessionId = null;
+const _histPlayers = {};
+
+function _ensureYTApi() {
+  if (_ytApiLoaded) return;
+  _ytApiLoaded = true;
+  const tag = document.createElement('script');
+  tag.src = 'https://www.youtube.com/iframe_api';
+  document.head.appendChild(tag);
+}
+
+function onYouTubeIframeAPIReady() {
+  _ytApiReady = true;
+  if (_ytPendingSessionId !== null) {
+    _createHistPlayer(_ytPendingSessionId);
+    _ytPendingSessionId = null;
+  }
+}
+
+async function toggleHistoryPlayer(sessionId) {
+  const el = document.getElementById('hist-player-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (_histPlayers[sessionId]) {
+      _histPlayers[sessionId].destroy();
+      delete _histPlayers[sessionId];
+    }
+    return;
+  }
+
+  // Fetch videos for this session
+  const r = await fetch('/api/sessions/' + sessionId + '/videos');
+  const videos = await r.json();
+  if (!videos.length) { el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No videos</span>'; el.style.display = ''; return; }
+
+  const vid = videos.find(v => v.video_id) || videos[0];
+  if (!vid || !vid.video_id) { el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No embeddable video</span>'; el.style.display = ''; return; }
+
+  // Build switcher + player container
+  let html = '';
+  if (videos.filter(v => v.video_id).length > 1) {
+    html += '<div style="display:flex;gap:6px;margin-bottom:6px">';
+    html += videos.filter(v => v.video_id).map((v, i) => {
+      const label = (v.label || v.title || 'Video ' + (i + 1)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      const cls = v.video_id === vid.video_id ? 'filter-btn active' : 'filter-btn';
+      return '<button class="' + cls + '" onclick="switchHistVideo(' + sessionId + ',\'' + v.video_id + '\',this)">' + label + '</button>';
+    }).join('');
+    html += '</div>';
+  }
+  html += '<div id="hist-yt-' + sessionId + '" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>';
+  el.innerHTML = html;
+  el.style.display = '';
+  el.dataset.videoId = vid.video_id;
+
+  _ensureYTApi();
+  if (_ytApiReady) {
+    _createHistPlayer(sessionId);
+  } else {
+    _ytPendingSessionId = sessionId;
+  }
+}
+
+function _createHistPlayer(sessionId) {
+  const el = document.getElementById('hist-player-' + sessionId);
+  if (!el) return;
+  const videoId = el.dataset.videoId;
+  if (!videoId) return;
+  _histPlayers[sessionId] = new YT.Player('hist-yt-' + sessionId, {
+    height: '100%', width: '100%', videoId: videoId,
+    playerVars: { modestbranding: 1, rel: 0, enablejsapi: 1, origin: location.origin },
+  });
+}
+
+function switchHistVideo(sessionId, videoId, btn) {
+  if (!_histPlayers[sessionId]) return;
+  _histPlayers[sessionId].loadVideoById(videoId);
+  const el = document.getElementById('hist-player-' + sessionId);
+  if (el) {
+    el.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+  }
 }
 
 async function toggleHistorySails(sessionId) {
