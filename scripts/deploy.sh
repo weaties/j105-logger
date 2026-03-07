@@ -129,7 +129,7 @@ fi
 echo "==> Syncing Python dependencies..."
 "$UV_BIN" sync
 
-# Ensure j105logger can traverse the uv Python symlink chain (.venv/bin/python →
+# Ensure helmlog can traverse the uv Python symlink chain (.venv/bin/python →
 # ~/.local/share/uv/python/cpython-*/bin/python3.12).  A Python version upgrade
 # creates a new cpython-* dir that would otherwise be 700.
 for d in "$HOME/.local" "$HOME/.local/share" "$HOME/.local/share/uv" \
