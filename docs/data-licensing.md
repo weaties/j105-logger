@@ -8,7 +8,7 @@ A **data co-op** is a group of boats that agree to share instrument data under t
 policy. Multiple independent co-ops can exist — for example, a J/105 co-op in
 Seattle, a J/105 co-op in San Francisco, and a J/80 co-op in Seattle are all
 separate co-ops with independent membership, governance, and data pools. A boat may
-belong to more than one co-op.
+belong to more than one co-op, subject to the per-event exclusivity rules below.
 
 All participants must agree to this policy before joining a data co-op. Single-boat
 users who do not participate in any co-op are bound only by the ownership and
@@ -505,6 +505,33 @@ Two or more co-ops may choose to share data with each other. This requires:
 Cross-co-op agreements do not merge co-ops — each retains independent governance,
 membership, and the right to withdraw.
 
+### Dual membership and per-event exclusivity
+
+A boat may belong to multiple co-ops. However, when two or more of a boat's
+co-ops participate in the **same event** (race, regatta, or series), the boat
+must designate **one co-op** to receive their session data for that event. The
+same session data may not be contributed to multiple co-ops.
+
+This rule:
+
+- **Prevents data duplication** across co-ops for the same event
+- **Eliminates proxy aggregation** — two co-ops cannot reconstruct the same
+  race from overlapping members' data
+- **Applies per-session** — a boat can contribute Saturday's race to Co-op A
+  and Wednesday's race to Co-op B if the co-ops don't overlap for those events
+- **Does not restrict non-overlapping events** — if only one of the boat's
+  co-ops participates in a given event, no choice is needed
+
+#### Transparency
+
+Dual membership must be disclosed:
+
+- When joining a second co-op, the boat must inform **both co-ops** of the
+  dual membership
+- Each co-op may set its own policy on whether dual membership is permitted.
+  A co-op may choose to prohibit dual membership with a specific other co-op
+  (e.g., if they have competing commercial agreements) by majority vote
+
 ---
 
 ## 7. Non-Member Boats
@@ -744,6 +771,8 @@ codebase:
 | Current model geographic scoping | Scope current/tide models to defined geographic areas; per-area opt-in/opt-out per boat |
 | Current model unanimous consent | Enforce unanimous vote requirement (not 2/3) for current model projects |
 | Pre-join disclosure | Present all active commercial, ML, current model, and cross-co-op agreements to prospective members before admission |
+| Per-event co-op assignment | When a boat belongs to multiple co-ops, require co-op selection per session before data is shared; prevent same session from being contributed to multiple co-ops |
+| Dual membership tracking | Record multi-co-op memberships; notify both co-ops; enforce co-op-level dual membership policies |
 
 ---
 
@@ -781,3 +810,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 7 — non-member boats section, AIS/proximity data exclusion, full-fleet result imports with OA license compliance, non-member removal policy, "do not poison the well" principle |
 | 2026-03-07 | Rev 8 — tide and current observations as boat-private data type, co-op current models with unanimous consent and geographic scoping, per-area opt-out, private observation combination rights, competitive incentive for non-members |
 | 2026-03-07 | Rev 9 — pre-join disclosure of active agreements, informed consent on joining, standalone platform use without co-op |
+| 2026-03-07 | Rev 10 — dual co-op membership rules, per-event exclusivity (same session cannot go to multiple co-ops), dual membership disclosure and co-op-level opt-out |
