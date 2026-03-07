@@ -1330,7 +1330,12 @@ class Storage:
                 f" r.start_utc AS start_utc, r.end_utc AS end_utc,"
                 f" CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS has_audio,"
                 f" a.id AS audio_session_id,"
-                f" NULL AS parent_race_id, NULL AS parent_race_name"
+                f" NULL AS parent_race_id, NULL AS parent_race_name,"
+                f" (SELECT COUNT(*) > 0 FROM positions p"
+                f"   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
+                f" ) AS has_track,"
+                f" (SELECT rv.youtube_url FROM race_videos rv"
+                f"   WHERE rv.race_id = r.id LIMIT 1) AS first_video_url"
                 f" FROM races r"
                 f" LEFT JOIN audio_sessions a"
                 f"   ON a.race_id = r.id AND a.session_type IN ('race', 'practice')"
@@ -1360,7 +1365,8 @@ class Storage:
                 f" COALESCE(r.date, substr(a.start_utc, 1, 10)) AS date,"
                 f" a.start_utc AS start_utc, a.end_utc AS end_utc,"
                 f" 1 AS has_audio, a.id AS audio_session_id,"
-                f" r.id AS parent_race_id, r.name AS parent_race_name"
+                f" r.id AS parent_race_id, r.name AS parent_race_name,"
+                f" 0 AS has_track, NULL AS first_video_url"
                 f" FROM audio_sessions a"
                 f" LEFT JOIN races r ON r.id = a.race_id"
                 f" {where}"
@@ -1404,6 +1410,8 @@ class Storage:
                     "audio_session_id": row["audio_session_id"],
                     "parent_race_id": row["parent_race_id"],
                     "parent_race_name": row["parent_race_name"],
+                    "has_track": bool(row["has_track"]),
+                    "first_video_url": row["first_video_url"],
                     "crew": [],
                 }
             )
