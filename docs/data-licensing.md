@@ -298,12 +298,35 @@ remain a member, just no longer an admin.
 
 ### Joining
 
-Any boat running a Helm Log instance can request to join a co-op. Joining
-requires:
+Any boat running a Helm Log instance can request to join a co-op. The platform
+is fully functional without co-op membership — joining is a choice, not a
+requirement. Joining requires:
 
 1. Agreeing to this data licensing policy
 2. Sharing at least one race session
 3. Acceptance by a co-op admin
+
+#### Disclosure of active agreements
+
+Before joining, the co-op must disclose to the prospective member all active:
+
+- **Commercial agreements** (Section 9) — what data or derivatives are being
+  commercialized, by whom, and the revenue-sharing terms
+- **ML projects** (Section 8) — what models are being trained, on what data,
+  and what opt-out rights exist
+- **Current model projects** (Section 8) — which geographic areas have active
+  current models and which members have contributed
+- **Cross-co-op data sharing agreements** (Section 6) — which other co-ops
+  have access to this co-op's data
+
+By joining, the new member **accepts all active agreements as disclosed**. Their
+contributed data becomes subject to those agreements from the moment it enters
+the co-op. There is no grace period or retroactive carve-out — the member had
+full information before joining and chose to participate.
+
+If a prospective member objects to an active agreement, they may choose not to
+join. They can still use Helm Log as a standalone platform without co-op
+membership.
 
 #### Bootstrap phase
 
@@ -720,6 +743,7 @@ codebase:
 | Current observation derivation | Compute observed current vectors from BSP/heading vs SOG/COG; store as boat-private by default |
 | Current model geographic scoping | Scope current/tide models to defined geographic areas; per-area opt-in/opt-out per boat |
 | Current model unanimous consent | Enforce unanimous vote requirement (not 2/3) for current model projects |
+| Pre-join disclosure | Present all active commercial, ML, current model, and cross-co-op agreements to prospective members before admission |
 
 ---
 
@@ -756,3 +780,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 6 — coach derivative works prohibition, race results clarified as scored rank/time only, small-dataset anonymization disclaimer, inactive co-op dormancy/dissolution, liability shield and no-warranty clause, soft delete vs hard delete distinction, audit logging requirement |
 | 2026-03-07 | Rev 7 — non-member boats section, AIS/proximity data exclusion, full-fleet result imports with OA license compliance, non-member removal policy, "do not poison the well" principle |
 | 2026-03-07 | Rev 8 — tide and current observations as boat-private data type, co-op current models with unanimous consent and geographic scoping, per-area opt-out, private observation combination rights, competitive incentive for non-members |
+| 2026-03-07 | Rev 9 — pre-join disclosure of active agreements, informed consent on joining, standalone platform use without co-op |
