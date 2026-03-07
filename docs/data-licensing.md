@@ -147,6 +147,12 @@ co-op must comply with any licensing terms imposed by the organizing authority o
 race management software provider (e.g., Sailwave, Yacht Scoring) on the use of
 their published results.
 
+**Liability for result imports rests with the co-op, not the platform.** The
+co-op admin who initiates the import is responsible for verifying that the
+source data's license permits the intended use. Helm Log provides the import
+mechanism but does not warrant that any specific co-op's use of imported results
+complies with third-party terms.
+
 Non-member boats appear in imported results **only as their official scored
 finish** (rank, time, corrected time, and boat name as published by the organizing
 authority). No instrument data, GPS tracks, or other session data is captured for
@@ -393,6 +399,15 @@ members) for **2 consecutive years**, it enters **dormant status**:
   co-op is **dissolved**: all data is anonymized, identity mappings are deleted,
   and the co-op ceases to exist
 - Individual boats retain their own local data regardless of co-op dissolution
+
+#### Minimum viable co-op
+
+If a co-op's membership drops to **fewer than 3 boats**, it enters dormant status
+immediately regardless of activity level. A co-op of 1–2 boats does not provide
+meaningful reciprocal value, and the remaining members should not retain access
+to the anonymized historical data of all the boats that departed. The same
+reactivation and dissolution rules apply — if membership returns to 3 or more
+within the 30-day window, the co-op resumes normal operation.
 
 ### Re-entry after expulsion
 
@@ -811,3 +826,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 8 — tide and current observations as boat-private data type, co-op current models with unanimous consent and geographic scoping, per-area opt-out, private observation combination rights, competitive incentive for non-members |
 | 2026-03-07 | Rev 9 — pre-join disclosure of active agreements, informed consent on joining, standalone platform use without co-op |
 | 2026-03-07 | Rev 10 — dual co-op membership rules, per-event exclusivity (same session cannot go to multiple co-ops), dual membership disclosure and co-op-level opt-out |
+| 2026-03-07 | Rev 11 — OA result import liability on co-op not platform, minimum viable co-op (3 boats) triggers dormancy |
