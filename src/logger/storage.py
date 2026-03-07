@@ -1335,7 +1335,11 @@ class Storage:
                 f"   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
                 f" ) AS has_track,"
                 f" (SELECT rv.youtube_url FROM race_videos rv"
-                f"   WHERE rv.race_id = r.id LIMIT 1) AS first_video_url"
+                f"   WHERE rv.race_id = r.id LIMIT 1) AS first_video_url,"
+                f" (SELECT COUNT(*) > 0 FROM transcripts t"
+                f"   JOIN audio_sessions a2 ON a2.id = t.audio_session_id"
+                f"   WHERE a2.race_id = r.id AND t.status = 'done'"
+                f" ) AS has_transcript"
                 f" FROM races r"
                 f" LEFT JOIN audio_sessions a"
                 f"   ON a.race_id = r.id AND a.session_type IN ('race', 'practice')"
@@ -1366,7 +1370,10 @@ class Storage:
                 f" a.start_utc AS start_utc, a.end_utc AS end_utc,"
                 f" 1 AS has_audio, a.id AS audio_session_id,"
                 f" r.id AS parent_race_id, r.name AS parent_race_name,"
-                f" 0 AS has_track, NULL AS first_video_url"
+                f" 0 AS has_track, NULL AS first_video_url,"
+                f" (SELECT COUNT(*) > 0 FROM transcripts t"
+                f"   WHERE t.audio_session_id = a.id AND t.status = 'done'"
+                f" ) AS has_transcript"
                 f" FROM audio_sessions a"
                 f" LEFT JOIN races r ON r.id = a.race_id"
                 f" {where}"
@@ -1412,6 +1419,7 @@ class Storage:
                     "parent_race_name": row["parent_race_name"],
                     "has_track": bool(row["has_track"]),
                     "first_video_url": row["first_video_url"],
+                    "has_transcript": bool(row["has_transcript"]),
                     "crew": [],
                 }
             )

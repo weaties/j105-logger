@@ -55,19 +55,18 @@ function render(data) {
     // --- Toggle buttons: Track, Results, Crew, Sails, Notes, Videos, Transcript ---
     let toggles = '';
     if (s.type !== 'debrief') {
-      if (s.has_track) {
-        toggles += '<button class="btn-export" id="hist-track-btn-' + s.id + '" onclick="toggleHistoryTrack(' + s.id + ')">Track ▶</button>';
-      }
+      const trackCls = s.has_track ? 'btn-export btn-has-data' : 'btn-export btn-no-data';
+      toggles += '<button class="' + trackCls + '" id="hist-track-btn-' + s.id + '"' + (s.has_track ? ' onclick="toggleHistoryTrack(' + s.id + ')"' : ' disabled') + '>Track ▶</button>';
+      const videoCls = s.first_video_url ? 'btn-export btn-has-data' : 'btn-export btn-no-data';
+      toggles += '<button class="' + videoCls + '" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryPlayer(' + s.id + ')">Video ▶</button>';
       toggles += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
       toggles += '<button class="btn-export" id="hist-crew-btn-' + s.id + '" onclick="toggleHistoryCrew(' + s.id + ')">Crew ▶</button>';
       toggles += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">Sails ▶</button>';
       toggles += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
-      if (!s.first_video_url) {
-        toggles += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">Videos ▶</button>';
-      }
     }
     if (s.has_audio && s.audio_session_id) {
-      toggles += '<button class="btn-export" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">Transcript ▶</button>';
+      const transCls = s.has_transcript ? 'btn-export btn-has-data' : 'btn-export btn-no-data';
+      toggles += '<button class="' + transCls + '" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">Transcript ▶</button>';
     }
     const togglesHtml = toggles ? '<div class="session-exports">' + toggles + '</div>' : '';
 
@@ -85,10 +84,7 @@ function render(data) {
     }
     const downloadsHtml = downloads ? '<div class="session-exports">' + downloads + '</div>' : '';
 
-    // --- Video play button in header ---
-    const videoLink = s.first_video_url
-      ? '<button class="session-video-link" onclick="event.stopPropagation();toggleHistoryPlayer(' + s.id + ')" title="Watch video">&#9654; Video</button>'
-      : '';
+    const videoLink = '';
 
     // --- Expandable panels (order matches toggle buttons) ---
     const trackPanel = (s.type !== 'debrief' && s.has_track)
@@ -106,15 +102,13 @@ function render(data) {
     const notesPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
       : '';
-    const videosPanel = (s.type !== 'debrief' && !s.first_video_url)
-      ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
-      : '';
+    const videosPanel = '';
     const transcriptPanel = s.has_audio && s.audio_session_id
       ? '<div class="session-results" id="hist-transcript-' + s.id + '" style="display:none"></div>'
       : '';
 
     // --- Embedded video player panel ---
-    const playerPanel = s.first_video_url
+    const playerPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-player-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
 
@@ -503,9 +497,11 @@ function onYouTubeIframeAPIReady() {
 
 async function toggleHistoryPlayer(sessionId) {
   const el = document.getElementById('hist-player-' + sessionId);
+  const btn = document.getElementById('hist-videos-btn-' + sessionId);
   if (!el) return;
   if (el.style.display !== 'none') {
     el.style.display = 'none';
+    if (btn) btn.textContent = 'Video ▶';
     _stopHistSync(sessionId);
     if (_histPlayers[sessionId]) {
       _histPlayers[sessionId].destroy();
@@ -515,13 +511,29 @@ async function toggleHistoryPlayer(sessionId) {
     return;
   }
 
+  if (btn) btn.textContent = 'Video ▼';
+
   // Fetch videos for this session
   const r = await fetch('/api/sessions/' + sessionId + '/videos');
   const videos = await r.json();
-  if (!videos.length) { el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No videos</span>'; el.style.display = ''; return; }
+  if (!videos.length) {
+    // No videos yet — show just the add form
+    const startUtc = el.dataset.startUtc || '';
+    el.innerHTML = '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>'
+      + _histVideoAddForm(sessionId, startUtc);
+    el.style.display = '';
+    return;
+  }
 
   const vid = videos.find(v => v.video_id) || videos[0];
-  if (!vid || !vid.video_id) { el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No embeddable video</span>'; el.style.display = ''; return; }
+  if (!vid || !vid.video_id) {
+    const startUtc = el.dataset.startUtc || '';
+    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No embeddable video</span>'
+      + '<div id="hist-player-videos-' + sessionId + '" style="margin-top:8px"></div>';
+    _renderPlayerVideoList(sessionId, videos);
+    el.style.display = '';
+    return;
+  }
 
   // Build switcher + player + video list
   let html = '';
