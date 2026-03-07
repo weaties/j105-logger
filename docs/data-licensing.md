@@ -86,6 +86,33 @@ If a boat departs the co-op or requests data deletion, YouTube video metadata
 linked to that boat's sessions is included in the deletion scope (see Section 5).
 The actual YouTube video remains on YouTube under the uploader's control.
 
+### Tide and current observations
+
+Helm Log captures publicly available **tide and current predictions** from
+sources like NOAA (reference station predictions, harmonic constants). These
+public predictions are not proprietary and carry no ownership restrictions.
+
+However, as a boat sails in a specific area over time, Helm Log can derive
+**observed current data** — actual current vectors computed by comparing
+instrument speed (BSP/heading) against ground track (SOG/COG). These
+observations reveal how real currents differ from NOAA predictions at specific
+locations, times, and tide phases. This is **hard-earned local knowledge** that
+represents genuine competitive advantage built up over seasons of racing.
+
+Observed current data is:
+
+- **Owned by the boat** — it is derived from the boat's own instrument data
+- **Boat-private by default** — it is never shared with the co-op unless the
+  boat owner explicitly opts in
+- **Temporally rich** — current observations are most valuable in the context of
+  their tide cycle phase. An observation from three years ago is highly relevant
+  today if the tide conditions match, because tidal patterns are cyclical
+- **Geographically specific** — current knowledge for one sailing area has no
+  value in another
+
+For co-op current models built from multiple boats' observations, see Section 8
+(AI, Machine Learning, and Derived Models).
+
 ### Race results
 
 Race results occupy a unique position: they are entered into the logger by the
@@ -180,6 +207,7 @@ owner explicitly opts in:
 - Crew roster and role assignments
 - Sail selections and tuning notes
 - YouTube video links and metadata
+- Observed current and tide data (derived local knowledge)
 
 ### No bulk export of co-op data
 
@@ -529,6 +557,41 @@ To use co-op data for ML, the following conditions must all be met:
 5. Individual members may **opt out** of having their data included in ML training.
    Opting out does not affect their co-op membership or access to co-op data
 
+### Current and tide models — elevated governance
+
+Current and tide models built from co-op data are among the most competitively
+sensitive derivatives the co-op can produce. A high-resolution current model for
+a specific racing area can fundamentally change competitive outcomes. Because of
+this sensitivity, current models require **stricter governance** than general ML
+projects:
+
+1. **Unanimous consent** of all co-op boat representatives is required to
+   initiate a co-op current model project (not the standard 2/3 supermajority).
+   Every member must agree, because every member's local knowledge is at stake
+2. Current models must be **scoped to a specific geographic area** (e.g.,
+   "Elliott Bay," "SF Bay central," "Shilshole to West Point"). A co-op cannot
+   build a single undifferentiated "all waters" current model — each area is a
+   separate project requiring its own vote
+3. Members may **opt out per geographic area** — a member might contribute data
+   for one sailing area but not another, even within the same co-op
+4. The resulting current model is **owned by the co-op** and available to all
+   members (including those who opted out of contributing — the incentive to
+   contribute is that the model improves with more data, not that access is
+   gated)
+5. A member may combine the co-op current model with their **own private
+   observations** for their own use. This is not a derivative work violation —
+   it is simply a member using co-op resources plus their own data to race
+   better. However, if the member attempts to **extract, sell, or distribute**
+   the combined result, that falls under the commercial use rules in Section 9
+
+#### Competitive incentive for non-members
+
+A co-op current model creates a natural incentive for non-member boats to join:
+the model gets better with more boats contributing data across the sailing area,
+and members benefit from collective knowledge that no single boat could build
+alone. This incentive is intentional — it grows the co-op's value without
+coercing participation.
+
 ### Prohibitions
 
 - No member may use co-op data to train models **without co-op approval**
@@ -654,6 +717,9 @@ codebase:
 | AIS data filtering | Exclude AIS and proximity data from other vessels during capture; never store non-member tracking data |
 | Non-member result scoping | When importing full-fleet results, store only official scored finish data for non-members; no instrument or session data |
 | OA license compliance | Track organizing authority and race management software licensing terms for imported results |
+| Current observation derivation | Compute observed current vectors from BSP/heading vs SOG/COG; store as boat-private by default |
+| Current model geographic scoping | Scope current/tide models to defined geographic areas; per-area opt-in/opt-out per boat |
+| Current model unanimous consent | Enforce unanimous vote requirement (not 2/3) for current model projects |
 
 ---
 
@@ -689,3 +755,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 5 — data extraction protections (no bulk export), coach access hardening (time-limited, no-aggregation, mandatory deletion), AI/ML governance (co-op-owned models, opt-out, commercial vote), commercial use framework (non-commercial default, revenue sharing), cross-co-op isolation, admin elections and removal, dataset bias disclaimer |
 | 2026-03-07 | Rev 6 — coach derivative works prohibition, race results clarified as scored rank/time only, small-dataset anonymization disclaimer, inactive co-op dormancy/dissolution, liability shield and no-warranty clause, soft delete vs hard delete distinction, audit logging requirement |
 | 2026-03-07 | Rev 7 — non-member boats section, AIS/proximity data exclusion, full-fleet result imports with OA license compliance, non-member removal policy, "do not poison the well" principle |
+| 2026-03-07 | Rev 8 — tide and current observations as boat-private data type, co-op current models with unanimous consent and geographic scoping, per-area opt-out, private observation combination rights, competitive incentive for non-members |
