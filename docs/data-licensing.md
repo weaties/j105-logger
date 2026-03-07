@@ -28,6 +28,17 @@ The boat owner has full rights to export, share, delete, or restrict access to
 their instrument data. The boat owner controls who their data is shared with and
 can revoke any person's access at any time.
 
+#### AIS and proximity data exclusion
+
+Instrument systems may passively receive AIS (Automatic Identification System)
+transmissions or other proximity data from nearby boats. Helm Log **must not
+capture, store, or share** AIS positions or identifying information of other
+boats. The co-op exists to share data that members voluntarily contribute — it
+must not become a surveillance tool for non-participating boats.
+
+This exclusion applies to any passively received data that identifies or tracks
+another vessel, regardless of the source (AIS, radar targets, DSC, etc.).
+
 ### Audio and voice data
 
 Audio recordings are personally identifiable information (PII). Under GDPR, CCPA,
@@ -100,6 +111,20 @@ Because race results are **publicly available data** published by third parties:
   public information)
 - Annotations, comments, or notes attached to race results remain boat-private
   (they are not public data)
+
+#### Full-fleet result imports
+
+A co-op may vote to import **full-fleet official results** from the organizing
+authority, which includes finishing data for boats that are not co-op members. The
+co-op must comply with any licensing terms imposed by the organizing authority or
+race management software provider (e.g., Sailwave, Yacht Scoring) on the use of
+their published results.
+
+Non-member boats appear in imported results **only as their official scored
+finish** (rank, time, corrected time, and boat name as published by the organizing
+authority). No instrument data, GPS tracks, or other session data is captured for
+non-member boats. The co-op's only view of a non-member is what the organizing
+authority has already made public.
 
 ### Coach and combined datasets
 
@@ -431,7 +456,52 @@ membership, and the right to withdraw.
 
 ---
 
-## 7. AI, Machine Learning, and Derived Models
+## 7. Non-Member Boats
+
+### Principle: the co-op must not poison the well
+
+The existence of a data co-op within a fleet must not create adverse consequences
+for boats that choose not to participate. Non-members should experience racing
+exactly as they would if the co-op did not exist.
+
+### What the co-op knows about non-members
+
+The co-op's only information about non-member boats comes from **official race
+results published by the organizing authority**. This is limited to:
+
+- Boat name (as published by the OA)
+- Scored rank, finishing time, and corrected time
+- Class, sail number, and other regatta registration data
+
+The co-op has **no instrument data, GPS tracks, performance metrics, or session
+data** for non-member boats.
+
+### What the co-op must NOT capture about non-members
+
+- AIS positions or tracks (see Section 1, AIS exclusion)
+- Radar targets or other proximity-derived position data
+- Any data that would allow the co-op to reconstruct a non-member's race
+  performance beyond what the organizing authority publishes
+
+### Non-member removal requests
+
+Non-member boats **cannot request removal** of their data from the co-op, because
+the only non-member data in the co-op is official race results that the organizing
+authority has already published. The co-op is not the source of this data — the
+organizing authority is.
+
+If a non-member has concerns about their race results being published, they should
+address those concerns with the organizing authority.
+
+### Joining the co-op
+
+A non-member boat that wants to see co-op data (including how co-op members
+performed relative to them) can join the co-op by meeting the standard membership
+requirements in Section 3.
+
+---
+
+## 8. AI, Machine Learning, and Derived Models
 
 ### Individual boat data
 
@@ -471,7 +541,7 @@ To use co-op data for ML, the following conditions must all be met:
 
 ---
 
-## 8. Commercial Use and Value
+## 9. Commercial Use and Value
 
 ### Non-commercial by default
 
@@ -506,7 +576,7 @@ the time of the commercial agreement and must be included in the vote.
 
 ---
 
-## 9. Dataset Representativeness
+## 10. Dataset Representativeness
 
 ### No guarantee of balance
 
@@ -529,7 +599,7 @@ determined analysis by someone with fleet knowledge.
 
 ---
 
-## 10. Liability and Warranty
+## 11. Liability and Warranty
 
 ### No warranty
 
@@ -552,7 +622,7 @@ dissolution.
 
 ---
 
-## 11. Technical Requirements
+## 12. Technical Requirements
 
 This policy requires the following technical capabilities in the Helm Log
 codebase:
@@ -581,10 +651,13 @@ codebase:
 | Commercial use tracking | Record commercial agreements, votes, and revenue distribution |
 | Audit logging | Log all co-op data access (who viewed which session, when) to detect extraction patterns (e.g., a member viewing hundreds of sessions in a short period) |
 | Co-op dormancy tracking | Track last governance activity date; trigger dormant status after 2 years of inactivity |
+| AIS data filtering | Exclude AIS and proximity data from other vessels during capture; never store non-member tracking data |
+| Non-member result scoping | When importing full-fleet results, store only official scored finish data for non-members; no instrument or session data |
+| OA license compliance | Track organizing authority and race management software licensing terms for imported results |
 
 ---
 
-## 12. Software License
+## 13. Software License
 
 The Helm Log source code is licensed under the **GNU Affero General Public
 License v3.0 (AGPLv3)**. See the `LICENSE` file in the repository root.
@@ -615,3 +688,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 4 — rebrand from "J105 Logger" to "Helm Log" (helmlog.org) |
 | 2026-03-07 | Rev 5 — data extraction protections (no bulk export), coach access hardening (time-limited, no-aggregation, mandatory deletion), AI/ML governance (co-op-owned models, opt-out, commercial vote), commercial use framework (non-commercial default, revenue sharing), cross-co-op isolation, admin elections and removal, dataset bias disclaimer |
 | 2026-03-07 | Rev 6 — coach derivative works prohibition, race results clarified as scored rank/time only, small-dataset anonymization disclaimer, inactive co-op dormancy/dissolution, liability shield and no-warranty clause, soft delete vs hard delete distinction, audit logging requirement |
+| 2026-03-07 | Rev 7 — non-member boats section, AIS/proximity data exclusion, full-fleet result imports with OA license compliance, non-member removal policy, "do not poison the well" principle |
