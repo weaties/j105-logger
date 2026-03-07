@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no"/>
+<title>J105</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#0a1628;color:#e8eaf0;
+  padding:4px;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+
+/* Instrument grid */
+.instruments{display:grid;grid-template-columns:1fr 1fr;gap:3px;flex:1;min-height:0}
+.inst{background:#141e33;border-radius:6px;padding:4px;text-align:center;
+  display:flex;flex-direction:column;justify-content:center}
+.inst .label{font-size:9px;color:#8899aa;text-transform:uppercase;letter-spacing:.5px}
+.inst .value{font-size:22px;font-weight:700;line-height:1.1}
+.inst .unit{font-size:8px;color:#667788}
+
+/* Polar gauge */
+.polar{grid-column:span 2;display:flex;align-items:center;justify-content:center;gap:6px}
+.polar .value{font-size:28px;font-weight:800}
+.polar .value.good{color:#4ade80}
+.polar .value.ok{color:#facc15}
+.polar .value.bad{color:#f87171}
+
+/* Timer */
+.timer-row{text-align:center;padding:3px 0;font-size:14px;font-weight:600;color:#94a3b8}
+.timer-row .elapsed{font-variant-numeric:tabular-nums}
+
+/* Action buttons */
+.actions{display:flex;gap:4px;padding:3px 0}
+.btn{flex:1;border:none;border-radius:8px;padding:10px 0;font-size:13px;font-weight:700;
+  cursor:pointer;touch-action:manipulation;-webkit-tap-highlight-color:transparent}
+.btn-start{background:#22c55e;color:#000}
+.btn-stop{background:#ef4444;color:#fff}
+.btn-mark{background:#3b82f6;color:#fff}
+.btn:active{opacity:.7}
+.btn:disabled{opacity:.3;cursor:default}
+
+/* Status */
+.status{text-align:center;font-size:9px;color:#475569;padding:2px}
+.status .event{color:#94a3b8}
+
+/* Idle state */
+.idle-msg{flex:1;display:flex;align-items:center;justify-content:center;
+  font-size:13px;color:#64748b;text-align:center;padding:8px}
+</style>
+</head>
+<body>
+
+<div id="racing" style="display:none;flex:1;display:flex;flex-direction:column">
+  <div class="instruments">
+    <div class="inst"><span class="label">BSP</span><span class="value" id="bsp">—</span><span class="unit">kts</span></div>
+    <div class="inst"><span class="label">SOG</span><span class="value" id="sog">—</span><span class="unit">kts</span></div>
+    <div class="inst"><span class="label">TWS</span><span class="value" id="tws">—</span><span class="unit">kts</span></div>
+    <div class="inst"><span class="label">TWA</span><span class="value" id="twa">—</span><span class="unit">°</span></div>
+    <div class="polar">
+      <span class="label" style="font-size:9px;color:#8899aa">POLAR</span>
+      <span class="value" id="polar-pct">—%</span>
+    </div>
+  </div>
+  <div class="timer-row">
+    <span id="event-name"></span>
+    <span class="elapsed" id="elapsed">00:00</span>
+  </div>
+  <div class="actions">
+    <button class="btn btn-mark" id="btn-mark" onclick="addMark()">MARK</button>
+    <button class="btn btn-stop" id="btn-stop" onclick="confirmStop()">STOP</button>
+  </div>
+</div>
+
+<div id="idle" style="flex:1;display:flex;flex-direction:column">
+  <div class="idle-msg">No active race</div>
+  <div class="actions">
+    <button class="btn btn-start" id="btn-start-race" onclick="startRace('race')">START RACE</button>
+    <button class="btn btn-start" id="btn-start-prac" style="background:#3b82f6;color:#fff" onclick="startRace('practice')">PRACTICE</button>
+  </div>
+</div>
+
+<div class="status"><span class="event" id="status-event"></span> <span id="status-dot">●</span></div>
+
+<script>
+let state = null;
+let stopConfirm = false;
+let pollTimer = null;
+
+async function fetchJSON(url, opts) {
+  const r = await fetch(url, opts);
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+
+async function refresh() {
+  try {
+    const [st, inst, pol] = await Promise.all([
+      fetchJSON('/api/state'),
+      fetchJSON('/api/instruments'),
+      fetchJSON('/api/polar/current'),
+    ]);
+    state = st;
+    updateUI(st, inst, pol);
+    document.getElementById('status-dot').style.color = '#4ade80';
+  } catch (e) {
+    document.getElementById('status-dot').style.color = '#ef4444';
+  }
+}
+
+function updateUI(st, inst, pol) {
+  const racing = st.current_race != null;
+  document.getElementById('racing').style.display = racing ? 'flex' : 'none';
+  document.getElementById('idle').style.display = racing ? 'none' : 'flex';
+
+  if (st.event) {
+    document.getElementById('status-event').textContent = st.event;
+  }
+
+  if (!racing) return;
+
+  // Instruments
+  const fmt = (v) => v != null ? Number(v).toFixed(1) : '—';
+  document.getElementById('bsp').textContent = fmt(inst.bsp_kts);
+  document.getElementById('sog').textContent = fmt(inst.sog_kts);
+  document.getElementById('tws').textContent = fmt(inst.tws_kts);
+  document.getElementById('twa').textContent = inst.twa_deg != null ? Math.round(inst.twa_deg) : '—';
+
+  // Polar %
+  const pctEl = document.getElementById('polar-pct');
+  if (pol.bsp != null && pol.baseline_bsp != null && pol.baseline_bsp > 0) {
+    const p = Math.round((pol.bsp / pol.baseline_bsp) * 100);
+    pctEl.textContent = p + '%';
+    pctEl.className = 'value ' + (p >= 95 ? 'good' : p >= 85 ? 'ok' : 'bad');
+  } else {
+    pctEl.textContent = '—%';
+    pctEl.className = 'value';
+  }
+
+  // Timer
+  const start = new Date(st.current_race.start_utc);
+  document.getElementById('event-name').textContent =
+    (st.current_race.event || '') + ' ';
+  updateTimer(start);
+}
+
+function updateTimer(start) {
+  const el = document.getElementById('elapsed');
+  function tick() {
+    const s = Math.floor((Date.now() - start.getTime()) / 1000);
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    if (m >= 60) {
+      const h = Math.floor(m / 60);
+      el.textContent = h + ':' + String(m % 60).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+    } else {
+      el.textContent = String(m).padStart(2,'0') + ':' + String(sec).padStart(2,'0');
+    }
+  }
+  tick();
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(tick, 1000);
+}
+
+async function startRace(type) {
+  try {
+    await fetchJSON('/api/races/start?session_type=' + type, {method: 'POST'});
+    refresh();
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+function confirmStop() {
+  const btn = document.getElementById('btn-stop');
+  if (!stopConfirm) {
+    stopConfirm = true;
+    btn.textContent = 'CONFIRM';
+    btn.style.background = '#dc2626';
+    setTimeout(() => { stopConfirm = false; btn.textContent = 'STOP'; btn.style.background = '#ef4444'; }, 3000);
+    return;
+  }
+  stopRace();
+}
+
+async function stopRace() {
+  if (!state || !state.current_race) return;
+  try {
+    await fetch('/api/races/' + state.current_race.id + '/end', {method: 'POST'});
+    stopConfirm = false;
+    document.getElementById('btn-stop').textContent = 'STOP';
+    if (pollTimer) clearInterval(pollTimer);
+    refresh();
+  } catch (e) {
+    /* ignore */
+  }
+}
+
+async function addMark() {
+  if (!state || !state.current_race) return;
+  const btn = document.getElementById('btn-mark');
+  try {
+    await fetchJSON('/api/sessions/' + state.current_race.id + '/notes', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({body: 'Watch mark'}),
+    });
+    btn.textContent = '✓';
+    setTimeout(() => { btn.textContent = 'MARK'; }, 1000);
+  } catch (e) {
+    btn.textContent = '✗';
+    setTimeout(() => { btn.textContent = 'MARK'; }, 1000);
+  }
+}
+
+// Poll every 3 seconds
+refresh();
+setInterval(refresh, 3000);
+</script>
+</body>
+</html>
