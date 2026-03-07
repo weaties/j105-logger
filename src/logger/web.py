@@ -531,6 +531,10 @@ def create_app(
             ),
         )
 
+    @app.get("/watch", response_class=HTMLResponse, include_in_schema=False)
+    async def watch_page(request: Request) -> Response:
+        return _templates.TemplateResponse(request, "watch.html", {"request": request})
+
     @app.get("/history", response_class=HTMLResponse, include_in_schema=False)
     async def history_page(request: Request) -> Response:
         return _templates.TemplateResponse(
