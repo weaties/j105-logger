@@ -52,9 +52,12 @@ function render(data) {
     const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
-    // --- Toggle buttons: Results, Crew, Sails, Notes, Videos, Transcript ---
+    // --- Toggle buttons: Track, Results, Crew, Sails, Notes, Videos, Transcript ---
     let toggles = '';
     if (s.type !== 'debrief') {
+      if (s.has_track) {
+        toggles += '<button class="btn-export" id="hist-track-btn-' + s.id + '" onclick="toggleHistoryTrack(' + s.id + ')">Track ▶</button>';
+      }
       toggles += '<button class="btn-export" id="hist-results-btn-' + s.id + '" onclick="toggleHistoryResults(' + s.id + ')">Results ▶</button>';
       toggles += '<button class="btn-export" id="hist-crew-btn-' + s.id + '" onclick="toggleHistoryCrew(' + s.id + ')">Crew ▶</button>';
       toggles += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">Sails ▶</button>';
@@ -80,7 +83,15 @@ function render(data) {
     }
     const downloadsHtml = downloads ? '<div class="session-exports">' + downloads + '</div>' : '';
 
+    // --- Video link in header ---
+    const videoLink = s.first_video_url
+      ? '<a class="session-video-link" href="' + s.first_video_url.replace(/&/g,'&amp;') + '" target="_blank" title="Watch video">&#9654; Video</a>'
+      : '';
+
     // --- Expandable panels (order matches toggle buttons) ---
+    const trackPanel = (s.type !== 'debrief' && s.has_track)
+      ? '<div class="session-results" id="hist-track-' + s.id + '" style="display:none"></div>'
+      : '';
     const resultsPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-results-' + s.id + '" style="display:none"></div>'
       : '';
@@ -107,10 +118,10 @@ function render(data) {
         + '</audio></div>'
       : '';
 
-    return '<div class="card"><div class="session-name">' + s.name + badge + '</div>'
+    return '<div class="card"><div class="session-name">' + s.name + badge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + parent
-      + togglesHtml + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
+      + togglesHtml + trackPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
       + downloadsHtml + audioHtml + '</div>';
   }).join('');
 
@@ -578,9 +589,54 @@ async function startTranscript(sessionId, audioSessionId) {
   await _loadTranscript(sessionId, audioSessionId, el);
 }
 
-// Default: last 30 days
+// ---- Track map (Leaflet) ----
+const _trackMaps = {};
+
+async function toggleHistoryTrack(sessionId) {
+  const el = document.getElementById('hist-track-' + sessionId);
+  const btn = document.getElementById('hist-track-btn-' + sessionId);
+  if (!el) return;
+  if (el.style.display !== 'none') {
+    el.style.display = 'none';
+    if (btn) btn.textContent = 'Track ▶';
+    if (_trackMaps[sessionId]) {
+      _trackMaps[sessionId].remove();
+      delete _trackMaps[sessionId];
+    }
+    return;
+  }
+  el.innerHTML = '<div id="track-map-' + sessionId + '" class="track-map"></div>';
+  el.style.display = '';
+  if (btn) btn.textContent = 'Track ▼';
+
+  const r = await fetch('/api/sessions/' + sessionId + '/track');
+  const geojson = await r.json();
+  if (!geojson.features || !geojson.features.length) {
+    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No track data</span>';
+    return;
+  }
+
+  const map = L.map('track-map-' + sessionId);
+  _trackMaps[sessionId] = map;
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap',
+    maxZoom: 18,
+  }).addTo(map);
+
+  const coords = geojson.features[0].geometry.coordinates;
+  const latLngs = coords.map(c => [c[1], c[0]]);
+  const line = L.polyline(latLngs, {color: '#2563eb', weight: 3}).addTo(map);
+
+  // Start marker (green) and end marker (red)
+  L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1}).addTo(map).bindPopup('Start');
+  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1}).addTo(map).bindPopup('Finish');
+
+  map.fitBounds(line.getBounds(), {padding: [20, 20]});
+}
+
+// Default: last 365 days (includes historical imports)
 const now = new Date();
-const past = new Date(now - 30 * 86400000);
+const past = new Date(now - 365 * 86400000);
 document.getElementById('to-date').value = now.toISOString().substring(0,10);
 document.getElementById('from-date').value = past.toISOString().substring(0,10);
 initTimezone().then(() => load());

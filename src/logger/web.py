@@ -1504,6 +1504,40 @@ def create_app(
         )
 
     # ------------------------------------------------------------------
+    # /api/sessions/{id}/track  (GeoJSON track for map display)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{session_id}/track")
+    async def api_session_track(session_id: int) -> JSONResponse:
+        """Return GPS track as GeoJSON for map display."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+        start_utc = row["start_utc"]
+        end_utc = row["end_utc"] or start_utc
+
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions"
+            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (start_utc, end_utc),
+        )
+        positions = await pos_cur.fetchall()
+        if not positions:
+            return JSONResponse({"type": "FeatureCollection", "features": []})
+
+        coords = [[r["longitude_deg"], r["latitude_deg"]] for r in positions]
+        feature = {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {"session_id": session_id, "points": len(coords)},
+        }
+        return JSONResponse({"type": "FeatureCollection", "features": [feature]})
+
+    # ------------------------------------------------------------------
     # /api/sessions  (history browser)
     # ------------------------------------------------------------------
 
