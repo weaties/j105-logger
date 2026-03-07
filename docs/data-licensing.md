@@ -1,7 +1,7 @@
-# J105 Logger — Data Licensing Policy
+# Helm Log — Data Licensing Policy
 
 This document defines data ownership, access, sharing, and retention rules for all
-data collected, stored, and shared through the J105 Logger platform. These rules
+data collected, stored, and shared through the Helm Log platform. These rules
 govern both single-boat usage and co-op data sharing.
 
 A **data co-op** is a group of boats that agree to share instrument data under this
@@ -22,7 +22,7 @@ audio/PII sections.
 
 All instrument data — positions, wind, speed, heading, depth, heel, pitch, and
 derived metrics — is owned by the **boat owner or instance operator** (the person
-who administers the J105 Logger instance on that boat's hardware).
+who administers the Helm Log instance on that boat's hardware).
 
 The boat owner has full rights to export, share, delete, or restrict access to
 their instrument data. The boat owner controls who their data is shared with and
@@ -66,7 +66,7 @@ boat-private by default.
 ### YouTube and external video
 
 YouTube videos linked to sessions are hosted on YouTube and governed by YouTube's
-terms of service. The J105 Logger stores only **metadata** (video ID, title, sync
+terms of service. The Helm Log stores only **metadata** (video ID, title, sync
 points) — not the video content itself. The boat owner controls which videos are
 linked and can unlink a video at any time. Unlinking removes the metadata from the
 logger but does not affect the video on YouTube.
@@ -108,7 +108,7 @@ time, at which point the coach must delete that boat's data from their systems.
 
 ### Overview
 
-A J105 Logger data co-op is a **reciprocal sharing arrangement** for instrument
+A Helm Log data co-op is a **reciprocal sharing arrangement** for instrument
 data. Members share their race data with the co-op and gain access to other
 members' data in return.
 
@@ -191,7 +191,7 @@ owns multiple boats, the following rules apply:
 
 ### Joining
 
-Any boat running a J105 Logger instance can request to join a co-op. Joining
+Any boat running a Helm Log instance can request to join a co-op. Joining
 requires:
 
 1. Agreeing to this data licensing policy
@@ -261,7 +261,7 @@ the same **supermajority (2/3) vote** as expulsion.
 
 ### Active crew
 
-The boat owner controls which crew members have access to the boat's J105 Logger
+The boat owner controls which crew members have access to the boat's Helm Log
 instance and what level of access they hold (view, edit, admin).
 
 ### Per-recording deletion
@@ -296,7 +296,7 @@ identifiable photos containing them, per Section 1.
 
 ### Retention
 
-Data is retained indefinitely by default on the boat's local J105 Logger instance.
+Data is retained indefinitely by default on the boat's local Helm Log instance.
 There is no automatic expiration.
 
 ### Deletion requests
@@ -334,7 +334,7 @@ During the grace period:
 
 ## 6. Technical Requirements
 
-This policy requires the following technical capabilities in the J105 Logger
+This policy requires the following technical capabilities in the Helm Log
 codebase:
 
 | Requirement | Purpose |
@@ -358,7 +358,7 @@ codebase:
 
 ## 7. Software License
 
-The J105 Logger source code is licensed under the **GNU Affero General Public
+The Helm Log source code is licensed under the **GNU Affero General Public
 License v3.0 (AGPLv3)**. See the `LICENSE` file in the repository root.
 
 This means:
@@ -384,3 +384,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Initial version — ownership, co-op model, expulsion, crew departure, retention |
 | 2026-03-07 | Rev 2 — multi-co-op model, photos, YouTube metadata, audio anonymization, club ownership, boat representatives, bootstrap phase, data suppression during grace periods, per-recording crew deletion rights |
 | 2026-03-07 | Rev 3 — single-entity co-op governance, race results as public data, reversible anonymization on departure, post-expulsion data contribution rules |
+| 2026-03-07 | Rev 4 — rebrand from "J105 Logger" to "Helm Log" (helmlog.org) |
