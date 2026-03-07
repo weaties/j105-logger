@@ -62,7 +62,9 @@ function render(data) {
       toggles += '<button class="btn-export" id="hist-crew-btn-' + s.id + '" onclick="toggleHistoryCrew(' + s.id + ')">Crew ▶</button>';
       toggles += '<button class="btn-export" id="hist-sails-btn-' + s.id + '" onclick="toggleHistorySails(' + s.id + ')">Sails ▶</button>';
       toggles += '<button class="btn-export" id="hist-notes-btn-' + s.id + '" onclick="toggleHistoryNotes(' + s.id + ')">Notes ▶</button>';
-      toggles += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">Videos ▶</button>';
+      if (!s.first_video_url) {
+        toggles += '<button class="btn-export" id="hist-videos-btn-' + s.id + '" onclick="toggleHistoryVideos(' + s.id + ')">Videos ▶</button>';
+      }
     }
     if (s.has_audio && s.audio_session_id) {
       toggles += '<button class="btn-export" id="hist-transcript-btn-' + s.id + '" onclick="toggleHistoryTranscript(' + s.id + ',' + s.audio_session_id + ')">Transcript ▶</button>';
@@ -104,7 +106,7 @@ function render(data) {
     const notesPanel = s.type !== 'debrief'
       ? '<div class="session-results" id="hist-notes-' + s.id + '" style="display:none"></div>'
       : '';
-    const videosPanel = s.type !== 'debrief'
+    const videosPanel = (s.type !== 'debrief' && !s.first_video_url)
       ? '<div class="session-results" id="hist-videos-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
     const transcriptPanel = s.has_audio && s.audio_session_id
@@ -113,7 +115,7 @@ function render(data) {
 
     // --- Embedded video player panel ---
     const playerPanel = s.first_video_url
-      ? '<div class="session-results" id="hist-player-' + s.id + '" style="display:none"></div>'
+      ? '<div class="session-results" id="hist-player-' + s.id + '" data-start-utc="' + s.start_utc + '" style="display:none"></div>'
       : '';
 
     // --- Audio playback at the bottom ---
@@ -127,8 +129,7 @@ function render(data) {
     return '<div class="card"><div class="session-name">' + nameLink + badge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + parent
-      + playerPanel
-      + togglesHtml + trackPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
+      + togglesHtml + trackPanel + playerPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
       + downloadsHtml + audioHtml + '</div>';
   }).join('');
 
@@ -418,9 +419,11 @@ async function _loadVideos(sessionId, el) {
   el.innerHTML = html;
 }
 
-function _histVideoAddForm(sessionId) {
-  const container = document.getElementById('hist-videos-' + sessionId);
-  const startUtc = container ? container.dataset.startUtc : '';
+function _histVideoAddForm(sessionId, startUtc) {
+  if (startUtc === undefined) {
+    const container = document.getElementById('hist-videos-' + sessionId);
+    startUtc = container ? container.dataset.startUtc : '';
+  }
   const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
   return '<div id="hist-video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
     + '<input id="hist-video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
@@ -454,8 +457,14 @@ async function submitHistAddVideo(sessionId) {
       body: JSON.stringify({youtube_url: url, label, sync_utc: syncUtc, sync_offset_s: syncOffsetS})
     });
     if (!resp.ok) { alert('Failed to add video: ' + resp.status); return; }
-    const el = document.getElementById('hist-videos-' + sessionId);
-    await _loadVideos(sessionId, el);
+    // Refresh whichever video panel is open
+    const videosEl = document.getElementById('hist-videos-' + sessionId);
+    if (videosEl && videosEl.style.display !== 'none') await _loadVideos(sessionId, videosEl);
+    const playerVideosEl = document.getElementById('hist-player-videos-' + sessionId);
+    if (playerVideosEl) {
+      const vr = await fetch('/api/sessions/' + sessionId + '/videos');
+      _renderPlayerVideoList(sessionId, await vr.json());
+    }
   } catch (e) {
     alert('Error saving video: ' + e.message);
   } finally {
@@ -497,10 +506,12 @@ async function toggleHistoryPlayer(sessionId) {
   if (!el) return;
   if (el.style.display !== 'none') {
     el.style.display = 'none';
+    _stopHistSync(sessionId);
     if (_histPlayers[sessionId]) {
       _histPlayers[sessionId].destroy();
       delete _histPlayers[sessionId];
     }
+    delete _videoSync[sessionId];
     return;
   }
 
@@ -512,7 +523,7 @@ async function toggleHistoryPlayer(sessionId) {
   const vid = videos.find(v => v.video_id) || videos[0];
   if (!vid || !vid.video_id) { el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No embeddable video</span>'; el.style.display = ''; return; }
 
-  // Build switcher + player container
+  // Build switcher + player + video list
   let html = '';
   if (videos.filter(v => v.video_id).length > 1) {
     html += '<div style="display:flex;gap:6px;margin-bottom:6px">';
@@ -524,9 +535,19 @@ async function toggleHistoryPlayer(sessionId) {
     html += '</div>';
   }
   html += '<div id="hist-yt-' + sessionId + '" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>';
+  html += '<div id="hist-player-videos-' + sessionId + '" style="margin-top:8px"></div>';
   el.innerHTML = html;
+  _renderPlayerVideoList(sessionId, videos);
   el.style.display = '';
   el.dataset.videoId = vid.video_id;
+
+  // Store sync info for bidirectional track sync
+  _videoSync[sessionId] = {
+    syncUtc: new Date(vid.sync_utc),
+    syncOffsetS: vid.sync_offset_s || 0,
+    player: null,
+    allVideos: videos,
+  };
 
   _ensureYTApi();
   if (_ytApiReady) {
@@ -541,20 +562,63 @@ function _createHistPlayer(sessionId) {
   if (!el) return;
   const videoId = el.dataset.videoId;
   if (!videoId) return;
-  _histPlayers[sessionId] = new YT.Player('hist-yt-' + sessionId, {
+  const player = new YT.Player('hist-yt-' + sessionId, {
     height: '100%', width: '100%', videoId: videoId,
     playerVars: { modestbranding: 1, rel: 0, enablejsapi: 1, origin: location.origin },
+    events: {
+      onStateChange: function(event) {
+        if (event.data === 1) { _startHistSync(sessionId); }
+        else { _stopHistSync(sessionId); _histSyncMapToVideo(sessionId); }
+      },
+    },
   });
+  _histPlayers[sessionId] = player;
+  if (_videoSync[sessionId]) _videoSync[sessionId].player = player;
 }
 
 function switchHistVideo(sessionId, videoId, btn) {
   if (!_histPlayers[sessionId]) return;
   _histPlayers[sessionId].loadVideoById(videoId);
+  // Update sync info for the new video
+  const vs = _videoSync[sessionId];
+  if (vs && vs.allVideos) {
+    const vid = vs.allVideos.find(v => v.video_id === videoId);
+    if (vid) {
+      vs.syncUtc = new Date(vid.sync_utc);
+      vs.syncOffsetS = vid.sync_offset_s || 0;
+    }
+  }
   const el = document.getElementById('hist-player-' + sessionId);
   if (el) {
     el.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     if (btn) btn.classList.add('active');
   }
+}
+
+function _renderPlayerVideoList(sessionId, videos) {
+  const container = document.getElementById('hist-player-videos-' + sessionId);
+  if (!container) return;
+  let html = '';
+  if (videos.length) {
+    html += videos.map(v => {
+      const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
+      const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+      const del = '<button onclick="deletePlayerVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">&#10005;</button>';
+      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + ttl + del + '</div>';
+    }).join('');
+  }
+  const panel = document.getElementById('hist-player-' + sessionId);
+  const startUtc = panel ? panel.dataset.startUtc : '';
+  html += _histVideoAddForm(sessionId, startUtc);
+  container.innerHTML = html;
+}
+
+async function deletePlayerVideo(videoId, sessionId) {
+  if (!confirm('Remove this video link?')) return;
+  await fetch('/api/videos/' + videoId, {method: 'DELETE'});
+  const r = await fetch('/api/sessions/' + sessionId + '/videos');
+  const videos = await r.json();
+  _renderPlayerVideoList(sessionId, videos);
 }
 
 async function toggleHistorySails(sessionId) {
@@ -683,8 +747,11 @@ async function startTranscript(sessionId, audioSessionId) {
   await _loadTranscript(sessionId, audioSessionId, el);
 }
 
-// ---- Track map (Leaflet) ----
+// ---- Track map (Leaflet) + bidirectional video sync ----
 const _trackMaps = {};
+const _trackData = {};  // {latLngs, timestamps (Date[]), cursor, map}
+const _videoSync = {};  // {syncUtc (Date), syncOffsetS, player}
+const _syncTimers = {};
 
 async function toggleHistoryTrack(sessionId) {
   const el = document.getElementById('hist-track-' + sessionId);
@@ -693,10 +760,12 @@ async function toggleHistoryTrack(sessionId) {
   if (el.style.display !== 'none') {
     el.style.display = 'none';
     if (btn) btn.textContent = 'Track ▶';
+    _stopHistSync(sessionId);
     if (_trackMaps[sessionId]) {
       _trackMaps[sessionId].remove();
       delete _trackMaps[sessionId];
     }
+    delete _trackData[sessionId];
     return;
   }
   el.innerHTML = '<div id="track-map-' + sessionId + '" class="track-map"></div>';
@@ -719,46 +788,82 @@ async function toggleHistoryTrack(sessionId) {
 
   const feature = geojson.features[0];
   const coords = feature.geometry.coordinates;
-  const timestamps = feature.properties.timestamps || [];
+  const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
+  const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
   const line = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(map);
 
-  // Start marker (green) and end marker (red)
   L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1}).addTo(map).bindPopup('Start');
   L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1}).addTo(map).bindPopup('Finish');
 
-  // Click track to jump to video at that moment
+  const cursor = L.circleMarker([0,0], {radius: 7, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2});
+  _trackData[sessionId] = {latLngs, timestamps, cursor, map};
+
+  // Click track → seek embedded video
   if (timestamps.length) {
-    const cursor = L.circleMarker([0,0], {radius: 5, color: '#facc15', fillColor: '#facc15', fillOpacity: 1});
-    line.on('click', async function(e) {
-      // Find nearest point to click
-      let minDist = Infinity, nearIdx = 0;
-      for (let i = 0; i < latLngs.length; i++) {
-        const d = map.latLngToLayerPoint(latLngs[i]).distanceTo(map.latLngToLayerPoint(e.latlng));
-        if (d < minDist) { minDist = d; nearIdx = i; }
-      }
-      const ts = timestamps[nearIdx];
-      if (!ts) return;
-
-      // Show cursor at clicked point
-      cursor.setLatLng(latLngs[nearIdx]).addTo(map);
-
-      // Fetch video deep-link for this timestamp
-      const vr = await fetch('/api/sessions/' + sessionId + '/videos?at=' + encodeURIComponent(ts));
-      const videos = await vr.json();
-      const linked = videos.find(v => v.deep_link);
-      if (linked) {
-        window.open(linked.deep_link, '_blank');
-      } else if (videos.length) {
-        // Video exists but timestamp outside range — open video anyway
-        window.open(videos[0].youtube_url, '_blank');
-      } else {
-        cursor.bindPopup('No video linked').openPopup();
-      }
+    line.on('click', function(e) {
+      const idx = _histNearestIndex(sessionId, e.latlng);
+      cursor.setLatLng(latLngs[idx]).addTo(map);
+      _histSeekVideoToIndex(sessionId, idx);
     });
   }
 
   map.fitBounds(line.getBounds(), {padding: [20, 20]});
+}
+
+function _histNearestIndex(sessionId, latlng) {
+  const td = _trackData[sessionId];
+  if (!td) return 0;
+  let minDist = Infinity, nearIdx = 0;
+  for (let i = 0; i < td.latLngs.length; i++) {
+    const d = td.map.latLngToLayerPoint(td.latLngs[i]).distanceTo(td.map.latLngToLayerPoint(latlng));
+    if (d < minDist) { minDist = d; nearIdx = i; }
+  }
+  return nearIdx;
+}
+
+function _histIndexForUtc(sessionId, utcDate) {
+  const td = _trackData[sessionId];
+  if (!td || !td.timestamps.length) return 0;
+  const t = utcDate.getTime();
+  let best = 0, bestDiff = Math.abs(td.timestamps[0].getTime() - t);
+  for (let i = 1; i < td.timestamps.length; i++) {
+    const diff = Math.abs(td.timestamps[i].getTime() - t);
+    if (diff < bestDiff) { bestDiff = diff; best = i; }
+    if (td.timestamps[i].getTime() > t) break;
+  }
+  return best;
+}
+
+function _histSeekVideoToIndex(sessionId, idx) {
+  const td = _trackData[sessionId];
+  const vs = _videoSync[sessionId];
+  if (!td || !vs || !vs.player) return;
+  const utc = td.timestamps[Math.min(idx, td.timestamps.length - 1)];
+  if (!utc) return;
+  const offset = vs.syncOffsetS + (utc.getTime() - vs.syncUtc.getTime()) / 1000;
+  if (offset < 0) return;
+  if (typeof vs.player.seekTo === 'function') vs.player.seekTo(offset, true);
+}
+
+function _histSyncMapToVideo(sessionId) {
+  const td = _trackData[sessionId];
+  const vs = _videoSync[sessionId];
+  if (!td || !vs || !vs.player) return;
+  if (typeof vs.player.getCurrentTime !== 'function') return;
+  const videoTime = vs.player.getCurrentTime();
+  const ms = vs.syncUtc.getTime() + (videoTime - vs.syncOffsetS) * 1000;
+  const idx = _histIndexForUtc(sessionId, new Date(ms));
+  td.cursor.setLatLng(td.latLngs[idx]).addTo(td.map);
+}
+
+function _startHistSync(sessionId) {
+  _stopHistSync(sessionId);
+  _syncTimers[sessionId] = setInterval(function() { _histSyncMapToVideo(sessionId); }, 500);
+}
+
+function _stopHistSync(sessionId) {
+  if (_syncTimers[sessionId]) { clearInterval(_syncTimers[sessionId]); delete _syncTimers[sessionId]; }
 }
 
 // Default: last 365 days (includes historical imports)
