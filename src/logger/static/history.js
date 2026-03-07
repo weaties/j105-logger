@@ -623,13 +623,46 @@ async function toggleHistoryTrack(sessionId) {
     maxZoom: 18,
   }).addTo(map);
 
-  const coords = geojson.features[0].geometry.coordinates;
+  const feature = geojson.features[0];
+  const coords = feature.geometry.coordinates;
+  const timestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
-  const line = L.polyline(latLngs, {color: '#2563eb', weight: 3}).addTo(map);
+  const line = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(map);
 
   // Start marker (green) and end marker (red)
   L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1}).addTo(map).bindPopup('Start');
   L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1}).addTo(map).bindPopup('Finish');
+
+  // Click track to jump to video at that moment
+  if (timestamps.length) {
+    const cursor = L.circleMarker([0,0], {radius: 5, color: '#facc15', fillColor: '#facc15', fillOpacity: 1});
+    line.on('click', async function(e) {
+      // Find nearest point to click
+      let minDist = Infinity, nearIdx = 0;
+      for (let i = 0; i < latLngs.length; i++) {
+        const d = map.latLngToLayerPoint(latLngs[i]).distanceTo(map.latLngToLayerPoint(e.latlng));
+        if (d < minDist) { minDist = d; nearIdx = i; }
+      }
+      const ts = timestamps[nearIdx];
+      if (!ts) return;
+
+      // Show cursor at clicked point
+      cursor.setLatLng(latLngs[nearIdx]).addTo(map);
+
+      // Fetch video deep-link for this timestamp
+      const vr = await fetch('/api/sessions/' + sessionId + '/videos?at=' + encodeURIComponent(ts));
+      const videos = await vr.json();
+      const linked = videos.find(v => v.deep_link);
+      if (linked) {
+        window.open(linked.deep_link, '_blank');
+      } else if (videos.length) {
+        // Video exists but timestamp outside range — open video anyway
+        window.open(videos[0].youtube_url, '_blank');
+      } else {
+        cursor.bindPopup('No video linked').openPopup();
+      }
+    });
+  }
 
   map.fitBounds(line.getBounds(), {padding: [20, 20]});
 }

@@ -1530,10 +1530,15 @@ def create_app(
             return JSONResponse({"type": "FeatureCollection", "features": []})
 
         coords = [[r["longitude_deg"], r["latitude_deg"]] for r in positions]
+        timestamps = [r["ts"] for r in positions]
         feature = {
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coords},
-            "properties": {"session_id": session_id, "points": len(coords)},
+            "properties": {
+                "session_id": session_id,
+                "points": len(coords),
+                "timestamps": timestamps,
+            },
         }
         return JSONResponse({"type": "FeatureCollection", "features": [feature]})
 
