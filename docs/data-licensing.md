@@ -75,6 +75,26 @@ If a boat departs the co-op or requests data deletion, YouTube video metadata
 linked to that boat's sessions is included in the deletion scope (see Section 5).
 The actual YouTube video remains on YouTube under the uploader's control.
 
+### Race results
+
+Race results occupy a unique position: they are entered into the logger by the
+boat owner, but the same information is independently published by the **organizing
+authority** (yacht club, class association, or regatta committee) as part of the
+official event record.
+
+Because race results are **publicly available data** published by third parties:
+
+- Race results entered into the logger are owned by the boat, but the boat owner
+  cannot claim exclusive rights over publicly published finishing positions, times,
+  or scores
+- On departure or deletion, a boat's race results are **anonymized** in the co-op
+  (displayed as "Boat X") but not removed, since the same data is publicly
+  available from the organizing authority
+- Race results are included in co-op shared data by default (they are already
+  public information)
+- Annotations, comments, or notes attached to race results remain boat-private
+  (they are not public data)
+
 ### Coach and combined datasets
 
 When a coach imports multiple boats' data for analysis, the coach holds a
@@ -100,6 +120,7 @@ When a boat joins a co-op, the following data is shared with all co-op members:
   SOG, COG), heading, depth, heel, pitch
 - **Session metadata**: date, duration, race name, venue
 - **Derived metrics**: VMG, polar performance percentage, tacking angles
+- **Race results**: finishing positions, times, scores (publicly available data)
 
 ### What is NOT shared by default
 
@@ -163,6 +184,10 @@ owns multiple boats, the following rules apply:
   collectively hold **no more than 1/3 of total votes** in any governance decision.
   If one entity's boats exceed 1/3 of co-op membership, their excess votes are
   excluded from the count
+- **Single-entity co-ops**: when all boats in a co-op are owned by the same entity
+  (e.g., a sailing club's fleet), the vote-capping rule does not apply — the entity
+  has full governance control. However, if independently-owned boats later join, the
+  1/3 cap takes effect immediately for the original entity's boats
 
 ### Joining
 
@@ -187,12 +212,13 @@ When a co-op has **fewer than 5 member boats**, it operates in bootstrap phase:
 A boat may leave the co-op at any time. On departure:
 
 - The boat's server-side co-op access is revoked immediately
-- The departing boat's data is **suppressed** from co-op views during a **30-day
-  grace period** (not visible to other members, but not yet deleted)
-- The departure can be reversed during the grace period
-- After 30 days, the departing boat's historical data is **anonymized** in co-op
-  comparisons (displayed as "Boat X" rather than the actual boat name) and all
-  identifiable data is permanently deleted from co-op systems
+- The departing boat's historical data is immediately **anonymized** in co-op
+  comparisons (displayed as "Boat X" rather than the actual boat name) but remains
+  accessible to other co-op members in anonymized form
+- During a **30-day grace period**, the departure can be reversed and the boat's
+  identity restored
+- After 30 days, anonymization becomes **permanent** — the mapping between "Boat X"
+  and the real identity is deleted and can no longer be reversed
 
 ### Expulsion
 
@@ -213,6 +239,16 @@ The co-op may vote to remove a member. The process is:
      delete any co-op data in their possession (this includes local copies)
    - The expelled boat's historical data is **anonymized** in the co-op (same
      treatment as voluntary departure)
+
+### Post-expulsion data contribution
+
+After expulsion, the expelled boat's data remains on their own local instance —
+expulsion only affects co-op access, not local data. If the expelled boat is
+re-admitted to the co-op (see below), they can resume sharing and their locally
+stored sessions become available to the co-op again.
+
+During expulsion, the boat **cannot contribute new data** to the co-op. Any
+sessions recorded during this period remain local until re-admission.
 
 ### Re-entry after expulsion
 
@@ -283,8 +319,9 @@ During the grace period:
 - Any audio, transcripts, photos, notes, or annotations that were explicitly shared
 - YouTube video metadata linked to the boat's sessions (the actual YouTube videos
   are unaffected — they remain on YouTube under the uploader's control)
-- The boat's identity in co-op comparisons (replaced with anonymized placeholder
-  if historical comparisons are retained)
+- The boat's identity in co-op comparisons (replaced with anonymized placeholder)
+- Race result annotations and comments (the results themselves remain as public
+  data, anonymized as "Boat X")
 
 ### What deletion does not cover
 
@@ -308,7 +345,7 @@ codebase:
 | Boat-level identity in auth | Boats are first-class entities with owners, designated representatives, crew, and sharing posture |
 | Club/multi-boat entity support | Track which boats belong to the same owning entity for vote-capping rules |
 | Coach/tuning-partner ACLs | Explicit, revocable access grants for private data to designated coaches and tuning partners |
-| Anonymization capability | Replace boat identity with "Boat X" in co-op comparisons on departure/expulsion |
+| Reversible anonymization | Replace boat identity with "Boat X" in co-op comparisons; retain mapping for 30-day reversal window, then permanently delete mapping |
 | Audio anonymization | Voice scrambling / redaction as an alternative to full deletion |
 | Photo PII handling | Deletion or anonymization of identifiable photos on request |
 | Data suppression | Hide (but preserve) a boat's data during 30-day grace periods |
@@ -346,3 +383,4 @@ beyond what the AGPLv3 allows.
 |---|---|
 | 2026-03-07 | Initial version — ownership, co-op model, expulsion, crew departure, retention |
 | 2026-03-07 | Rev 2 — multi-co-op model, photos, YouTube metadata, audio anonymization, club ownership, boat representatives, bootstrap phase, data suppression during grace periods, per-recording crew deletion rights |
+| 2026-03-07 | Rev 3 — single-entity co-op governance, race results as public data, reversible anonymization on departure, post-expulsion data contribution rules |
