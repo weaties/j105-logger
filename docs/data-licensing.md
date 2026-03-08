@@ -1,5 +1,28 @@
 # Helm Log — Data Licensing Policy
 
+## Table of Contents
+
+- [Plain English Summary](#plain-english-summary)
+- [Data Type Matrix](#data-type-matrix)
+- [Crew Rights Summary](#crew-rights-summary)
+- [Definitions](#definitions)
+- [1. Data Ownership](#1-data-ownership)
+- [2. Data Sharing — The Co-op Model](#2-data-sharing--the-co-op-model)
+- [3. Co-op Membership and Governance](#3-co-op-membership-and-governance)
+- [4. Crew Access and Departure](#4-crew-access-and-departure)
+- [5. Data Retention and Deletion](#5-data-retention-and-deletion)
+- [6. Cross-Co-op Data Boundaries](#6-cross-co-op-data-boundaries)
+- [7. Non-Member Boats](#7-non-member-boats)
+- [8. AI, Machine Learning, and Derived Models](#8-ai-machine-learning-and-derived-models)
+- [9. Commercial Use and Value](#9-commercial-use-and-value)
+- [10. Dataset Representativeness](#10-dataset-representativeness)
+- [11. Liability and Warranty](#11-liability-and-warranty)
+- [12. Technical Requirements](#12-technical-requirements)
+- [13. Software License](#13-software-license)
+- [Document History](#document-history)
+
+---
+
 ## Plain English Summary
 
 - **You own your data.** Your instrument logs, notes, and photos belong to you.

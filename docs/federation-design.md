@@ -3,6 +3,37 @@
 > Design document for decentralized data sharing between boats in a co-op,
 > built on the existing Raspberry Pi + Tailscale + FastAPI architecture.
 
+## Table of Contents
+
+- [Core Principle](#core-principle)
+- [1. Identity Model](#1-identity-model)
+- [2. Membership Protocol](#2-membership-protocol)
+- [3. Co-op API Endpoints](#3-co-op-api-endpoints)
+- [4. Request Authentication](#4-request-authentication)
+- [5. Data Flow Patterns](#5-data-flow-patterns)
+- [6. Peer Caching (Optional)](#6-peer-caching-optional)
+- [6.5. Processing Offload](#65-processing-offload)
+- [6.6. Video and the Camera Pipeline](#66-video-and-the-camera-pipeline)
+- [7. Per-Event Co-op Assignment](#7-per-event-co-op-assignment)
+- [8. Current Model Computation](#8-current-model-computation)
+- [8.5. Fleet Benchmark Computation](#85-fleet-benchmark-computation)
+- [9. SQLite Schema Additions](#9-sqlite-schema-additions)
+- [10. New Python Modules](#10-new-python-modules)
+- [11. Peer Discovery](#11-peer-discovery)
+- [12. What This Does NOT Require](#12-what-this-does-not-require)
+- [13. Migration Path](#13-migration-path)
+- [14. Protocol Versioning & Upgrades](#14-protocol-versioning--upgrades)
+- [15. Security Assumptions & Threat Model](#15-security-assumptions--threat-model)
+- [16. Failure Modes & Recovery](#16-failure-modes--recovery)
+- [17. Event Naming & Canonicalization](#17-event-naming--canonicalization)
+- [18. Charter vs Agreements](#18-charter-vs-agreements)
+- [19. Co-op Dissolution](#19-co-op-dissolution)
+- [20. Inter-Co-op Boundaries](#20-inter-co-op-boundaries)
+- [21. Performance Envelope](#21-performance-envelope)
+- [22. Enforcement Classification](#22-enforcement-classification)
+- [23. Resolved Design Decisions](#23-resolved-design-decisions)
+- [24. Open Questions](#24-open-questions)
+
 ---
 
 ## Core Principle
