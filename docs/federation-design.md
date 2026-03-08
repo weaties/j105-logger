@@ -317,6 +317,12 @@ GET  /co-op/{co_op_id}/sessions/{session_id}/polar
      Subject to the same event-scoping and data aging rules as /track.
 ```
 
+**Not served via co-op API:** audio recordings, transcripts, video
+recordings, YouTube links, photos, session notes, crew roster, sail
+selections. These remain boat-private. Video is the most tactically
+revealing data type (360° footage shows sail trim, crew positions,
+tacking technique) — see "Video and the camera pipeline" below.
+
 ### Fleet benchmarking
 
 ```
@@ -677,6 +683,79 @@ The transcription offload pattern generalizes to:
 All patterns follow the same rules: encrypted transit, ephemeral
 processing, no data retention on the offload host, PII deletion
 obligations, and co-op approval for shared infrastructure.
+
+---
+
+## 6.6. Video and the Camera Pipeline
+
+Helm Log controls on-board cameras (Insta360 X4) that automatically record
+during sessions. The resulting video flows through a pipeline that is
+**entirely outside the co-op protocol** — it is a boat-private operation
+with third-party (YouTube) involvement.
+
+### Pipeline overview
+
+```
+Session starts → Pi triggers camera via OSC HTTP API
+Session ends   → Pi stops camera
+                 ↓
+SD card transferred to Mac (manual or launchd trigger)
+                 ↓
+.insv (360°) → Docker stitch → equirectangular .mp4
+.mp4 (single-lens) → direct
+                 ↓
+Upload to YouTube (unlisted by default)
+                 ↓
+Pi links video via POST /api/sessions/{id}/videos
+  with sync point: (sync_utc, sync_offset_s)
+                 ↓
+Video appears in session history with time-synced playback
+```
+
+### Why video is not in the co-op API
+
+Video is the **most tactically revealing data type** the platform handles.
+360° footage shows sail trim, crew weight placement, tacking sequence,
+mark rounding approach, and competitive information that instrument data
+alone cannot capture. For this reason:
+
+1. **Video metadata (YouTube links, sync points) is boat-private by default**
+   — not served via any co-op endpoint.
+2. **Video content is hosted on YouTube**, not on the Pi. The co-op protocol
+   has no mechanism to serve, cache, or proxy video content between peers.
+3. **Coach access to video** follows the same per-boat, session-scoped model
+   as other private data. A coach with an access record can view a boat's
+   linked videos for their authorized sessions, but video links are not
+   included in co-op session lists.
+
+### Video PII in the protocol context
+
+Video is PII (crew faces, voices, other boats' identifying marks). The
+protocol implications:
+
+- **Tombstone propagation**: if a boat requests deletion, YouTube video
+  metadata is deleted from the Pi and any co-op references (coach access
+  records, session metadata). The YouTube video itself is outside the
+  protocol's reach — it persists on YouTube until the uploader deletes it.
+- **Processing offload**: video stitching and upload run on the Mac (see
+  Section 6.5). The same ephemeral processing rules apply — the Mac should
+  not retain raw video after upload completes.
+- **Crew PII requests**: if a crew member requests face-blur in video, this
+  is handled on the boat owner's machine (re-process and re-upload), not
+  through the co-op protocol.
+
+### Future: video sharing in the co-op
+
+If a future version enables voluntary video sharing between co-op members:
+
+- Video links (not content) would be served via an opt-in co-op endpoint
+- The same event-scoping and embargo rules that apply to track data would
+  apply to video links
+- Video content would still be hosted on YouTube — the co-op protocol would
+  only share the link and sync metadata
+- Given the tactical sensitivity of 360° footage, video sharing would likely
+  require explicit per-session opt-in (not blanket sharing like instrument
+  data)
 
 ---
 
