@@ -29,6 +29,17 @@ shared, when access expires — so you don't have to police it yourself.
 If someone asks "where does my data go?", the answer is: "nowhere you
 didn't send it."
 
+```
+  ┌──────────┐       ┌──────────┐       ┌──────────┐
+  │  Boat A   │◄─────►│  Boat B   │◄─────►│  Boat C   │
+  │  (Pi)     │       │  (Pi)     │       │  (Pi)     │
+  └──────────┘       └──────────┘       └──────────┘
+       ▲                                       ▲
+       └───────────────────────────────────────┘
+              direct, encrypted connections
+                  (no central server)
+```
+
 ---
 
 ## Pitching it to the fleet
@@ -52,6 +63,28 @@ didn't send it."
 3. **"Is it complicated?"**
    For you, no. After setup, it's one tap to share a race. The tech
    stuff happens in the background.
+
+### Common objections and how to answer them
+
+**"I don't want people seeing my mistakes."**
+They already see your mistakes — they're on the race course. The
+difference is that now you can see theirs too, and everyone learns from
+it. The boats that debrief together improve the fastest.
+
+**"We're already fast enough."**
+Are you? Without data, you're guessing. The boats at the top of every
+competitive fleet use data. This just makes it available to everyone,
+not just the boats with the biggest budgets.
+
+**"This sounds complicated."**
+For you, it's not. After setup (which I'll help with), it's one tap to
+share a race. The tech runs in the background. If you can use a weather
+app, you can use this.
+
+**"I don't trust technology with my data."**
+Good — neither do we. That's why there's no cloud, no company, no
+subscription. Your data stays on your boat unless you choose to share
+it. You can leave anytime and take everything with you.
 
 ### What not to lead with
 
@@ -205,6 +238,23 @@ but explicit — nobody should be surprised by a decision.
 
 ---
 
+## What success looks like after one month
+
+If things go well, here's where you'll be four weeks in:
+
+- **5-8 boats sharing** race data regularly
+- **Coach running debriefs** with real track overlays and fleet benchmarks
+- **Fleet benchmark heatmap** showing where each boat is strong and weak
+- **A culture of sharing** — boats asking each other "did you share that
+  race?" instead of hoarding data
+- **Better racing** — boats that were mid-fleet starting to close the gap
+  because they can see exactly what the leaders do differently
+
+You don't need the whole fleet on day one. Three boats sharing
+consistently is enough to prove the value. The rest will follow.
+
+---
+
 ## The narrative you're building
 
 You're not just setting up software. You're building a culture of
@@ -222,6 +272,8 @@ That's the story. Tell it.
 
 ## Resources
 
+- [Fleet Quickstart](fleet-quickstart.md) — one-page handout, print and
+  give to every boat at the dock
 - [How the Co-op Works](guide-sailors.md) — give this to sailors who
   want to understand the co-op before joining
 - [Coach Access Guide](guide-coaches.md) — give this to coaches

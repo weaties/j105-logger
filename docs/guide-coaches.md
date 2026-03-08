@@ -151,6 +151,28 @@ A typical post-race debrief using co-op data:
 6. **Debrief with the fleet** — walk through the key moments. The data
    backs up the conversation.
 
+### What to ask boats for before a debrief
+
+Not everything you need is in the platform automatically. Before a
+debrief session, ask:
+
+- **Did everyone share their sessions?** If a boat forgot, remind them —
+  it's one tap.
+- **Wind range and shifts?** The platform records instrument wind, but
+  knowing the sailors' read on the conditions adds context.
+- **Sail choices?** Sail selection is boat-private in the platform, but
+  boats can share it voluntarily. Knowing who was in the #1 vs #3 jib
+  matters for the debrief.
+- **Tactical context?** "We went left because we saw pressure" — this
+  kind of context makes the track data much more useful.
+
+### A note on offline boats
+
+If you can't see a boat's session, their Pi is probably offline. Boats
+need to be connected (usually via phone hotspot) for their data to be
+available to the co-op. It will sync automatically when they come online
+— there's no deadline.
+
 ---
 
 ## Getting started
