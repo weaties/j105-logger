@@ -64,8 +64,8 @@ async function loadStatus(){
   const s=statusData;
   const v=s.running;
   let html='';
-  html+='<div class="kv"><span class="k">Branch</span><span class="v">'+esc(s.branch)+'</span></div>';
-  html+='<div class="kv"><span class="k">Commit</span><span class="v">'+esc(v.short_sha)+' ('+esc(v.commit_timestamp).slice(0,19)+')</span></div>';
+  html+='<div class="kv"><span class="k">Running</span><span class="v">'+esc(v.branch)+' @ '+esc(v.short_sha)+' ('+esc(v.commit_timestamp).slice(0,19)+')</span></div>';
+  html+='<div class="kv"><span class="k">Tracking</span><span class="v">'+esc(s.branch)+'</span></div>';
   html+='<div class="kv"><span class="k">Mode</span><span class="v"><span class="badge badge-mode">'+esc(s.mode)+'</span></span></div>';
   html+='<div class="kv"><span class="k">Poll interval</span><span class="v">'+s.poll_interval+'s</span></div>';
   if(s.deploy_window.start!==null){
