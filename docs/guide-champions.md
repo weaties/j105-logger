@@ -119,6 +119,12 @@ Tailscale is a lightweight private network that encrypts all traffic
 between your boats' Pis. It's what lets the boats talk to each other
 without a central server. The free tier supports up to 100 devices.
 
+For crew members who don't want to install Tailscale, helmlog.org
+provides a lightweight gateway that routes requests to the right Pi.
+No data is stored on the gateway — it's a pass-through. This is the
+one piece of shared infrastructure, and it handles only routing, not
+data storage.
+
 ### The setup sequence
 
 If a boat doesn't have instruments yet, they can still join later — you
@@ -183,8 +189,9 @@ Once the co-op is running, your job is minimal:
 
 ### Seasonal tasks
 
-- **Start of season**: renew coach access if applicable, check all Pis
-  are online and up to date
+- **Start of season**: remind boats to renew coach access if applicable
+  (each boat grants access individually), check all Pis are online and
+  up to date
 - **End of season**: review co-op membership, remove boats that sold or
   left the fleet
 - **If a vote is needed**: proposals (like enabling current model sharing)
@@ -207,9 +214,10 @@ Once the co-op is running, your job is minimal:
 
 ## Light mode vs full mode
 
-### Light mode (3-5 boats)
+### Light mode (fewer than ~6 boats)
 
-For small fleets, keep it simple:
+The data licensing policy calls this the **bootstrap phase** — simplified
+governance for small co-ops. In practice, it means:
 
 - **Single admin** with a designated backup
 - **No formal voting** — decisions by consensus on the dock

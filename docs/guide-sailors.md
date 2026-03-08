@@ -124,13 +124,17 @@ other boats shared:
 
 ### Coaching
 
-If your fleet has a coach, the co-op admin can grant them temporary access.
-Coaches can view shared instrument data but:
+If your fleet has a coach, **you decide** whether to grant them access to
+your data. Coach access is per-boat — each boat owner approves
+individually. The co-op admin cannot grant a coach access on your behalf.
 
-- Access has an expiration date
+If you grant a coach access:
+
+- You set an expiration date (typically one season)
+- They can view your shared instrument data but not audio, notes, or crew
 - They can't download or export your data in bulk
-- They can't aggregate data across multiple co-ops
 - When access expires, it's done automatically
+- You can revoke access at any time
 
 ---
 

@@ -55,8 +55,9 @@ complex key-sharding ceremonies.
 The founding admin designates 2-3 admin boats at creation. A membership record
 or revocation requires signatures from a majority of admins (e.g., 2-of-3).
 
-**Single moderator mode** (for small co-ops of 3-4 boats): instead of M-of-N,
-a single moderator boat signs all admin records. A **designated backup boat**
+**Single moderator mode** (available for co-ops of any size, per the data
+licensing policy): instead of M-of-N, a single moderator boat signs all
+admin records. A **designated backup boat**
 can assume moderator role if the moderator's Pi is lost. The charter specifies
 which mode the co-op uses.
 
@@ -1179,8 +1180,10 @@ Decisions reached through PR review and external feedback:
    never exposed to other members. Scrubbed on departure. See data licensing
    policy Section 1.
 
-9. **Single moderator mode for small co-ops.** Co-ops of 3-4 boats may use
-   a single moderator with a designated backup instead of M-of-N multi-admin.
+9. **Single moderator mode.** Available for co-ops of any size (per data
+   licensing policy). A single moderator with a designated backup instead
+   of M-of-N multi-admin. Simpler for small fleets; larger fleets may
+   also use it if the charter specifies it.
    Charter specifies which mode. See Section 1 above.
 
 10. **Heartbeat with manual inactive toggle.** "On the water" vs "in the

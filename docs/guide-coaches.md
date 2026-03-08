@@ -6,8 +6,8 @@
 
 ## What you get
 
-As a fleet coach, the co-op admin can grant you access to shared session
-data. This gives you:
+Each boat in the co-op can individually grant you access to their shared
+session data. This gives you:
 
 - **Track overlays** — see multiple boats on the same race, color-coded by
   speed
@@ -19,22 +19,19 @@ data. This gives you:
 - **Fleet benchmarks** — anonymous percentile rankings (e.g., "Boat A's
   tacking angles are in the 75th percentile of the fleet")
 
-You see only what boats explicitly shared — nothing is automatic. Each
-boat chooses, session by session, what the co-op can see.
+You see only what individual boats have explicitly granted you access to.
+Each boat decides independently — there is no co-op-wide coach access.
 
 This is enough to run a full debrief, identify fleet-wide weaknesses, and
-give targeted coaching to individual boats.
-
-Note: fleet benchmarks require at least 4 boats contributing data in a
-given condition band (wind speed / angle range) to produce meaningful
-percentile rankings. Benchmarks get more stable and useful as more boats
-contribute across more sessions.
+give targeted coaching to individual boats. Fleet benchmarks require at
+least 4 boats contributing data in a given condition band to produce
+meaningful percentile rankings.
 
 ---
 
 ## What you don't get
 
-The co-op data policy protects certain categories of data. As a coach,
+The data policy protects certain categories of data. As a coach,
 you **cannot** access:
 
 | Not available to coaches | Why |
@@ -57,15 +54,24 @@ serve it to you automatically.
 
 ### Getting access
 
-1. The co-op admin grants you a **coach access record** with a start and
-   end date (e.g., "May 1 through October 31")
-2. You receive a link or QR code that sets up your device
-3. You can view shared sessions from any co-op member's boat
+Coach access is **per-boat, not per-co-op.** Each boat owner grants you
+access individually:
+
+1. You request access from each boat you want to work with
+2. Each boat owner grants you a **time-limited access record** with a
+   start and end date (e.g., "May 1 through October 31")
+3. You receive a link or QR code that sets up your device
+4. You accumulate per-boat access records — one from each boat that
+   grants you access
+
+In practice, the fleet champion or admin often coordinates this ("everyone
+grant Coach Pat access for the season"), but each boat must approve
+individually. The admin cannot grant access on behalf of other boats.
 
 ### What happens during your access window
 
-- You can view any session that a co-op member has shared
-- Every time you view a session, it's logged in the co-op's audit trail
+- You can view sessions from boats that granted you access
+- Every time you view a session, it's logged in the audit trail
 - You can view data in the platform but not export it in bulk
 - **Taking notes, screenshots, and preparing presentations is expected
   coaching work.** The no-export rule prevents bulk raw-data downloads,
@@ -77,15 +83,15 @@ serve it to you automatically.
 ### What happens when access expires
 
 - Your access stops automatically on the expiration date
-- You can no longer query any co-op member's data
-- No action needed from the admin — it's enforced by the protocol
-- If the fleet wants to renew, the admin grants a new access window
+- You can no longer query that boat's data
+- No action needed from the boat owner — it's enforced by the protocol
+- If the fleet wants to renew, each boat grants a new access window
 
-### Renewal
+### Renewal and revocation
 
 Access is typically granted per-season. If the fleet renews your coaching
-engagement, the admin grants a new access record. There's no automatic
-renewal.
+engagement, each boat grants a new access record. There's no automatic
+renewal. Any boat owner can revoke your access at any time.
 
 ---
 
@@ -116,9 +122,9 @@ relationships stay healthy. Each one has a reason:
    *Why: The fleet shared data with you specifically, not with the world.
    Your insights and observations are yours to share — raw data is not.*
 
-4. **Audit transparency.** The co-op admin can see which sessions you
-   accessed and when. This isn't surveillance — it's the same transparency
-   that any shared-data system should have.
+4. **Audit transparency.** Each boat owner can see which of their
+   sessions you accessed and when. This isn't surveillance — it's the
+   same transparency that any shared-data system should have.
    *Why: Trust requires visibility. Knowing that access is logged keeps
    everyone honest and makes the system trustworthy for all parties.*
 
@@ -133,16 +139,12 @@ Most commercial sailing analytics platforms either:
 
 Helm Log's approach is designed to reflect how coaching actually works:
 
+- **Per-boat consent** — each boat decides, not a central admin
 - **Time-limited** — matches the coaching engagement
 - **Scoped to what you need** — instrument data and benchmarks, not private
   conversations
 - **Transparent** — everyone knows what's being accessed
-- **Revocable** — if the relationship ends, so does access
-- **No lock-in** — coaches don't accumulate a data warehouse that outlasts
-  the engagement
-
-This protects both the fleet and the coach. The fleet knows their data is
-governed. The coach knows the rules are clear and consistent.
+- **Revocable** — any boat can revoke access at any time
 
 ---
 
@@ -170,8 +172,9 @@ A typical post-race debrief using co-op data:
 Not everything you need is in the platform automatically. Before a
 debrief session, ask:
 
-- **Did everyone share their sessions?** If a boat forgot, remind them —
-  it's one tap.
+- **Did everyone grant you access and share their sessions?** If a boat
+  forgot either step, remind them — access is one approval, sharing is
+  one tap per session.
 - **Wind range and shifts?** The platform records instrument wind, but
   knowing the sailors' read on the conditions adds context.
 - **Sail choices?** Sail selection is boat-private in the platform, but
@@ -184,19 +187,20 @@ debrief session, ask:
 
 If you can't see a boat's session, their Pi is probably offline. Boats
 need to be connected (usually via phone hotspot) for their data to be
-available to the co-op. It will sync automatically when they come online
-— there's no deadline.
+available. It will sync automatically when they come online — there's
+no deadline.
 
 ---
 
 ## Getting started
 
-Talk to the co-op admin about setting up your access. They'll need:
+Talk to the fleet champion about coordinating access. Each boat will
+need to:
 
-- Your email address (for out-of-band communication)
-- The date range for your coaching engagement
-- Confirmation from the fleet that coaching access has been agreed to
+- Know your coaching identity (email or public key)
+- Grant you a time-limited access record
+- Share the sessions they want you to see
 
 For the full technical details on how coach access is implemented, see the
-[Data Licensing Policy](data-licensing.md) (Section 5: Coach and Tuning
-Partner Access).
+[Data Licensing Policy](data-licensing.md) (Section 1: Coach and Combined
+Datasets).
