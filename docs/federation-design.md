@@ -200,6 +200,25 @@ During the 30-day grace period, the departing boat's data is still accessible
 but marked as pending departure. After `grace_until`, other Pis stop querying
 that boat and purge any cached data.
 
+#### Revocation broadcast
+
+Revocation records are **aggressively pushed**, not passively polled. When
+admins sign a revocation:
+
+1. The admin Pi immediately pushes the revocation record to **all online
+   co-op peers** via `POST /co-op/{co_op_id}/revocations`
+2. Each receiving Pi verifies the admin signatures and immediately:
+   - Drops the revoked boat from its `co_op_peers` table
+   - Rejects any future API requests from the revoked boat's fingerprint
+   - Purges any cached data from the revoked boat (after `grace_until`)
+3. Offline Pis receive the revocation on their next tombstone poll cycle
+   (Section 3 tombstone polling already covers this as a fallback)
+
+This is critical for **expulsion** scenarios — the co-op cannot rely on
+the expelled boat voluntarily deleting caches or stopping queries. The
+push ensures all peers enforce the revocation within minutes of signing,
+not hours or days.
+
 ### Admin rotation
 
 Since admin authority is distributed across M-of-N admin boats, rotating
@@ -270,10 +289,18 @@ GET  /co-op/{co_op_id}/sessions/{session_id}/track
      at 1 Hz: lat, lon, bsp, tws, twa, hdg, cog, sog, aws, awa.
 
      Respects session visibility and data aging:
-     - If the co-op uses event-scoped visibility, returns 403 with
-       { "error": "event_scope", "message": "Track data available only
-       for events you participated in" } unless the requesting boat also
-       has a shared session in the same event
+     - If the co-op uses event-scoped visibility, the requester must
+       include a **Proof of Participation** header:
+         X-HelmLog-PoP: <signed-session-summary>
+       The PoP is a signed claim that the requesting boat has a shared
+       session in the same event (event_name match). The provider Pi
+       verifies the signature and event match before releasing full
+       track data. This solves the discovery loop: neither Pi needs to
+       see the other's private session list — the requester proves
+       participation with a self-signed, verifiable claim.
+     - Without a valid PoP (or if the co-op doesn't use event scoping),
+       returns 403 with { "error": "event_scope", "message": "Track
+       data available only for events you participated in" }
      - If data aging is enabled, older sessions return reduced-resolution
        data (e.g., 10-second intervals for previous season, summary-only
        for 2+ seasons ago)
@@ -364,6 +391,12 @@ POST /co-op/{co_op_id}/tombstones
 GET  /co-op/{co_op_id}/tombstones?after=<iso>
      Fetch recent tombstones. Pis poll this on each other periodically
      to stay in sync on deletions.
+
+POST /co-op/{co_op_id}/revocations
+     Admin pushes a signed revocation record to all peers. Receiving Pi
+     verifies admin signatures, drops the revoked boat from co_op_peers,
+     rejects future requests from that fingerprint. This is push-based
+     (not poll-based) to ensure rapid enforcement on expulsion.
 ```
 
 ### Heartbeat & presence
@@ -423,17 +456,22 @@ identity:
 ```
 X-HelmLog-Boat: <boat-pub-fingerprint>
 X-HelmLog-Timestamp: <iso-8601-utc>
+X-HelmLog-Nonce: <16-byte-random-hex>
 X-HelmLog-Sig: <base64>
 ```
 
-The signature covers: `METHOD /path timestamp`. The receiving Pi:
+The signature covers: `METHOD /path timestamp nonce`. The receiving Pi:
 
 1. Looks up the boat's public key by fingerprint
 2. Verifies the signature
 3. Checks that the timestamp is within the allowed window (replay protection)
-4. Checks that the boat holds a valid membership record for the requested
+4. **Checks the nonce is unique** — the receiving Pi maintains a
+   `seen_nonces` set (bounded by the timestamp window). If the nonce has
+   been seen before, the request is rejected. This prevents replay attacks
+   even within the relaxed 20-minute clock skew window.
+5. Checks that the boat holds a valid membership record for the requested
    co-op
-5. Logs the access to the audit trail
+6. Logs the access to the audit trail (including nonce hash for forensics)
 
 No OAuth, no tokens to refresh, no central auth server. Just signatures.
 
@@ -709,11 +747,21 @@ CREATE TABLE IF NOT EXISTS co_op_audit (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     co_op_id        TEXT NOT NULL,
     accessor_fp     TEXT NOT NULL,       -- fingerprint of requesting boat
-    action          TEXT NOT NULL,       -- session_list | track_fetch | current_fetch
+    action          TEXT NOT NULL,       -- session_list | track_fetch | current_fetch | benchmark_fetch
     resource        TEXT,                -- e.g., session_id
     timestamp       TEXT NOT NULL,
-    ip              TEXT
+    ip              TEXT,
+    points_count    INTEGER,             -- number of data points returned (1Hz samples, maneuver events, etc.)
+    bytes_transferred INTEGER,           -- response payload size in bytes
+    nonce_hash      TEXT                 -- SHA-256 of request nonce for replay forensics
 );
+
+-- Rate limiting: the Pi tracks per-peer rolling windows over co_op_audit.
+-- If a peer exceeds thresholds (e.g., 50+ track_fetch actions in 1 hour,
+-- or 500K+ points_count in 1 hour), the Pi auto-freezes that peer's access
+-- and alerts the co-op admin. This enforces the "no bulk export" policy at
+-- the API level by detecting scraping patterns from data volume, not just
+-- request count.
 
 -- Tombstones received from peers (for cache invalidation)
 CREATE TABLE IF NOT EXISTS co_op_tombstones (
@@ -776,6 +824,14 @@ CREATE TABLE IF NOT EXISTS co_op_votes (
     vote_json       TEXT,                -- signed vote (once cast)
     created_at      TEXT NOT NULL
 );
+
+-- Nonce deduplication for replay protection (Section 4)
+-- Entries are pruned when their timestamp falls outside the clock skew window
+CREATE TABLE IF NOT EXISTS request_nonces (
+    nonce_hash  TEXT PRIMARY KEY,         -- SHA-256 of nonce
+    timestamp   TEXT NOT NULL,            -- request timestamp
+    boat_fp     TEXT NOT NULL             -- requesting boat fingerprint
+);
 ```
 
 ---
@@ -794,7 +850,8 @@ src/helmlog/
 │   ├── verify_membership(co_op_pub, membership_record) -> bool
 │   ├── sign_revocation(co_op_key, boat_pub, reason) -> dict
 │   ├── sign_tombstone(boat_key, session_ids, action) -> dict
-│   ├── verify_request(pub_key, method, path, timestamp, sig) -> bool
+│   ├── verify_request(pub_key, method, path, timestamp, nonce, sig) -> bool
+│   ├── check_nonce(nonce_hash, timestamp) -> bool  # replay protection
 │   ├── sign_coach_access(boat_key, coach_pub, sessions, expiry) -> dict
 │   ├── verify_coach_access(boat_pub, access_record) -> bool
 │   └── CoOpPeer (dataclass for peer connection state)
