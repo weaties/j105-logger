@@ -46,13 +46,32 @@ audio/PII sections.
 
 ---
 
+## Definitions
+
+The following terms have specific meanings throughout this document:
+
+| Term | Definition |
+|---|---|
+| **Boat owner** | The legal owner of the vessel, or a person explicitly delegated data authority by the legal owner. If no delegation exists, the legal owner is the boat owner for all purposes in this policy. The boat owner is always the final authority over the boat's data |
+| **Instance operator** | The person who administers the Helm Log hardware (Pi) on a boat. This is usually the boat owner but may be a crew member or technician. The instance operator acts on behalf of the boat owner and cannot override the boat owner's data decisions |
+| **Session** | A contiguous recording period with a defined start and end time, corresponding to a single race, practice sail, or delivery. A regatta day with multiple races produces multiple sessions. Session boundaries are set by the boat operator (manually or via race start/finish detection) |
+| **Instrument data** | Raw and calibrated readings from the boat's sensors: position (GPS), wind (TWS, TWA, TWD, AWS, AWA), boat speed (BSP), speed/course over ground (SOG, COG), heading, depth, heel, pitch. Does not include audio, photos, notes, or biometric data |
+| **Derived metrics** | Standardized calculations produced by the Helm Log platform from instrument data: VMG, polar performance percentage, tacking angles, layline estimates, and current vectors. Does not include proprietary analytics, tactical algorithms, or custom models built by individual boats or coaches |
+| **Entity** | A single legal person or organization with common ownership or controlling interest over one or more boats. Examples: an individual owner, a sailing club, a corporate sponsor, a charter company, or a syndicate. Family members who independently own separate boats are separate entities unless they share a common ownership structure (e.g., a family trust) |
+| **Platform** | The Helm Log software, including the Pi-based logger, web interface, API endpoints, and any hosted services (e.g., helmlog.org gateway). The platform is the tool; it does not own user data |
+| **Co-op admin** | A boat designated to perform administrative functions (approving members, signing records) under the M-of-N multi-admin model. Admin is a role, not a rank — admins have no governance authority beyond what this policy grants |
+| **PII** | Personally identifiable information — data that can identify a specific individual. In this policy: audio recordings, voice data, photos containing identifiable people, email addresses, biometric data, and diarized (speaker-labeled) transcripts |
+
+---
+
 ## 1. Data Ownership
 
 ### Instrument data
 
 All instrument data — positions, wind, speed, heading, depth, heel, pitch, and
-derived metrics — is owned by the **boat owner or instance operator** (the person
-who administers the Helm Log instance on that boat's hardware).
+derived metrics — is owned by the **boat owner** (see Definitions). If the
+instance operator is a different person, they act on behalf of the boat owner
+and cannot independently claim ownership of the data.
 
 The boat owner has full rights to export, share, delete, or restrict access to
 their instrument data. The boat owner controls who their data is shared with and
@@ -251,12 +270,14 @@ When a coach accesses multiple boats' data for analysis, the coach holds a
 - When a coaching engagement ends — whether by expiration, revocation, or mutual
   agreement — the coach must **delete all data** from that boat. This is mandatory,
   not optional
-- **Derivative works** — any reports, summaries, screenshots, spreadsheets, or
-  other materials the coach creates using co-op or boat data are subject to the
-  same recall and deletion obligations. The coach may not retain derivative works
-  after access ends
-- The boat owner can revoke a coach's access at any time, which triggers immediate
-  deletion obligations (including derivative works)
+- **Derivative works** — the coach **agrees not to retain** reports, summaries,
+  screenshots, spreadsheets, or other materials created using co-op or boat
+  data after access ends. This is a **normative obligation** — the platform
+  revokes technical access automatically, but cannot enforce deletion of
+  offline materials. Violation of this obligation is grounds for the boat owner
+  or co-op to deny future coach access
+- The boat owner can revoke a coach's access at any time, which triggers the
+  same deletion and non-retention obligations
 
 ---
 
@@ -275,7 +296,9 @@ When a boat joins a co-op, the following data is shared with all co-op members:
 - **Instrument data**: positions, wind (TWS, TWA, TWD, AWS, AWA), boat speed (BSP,
   SOG, COG), heading, depth, heel, pitch
 - **Session metadata**: date, duration, race name, venue
-- **Derived metrics**: VMG, polar performance percentage, tacking angles
+- **Derived metrics**: standardized platform calculations only — VMG, polar
+  performance percentage, tacking angles (see Definitions; does not include
+  proprietary analytics or custom models)
 - **Race results**: finishing positions, times, scores (publicly available data)
 
 ### What is NOT shared by default
@@ -293,15 +316,18 @@ owner explicitly opts in:
 - YouTube video links and metadata
 - Observed current and tide data (derived local knowledge)
 
-### No bulk export of co-op data
+### No export tools for co-op data
 
-Co-op data is available for **in-platform viewing and comparison only**. Members
-may not bulk-export, scrape, or programmatically extract other boats' raw data
-from the co-op. Each boat can export its own data freely, but co-op data from
-other boats is view-only within the Helm Log interface.
+The platform **does not provide export, download, or bulk-access tools** for
+other boats' co-op data. Each boat can export its own data freely, but co-op
+data from other boats is viewable only within the Helm Log interface. API
+endpoints serving co-op data are **rate-limited** and **audit-logged**.
 
-This restriction exists to prevent data extraction attacks (join, download
-everything, leave) and to preserve the collective value of the co-op dataset.
+This is a **technical restriction, not an absolute guarantee**. View-only data
+can still be captured via screenshots, manual transcription, or browser
+automation. The platform makes extraction inconvenient and detectable, not
+impossible. The audit system (Section 12) detects anomalous access patterns and
+alerts admins. Deliberate extraction is a policy violation subject to expulsion.
 
 ### Explicit sharing with coaches and tuning partners
 
@@ -396,6 +422,9 @@ admins are subject to the same voting rules as any other member.
 
 #### Admin selection
 
+The co-op charter specifies one of two administration modes:
+
+**Multi-admin mode** (recommended for co-ops of 5+ boats):
 - The co-op founder designates the **initial admin boats** (2–3 boats,
   including themselves) at co-op creation
 - Admin authority is distributed: administrative actions (approving members,
@@ -405,8 +434,19 @@ admins are subject to the same voting rules as any other member.
 - Admin rotation is handled by **charter amendment**: the existing admins
   (meeting threshold) sign an amendment that adds or removes an admin boat.
   No private key material changes hands
-- There is no fixed admin term — admins serve until replaced by charter
-  amendment or removed by member vote
+
+**Single moderator mode** (available for co-ops of any size):
+- The co-op charter designates a **single moderator boat** with a named
+  **backup moderator** who assumes the role if the primary is unavailable
+- The moderator handles all admin functions without multi-signature
+  requirements
+- This mode is simpler for small fleets where the full M-of-N signing
+  process would be burdensome
+- The co-op may switch from single moderator to multi-admin mode by majority
+  vote at any time
+
+In either mode, there is no fixed admin term — admins serve until replaced by
+charter amendment or removed by member vote.
 
 #### Admin removal
 
@@ -438,6 +478,13 @@ Example: 7-boat co-op, 2 boats inactive for winter haul-out.
 A boat that comes back online and sends a heartbeat immediately becomes
 active again and is included in future votes. The inactivity threshold is
 set in the co-op charter and may be adjusted by majority vote.
+
+**Seasonal power-down**: many boats remove electronics or power down their Pi
+for winter storage. This is expected behavior, not abandonment. A boat owner
+may also **manually set their status to inactive** via the web UI or CLI
+before haul-out, which has the same effect as an expired heartbeat without
+waiting for the threshold. Inactive status does not affect data access or
+membership — it only affects quorum calculations.
 
 ### Joining
 
@@ -517,6 +564,23 @@ The co-op may vote to remove a member. The process is:
      delete any co-op data in their possession (this includes local copies)
    - The expelled boat's historical data is **anonymized** in the co-op (same
      treatment as voluntary departure)
+
+### Expulsion and deletion precedence
+
+Sessions that have been **shared with the co-op** become part of the co-op
+dataset. An expelled member **cannot request deletion of sessions that were
+shared during their membership**. Those sessions are anonymized (attributed to
+"Boat X") but remain in the co-op dataset.
+
+This prevents a scenario where a bad actor is expelled and then requests
+deletion to destroy valuable dataset history out of spite. The co-op accepted
+the data in good faith during membership; expulsion revokes future access, not
+the co-op's right to retain anonymized historical data.
+
+**Voluntary departure** retains the same anonymization treatment — shared
+sessions remain in the dataset as "Boat X." A full deletion request (Section 5)
+is available for voluntary departures but applies only to **identifiable data**;
+anonymized sessions that can no longer be attributed to the boat are retained.
 
 ### Post-expulsion data contribution
 
@@ -929,6 +993,44 @@ The co-op does not guarantee continuous access to shared data. Data may become
 unavailable due to member departures, deletions, technical failures, or co-op
 dissolution.
 
+### Limitation of damages
+
+To the maximum extent permitted by applicable law, in no event shall any
+co-op member, admin, or the Helm Log platform be liable for any **indirect,
+incidental, special, consequential, or punitive damages** arising out of or
+related to the use of shared data, regardless of the theory of liability.
+
+### Indemnification
+
+Each co-op member agrees to **indemnify and hold harmless** the other members,
+the co-op admins, and the Helm Log platform maintainers from any claims,
+damages, or expenses arising from that member's use of co-op data, including
+but not limited to violations of this policy, misuse of shared data, or
+unauthorized disclosure.
+
+### Governing law
+
+Each co-op specifies its **governing jurisdiction** in its charter. If no
+jurisdiction is specified, disputes are governed by the laws of the jurisdiction
+where the co-op was created (i.e., the jurisdiction of the founding admin's
+registered address). This policy is not a contract with the Helm Log open-source
+project — it is a contract between co-op members.
+
+### Data controller
+
+Under GDPR and equivalent privacy frameworks, the **data controller** for each
+boat's data is the **boat owner**. The boat owner decides what data to collect,
+how long to retain it, and with whom to share it.
+
+When a boat joins a co-op, the co-op functions as a **joint controller** for
+shared session data — each member has contributed data and each member has
+access. The co-op admin is the designated contact point for data subject
+requests related to co-op data.
+
+The Helm Log platform (software and any hosted services) is a **data
+processor** — it processes data on behalf of boat owners and co-ops but does
+not independently determine the purposes or means of processing.
+
 ### Protest hearings and dispute resolution
 
 Co-op data — including GPS tracks, instrument telemetry, and derived metrics
@@ -959,23 +1061,36 @@ Submitting that data to a protest committee is not.
 ## 12. Technical Requirements
 
 This policy requires the following technical capabilities in the Helm Log
-codebase:
+codebase. Requirements are split into **MVP** (needed for initial co-op
+launch) and **future** (needed as the platform matures).
+
+### MVP requirements
 
 | Requirement | Purpose |
 |---|---|
 | `data_sharing_consent` table | Record each boat's agreement to this policy and co-op membership status |
-| Multi-co-op support | A boat can belong to multiple co-ops; each co-op has independent membership and data pools |
 | Per-session sharing flags | Mark individual sessions as co-op-shared, coach-shared, or private |
 | Boat-level identity in auth | Boats are first-class entities with owners, designated representatives, crew, and sharing posture |
-| Club/multi-boat entity support | Track which boats belong to the same owning entity for vote-capping rules |
-| Coach/tuning-partner ACLs | Time-limited, revocable access grants with mandatory deletion on expiration |
 | No-bulk-export enforcement | Co-op data viewable in-platform only; API and export restricted to own-boat data |
-| Reversible anonymization | Replace boat identity with "Boat X" in co-op comparisons; retain mapping for 30-day reversal window, then permanently delete mapping |
-| Audio anonymization | Voice scrambling / redaction as an alternative to full deletion |
-| Photo PII handling | Deletion or anonymization of identifiable photos on request |
 | Data suppression (soft delete) | Hide (but preserve) a boat's data during 30-day grace periods; data remains in DB but is excluded from all queries and views |
 | Permanent deletion (hard delete) | Irreversibly purge data from the database after grace period expiration; no recovery possible |
-| Audio PII deletion | Ability to delete or anonymize specific audio segments by speaker (requires diarization) |
+| Audio PII deletion | Delete entire recordings containing a specific speaker. Whole-recording deletion is the baseline; per-segment editing is a future capability |
+| Reversible anonymization | Replace boat identity with "Boat X" in co-op comparisons; retain mapping for 30-day reversal window, then permanently delete mapping |
+| Data portability export | Unconditional export of all own-boat data in CSV, GPX, JSON, WAV formats; no restrictions on frequency or volume |
+| Audit logging | Log all co-op data API access (who fetched which session, when) to detect extraction patterns. Rate-limit API endpoints (not UI page views) and alert admin when anomalous API access is detected. Legitimate UI browsing and comparison pages must not trigger false positives |
+| AIS data filtering | Exclude AIS and proximity data from other vessels during capture; never store non-member tracking data |
+| Email PII handling | Scrub owner and crew email from records on departure; admin-only visibility by default |
+| Active/inactive member tracking | Heartbeat-based activity detection; manual inactive toggle; configurable inactivity threshold; quorum denominator adjustment |
+
+### Future requirements
+
+| Requirement | Purpose |
+|---|---|
+| Multi-co-op support | A boat can belong to multiple co-ops; each co-op has independent membership and data pools |
+| Club/multi-boat entity support | Track which boats belong to the same owning entity for vote-capping rules |
+| Coach/tuning-partner ACLs | Time-limited, revocable access grants with mandatory deletion on expiration |
+| Audio anonymization | Voice scrambling / redaction as an alternative to full deletion |
+| Photo PII handling | Deletion or anonymization of identifiable photos on request |
 | Admin election tracking | Record admin elections, terms, and removal votes |
 | Expulsion vote tracking | Record votes (by boat representative), notice periods, and appeal outcomes |
 | YouTube metadata cleanup | Remove linked video metadata on boat departure/deletion |
@@ -983,9 +1098,7 @@ codebase:
 | ML opt-out flag | Per-boat flag to exclude data from approved ML training projects |
 | ML project governance | Record ML project proposals, votes, model ownership, and opt-outs |
 | Commercial use tracking | Record commercial agreements, votes, and revenue distribution |
-| Audit logging | Log all co-op data access (who viewed which session, when) to detect extraction patterns; automatically freeze co-op access and alert admin when anomalous access is detected (e.g., 50+ session views per minute) |
 | Co-op dormancy tracking | Track last governance activity date; trigger dormant status after 2 years of inactivity |
-| AIS data filtering | Exclude AIS and proximity data from other vessels during capture; never store non-member tracking data |
 | Non-member result scoping | When importing full-fleet results, store only official scored finish data for non-members; no instrument or session data |
 | OA license compliance | Track organizing authority and race management software licensing terms for imported results |
 | Current observation derivation | Compute observed current vectors from BSP/heading vs SOG/COG; store as boat-private by default |
@@ -994,15 +1107,13 @@ codebase:
 | Pre-join disclosure | Present all active commercial, ML, current model, and cross-co-op agreements to prospective members before admission |
 | Per-event co-op assignment | When a boat belongs to multiple co-ops, require co-op selection per session before data is shared; prevent same session from being contributed to multiple co-ops |
 | Dual membership tracking | Record multi-co-op memberships; notify both co-ops; enforce co-op-level dual membership policies |
-| Email PII handling | Scrub owner email from membership/revocation records on departure; admin-only visibility by default |
 | Biometric consent tracking | Per-person, per-data-type consent records for biometric data; independent of instrument data sharing |
 | Biometric data isolation | Store biometric data separately from instrument data; enforce per-person access controls |
-| Temporal sharing controls | Per-session sharing delay (immediate, duration-based, or date-based embargo); embargo state visible in co-op session list |
-| Data portability export | Unconditional export of all own-boat data in CSV, GPX, JSON, WAV formats; no restrictions on frequency or volume |
-| Gambling prohibition enforcement | Block co-op data API access for any purpose flagged as betting/wagering; include prohibition in co-op membership agreement |
+| Temporal sharing controls | Co-op-level sharing delay (immediate, duration-based, or date-based embargo); embargo state visible in co-op session list |
+| Gambling prohibition enforcement | Include prohibition in co-op membership agreement; policy-level restriction |
 | Protest firewall | Technical documentation that co-op data from other boats is inadmissible in protest proceedings; no enforcement mechanism needed (policy-only) |
-| Active/inactive member tracking | Heartbeat-based activity detection; configurable inactivity threshold; automatic quorum denominator adjustment for votes |
 | Multi-admin signing | M-of-N admin boat signatures for membership, revocation, and charter amendment records |
+| Single moderator mode | Alternative to multi-admin for small co-ops; single moderator with designated backup |
 
 ---
 
@@ -1046,3 +1157,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-07 | Rev 13 — co-op charter template, charter reference in pre-join disclosure |
 | 2026-03-07 | Rev 14 — hardening from cross-sport research (NFL/NBA/MLB/SailGP/Strava/esports): email as PII with admin-only visibility and departure scrubbing; biometric data firewall with per-person consent independent of instrument sharing; temporal/seasonal sharing controls (delayed and embargoed sessions); gambling/betting absolute prohibition; data portability guarantee (anti-lock-in); protest hearing data firewall (other boats' co-op data inadmissible under RRS); active/inactive quorum based on heartbeat to prevent winter deadlock; multi-admin M-of-N signing model replacing single-admin elections |
 | 2026-03-08 | Rev 15 — PR review feedback: crew member emails covered alongside owner emails; temporal sharing controls changed from per-boat to co-op-level decision |
+| 2026-03-08 | Rev 16 — adversarial review hardening: formal definitions section (session, boat owner, entity, derived metrics, PII, platform, etc.); boat owner vs instance operator clarified (owner wins); coach derivative works reframed as normative obligation; bulk export reframed as "no export tools" with honest acknowledgment of view-only limitations; expulsion+deletion precedence (shared sessions survive expulsion as anonymized data); single moderator mode for small co-ops; heartbeat seasonal power-down handling with manual inactive toggle; liability expanded (limitation of damages, indemnification, governing law); data controller/processor roles defined for GDPR; audit logging scoped to API endpoints not UI views; audio PII weakened to whole-recording deletion baseline; tech requirements split into MVP vs future |
