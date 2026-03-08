@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v20) |
+| Storage | SQLite via `aiosqlite` (schema v26) |
 | Web interface | `fastapi` + `uvicorn` + `jinja2` templates |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -46,22 +46,28 @@ helmlog/
 │       ├── __init__.py
 │       ├── main.py         # CLI entry point; wires modules together, starts async loop
 │       ├── audio.py        # USB audio recording (Gordik / any UAC device)
+│       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
 │       ├── cameras.py      # Insta360 X4 camera control via OSC HTTP API
 │       ├── can_reader.py   # CAN bus interface — legacy direct-CAN path only
+│       ├── email.py        # SMTP email sending (welcome, new-device alerts)
 │       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
 │       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
+│       ├── gaigps.py       # GaiGPS integration
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
 │       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
-│       ├── races.py        # Race naming logic + RaceConfig dataclass
-│       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
+│       ├── pipeline.py     # Video processing pipeline orchestration
 │       ├── polar.py        # Polar performance baseline builder
+│       ├── race_classifier.py  # Automated race/practice session classification
+│       ├── races.py        # Race naming logic + RaceConfig dataclass
 │       ├── sk_reader.py    # Signal K WebSocket reader — primary data source
 │       ├── storage.py      # SQLite read/write; schema migrations
 │       ├── transcribe.py   # faster-whisper transcription + pyannote diarisation
+│       ├── triggers.py     # Event triggers (auto-start/stop sessions)
 │       ├── video.py        # YouTube video metadata / sync-point logic
 │       ├── web.py          # FastAPI app — route handlers and API endpoints
+│       ├── youtube.py      # YouTube upload and API integration
 │       │
 │       ├── templates/      # Jinja2 HTML templates (extends base.html)
 │       │   ├── base.html   # Base layout — nav, footer, CSS/JS includes
@@ -69,18 +75,20 @@ helmlog/
 │       │   ├── history.html
 │       │   ├── login.html  # Standalone (no base.html)
 │       │   ├── profile.html
+│       │   ├── session.html  # Dedicated session detail page
 │       │   └── admin/      # Admin pages (boats, users, audit, cameras, events, settings)
 │       │
 │       └── static/         # CSS and JS served by FastAPI StaticFiles
 │           ├── base.css    # Shared styles for all pages
 │           ├── shared.js   # Shared JS utilities (fmtTime, initNav, etc.)
 │           ├── home.js     # Home page logic
-│           └── history.js  # History page logic
+│           ├── history.js  # History page logic
+│           └── session.js  # Session detail page logic
 │
 ├── tests/                  # pytest suite — runs on any machine, no hardware required
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
 ├── scripts/                # deploy.sh, setup.sh, transcribe_worker.py
-└── docs/                   # Architecture notes, setup guides
+└── docs/                   # Guides, policies, and technical specs
 ```
 
 ---
