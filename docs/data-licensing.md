@@ -7,8 +7,8 @@
   (wind, speed, GPS) to see everyone else's.
 - **Privacy by default.** Your audio recordings, personal notes, and hard-earned
   current observations are private and never shared unless you say so.
-- **Crew rights.** Any crew member can ask to have their voice or face deleted or
-  scrambled from your logs at any time.
+- **Crew rights.** Any crew member can ask to have their voice, face, or likeness
+  deleted or blurred from your audio and video at any time.
 - **No spying.** We don't track non-member boats via AIS or radar.
 - **Governance.** The co-op is a democracy. Big moves (like building AI current
   models or selling data) require a supermajority or unanimous vote.
@@ -68,7 +68,7 @@ The following terms have specific meanings throughout this document:
 | **Platform** | The Helm Log software, including the Pi-based logger, web interface, API endpoints, and any hosted services (e.g., helmlog.org gateway). The platform is the tool; it does not own user data |
 | **Co-op admin** | A boat designated to perform administrative functions (approving members, signing records) under the M-of-N multi-admin model. Admin is a role, not a rank — admins have no governance authority beyond what this policy grants |
 | **Fleet benchmark** | An aggregate statistic computed across all contributing co-op boats for a specific metric and condition range — e.g., "fleet median upwind VMG in 10–12 knots TWS." Benchmarks are anonymous by construction: they contain no boat identities, no individual tracks, and no per-boat data points. A boat sees the fleet distribution and its own position within it, but not which boats produced which data points |
-| **PII** | Personally identifiable information — data that can identify a specific individual. In this policy: audio recordings, voice data, photos containing identifiable people, email addresses, biometric data, and diarized (speaker-labeled) transcripts |
+| **PII** | Personally identifiable information — data that can identify a specific individual. In this policy: video recordings (including 360° footage capturing crew faces and nearby boats), audio recordings, voice data, photos containing identifiable people, email addresses, biometric data, and diarized (speaker-labeled) transcripts |
 
 ---
 
@@ -121,10 +121,13 @@ speaker's deletion or anonymization request for their own voice data.
 
 ### Photos and images
 
-Photos captured as part of session notes, on-board cameras, or image-based
-detection (e.g., sail shape analysis) are owned by the boat and are **boat-private
-by default**. Photos that contain identifiable people are PII — the same deletion
-and anonymization rights that apply to audio (above) apply to identifiable photos.
+Photos captured as part of session notes or image-based detection (e.g., sail
+shape analysis) are owned by the boat and are **boat-private by default**. Photos
+that contain identifiable people are PII — the same deletion and anonymization
+rights that apply to audio (above) apply to identifiable photos. See also "Video
+recordings and the camera pipeline" below for on-board camera footage, which
+carries stronger PII obligations due to continuous recording and potential YouTube
+upload.
 
 ### Email addresses
 
@@ -179,17 +182,128 @@ from wearable sensors — the following rules apply:
 Session notes, race comments, and annotations are owned by the boat and are
 boat-private by default.
 
-### YouTube and external video
+### Video recordings and the camera pipeline
 
-YouTube videos linked to sessions are hosted on YouTube and governed by YouTube's
-terms of service. The Helm Log stores only **metadata** (video ID, title, sync
-points) — not the video content itself. The boat owner controls which videos are
-linked and can unlink a video at any time. Unlinking removes the metadata from the
-logger but does not affect the video on YouTube.
+Helm Log can control on-board cameras (Insta360 X4 or similar) via the platform's
+camera API. When a session starts, cameras begin recording automatically. When the
+session ends, cameras stop. The resulting video files are processed through an
+automated pipeline: files are transferred from the camera's SD card, stitched if
+necessary (360° dual-fisheye → equirectangular), uploaded to YouTube, and linked
+to the session with time-synchronization metadata.
 
-If a boat departs the co-op or requests data deletion, YouTube video metadata
-linked to that boat's sessions is included in the deletion scope (see Section 5).
-The actual YouTube video remains on YouTube under the uploader's control.
+This pipeline raises distinct data licensing concerns because **video is the
+richest PII the platform handles**.
+
+#### Video as PII
+
+On-board video — especially 360° video — captures:
+
+- **Crew faces and bodies** — identifiable individuals on the boat
+- **Crew voices** — if the camera records audio (many action cameras do)
+- **Other boats and their crew** — non-member boats in close proximity during
+  starts, mark roundings, and crossings
+- **Sail numbers, boat names, and identifying marks** — even distant boats may
+  be identifiable in high-resolution 360° footage
+- **Tactical information** — sail trim, crew positions, tacking sequences, and
+  other competitive knowledge visible in the footage
+
+Video PII obligations:
+
+- **Crew members retain PII rights over their likeness in video**, the same as
+  their voice in audio. Any crew member (active or former) can request that
+  their identifiable appearance be removed or blurred in video.
+- **Video anonymization** (face blurring, body obscuring) is an acceptable
+  alternative to full deletion, provided the person is no longer identifiable.
+  This is technically harder than audio anonymization and may require
+  re-processing the video through a face-detection pipeline.
+- **Non-member boats captured in video** are subject to the same principle as
+  AIS data: the platform must not become a surveillance tool. However, video
+  captured incidentally during racing is a natural consequence of being on the
+  water together. The policy does not require blurring of non-member boats
+  in race footage, but boat owners should be aware that uploading video makes
+  other boats' tactical decisions visible.
+
+#### Camera consent
+
+Operating cameras on a racing sailboat creates an **implicit recording
+environment**. The boat owner is responsible for:
+
+- **Informing crew** that cameras are active during sessions. The platform
+  displays camera status on the home page when cameras are recording.
+- **Respecting crew objections.** If a crew member objects to being recorded,
+  the boat owner should accommodate them (e.g., adjusting camera angles, not
+  recording that crew member's position). A crew member's objection does not
+  override the boat owner's right to record their own boat, but the boat
+  owner should not publish video that a crew member has asked to be excluded
+  from.
+- **Crew departure.** When a crew member departs, their video PII rights
+  persist. Former crew can request face-blur or removal from published videos
+  that identify them, the same as audio deletion rights.
+
+#### YouTube as a third-party platform
+
+Video uploaded to YouTube is governed by **YouTube's Terms of Service** in
+addition to this policy. Key implications:
+
+- **Data leaves the boat permanently.** Unlike instrument data (stored on the
+  Pi) or audio (stored locally and optionally offloaded for transcription),
+  YouTube videos are hosted by Google on Google's infrastructure. The boat
+  owner cannot guarantee deletion from Google's systems — YouTube's content
+  removal process applies.
+- **Privacy settings are the boat owner's responsibility.** Videos can be
+  uploaded as private, unlisted, or public. The platform defaults to
+  **unlisted** (accessible only via direct link). The boat owner controls
+  this setting and is responsible for choosing an appropriate visibility level.
+- **Linking is not sharing the video.** Helm Log stores only metadata (video
+  ID, title, duration, sync points). The co-op never hosts video content.
+  Linking a video to a session creates a navigable reference, not a copy.
+- **Unlinking removes the reference, not the video.** If a boat owner unlinks
+  a video, the metadata is removed from the Pi and any co-op references. The
+  YouTube video itself remains on YouTube under the uploader's Google account.
+
+#### Video in the co-op context
+
+YouTube video links and metadata are **boat-private by default** (listed under
+"What is NOT shared" in Section 2). This means:
+
+- Co-op members **cannot see** another boat's linked videos unless the boat
+  owner explicitly shares them (e.g., via coach access or tuning partner
+  sharing).
+- If the co-op charter or a future feature enables **video sharing**, the same
+  event-scoping and temporal embargo rules that apply to track data would
+  apply to video links. Video from events you didn't participate in would not
+  be accessible.
+- **360° video is tactically more revealing than instrument data.** Sail trim,
+  crew weight placement, tacking technique, mark rounding strategy — all
+  visible in video but not in instrument telemetry. Co-ops should consider
+  this when deciding whether to enable video sharing features.
+
+#### Video deletion and departure
+
+When a boat departs the co-op or requests data deletion:
+
+- YouTube video **metadata** (links, sync points) is deleted from the Pi and
+  any co-op references, per the standard deletion process in Section 5.
+- The **YouTube videos themselves** remain on YouTube. The platform cannot
+  delete YouTube content — only the Google account holder (the uploader) can.
+- If a departing boat wants full video deletion, they must separately delete
+  the videos from their YouTube channel. The platform's deletion process
+  handles metadata only.
+
+#### Video retention
+
+YouTube videos have no automatic expiration — they persist until the uploader
+deletes them. This creates an asymmetry with on-Pi data, which can be aged
+or purged:
+
+- Instrument data can be aged (reduced resolution after 1-2 seasons)
+- Audio can be deleted from the Pi
+- But YouTube videos linked to those same sessions remain at full fidelity
+  on YouTube indefinitely
+
+Boat owners should be aware of this asymmetry when uploading race video.
+The platform may add a reminder when videos are linked to sessions older
+than the co-op's data aging threshold.
 
 ### Tide and current observations
 
@@ -1335,6 +1449,10 @@ launch) and **future** (needed as the platform matures).
 | Admin election tracking | Record admin elections, terms, and removal votes |
 | Expulsion vote tracking | Record votes (by boat representative), notice periods, and appeal outcomes |
 | YouTube metadata cleanup | Remove linked video metadata on boat departure/deletion |
+| Video PII handling | Face-blur or removal of identifiable crew in video on request; extends crew PII deletion rights to video recordings |
+| Camera consent notification | Display active camera recording status on home page; provide mechanism for crew to flag recording objections |
+| YouTube upload privacy default | Default to unlisted YouTube uploads; warn when changing to public; log upload events with privacy setting |
+| Video aging reminder | Notify boat owner when YouTube videos are linked to sessions older than the co-op's data aging threshold, since YouTube videos persist indefinitely unlike aged instrument data |
 | Cross-co-op isolation | Enforce data pool boundaries; prevent cross-co-op queries or exports |
 | ML opt-out flag | Per-boat flag to exclude data from approved ML training projects |
 | ML project governance | Record ML project proposals, votes, model ownership, and opt-outs |
@@ -1410,3 +1528,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-08 | Rev 18 — anonymous fleet benchmarking: fleet benchmark definition added to Definitions; new "Anonymous fleet benchmarking" subsection in Section 2 covering what benchmarks show (fleet statistics, percentile rank, condition binning), what they don't show (no identities, no tracks, no reverse-engineering tools), minimum 4-boat threshold per condition bin, benchmarks-are-not-ML clarification (descriptive stats don't require Section 8 governance), benchmark behavior on departure and during embargoes, network effect value proposition; MVP tech requirements for benchmark computation and embargo sync; future tech requirements for condition binning and historical trends; plain English summary updated |
 | 2026-03-08 | Rev 19 — protocol hardening from security review: audit logging expanded to track data volume (points returned, bytes transferred) for volume-based rate limiting; replay protection via request nonces with dedup; revocation broadcast (active push to all peers instead of passive polling); event-scoped Proof of Participation for track data requests; maneuver detection added to future tech requirements |
 | 2026-03-08 | Rev 20 — processing offload: new "Processing offload" subsection in Section 1 covering own-boat offload (PII obligations, ephemeral processing, no data retention on offload host), third-party offload (GDPR data processor role, public endpoint warning), co-op offload (designated host approved by 2/3 vote, no raw per-boat data retention, audit logging), and transport security (Tailscale default, TLS 1.2+ for non-Tailscale); MVP tech requirement for offload cleanup and audit trail; future requirements for third-party warning, co-op host approval, and photo/video analysis offload; plain English summary updated |
+| 2026-03-08 | Rev 21 — video and camera pipeline: comprehensive rewrite of "YouTube and external video" into "Video recordings and the camera pipeline" covering: video as PII (crew faces, voices, other boats, tactical info in 360° footage); crew PII rights over likeness in video with face-blur anonymization; camera consent (inform crew, respect objections, departure rights); YouTube as third-party platform (data leaves boat permanently, privacy settings, unlinking vs deletion); video in co-op context (boat-private by default, event-scoping for future sharing); video deletion asymmetry (metadata deleted, YouTube videos persist); video retention (no auto-expiration on YouTube, aging reminder); PII definition updated to include video; future tech requirements for video PII handling, camera consent notification, upload privacy defaults, and video aging reminders |

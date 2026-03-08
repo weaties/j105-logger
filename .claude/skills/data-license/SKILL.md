@@ -14,7 +14,7 @@ Check `git diff` (staged + unstaged) and any new files for code that:
 
 - Stores, reads, exports, or deletes user data
 - Serves data via API endpoints
-- Handles PII (audio, photos, emails, biometrics, transcripts)
+- Handles PII (video, audio, photos, emails, biometrics, transcripts)
 - Implements co-op membership, sharing, or governance
 - Adds new data types or collection mechanisms
 
@@ -28,6 +28,10 @@ For each data-touching change, verify compliance with the relevant sections:
 - [ ] Boat owner retains full export/delete/restrict rights over their data
 - [ ] AIS and proximity data from other vessels is excluded
 - [ ] Audio/photo/email deletion and anonymization rights are supported
+- [ ] Video PII: crew can request face-blur or removal from video recordings
+- [ ] Camera consent: crew are informed when cameras are recording
+- [ ] YouTube uploads default to unlisted; video links are boat-private
+- [ ] Processing offload: offload hosts do not retain data after task completion
 - [ ] Biometric data (if any) has per-person consent separate from instrument sharing
 - [ ] Biometric data cannot be used in personnel decisions
 - [ ] Crew emails are deleted when access is revoked
