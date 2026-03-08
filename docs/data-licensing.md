@@ -1512,9 +1512,7 @@ launch) and **future** (needed as the platform matures).
 
 ### Designed (see [Federation Protocol Design](federation-design.md))
 
-The following requirements have complete protocol specifications, API
-endpoints, SQLite schemas, and Python module signatures in the federation
-design document:
+Section 12 groups requirements into three tiers: **MVP** (needed for initial co-op launch), **Designed** (requirements with complete protocol specifications, API endpoints, SQLite schemas, and Python module signatures defined in the federation design document), and **future** (needed as the platform matures). The following requirements are part of the **Designed** tier:
 
 | Requirement | Purpose |
 |---|---|
