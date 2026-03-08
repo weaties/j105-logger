@@ -18,6 +18,47 @@ boats in your fleet. In return, you see theirs. Everyone gets faster.
 
 ---
 
+## Why fleets do this
+
+Sharing race data within a fleet is the single fastest way to improve
+everyone's sailing. When you can overlay your track against the boats
+that beat you, you stop guessing and start seeing exactly where you lost
+distance — the bad lane off the start, the extra tack on the beat, the
+slow set on the run. Multiply that across a season and the whole fleet
+gets faster.
+
+The problem has always been logistics: who collects the data, where does
+it live, and who do you trust with it? Helm Log removes all of that.
+Each boat records its own data and shares directly with the fleet — no
+middleman, no subscriptions, no upload to someone else's server.
+
+---
+
+## How data moves between boats
+
+There's no central server. Each boat's Raspberry Pi talks directly to
+the other Pis in the co-op over a private network (Tailscale).
+
+```
+  ┌──────────┐       ┌──────────┐       ┌──────────┐
+  │  Boat A   │◄─────►│  Boat B   │◄─────►│  Boat C   │
+  │  (Pi)     │       │  (Pi)     │       │  (Pi)     │
+  └──────────┘       └──────────┘       └──────────┘
+       ▲                                       ▲
+       └───────────────────────────────────────┘
+              direct, encrypted connections
+                  (no central server)
+```
+
+When you share a session, the other boats in the co-op can pull your
+track and instrument data directly from your Pi. When their Pis are
+offline, cached copies let you still view previously shared sessions.
+
+**If a boat's Pi is off or disconnected**, nothing breaks. The data
+syncs up the next time it comes online — there's no deadline.
+
+---
+
 ## What gets shared and what stays private
 
 When you join a co-op, your **instrument data** from races and practices
@@ -32,9 +73,12 @@ is visible to other co-op members:
 | | Sail selection |
 | | YouTube video links |
 
-**You choose what to share.** After each race, you decide whether to
-share that session with the co-op or keep it private. Nothing is shared
-automatically without your action.
+**You choose what to share, session by session.** After each race, you
+decide whether to share that session with the co-op or keep it private.
+Nothing is ever shared automatically — every share is an explicit action
+you take. You can share one Wednesday night race and skip the next. You
+can share all your practices but keep the regattas private. It's entirely
+up to you, every time.
 
 ---
 
@@ -119,6 +163,29 @@ You can opt out of current sharing even if the rest of the co-op opts in.
   data is used. You see the charter before you join.
 - **No one can use your data for gambling, protests, or surveillance.**
   These uses are explicitly prohibited.
+
+---
+
+## Common misconceptions
+
+**"If I share, everyone can see everything."**
+No. Only instrument data (speed, track, wind) from sessions you
+explicitly share. Audio, video, notes, crew, and sail choices are always
+private.
+
+**"I have to share every race."**
+No. Sharing is per-session and entirely optional. Share the ones you
+want, skip the ones you don't.
+
+**"Someone could download my data and keep it forever."**
+No. Co-op data is view-only in the platform. There's no bulk export.
+If you leave the co-op, cached copies are deleted and your contributions
+are anonymized within 30 days.
+
+**"This is like uploading to Strava or RacingRules."**
+Not at all. There is no central server. Your data lives on your Pi and
+is shared directly to other boats in your co-op over an encrypted
+connection. No company has access to it.
 
 ---
 

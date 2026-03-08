@@ -15,6 +15,22 @@ set up, and how to run a co-op without it becoming a second job.
 
 ---
 
+## The mental model
+
+When you're explaining Helm Log to someone, the simplest way to think
+about it: **each boat is its own server.** Your Pi records your data,
+stores it, and serves it to other boats you choose to share with. There
+is no company in the middle. No website you upload to. No subscription.
+
+The co-op is just an agreement between boats to share instrument data
+with each other. The technology enforces the agreement — who's in, what's
+shared, when access expires — so you don't have to police it yourself.
+
+If someone asks "where does my data go?", the answer is: "nowhere you
+didn't send it."
+
+---
+
 ## Pitching it to the fleet
 
 ### The one-liner
@@ -119,6 +135,10 @@ Once the co-op is running, your job is minimal:
 | Dispute about data sharing | Point to the charter. If the charter doesn't cover it, propose an amendment and vote. |
 | Coach wants more access than allowed | Explain the rules. The platform enforces them — it's not personal, it's policy. |
 | Fleet is too small (<3 boats) | The co-op can still function but is in "light mode" — simpler governance, single admin. Recruit more boats. |
+| "I shared a session but nobody can see it" | The other boats need to be online to pull the data. If their Pis are off, it syncs next time they connect. |
+| "The clock on my Pi is wrong" | Normal after a power cycle — the Pi has no battery-backed clock. It syncs via NTP when internet is available. The protocol tolerates up to 5 minutes of drift. |
+| "I only want to share with some boats" | Sharing is all-or-nothing within the co-op. If you want selective sharing, keep the session private and share individual files directly (outside the platform). |
+| "A new boat joined but can't see old races" | Correct — new members see sessions shared after they join. The co-op doesn't backfill historical data to new members. |
 
 ---
 
@@ -147,6 +167,41 @@ As the fleet grows, formalize:
 The transition from light to full mode happens naturally. When the fleet
 is big enough that a handshake isn't sufficient, you create a charter
 and add a second admin.
+
+---
+
+## How decisions get made
+
+As the fleet grows, people will ask governance questions: "Can we add a
+coach?", "Can we share data with another fleet?", "What if someone
+breaks the rules?"
+
+### In light mode (3-5 boats)
+
+Decisions happen on the dock. You're the admin, you have a backup, and
+everyone knows each other. If the fleet agrees, you make the change.
+There's no formal process because you don't need one yet.
+
+### In full mode (6+ boats)
+
+Decisions go through the charter:
+
+- **Routine changes** (adding a boat, renewing coach access) — the admin
+  handles it directly
+- **Policy changes** (enabling current model sharing, granting cross-co-op
+  access, adding a new admin) — require a proposal and a 2/3 supermajority
+  vote from active members
+- **Current model sharing** — requires unanimous consent (higher bar because
+  current knowledge is competitively valuable)
+
+The platform enforces these rules. You don't have to remember who voted
+for what — the signed records are on every Pi.
+
+### If there's a dispute
+
+Point to the charter. If the charter doesn't cover the situation, propose
+an amendment and vote on it. The goal is to keep governance lightweight
+but explicit — nobody should be surprised by a decision.
 
 ---
 

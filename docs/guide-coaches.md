@@ -58,8 +58,9 @@ serve it to you automatically.
 - You can view any session that a co-op member has shared
 - Every time you view a session, it's logged in the co-op's audit trail
 - You can view data in the platform but not export it in bulk
-- You can take notes, screenshots, or prepare presentations from what you
-  see — that's expected coaching work
+- **Taking notes, screenshots, and preparing presentations is explicitly
+  encouraged** — that's expected coaching work. The no-export rule applies
+  to raw data downloads, not to your own analysis and materials.
 
 ### What happens when access expires
 
@@ -79,25 +80,33 @@ renewal.
 ## Rules to be aware of
 
 These rules exist to protect the fleet and to make sure coaching
-relationships stay healthy:
+relationships stay healthy. Each one has a reason:
 
 1. **No aggregation across co-ops.** If you coach multiple fleets, you
    cannot combine data from different co-ops to build cross-fleet models
    or comparisons.
+   *Why: Each co-op's data belongs to that co-op. Combining fleets would
+   create competitive intelligence that no individual fleet agreed to.*
 
 2. **No derivative works beyond your access window.** If you build a
    presentation, polar model, or analysis from co-op data, you should not
    continue distributing it after your access expires. The fleet's data
    stays with the fleet.
+   *Why: Access is time-limited for a reason. If analyses outlive the
+   engagement, the time limit is meaningless.*
 
 3. **No sharing co-op data with non-members.** You can discuss your
    coaching observations (that's your expertise), but you cannot share raw
    session data, track files, or instrument recordings with anyone outside
    the co-op.
+   *Why: The fleet shared data with you specifically, not with the world.
+   Your insights and observations are yours to share — raw data is not.*
 
 4. **Audit transparency.** The co-op admin can see which sessions you
    accessed and when. This isn't surveillance — it's the same transparency
    that any shared-data system should have.
+   *Why: Trust requires visibility. Knowing that access is logged keeps
+   everyone honest and makes the system trustworthy for all parties.*
 
 ---
 
@@ -120,6 +129,27 @@ Helm Log's approach is designed to reflect how coaching actually works:
 
 This protects both the fleet and the coach. The fleet knows their data is
 governed. The coach knows the rules are clear and consistent.
+
+---
+
+## Running a debrief with Helm Log
+
+A typical post-race debrief using co-op data:
+
+1. **Pull up the race** — open the session in the co-op view. You'll see
+   all boats that shared overlaid on the same map.
+2. **Identify the key legs** — zoom into the beats and runs where the
+   fleet spread out. The speed coloring shows who was fast and slow.
+3. **Compare specific boats** — select two boats and walk through the
+   leg. Where did one gain? Was it a lane choice, a better tack angle,
+   or better VMG on the run?
+4. **Check the benchmarks** — fleet percentile rankings show patterns
+   across multiple races. "You're in the bottom quartile on downwind
+   VMG" is more useful than anecdotes from a single race.
+5. **Take screenshots and build your presentation** — you're encouraged
+   to capture what you need for your coaching materials.
+6. **Debrief with the fleet** — walk through the key moments. The data
+   backs up the conversation.
 
 ---
 
