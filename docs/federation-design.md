@@ -607,6 +607,79 @@ store cached data locally).
 
 ---
 
+## 6.5. Processing Offload
+
+Some tasks are too heavy for the Raspberry Pi: audio transcription, speaker
+diarization, photo analysis, video processing, and potentially benchmark
+aggregation for large co-ops. Helm Log supports **offloading** these tasks
+to a faster machine.
+
+### Current implementation: transcription offload
+
+The Pi sends WAV files over the Tailscale mesh to a worker process (e.g.,
+a Mac running `scripts/transcribe_worker.py`). The worker runs
+faster-whisper and returns the transcript. The Pi stores the result in
+SQLite. This is configured via the `TRANSCRIBE_URL` environment variable.
+
+```
+Pi (corvopi)                          Mac (worker)
+  |                                     |
+  | --- POST /transcribe (WAV) ------>  |
+  |     over Tailscale                  |
+  |                                     |  runs faster-whisper
+  |                                     |  + optional diarization
+  | <-- JSON (text + segments) ------   |
+  |                                     |
+  | stores in SQLite                    | deletes WAV + artifacts
+```
+
+### Protocol rules for offload
+
+1. **Offload hosts are ephemeral processors, not storage.** The Pi is the
+   single source of truth. The offload host must delete the source file and
+   all intermediate artifacts after returning the result.
+
+2. **PII obligations follow the data.** Audio contains crew voices (PII).
+   If a crew member requests voice deletion, the boat owner must ensure the
+   offload host has also purged any cached copies. The Pi logs all offload
+   events (what was sent, where, when) for audit purposes.
+
+3. **Transport must be encrypted.** Tailscale provides this by default.
+   For offload to non-Tailscale endpoints (cloud APIs, public services),
+   HTTPS (TLS 1.2+) is required. The Pi should warn the user when
+   configuring an offload URL outside the Tailscale network.
+
+4. **Own-boat offload needs no co-op approval.** The boat owner sending
+   their own data to their own hardware is a local processing decision.
+   The co-op has no say in how a boat processes its own private data.
+
+5. **Co-op offload requires a vote.** If a co-op wants to designate a
+   shared processing host (e.g., for current model aggregation or
+   benchmark computation), the host must be approved by 2/3 supermajority
+   vote and identified in the charter. The offload host must not retain
+   raw per-boat data beyond the computation — only aggregated results.
+   Audit logging of the host's data access is required.
+
+### Future offload patterns
+
+The transcription offload pattern generalizes to:
+
+- **Still photo analysis** — sail shape measurement, rig tune detection,
+  mark identification
+- **Video analysis** — automated maneuver detection from on-board camera
+  footage, start replay analysis
+- **ML inference** — running trained models (polar prediction, current
+  estimation) on hardware with GPU acceleration
+- **Benchmark aggregation** — if co-ops grow beyond 20-30 boats, a
+  designated aggregator could collect metrics from all peers and compute
+  fleet benchmarks centrally instead of each Pi doing it independently
+
+All patterns follow the same rules: encrypted transit, ephemeral
+processing, no data retention on the offload host, PII deletion
+obligations, and co-op approval for shared infrastructure.
+
+---
+
 ## 7. Per-Event Co-op Assignment
 
 When a boat belongs to multiple co-ops, session sharing works as follows:
