@@ -208,9 +208,10 @@ You can opt out of current sharing even if the rest of the co-op opts in.
 - **The co-op has rules.** Every co-op has a charter that spells out how
   data is used. You see the charter before you join.
 - **Prohibited uses.** The charter explicitly prohibits using co-op data
-  in protest hearings or for tracking where a specific boat sailed
-  outside of shared racing sessions (e.g., monitoring practice
-  locations or cruising patterns).
+  in protest hearings or for tracking any boat's movements or patterns
+  beyond their explicitly shared sessions (e.g., inferring practice
+  schedules, cruising patterns, or competitive preparations from
+  shared race data).
 
 ---
 
