@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -49,6 +50,25 @@ def _opt_int(val: str | None) -> int | None:
 def _repo_dir() -> str:
     """Return the project root directory."""
     return str(Path(__file__).resolve().parents[2])
+
+
+def _uv_bin() -> str:
+    """Return the full path to the uv binary.
+
+    Under systemd, ~/.local/bin is not in PATH, so we resolve it explicitly.
+    """
+    found = shutil.which("uv")
+    if found:
+        return found
+    # Common install location on Pi (installed by setup.sh for the deploy user)
+    home_local = Path.home() / ".local" / "bin" / "uv"
+    if home_local.exists():
+        return str(home_local)
+    # helmlog service account fallback
+    svc_local = Path("/home/helmlog/.local/bin/uv")
+    if svc_local.exists():
+        return str(svc_local)
+    return "uv"  # last resort — let it fail with a clear error
 
 
 def _git(args: list[str]) -> str:
@@ -228,7 +248,7 @@ async def execute_deploy(config: DeployConfig) -> dict[str, Any]:
         try:
             await asyncio.to_thread(
                 subprocess.check_output,
-                ["uv", "sync", "--no-interaction", "--project", repo],
+                [_uv_bin(), "sync", "--no-interaction", "--project", repo],
                 cwd=repo,
                 stderr=subprocess.STDOUT,
                 text=True,
