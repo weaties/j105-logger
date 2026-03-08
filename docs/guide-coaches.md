@@ -19,12 +19,16 @@ data. This gives you:
 - **Fleet benchmarks** — anonymous percentile rankings (e.g., "Boat A's
   tacking angles are in the 75th percentile of the fleet")
 
+You see only what boats explicitly shared — nothing is automatic. Each
+boat chooses, session by session, what the co-op can see.
+
 This is enough to run a full debrief, identify fleet-wide weaknesses, and
 give targeted coaching to individual boats.
 
 Note: fleet benchmarks require at least 4 boats contributing data in a
 given condition band (wind speed / angle range) to produce meaningful
-percentile rankings.
+percentile rankings. Benchmarks get more stable and useful as more boats
+contribute across more sessions.
 
 ---
 

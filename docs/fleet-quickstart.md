@@ -37,6 +37,8 @@ race data with your fleet.
 | Wind speed & direction  | Crew roster              |
 | Race results            | Sail selection           |
 
+You choose what to share, **race by race**.
+
 ---
 
 The fastest fleets in the world already share data — this makes it
@@ -73,6 +75,9 @@ Anytime. Your data is removed from the co-op within 30 days.
 **Do I need internet on the water?**
 No. The Pi records everything offline. You only need internet when you
 want to share or view other boats' data.
+
+**What if my Pi is offline?**
+Nothing breaks. Data syncs automatically when you're back online.
 
 **Is this like Strava for sailing?**
 No. There's no central server. Boats talk directly to each other.

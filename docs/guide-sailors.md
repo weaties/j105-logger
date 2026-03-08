@@ -96,7 +96,8 @@ overlays and fleet benchmarks.
 
 ### On race day
 
-1. Your Pi records the race automatically (instruments, audio, video)
+1. Your Pi records the race automatically (instruments, audio, video) —
+   you don't need to be online during the race, everything syncs later
 2. After the race, you open the Helm Log web page on your phone
 3. You see a prompt: "Share this session with [co-op name]?"
 4. If you tap **Share**, other co-op members can see your track and results
@@ -195,6 +196,10 @@ are anonymized within 30 days.
 **"If I leave, do other boats keep my old data?"**
 No. Cached copies are deleted and your contributions are anonymized
 within 30 days.
+
+**"If I share, can the coach see everything?"**
+Only the instrument data you shared, and only during their access
+window. Audio, video, notes, and crew info are always private.
 
 **"This is like uploading to Strava or RacingRules."**
 Not at all. There is no central server. Your data lives on your Pi and

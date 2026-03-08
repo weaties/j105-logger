@@ -91,6 +91,11 @@ They can't. Co-op data cannot be used in protests — it's explicitly
 prohibited in the charter. The platform exists to make the fleet faster,
 not to police it.
 
+**"What if someone shares selectively — only their good races?"**
+That's their right. Sharing is reciprocal: the more you share, the
+more useful the fleet benchmarks are for everyone, including you. Most
+sailors figure this out quickly.
+
 ### What not to lead with
 
 - Don't lead with "peer-to-peer" or "cryptographic identity" or
@@ -113,6 +118,9 @@ not to police it.
 - A **Tailscale account** (free tier, takes 2 minutes)
 
 ### The setup sequence
+
+If a boat doesn't have instruments yet, they can still join later — you
+don't need 100% coverage to start.
 
 1. **Start with your own boat.** Get Helm Log running, record a few
    races, make sure it works. You need to be confident before you
