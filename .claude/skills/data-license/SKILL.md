@@ -40,6 +40,9 @@ For each data-touching change, verify compliance with the relevant sections:
 - [ ] No bulk export of other boats' co-op data
 - [ ] Temporal sharing embargo timestamps are respected before serving track data
 - [ ] Temporal sharing policy is enforced at the co-op level, not per-boat
+- [ ] Fleet benchmarks contain no boat identities or per-boat data points
+- [ ] Benchmarks enforce minimum 4-boat threshold per condition bin
+- [ ] Benchmarks exclude embargoed session data until embargo lifts
 
 ### Section 5 — Retention and Deletion
 - [ ] Data portability: own-boat data exportable in CSV, GPX, JSON, WAV

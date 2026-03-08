@@ -25,6 +25,10 @@
   protests or redress hearings.
 - **Seasonal controls.** The co-op can time-delay sharing — race during the
   series, share after it ends.
+- **Anonymous benchmarking.** The co-op computes fleet-wide statistics (medians,
+  percentiles, rankings) so you can see exactly where you stand — without
+  revealing who is faster. You learn "your gybes cost 0.9 seconds vs the fleet
+  median" without learning who gybes well.
 - **Safety first.** This data is for performance analysis, not navigation. Don't
   hit a rock because of a shared log.
 
@@ -60,6 +64,7 @@ The following terms have specific meanings throughout this document:
 | **Entity** | A single legal person or organization with common ownership or controlling interest over one or more boats. Examples: an individual owner, a sailing club, a corporate sponsor, a charter company, or a syndicate. Family members who independently own separate boats are separate entities unless they share a common ownership structure (e.g., a family trust) |
 | **Platform** | The Helm Log software, including the Pi-based logger, web interface, API endpoints, and any hosted services (e.g., helmlog.org gateway). The platform is the tool; it does not own user data |
 | **Co-op admin** | A boat designated to perform administrative functions (approving members, signing records) under the M-of-N multi-admin model. Admin is a role, not a rank — admins have no governance authority beyond what this policy grants |
+| **Fleet benchmark** | An aggregate statistic computed across all contributing co-op boats for a specific metric and condition range — e.g., "fleet median upwind VMG in 10–12 knots TWS." Benchmarks are anonymous by construction: they contain no boat identities, no individual tracks, and no per-boat data points. A boat sees the fleet distribution and its own position within it, but not which boats produced which data points |
 | **PII** | Personally identifiable information — data that can identify a specific individual. In this policy: audio recordings, voice data, photos containing identifiable people, email addresses, biometric data, and diarized (speaker-labeled) transcripts |
 
 ---
@@ -436,6 +441,77 @@ session**. There is no ongoing minimum contribution requirement.
 
 This low threshold maximizes adoption. In a one-design fleet where everyone races
 together, social dynamics are a more effective incentive than technical enforcement.
+
+### Anonymous fleet benchmarking
+
+The co-op computes **fleet benchmarks** (see Definitions) — anonymous aggregate
+statistics that let each boat see where they stand relative to the fleet without
+revealing who is faster.
+
+#### What benchmarks show
+
+A boat sees its own performance alongside the fleet distribution:
+
+- **Fleet statistics**: median, top 25%, top 10% for any metric
+- **Your position**: your value and percentile rank within the fleet
+- **Condition binning**: benchmarks are scoped to wind speed ranges, wave state,
+  or other environmental conditions so comparisons are apples-to-apples
+
+Example: "Your upwind VMG in 10–12 kts TWS is 5.88 kt — fleet median is 5.72,
+top 10% is 5.95. You rank in the top 18%."
+
+Benchmarks can cover any derived metric the platform computes: VMG, tacking
+loss, gybe loss, start timing, layline accuracy, polar performance percentage,
+and more.
+
+#### What benchmarks do NOT show
+
+- **No boat identities.** Benchmarks never reveal which boats produced which
+  data points. "Top 10%" is a statistical threshold, not a leaderboard.
+- **No individual tracks.** Benchmarks are computed from aggregate statistics,
+  not viewable track data.
+- **No reverse-engineering tools.** The platform does not provide tools to
+  correlate benchmark positions with individual boats. However, the small-fleet
+  anonymization disclaimer (Section 5) applies — in a co-op of 5 boats, "top
+  10%" is effectively one boat.
+
+#### Minimum fleet size for benchmarks
+
+Benchmarks are only computed when **at least 4 boats** contribute data for a
+given metric and condition bin. Below this threshold, aggregate statistics are
+too easily attributed to individual boats. If a condition bin has fewer than 4
+contributors, the platform shows "insufficient data" rather than a benchmark.
+
+#### Benchmarks are not ML
+
+Fleet benchmarks are **descriptive statistics** (medians, percentiles, counts),
+not predictive models. They do not require the AI/ML governance process in
+Section 8. If the co-op later wants to build predictive models from benchmark
+data (e.g., "predict your VMG improvement if you reduce tack loss by 0.5s"),
+that crosses into Section 8 territory and requires a supermajority vote.
+
+#### Benchmark data and departure
+
+When a boat departs the co-op, their data is anonymized per Section 5. Their
+historical contributions to benchmarks remain in the aggregate statistics (since
+benchmarks contain no individual identity), but no new benchmarks are computed
+from their data.
+
+#### Benchmarks and temporal sharing
+
+Benchmarks respect the co-op's temporal sharing controls. If sessions are
+embargoed, the benchmark statistics are not updated with embargoed data until
+the embargo lifts. This prevents using benchmark shifts to infer what embargoed
+boats are doing.
+
+#### Why this matters
+
+Anonymous benchmarking is the co-op's primary value proposition for competitive
+sailors. It answers the questions elite sailors actually ask — "Are we fast?"
+"Are we losing in tacks or straight-line speed?" "Is our setup competitive?" —
+without requiring anyone to expose their secrets. Every boat that contributes
+data improves the benchmarks for everyone, creating a network effect that grows
+the co-op's value.
 
 ---
 
@@ -1171,6 +1247,8 @@ launch) and **future** (needed as the platform matures).
 | AIS data filtering | Exclude AIS and proximity data from other vessels during capture; never store non-member tracking data |
 | Email PII handling | Scrub owner and crew email from records on departure; admin-only visibility by default |
 | Active/inactive member tracking | Heartbeat-based activity detection; manual inactive toggle; configurable inactivity threshold; quorum denominator adjustment |
+| Fleet benchmark computation | Compute anonymous aggregate statistics (median, percentiles, rank) per metric per condition bin from co-op shared data; enforce minimum 4-boat threshold per bin |
+| Benchmark embargo sync | Exclude embargoed session data from benchmark computation until embargo lifts |
 
 ### Future requirements
 
@@ -1200,6 +1278,8 @@ launch) and **future** (needed as the platform matures).
 | Biometric consent tracking | Per-person, per-data-type consent records for biometric data; independent of instrument data sharing |
 | Biometric data isolation | Store biometric data separately from instrument data; enforce per-person access controls |
 | Temporal sharing controls | Co-op-level sharing delay (immediate, duration-based, or date-based embargo); embargo state visible in co-op session list |
+| Benchmark condition binning | Configurable environmental condition bins (wind speed, wave state, current) for fleet benchmark computation; co-op-level bin definitions |
+| Benchmark historical trends | Per-boat performance trends over time relative to fleet benchmarks; own-boat only (no cross-boat trend comparison) |
 | Gambling prohibition enforcement | Include prohibition in co-op membership agreement; policy-level restriction |
 | Protest firewall | Technical documentation that co-op data from other boats is inadmissible in protest proceedings; no enforcement mechanism needed (policy-only) |
 | Multi-admin signing | M-of-N admin boat signatures for membership, revocation, and charter amendment records |
@@ -1249,3 +1329,4 @@ beyond what the AGPLv3 allows.
 | 2026-03-08 | Rev 15 — PR review feedback: crew member emails covered alongside owner emails; temporal sharing controls changed from per-boat to co-op-level decision |
 | 2026-03-08 | Rev 16 — adversarial review hardening: formal definitions section (session, boat owner, entity, derived metrics, PII, platform, etc.); boat owner vs instance operator clarified (owner wins); coach derivative works reframed as normative obligation; bulk export reframed as "no export tools" with honest acknowledgment of view-only limitations; expulsion+deletion precedence (shared sessions survive expulsion as anonymized data); single moderator mode for small co-ops; heartbeat seasonal power-down handling with manual inactive toggle; liability expanded (limitation of damages, indemnification, governing law); data controller/processor roles defined for GDPR; audit logging scoped to API endpoints not UI views; audio PII weakened to whole-recording deletion baseline; tech requirements split into MVP vs future |
 | 2026-03-08 | Rev 17 — attack vector mitigations: coach access scoped to per-boat opt-in with session-level permissioning and "knowledge transfer reality" acknowledgment; anonymization disclaimer strengthened to "will almost certainly be identifiable" with specific examples (track shapes, start positions, tactical style); event-scoped session visibility (full detail only for events you participated in) with optional data aging tiers (current season full, previous season reduced, older summary only); membership eligibility criteria (active racing requirement, commercial actors must use coach access, observation-only grounds for expulsion) |
+| 2026-03-08 | Rev 18 — anonymous fleet benchmarking: fleet benchmark definition added to Definitions; new "Anonymous fleet benchmarking" subsection in Section 2 covering what benchmarks show (fleet statistics, percentile rank, condition binning), what they don't show (no identities, no tracks, no reverse-engineering tools), minimum 4-boat threshold per condition bin, benchmarks-are-not-ML clarification (descriptive stats don't require Section 8 governance), benchmark behavior on departure and during embargoes, network effect value proposition; MVP tech requirements for benchmark computation and embargo sync; future tech requirements for condition binning and historical trends; plain English summary updated |
