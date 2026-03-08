@@ -3067,10 +3067,16 @@ def create_app(
         request: Request,
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> JSONResponse:
-        from helmlog.deploy import DeployConfig, commits_behind, get_running_version
+        from helmlog.deploy import (
+            DeployConfig,
+            commits_behind,
+            fetch_latest,
+            get_running_version,
+        )
 
         config = DeployConfig()
         running = get_running_version()
+        await fetch_latest(config)  # update origin refs before comparing
         behind = commits_behind(config)
         last = await storage.last_deployment()
         return JSONResponse(
