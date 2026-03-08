@@ -51,13 +51,18 @@ accessible to everyone.
 - Coach can run debriefs with real data
 - The whole fleet gets faster together
 
+In the early days, the co-op view will be sparse. It gets more useful as
+more boats share more sessions — benchmarks need at least 4 boats to be
+meaningful.
+
 ---
 
 ## Getting started
 
 1. Talk to your fleet's Helm Log champion
 2. They'll help set up the Pi on your boat
-3. After setup: one tap to share a race, one tap to keep it private
+3. After setup: one tap to share a race, one tap to keep it private.
+   Data syncs when the Pi has internet (phone hotspot at the dock).
 
 ---
 
@@ -70,7 +75,8 @@ Nowhere unless you send it. It stays on your Pi.
 No. You choose, race by race.
 
 **Can I leave?**
-Anytime. Your data is removed from the co-op within 30 days.
+Anytime. Cached copies of your data are deleted from other boats within
+30 days, and your name is anonymized in fleet benchmarks.
 
 **Do I need internet on the water?**
 No. The Pi records everything offline. You only need internet when you

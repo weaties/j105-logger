@@ -277,7 +277,9 @@ GET  /co-op/{co_op_id}/sessions
      List sessions this boat has shared with the co-op.
      Query params: ?after=<iso>&before=<iso>&type=race|practice
      Returns: session summaries (id, type, start, end, event_name).
-     Does NOT return private data (audio, notes, crew, sails).
+     Does NOT return private data (audio, notes, crew, sails, video links).
+     See [Data Licensing Policy](data-licensing.md) Section 1 for the full
+     PII definition and Section 3 for the shared/private data boundary.
 
      Respects temporal sharing controls:
      - Embargoed sessions return { "status": "embargoed", "available_at": "<iso>" }

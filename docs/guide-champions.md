@@ -151,6 +151,23 @@ don't need 100% coverage to start.
 | Tailscale won't connect | Check that the phone hotspot is active and the Pi has internet |
 | "My boat's WiFi is terrible" | Hardwire the Pi to a small router, tether the router to a phone |
 
+### Backing up the Pi
+
+Each Pi has two things worth backing up:
+
+1. **The identity key** (`~/.helmlog/identity/boat.key` and `boat.json`)
+   — this is how the co-op recognizes the boat. If the SD card dies and
+   there's no backup, the boat needs to re-join the co-op as a new
+   identity. Back this up to a USB stick or the boat owner's phone.
+
+2. **The database** (`data/helmlog.db`) — all session data, race
+   results, transcripts, and notes. Without a backup, historical data on
+   a dead Pi is gone.
+
+Encourage every boat to copy these two items to a USB stick at least
+once a season. The setup script can configure automatic backups to an
+external SSD if one is connected.
+
 ---
 
 ## Running the co-op
@@ -176,7 +193,7 @@ Once the co-op is running, your job is minimal:
 
 | Situation | What to do |
 |---|---|
-| A boat's Pi dies | Help them set up a new one. Their co-op membership is stored on other Pis — they just need to re-join. Historical data on the dead Pi is lost unless they had backups. |
+| A boat's Pi dies | Help them set up a new one. If they backed up their identity key, they can rejoin as the same boat. If not, they rejoin as a new identity — the co-op still has their old shared data cached. Historical data on the dead Pi is lost unless they backed up the database (see "Backing up the Pi" above). |
 | Someone wants to leave | They can leave from their own Pi. Their data is anonymized within 30 days. No drama needed. |
 | Dispute about data sharing | Point to the charter. If the charter doesn't cover it, propose an amendment and vote. |
 | Coach wants more access than allowed | Explain the rules. The platform enforces them — it's not personal, it's policy. |

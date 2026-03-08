@@ -50,12 +50,19 @@ the other Pis in the co-op over a private network (Tailscale).
                   (no central server)
 ```
 
-When you share a session, the other boats in the co-op can pull your
+When you tap **Share**, you're authorizing the co-op to see that session.
+The actual data transfer happens when your Pi has an internet connection
+(usually a phone hotspot at the dock). Other boats can then pull your
 track and instrument data directly from your Pi. When their Pis are
 offline, cached copies let you still view previously shared sessions.
 
 **If a boat's Pi is off or disconnected**, nothing breaks. The data
 syncs up the next time it comes online — there's no deadline.
+
+```
+  Instrument → Pi records → You tap "Share" → Pi connects at dock → Peers pull data
+  (on water)   (offline)    (authorization)    (phone hotspot)       (over Tailscale)
+```
 
 ---
 
@@ -106,7 +113,8 @@ overlays and fleet benchmarks.
 ### Reviewing other boats
 
 Open the **Co-op** view in Helm Log. You'll see all the races that other
-boats shared:
+boats shared. (In the early days of a new co-op, this view will be
+sparse — it fills up as more boats share more sessions.)
 
 - Overlay multiple boats on the same race map
 - Compare boat speeds on the same leg
@@ -141,13 +149,15 @@ That's it. No accounts to create, no subscriptions, no cloud service.
 
 ## Leaving a co-op
 
-You can leave anytime. When you leave:
+You can leave anytime. When you leave, two things happen:
 
-- Your data is no longer visible to the co-op within 30 days
-- Any cached copies of your data on other boats are deleted
-- Your historical contributions are anonymized ("Boat X" replaces your
-  boat name in fleet benchmarks)
-- You keep all your own data on your Pi
+1. **Cached copies of your session data on other boats are deleted**
+   within 30 days. No one can view your tracks or instrument data.
+2. **Your contributions to fleet benchmarks are anonymized** — "Boat X"
+   replaces your boat name so historical fleet statistics remain valid,
+   but nobody can identify which data was yours.
+
+You keep all your own data on your Pi.
 
 ---
 
@@ -169,7 +179,10 @@ You can opt out of current sharing even if the rest of the co-op opts in.
 - **Audio and conversations are always private.** They never leave your Pi
   unless you explicitly share them.
 - **You can delete anything.** Deleted data is purged from your Pi and
-  from any co-op member's cache.
+  from any co-op member's cache. Note: if you linked a YouTube video to
+  a session, deleting the session removes the link from Helm Log but
+  does not delete the video from YouTube — you'd need to do that
+  separately on YouTube.
 - **The co-op has rules.** Every co-op has a charter that spells out how
   data is used. You see the charter before you join.
 - **No one can use your data for gambling, protests, or surveillance.**
