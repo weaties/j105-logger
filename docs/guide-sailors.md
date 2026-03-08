@@ -149,13 +149,17 @@ That's it. No accounts to create, no subscriptions, no cloud service.
 
 ## Leaving a co-op
 
-You can leave anytime. When you leave, two things happen:
+You can leave anytime. When you leave, two things happen over 30 days:
 
-1. **Cached copies of your session data on other boats are deleted**
-   within 30 days. No one can view your tracks or instrument data.
-2. **Your contributions to fleet benchmarks are anonymized** — "Boat X"
-   replaces your boat name so historical fleet statistics remain valid,
-   but nobody can identify which data was yours.
+1. **Your identifiable session data is deleted from other boats' caches.**
+   No one can view your tracks, instrument time-series, or race results.
+2. **Fleet benchmarks that included your data are preserved but
+   anonymized** — "Boat X" replaces your boat name in aggregate
+   statistics (like fleet percentile rankings), so the fleet's
+   historical benchmarks remain valid without identifying you.
+
+In short: your individual sessions are gone, but the anonymous
+statistical contributions remain so the fleet doesn't lose its baseline.
 
 You keep all your own data on your Pi.
 
@@ -207,8 +211,11 @@ If you leave the co-op, cached copies are deleted and your contributions
 are anonymized within 30 days.
 
 **"If I leave, do other boats keep my old data?"**
-No. Cached copies are deleted and your contributions are anonymized
-within 30 days.
+Your individual sessions are deleted from other boats' caches within 30
+days. Anonymous contributions to fleet benchmarks are preserved as
+"Boat X." One exception: if you linked YouTube videos to sessions, the
+videos still exist on YouTube — deleting the Helm Log link doesn't
+delete the video from a third-party platform.
 
 **"If I share, can the coach see everything?"**
 Only the instrument data you shared, and only during their access

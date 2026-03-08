@@ -75,8 +75,9 @@ Nowhere unless you send it. It stays on your Pi.
 No. You choose, race by race.
 
 **Can I leave?**
-Anytime. Cached copies of your data are deleted from other boats within
-30 days, and your name is anonymized in fleet benchmarks.
+Anytime. Your individual session data is deleted from other boats within
+30 days. Fleet benchmark statistics that included your data are kept but
+anonymized ("Boat X") so the fleet doesn't lose its baseline.
 
 **Do I need internet on the water?**
 No. The Pi records everything offline. You only need internet when you
