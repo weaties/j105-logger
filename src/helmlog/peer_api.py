@@ -11,10 +11,11 @@ Rate-limited and audit-logged per data-licensing.md §2 and §12.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import hashlib
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from loguru import logger
 from slowapi import Limiter
 from slowapi.util import get_remote_address
@@ -65,19 +66,34 @@ async def _audit_peer(
     request: Request,
     action: str,
     peer: dict[str, Any],
-    detail: str | None = None,
+    co_op_id: str,
+    *,
+    resource: str | None = None,
+    points_count: int | None = None,
 ) -> None:
-    """Log a co-op data access event to the audit trail."""
+    """Log a co-op data access event to both audit trails."""
     storage = _get_storage(request)
     fp = peer.get("fingerprint", "")
-    boat = peer.get("boat_name", "?")
-    full_detail = f"peer={boat} ({fp})"
-    if detail:
-        full_detail += f" | {detail}"
     ip = request.client.host if request.client else None
+
+    # Write to co_op_audit table (persistent, per data-licensing.md)
+    await storage.log_co_op_audit(
+        co_op_id=co_op_id,
+        accessor_fp=fp,
+        action=action,
+        resource=resource,
+        ip=ip,
+        points_count=points_count,
+    )
+
+    # Also log to general audit trail for admin visibility
+    boat = peer.get("boat_name", "?")
+    detail = f"peer={boat} ({fp}) | co_op={co_op_id}"
+    if resource:
+        detail += f" | {resource}"
     await storage.log_action(
         action,
-        detail=full_detail,
+        detail=detail,
         ip_address=ip,
         user_agent=request.headers.get("user-agent"),
     )
@@ -89,30 +105,39 @@ async def _authenticate_peer(
 ) -> dict[str, Any]:
     """Authenticate and authorize a peer request.
 
-    Raises JSONResponse (401/403) on failure. Returns the peer row on success.
+    Raises HTTPException (401/403) on failure. Returns the peer row on success.
     """
     storage = _get_storage(request)
     fingerprint = request.headers.get(HDR_BOAT, "")
 
     if not fingerprint:
-        return _reject(401, "Missing authentication headers")
+        raise HTTPException(status_code=401, detail="Missing authentication headers")
 
     # Resolve peer public key
     result = await resolve_peer(storage, fingerprint)
     if result is None:
-        return _reject(401, "Unknown peer: " + fingerprint)
+        raise HTTPException(status_code=401, detail="Unknown peer: " + fingerprint)
 
     pub_key, peer = result
 
-    # Verify signature
+    # Verify signature and timestamp
+    nonce = request.headers.get(HDR_NONCE, "")
     headers = {
         HDR_BOAT: fingerprint,
         HDR_TIMESTAMP: request.headers.get(HDR_TIMESTAMP, ""),
-        HDR_NONCE: request.headers.get(HDR_NONCE, ""),
+        HDR_NONCE: nonce,
         HDR_SIG: request.headers.get(HDR_SIG, ""),
     }
     if not verify_peer_request(request.method, request.url.path, headers, pub_key):
-        return _reject(401, "Invalid signature")
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    # Persistent nonce replay check (SQLite-backed)
+    if nonce:
+        nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
+        if await storage.check_nonce(nonce_hash):
+            logger.warning("Replayed nonce detected (persistent): {}", nonce[:16])
+            raise HTTPException(status_code=401, detail="Replayed request")
+        await storage.save_nonce(nonce_hash, fingerprint)
 
     # If co_op_id specified, verify the peer is a member of that co-op
     if co_op_id is not None:
@@ -122,7 +147,7 @@ async def _authenticate_peer(
             (co_op_id, fingerprint),
         )
         if await cur.fetchone() is None:
-            return _reject(403, "Not a member of this co-op")
+            raise HTTPException(status_code=403, detail="Not a member of this co-op")
 
     # Update last_seen
     now = datetime.now(UTC).isoformat()
@@ -137,19 +162,25 @@ async def _authenticate_peer(
     return peer
 
 
-def _reject(status: int, detail: str) -> dict[str, Any]:
-    """Marker dict for authentication failure."""
-    return {"_error": True, "status": status, "detail": detail}
-
-
-def _is_error(result: dict[str, Any]) -> JSONResponse | None:
-    """If result is an error marker, return a JSONResponse. Otherwise None."""
-    if result.get("_error"):
-        return JSONResponse(
-            {"detail": result["detail"]},
-            status_code=result["status"],
-        )
-    return None
+async def _check_embargo(
+    storage: Any,  # noqa: ANN401
+    session_id: int,
+    co_op_id: str,
+) -> None:
+    """Raise HTTPException 403 if session is under embargo for this co-op."""
+    sharing = await storage.get_session_sharing(session_id)
+    for s in sharing:
+        if s["co_op_id"] == co_op_id and s.get("embargo_until"):
+            try:
+                embargo = datetime.fromisoformat(s["embargo_until"])
+                if embargo > datetime.now(UTC):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Session is under embargo",
+                        headers={"X-Available-At": s["embargo_until"]},
+                    )
+            except ValueError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -185,8 +216,6 @@ async def peer_sessions(
 ) -> JSONResponse:
     """List sessions this boat has shared with the co-op."""
     peer = await _authenticate_peer(request, co_op_id)
-    if err := _is_error(peer):
-        return err
 
     storage = _get_storage(request)
     now = datetime.now(UTC)
@@ -239,7 +268,11 @@ async def peer_sessions(
         )
 
     await _audit_peer(
-        request, "coop.peer.sessions", peer, f"co_op={co_op_id} count={len(sessions)}"
+        request,
+        "coop.peer.sessions",
+        peer,
+        co_op_id,
+        resource=f"count={len(sessions)}",
     )
     return JSONResponse({"sessions": sessions})
 
@@ -253,8 +286,6 @@ async def peer_session_track(
 ) -> JSONResponse:
     """Return instrument data for a shared session (shared fields only)."""
     peer = await _authenticate_peer(request, co_op_id)
-    if err := _is_error(peer):
-        return err
 
     storage = _get_storage(request)
 
@@ -266,18 +297,7 @@ async def peer_session_track(
         )
 
     # Check embargo
-    sharing = await storage.get_session_sharing(session_id)
-    for s in sharing:
-        if s["co_op_id"] == co_op_id and s.get("embargo_until"):
-            try:
-                embargo = datetime.fromisoformat(s["embargo_until"])
-                if embargo > datetime.now(UTC):
-                    return JSONResponse(
-                        {"detail": "Session is under embargo", "available_at": s["embargo_until"]},
-                        status_code=403,
-                    )
-            except ValueError:
-                pass
+    await _check_embargo(storage, session_id, co_op_id)
 
     # Load session time range
     db = storage._conn()
@@ -312,8 +332,6 @@ async def peer_session_track(
 
     # Build 1 Hz rows with shared fields only
     track: list[dict[str, Any]] = []
-    from datetime import timedelta
-
     t = start
     while t <= end:
         sec = t.isoformat()
@@ -351,7 +369,9 @@ async def peer_session_track(
         request,
         "coop.peer.track",
         peer,
-        f"co_op={co_op_id} session={session_id} points={len(track)}",
+        co_op_id,
+        resource=f"session={session_id}",
+        points_count=len(track),
     )
     return JSONResponse({"track": track, "count": len(track)})
 
@@ -363,10 +383,8 @@ async def peer_session_results(
     co_op_id: str,
     session_id: int,
 ) -> JSONResponse:
-    """Return race results for a shared session."""
+    """Return race results for a shared session (notes excluded per data licensing)."""
     peer = await _authenticate_peer(request, co_op_id)
-    if err := _is_error(peer):
-        return err
 
     storage = _get_storage(request)
 
@@ -376,12 +394,21 @@ async def peer_session_results(
             status_code=404,
         )
 
+    # Check embargo (same as track endpoint)
+    await _check_embargo(storage, session_id, co_op_id)
+
     results = await storage.list_race_results(session_id)
+
+    # Strip PII fields — notes are PII per data-licensing.md
+    for r in results:
+        r.pop("notes", None)
+
     await _audit_peer(
         request,
         "coop.peer.results",
         peer,
-        f"co_op={co_op_id} session={session_id}",
+        co_op_id,
+        resource=f"session={session_id}",
     )
     return JSONResponse({"results": results})
 

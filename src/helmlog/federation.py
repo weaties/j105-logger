@@ -14,11 +14,12 @@ import hashlib
 import json
 import os
 import subprocess
-from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
@@ -240,7 +241,7 @@ def verify_signature(public_key: Ed25519PublicKey, message: bytes, signature: by
     """Verify an Ed25519 signature. Returns True if valid, False otherwise."""
     try:
         public_key.verify(signature, message)
-    except Exception:
+    except InvalidSignature:
         return False
     return True
 
@@ -351,6 +352,38 @@ def load_identity(identity_dir: Path | None = None) -> tuple[Ed25519PrivateKey, 
     return private_key, card
 
 
+def get_identity_dir() -> Path:
+    """Return the default identity directory path."""
+    return _DEFAULT_IDENTITY_DIR
+
+
+def load_boat_card_from_json(data: dict[str, Any]) -> BoatCard:
+    """Construct a BoatCard from a parsed JSON dict (e.g., from a boat.json file)."""
+    return BoatCard(
+        pub_key=data["pub"],
+        fingerprint=data["fingerprint"],
+        sail_number=data["sail_number"],
+        boat_name=data["name"],
+        owner_email=data.get("owner_email"),
+        tailscale_ip=data.get("tailscale_ip"),
+    )
+
+
+def save_membership_to_filesystem(
+    membership: MembershipRecord,
+    co_op_id: str,
+    fingerprint: str,
+    identity_dir: Path | None = None,
+) -> Path:
+    """Write a membership record to the co-op's members directory. Returns the path."""
+    identity_dir = identity_dir or _DEFAULT_IDENTITY_DIR
+    members_dir = identity_dir.parent / "co-ops" / co_op_id / "members"
+    members_dir.mkdir(parents=True, exist_ok=True)
+    out_path = members_dir / f"{fingerprint}.json"
+    out_path.write_text(membership.to_json() + "\n")
+    return out_path
+
+
 def identity_exists(identity_dir: Path | None = None) -> bool:
     """Check whether an identity has been initialized."""
     identity_dir = identity_dir or _DEFAULT_IDENTITY_DIR
@@ -396,7 +429,7 @@ def create_co_op(
     charter_dict = charter.to_dict()
     del charter_dict["admin_sig"]  # sign everything except the sig field
     sig = sign_json(private_key, charter_dict)
-    charter = Charter(**{**vars(charter), "admin_sig": sig})
+    charter = replace(charter, admin_sig=sig)
 
     # Write to filesystem
     co_op_dir = identity_dir.parent / "co-ops" / co_op_id
@@ -444,7 +477,7 @@ def sign_membership(
     del rec_dict["admin_sig"]
     sig = sign_json(admin_key, rec_dict)
 
-    return MembershipRecord(**{**vars(record), "admin_sig": sig})
+    return replace(record, admin_sig=sig)
 
 
 def verify_membership(admin_pub_b64: str, record: MembershipRecord) -> bool:
@@ -465,8 +498,6 @@ def sign_revocation(
 ) -> RevocationRecord:
     """Create and sign a revocation record."""
     now = datetime.now(UTC)
-    from datetime import timedelta
-
     effective = now.isoformat()
     grace = (now + timedelta(days=grace_days)).isoformat()
 
@@ -482,7 +513,7 @@ def sign_revocation(
     del rec_dict["admin_sig"]
     sig = sign_json(admin_key, rec_dict)
 
-    return RevocationRecord(**{**vars(record), "admin_sig": sig})
+    return replace(record, admin_sig=sig)
 
 
 def verify_revocation(admin_pub_b64: str, record: RevocationRecord) -> bool:

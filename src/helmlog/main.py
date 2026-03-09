@@ -1191,9 +1191,10 @@ async def _co_op_invite(
     import json as _json
 
     from helmlog.federation import (
-        BoatCard,
         identity_exists,
+        load_boat_card_from_json,
         load_identity,
+        save_membership_to_filesystem,
         sign_membership,
     )
     from helmlog.storage import Storage, StorageConfig
@@ -1206,13 +1207,7 @@ async def _co_op_invite(
 
     # Load the invitee's boat card
     card_data = _json.loads(Path(boat_card_path).read_text())
-    invitee = BoatCard(
-        pub_key=card_data["pub"],
-        fingerprint=card_data["fingerprint"],
-        sail_number=card_data["sail_number"],
-        boat_name=card_data["name"],
-        owner_email=card_data.get("owner_email"),
-    )
+    invitee = load_boat_card_from_json(card_data)
 
     # Resolve co-op ID
     storage = Storage(StorageConfig())
@@ -1243,7 +1238,9 @@ async def _co_op_invite(
                     print(f"  {m['co_op_id']}  {m['co_op_name']}")
                 sys.exit(1)
 
-        assert co_op_id is not None
+        if co_op_id is None:
+            print("Could not determine co-op ID.")
+            sys.exit(1)
 
         # Sign membership
         membership = sign_membership(
@@ -1254,12 +1251,7 @@ async def _co_op_invite(
         )
 
         # Save to filesystem
-        from helmlog.federation import _DEFAULT_IDENTITY_DIR
-
-        members_dir = _DEFAULT_IDENTITY_DIR.parent / "co-ops" / co_op_id / "members"
-        members_dir.mkdir(parents=True, exist_ok=True)
-        out_path = members_dir / f"{invitee.fingerprint}.json"
-        out_path.write_text(membership.to_json() + "\n")
+        out_path = save_membership_to_filesystem(membership, co_op_id, invitee.fingerprint)
 
         # Save peer in SQLite
         await storage.save_co_op_peer(

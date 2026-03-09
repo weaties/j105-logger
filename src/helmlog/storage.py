@@ -3509,6 +3509,65 @@ class Storage:
         return dict(row) if row else None
 
     # ------------------------------------------------------------------
+    # Federation — nonce replay protection
+    # ------------------------------------------------------------------
+
+    async def check_nonce(self, nonce_hash: str) -> bool:
+        """Return True if this nonce has already been used."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        # Prune expired nonces (older than 20 minutes)
+        cutoff = _datetime.now(UTC).isoformat()[:-6]  # rough cutoff
+        await db.execute("DELETE FROM request_nonces WHERE timestamp < ?", (cutoff,))
+        cur = await db.execute("SELECT 1 FROM request_nonces WHERE nonce_hash = ?", (nonce_hash,))
+        return await cur.fetchone() is not None
+
+    async def save_nonce(self, nonce_hash: str, boat_fp: str) -> None:
+        """Record a nonce as used for replay protection."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now = _datetime.now(UTC).isoformat()
+        await db.execute(
+            "INSERT OR IGNORE INTO request_nonces (nonce_hash, timestamp, boat_fp)"
+            " VALUES (?, ?, ?)",
+            (nonce_hash, now, boat_fp),
+        )
+        await db.commit()
+
+    # ------------------------------------------------------------------
+    # Federation — co-op audit logging
+    # ------------------------------------------------------------------
+
+    async def log_co_op_audit(
+        self,
+        co_op_id: str,
+        accessor_fp: str,
+        action: str,
+        *,
+        resource: str | None = None,
+        ip: str | None = None,
+        points_count: int | None = None,
+    ) -> int:
+        """Write a co-op data access event to the co_op_audit table."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO co_op_audit"
+            " (co_op_id, accessor_fp, action, resource, timestamp, ip, points_count)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (co_op_id, accessor_fp, action, resource, now, ip, points_count),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 

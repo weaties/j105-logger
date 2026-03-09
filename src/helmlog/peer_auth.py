@@ -132,20 +132,26 @@ def verify_peer_request(
     if not verify_signature(peer_pub_key, canonical, sig):
         return False
 
-    # Check timestamp window (soft-fail: log warning but don't reject)
+    # Check timestamp window — reject requests beyond the relaxed window
     try:
         ts = datetime.fromisoformat(timestamp)
         delta = abs((datetime.now(UTC) - ts).total_seconds())
         if delta > _RELAXED_WINDOW:
             logger.warning(
-                "Peer request timestamp {} is {}s old (beyond relaxed window)",
+                "Peer request timestamp {} is {}s old (beyond relaxed window) — rejected",
                 timestamp,
                 int(delta),
             )
-            # Per design doc: valid signature with out-of-window timestamp
-            # logs a warning but does not reject
+            return False
+        if delta > _DEFAULT_WINDOW:
+            logger.info(
+                "Peer request timestamp {} is {}s old (beyond default window, within relaxed)",
+                timestamp,
+                int(delta),
+            )
     except ValueError:
-        logger.warning("Invalid timestamp format: {}", timestamp)
+        logger.warning("Invalid timestamp format: {} — rejected", timestamp)
+        return False
 
     # Nonce replay check
     _prune_nonces()

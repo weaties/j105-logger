@@ -220,7 +220,7 @@ async function loadCoops(){
             <td>${esc(p.sail_number)||'\u2014'}</td>
             <td>${esc(p.boat_name)||'\u2014'}</td>
             <td class="mono">${esc(p.fingerprint)}</td>
-            <td>${p.last_seen||'\u2014'}</td>
+            <td>${esc(p.last_seen)||'\u2014'}</td>
           </tr>`;
         }
         html+='</tbody></table></div></div>';
