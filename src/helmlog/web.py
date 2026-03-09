@@ -301,6 +301,11 @@ def create_app(
     # -- Static files + templates --
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
+    # -- Peer API (federation endpoints for remote boats) --
+    from helmlog.peer_api import router as peer_router
+
+    app.include_router(peer_router)
+
     def _tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
         return {"request": request, "active_page": page, "git_info": _GIT_INFO, **extra}
 
@@ -3388,6 +3393,7 @@ def create_app(
             membership_json=record.to_json(),
             sail_number=invitee.sail_number,
             boat_name=invitee.boat_name,
+            tailscale_ip=body.get("tailscale_ip"),
         )
         await _audit(
             request, "federation.invite",
@@ -3460,5 +3466,58 @@ def create_app(
             user=_user,
         )
         return JSONResponse({"status": "unshared", "co_op_id": co_op_id})
+
+    # ── Peer data proxies (local UI → remote peers) ────────────────────
+
+    @app.get("/api/federation/co-ops/{co_op_id}/peer-sessions")
+    async def api_peer_sessions(
+        request: Request,
+        co_op_id: str,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Query all online peers in a co-op for their shared sessions."""
+        from helmlog.federation import load_identity
+        from helmlog.peer_client import fetch_all_peer_sessions
+
+        try:
+            private_key, card = load_identity()
+        except FileNotFoundError:
+            raise HTTPException(409, "Initialize identity first")  # noqa: B904
+
+        peers = await fetch_all_peer_sessions(
+            storage, co_op_id, private_key, card.fingerprint,
+        )
+        return JSONResponse({"peers": peers})
+
+    @app.get(
+        "/api/federation/co-ops/{co_op_id}/peers/{fingerprint}"
+        "/sessions/{session_id}/track",
+    )
+    async def api_peer_session_track(
+        request: Request,
+        co_op_id: str,
+        fingerprint: str,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Proxy track data from a specific remote peer."""
+        from helmlog.federation import load_identity
+        from helmlog.peer_client import fetch_session_track
+
+        try:
+            private_key, card = load_identity()
+        except FileNotFoundError:
+            raise HTTPException(409, "Initialize identity first")  # noqa: B904
+
+        # Look up peer's Tailscale IP
+        peer = await storage.get_co_op_peer(co_op_id, fingerprint)
+        if not peer or not peer.get("tailscale_ip"):
+            raise HTTPException(404, "Peer not found or no Tailscale IP")
+
+        track = await fetch_session_track(
+            peer["tailscale_ip"], co_op_id, session_id,
+            private_key, card.fingerprint,
+        )
+        return JSONResponse({"track": track, "count": len(track)})
 
     return app
