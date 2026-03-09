@@ -108,8 +108,16 @@ async function loadStatus(){
   updateModeDesc();
   const actions=document.getElementById('deploy-actions');
   const badge=document.getElementById('behind-badge');
-  if(s.update_available){
-    badge.innerHTML='<span class="badge badge-warn">'+s.commits_behind+' commit'+(s.commits_behind!==1?'s':'')+' behind</span>';
+  if(s.restart_needed && s.commits_behind===0){
+    badge.innerHTML='<span class="badge badge-warn">Restart needed</span>';
+    actions.style.display='flex';
+    document.getElementById('btn-deploy').disabled=false;
+    document.getElementById('btn-deploy').textContent='Restart Service';
+    const navDeploy=document.getElementById('nav-deploy');
+    if(navDeploy) navDeploy.textContent='Deploy (!)';
+  } else if(s.update_available){
+    const label=s.commits_behind+' commit'+(s.commits_behind!==1?'s':'')+' behind';
+    badge.innerHTML='<span class="badge badge-warn">'+label+(s.restart_needed?' + restart needed':'')+'</span>';
     actions.style.display='flex';
     document.getElementById('btn-deploy').disabled=false;
     document.getElementById('btn-deploy').textContent='Deploy Now';
@@ -208,7 +216,10 @@ async function loadHistory(){
   el.innerHTML=html;
 }
 async function deploy(){
-  if(!confirm('Deploy latest from '+statusData.branch+'?\n\n'+statusData.commits_behind+' new commit(s) will be applied.\nThe service will restart.')) return;
+  const msg=statusData.commits_behind>0
+    ?'Deploy latest from '+statusData.branch+'?\n\n'+statusData.commits_behind+' new commit(s) will be applied.\nThe service will restart.'
+    :'Restart the service to load code already on disk?\n\nNo new commits to pull — this just restarts the running process.';
+  if(!confirm(msg)) return;
   const btn=document.getElementById('btn-deploy');
   btn.disabled=true;btn.textContent='Deploying...';
   showStatus('Deploying...','ok');
@@ -222,7 +233,11 @@ async function deploy(){
       showStatus('Deploy failed: '+(d.detail||'unknown error'),'err');
       btn.disabled=false;btn.textContent='Deploy Now';
     }
-  }catch(e){showStatus('Deploy failed: '+e.message,'err');btn.disabled=false;btn.textContent='Deploy Now'}
+  }catch(e){
+    // A network error is expected when the service restarts (kills the connection)
+    showStatus('Service restarting...','ok');
+    setTimeout(()=>{loadStatus();loadChangelog();loadHistory()},5000);
+  }
 }
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function showStatus(msg,cls){const el=document.getElementById('deploy-status');el.textContent=msg;el.className='status '+cls;if(cls==='ok')setTimeout(()=>{el.className='status'},5000)}

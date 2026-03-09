@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v26) |
+| Storage | SQLite via `aiosqlite` (schema v28) |
 | Web interface | `fastapi` + `uvicorn` + `jinja2` templates |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -49,14 +49,19 @@ helmlog/
 │       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
 │       ├── cameras.py      # Insta360 X4 camera control via OSC HTTP API
 │       ├── can_reader.py   # CAN bus interface — legacy direct-CAN path only
+│       ├── deploy.py       # Self-update / deploy management logic
 │       ├── email.py        # SMTP email sending (welcome, new-device alerts)
 │       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
 │       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
+│       ├── federation.py   # Boat identity (Ed25519), co-op membership, signing
 │       ├── gaigps.py       # GaiGPS integration
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
 │       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
+│       ├── peer_api.py     # FastAPI router for inter-boat peer API endpoints
+│       ├── peer_auth.py    # Ed25519 request signing and verification middleware
+│       ├── peer_client.py  # Async HTTP client for querying peer boats
 │       ├── pipeline.py     # Video processing pipeline orchestration
 │       ├── polar.py        # Polar performance baseline builder
 │       ├── race_classifier.py  # Automated race/practice session classification
@@ -86,8 +91,19 @@ helmlog/
 │           └── session.js  # Session detail page logic
 │
 ├── tests/                  # pytest suite — runs on any machine, no hardware required
+│   └── integration/        # Federation integration tests (two-boat simulation)
+│       ├── conftest.py     # Fleet fixture — two boats with real Ed25519 keypairs
+│       ├── seed.py         # Test data seeding (co-op, sessions, instrument data)
+│       ├── test_federation_e2e.py   # Co-op lifecycle, session list, track fetch
+│       ├── test_auth_e2e.py         # Signing, replay, forgery, non-member
+│       ├── test_embargo_e2e.py      # Embargo enforcement and sharing lifecycle
+│       ├── test_data_license_e2e.py # Field allowlist, PII protection, audit
+│       ├── Dockerfile       # Minimal helmlog image for Docker-based testing
+│       ├── docker-compose.yml  # Two-container boat-a + boat-b + test-runner
+│       └── serve.py         # Entry point for Docker container web server
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
 ├── scripts/                # deploy.sh, setup.sh, transcribe_worker.py
+│   └── integration_smoke.py  # Pi-to-Pi smoke tests over Tailscale
 └── docs/                   # Guides, policies, and technical specs
 ```
 
@@ -98,6 +114,7 @@ helmlog/
 ```bash
 uv sync                     # install dependencies
 uv run pytest               # run tests (coverage printed by default)
+uv run pytest tests/integration/ -v  # run federation integration tests
 uv run ruff check .         # lint check
 uv run ruff format --check .  # format check
 uv run mypy src/            # type check
@@ -106,6 +123,11 @@ uv run ruff check --fix . && uv run ruff format .  # auto-fix
 helmlog run             # start the logger
 helmlog status          # show database row counts
 helmlog list-cameras    # show configured cameras and ping status
+helmlog identity init   # generate Ed25519 keypair + boat card
+helmlog identity show   # display current boat identity and fingerprint
+helmlog co-op create    # create a new co-op with this boat as moderator
+helmlog co-op status    # show co-op membership and peers
+helmlog co-op invite    # generate an invite bundle for a new boat
 helmlog --help          # full subcommand list
 ```
 
@@ -211,6 +233,7 @@ Use `/data-license` to review code changes against the full policy.
 - **Follow TDD** — write a failing test before implementing new functionality (see `/tdd` skill)
 - **Commit and push every change** — after editing any file (code, config, scripts), always commit and push to the current branch immediately. This is especially critical for hotfixes on the Pi — uncommitted changes on the device will be lost on the next deploy. Never leave work uncommitted.
 - Write tests for all decoding and export logic
+- Run integration tests (`uv run pytest tests/integration/ -v`) for any federation/co-op/peer API changes
 - Use `uv add <package>` to add dependencies — never edit `pyproject.toml` manually for deps
 - Keep the SQLite schema versioned with simple integer migrations in `storage.py`
 - Log every read error and decode failure with `loguru` at `WARNING` or above
@@ -227,13 +250,54 @@ Use `/data-license` to review code changes against the full policy.
 
 ## Testing Strategy
 
-- Unit tests live in `tests/` and run on any machine (no Pi hardware required)
+### Unit tests (`tests/`)
+
+- Run on any machine (no Pi hardware required)
 - `conftest.py` provides in-memory SQLite fixtures and sample decoded data structures
 - Hardware-dependent modules are mocked in tests
 - `test_web.py` uses `httpx.AsyncClient` with `ASGITransport` to exercise all API routes
 - **Pre-existing mypy errors in `web.py`** (do not fix unless explicitly asked):
   - `Item "None" of "datetime | None" has no attribute "isoformat"`
   - `Item "None" of "AudioRecorder | None" has no attribute "stop"` (x2)
+
+### Integration tests (`tests/integration/`)
+
+Three-layer strategy for validating inter-Pi federation, co-op, and data licensing:
+
+**Layer 1 — In-process pytest** (runs in CI, ~5 seconds):
+Two boats with real Ed25519 keypairs and in-memory SQLite, communicating via
+`httpx.ASGITransport`. No mocking of crypto or auth — real signing, real
+verification, real nonce replay protection. 32 tests covering:
+- Co-op lifecycle (create, join, share, unshare, revoke)
+- Ed25519 request auth (valid, tampered, forged, replayed, non-member)
+- Embargo enforcement (blocked while active, accessible after lift)
+- Data licensing (field allowlist, PII exclusion, private session isolation, audit)
+
+```bash
+uv run pytest tests/integration/ -v
+```
+
+**Layer 2 — Pi smoke tests** (corvopi-tst1 → corvopi-live over Tailscale):
+Lightweight script that runs on one Pi and tests the real running helmlog
+service on a peer Pi. Validates Tailscale networking, systemd, NTP sync.
+
+```bash
+ssh weaties@corvopi-tst1 "cd ~/helmlog && uv run python scripts/integration_smoke.py --peer corvopi-live"
+```
+
+**Layer 3 — Docker compose** (two containers on Mac, arm64 capable):
+Two real helmlog instances on an isolated Docker network. Useful for testing
+process isolation, network failure scenarios, and Pi-matching architecture.
+
+```bash
+docker compose -f tests/integration/docker-compose.yml up --build --abort-on-container-exit
+```
+
+**When to run integration tests:**
+- Any PR touching `federation.py`, `peer_api.py`, `peer_auth.py`, `peer_client.py`,
+  or federation-related storage code → Layer 1 runs automatically in CI
+- Federation PRs before merge → Layer 2 (Pi smoke) as manual validation
+- Use `/integration-test` skill to run the appropriate layer
 
 ---
 
@@ -247,3 +311,4 @@ Use `/data-license` to review code changes against the full policy.
 | `/deploy-pi` | Pi deployment reference and service architecture |
 | `/pr-checklist` | Pre-PR verification (tests, lint, types, docs) |
 | `/data-license` | Review changes against the data licensing policy |
+| `/integration-test` | Run federation integration tests (Layer 1/2/3) |
