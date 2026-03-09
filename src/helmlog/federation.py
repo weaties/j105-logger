@@ -99,7 +99,7 @@ class Charter:
     created_at: str
     heartbeat_inactive_days: int = 60
     sharing_delay: str = "immediate"
-    session_visibility: str = "event_scoped"
+    session_visibility: str = "full"
     benchmark_min_boats: int = 4
     benchmark_cache_ttl: int = 86400
     admin_sig: str = ""

@@ -303,8 +303,10 @@ def create_app(
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     # -- Peer API (federation endpoints for remote boats) --
+    from helmlog.peer_api import _limiter as peer_limiter
     from helmlog.peer_api import router as peer_router
 
+    app.state.peer_limiter = peer_limiter
     app.include_router(peer_router)
 
     def _tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -3601,6 +3603,7 @@ def create_app(
     # ── Peer data proxies (local UI → remote peers) ────────────────────
 
     @app.get("/api/federation/co-ops/{co_op_id}/peer-sessions")
+    @limiter.limit("10/minute")
     async def api_peer_sessions(
         request: Request,
         co_op_id: str,
@@ -3621,11 +3624,18 @@ def create_app(
             private_key,
             card.fingerprint,
         )
+        await _audit(
+            request,
+            "coop.proxy.peer_sessions",
+            detail=f"co_op={co_op_id} peers={len(peers)}",
+            user=_user,
+        )
         return JSONResponse({"peers": peers})
 
     @app.get(
         "/api/federation/co-ops/{co_op_id}/peers/{fingerprint}/sessions/{session_id}/track",
     )
+    @limiter.limit("10/minute")
     async def api_peer_session_track(
         request: Request,
         co_op_id: str,
@@ -3653,6 +3663,12 @@ def create_app(
             session_id,
             private_key,
             card.fingerprint,
+        )
+        await _audit(
+            request,
+            "coop.proxy.peer_track",
+            detail=f"co_op={co_op_id} peer={fingerprint} session={session_id} points={len(track)}",
+            user=_user,
         )
         return JSONResponse({"track": track, "count": len(track)})
 

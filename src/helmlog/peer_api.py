@@ -5,6 +5,8 @@ require Ed25519 request authentication via the X-HelmLog-* headers.
 
 These endpoints serve *shared* session data only — audio, notes, crew, sails,
 transcripts, and video links are never exposed (per data-licensing.md).
+
+Rate-limited and audit-logged per data-licensing.md §2 and §12.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 from loguru import logger
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from starlette.responses import JSONResponse
 
 from helmlog.peer_auth import (
@@ -26,6 +30,7 @@ from helmlog.peer_auth import (
 )
 
 router = APIRouter(prefix="/co-op", tags=["peer"])
+_limiter = Limiter(key_func=get_remote_address, config_filename="/dev/null")
 
 # Fields allowed in track responses (explicit allowlist per data licensing)
 SHARED_TRACK_FIELDS = frozenset(
@@ -54,6 +59,28 @@ _WIND_REF_APPARENT = 2
 
 def _get_storage(request: Request) -> Any:  # noqa: ANN401
     return request.app.state.storage
+
+
+async def _audit_peer(
+    request: Request,
+    action: str,
+    peer: dict[str, Any],
+    detail: str | None = None,
+) -> None:
+    """Log a co-op data access event to the audit trail."""
+    storage = _get_storage(request)
+    fp = peer.get("fingerprint", "")
+    boat = peer.get("boat_name", "?")
+    full_detail = f"peer={boat} ({fp})"
+    if detail:
+        full_detail += f" | {detail}"
+    ip = request.client.host if request.client else None
+    await storage.log_action(
+        action,
+        detail=full_detail,
+        ip_address=ip,
+        user_agent=request.headers.get("user-agent"),
+    )
 
 
 async def _authenticate_peer(
@@ -146,11 +173,12 @@ async def peer_identity(request: Request) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
-# Authenticated endpoints
+# Authenticated endpoints (audit-logged per data-licensing.md)
 # ---------------------------------------------------------------------------
 
 
 @router.get("/{co_op_id}/sessions")
+@_limiter.limit("30/minute")
 async def peer_sessions(
     request: Request,
     co_op_id: str,
@@ -210,10 +238,14 @@ async def peer_sessions(
             }
         )
 
+    await _audit_peer(
+        request, "coop.peer.sessions", peer, f"co_op={co_op_id} count={len(sessions)}"
+    )
     return JSONResponse({"sessions": sessions})
 
 
 @router.get("/{co_op_id}/sessions/{session_id}/track")
+@_limiter.limit("10/minute")
 async def peer_session_track(
     request: Request,
     co_op_id: str,
@@ -315,10 +347,17 @@ async def peer_session_track(
         track.append(row)
         t += timedelta(seconds=1)
 
+    await _audit_peer(
+        request,
+        "coop.peer.track",
+        peer,
+        f"co_op={co_op_id} session={session_id} points={len(track)}",
+    )
     return JSONResponse({"track": track, "count": len(track)})
 
 
 @router.get("/{co_op_id}/sessions/{session_id}/results")
+@_limiter.limit("30/minute")
 async def peer_session_results(
     request: Request,
     co_op_id: str,
@@ -338,6 +377,12 @@ async def peer_session_results(
         )
 
     results = await storage.list_race_results(session_id)
+    await _audit_peer(
+        request,
+        "coop.peer.results",
+        peer,
+        f"co_op={co_op_id} session={session_id}",
+    )
     return JSONResponse({"results": results})
 
 
