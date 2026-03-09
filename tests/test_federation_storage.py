@@ -67,8 +67,10 @@ class TestCoOpMemberships:
     @pytest.mark.asyncio
     async def test_get_specific(self, storage: Storage) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet A",
-            co_op_pub="pub1", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet A",
+            co_op_pub="pub1",
+            membership_json="{}",
         )
         result = await storage.get_co_op_membership("coop1")
         assert result is not None
@@ -81,13 +83,17 @@ class TestCoOpMemberships:
     @pytest.mark.asyncio
     async def test_upsert_reactivates(self, storage: Storage) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet",
-            co_op_pub="pub", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet",
+            co_op_pub="pub",
+            membership_json="{}",
         )
         # Re-save should update
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet Updated",
-            co_op_pub="pub2", membership_json='{"v": 2}',
+            co_op_id="coop1",
+            co_op_name="Fleet Updated",
+            co_op_pub="pub2",
+            membership_json='{"v": 2}',
         )
         result = await storage.get_co_op_membership("coop1")
         assert result is not None
@@ -111,8 +117,10 @@ class TestSessionSharing:
     @pytest.mark.asyncio
     async def test_share_and_get(self, storage: Storage, session_id: int) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet",
-            co_op_pub="pub", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet",
+            co_op_pub="pub",
+            membership_json="{}",
         )
         await storage.share_session(session_id, "coop1", event_name="CYC Wednesday")
         shares = await storage.get_session_sharing(session_id)
@@ -143,7 +151,9 @@ class TestSessionSharing:
     @pytest.mark.asyncio
     async def test_share_with_embargo(self, storage: Storage, session_id: int) -> None:
         await storage.share_session(
-            session_id, "coop1", embargo_until="2026-04-01T00:00:00Z",
+            session_id,
+            "coop1",
+            embargo_until="2026-04-01T00:00:00Z",
         )
         shares = await storage.get_session_sharing(session_id)
         assert shares[0]["embargo_until"] == "2026-04-01T00:00:00Z"
@@ -170,12 +180,18 @@ class TestCoOpPeers:
     @pytest.mark.asyncio
     async def test_upsert_peer(self, storage: Storage) -> None:
         await storage.save_co_op_peer(
-            co_op_id="coop1", boat_pub="pub1", fingerprint="fp1",
-            membership_json="{}", boat_name="OldName",
+            co_op_id="coop1",
+            boat_pub="pub1",
+            fingerprint="fp1",
+            membership_json="{}",
+            boat_name="OldName",
         )
         await storage.save_co_op_peer(
-            co_op_id="coop1", boat_pub="pub1", fingerprint="fp1",
-            membership_json='{"v":2}', boat_name="NewName",
+            co_op_id="coop1",
+            boat_pub="pub1",
+            fingerprint="fp1",
+            membership_json='{"v":2}',
+            boat_name="NewName",
         )
         peers = await storage.list_co_op_peers("coop1")
         assert len(peers) == 1

@@ -77,7 +77,8 @@ class TestKeyManagement:
         assert pub is not None
 
     def test_fingerprint_deterministic(
-        self, keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+        self,
+        keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
     ) -> None:
         from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -111,7 +112,8 @@ class TestSigning:
         assert verify_signature(pub, message, sig)
 
     def test_verify_wrong_message(
-        self, keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
+        self,
+        keypair: tuple[Ed25519PrivateKey, Ed25519PublicKey],
     ) -> None:
         priv, pub = keypair
         sig = sign_message(priv, b"hello")
@@ -190,7 +192,9 @@ class TestIdentity:
 
     def test_load_identity(self, identity_dir: Path) -> None:
         original = init_identity(
-            identity_dir, sail_number="69", boat_name="Javelina",
+            identity_dir,
+            sail_number="69",
+            boat_name="Javelina",
             owner_email="test@example.com",
         )
         priv, loaded = load_identity(identity_dir)
@@ -235,8 +239,11 @@ class TestCoOp:
     def test_create_co_op(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         charter = create_co_op(
-            priv, boat_card, name="Puget Sound J/105",
-            areas=["Elliott Bay"], identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Puget Sound J/105",
+            areas=["Elliott Bay"],
+            identity_dir=identity_dir,
         )
         assert charter.name == "Puget Sound J/105"
         assert len(charter.co_op_id) == 16  # URL-safe base64 hash prefix
@@ -244,48 +251,59 @@ class TestCoOp:
         assert charter.areas == ["Elliott Bay"]
         assert charter.admin_sig != ""
 
-    def test_create_co_op_writes_files(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_create_co_op_writes_files(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         charter = create_co_op(
-            priv, boat_card, name="Test Fleet", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Test Fleet",
+            identity_dir=identity_dir,
         )
         co_op_dir = identity_dir.parent / "co-ops" / charter.co_op_id
         assert (co_op_dir / "charter.json").exists()
         assert (co_op_dir / "members" / f"{boat_card.fingerprint}.json").exists()
 
     def test_create_two_coops_different_ids(
-        self, identity_dir: Path, boat_card: BoatCard,
+        self,
+        identity_dir: Path,
+        boat_card: BoatCard,
     ) -> None:
         """Same boat creating two co-ops should produce distinct IDs."""
         priv, _ = load_identity(identity_dir)
         c1 = create_co_op(
-            priv, boat_card, name="Fleet A", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Fleet A",
+            identity_dir=identity_dir,
         )
         c2 = create_co_op(
-            priv, boat_card, name="Fleet B", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Fleet B",
+            identity_dir=identity_dir,
         )
         assert c1.co_op_id != c2.co_op_id
 
-    def test_create_co_op_self_membership(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_create_co_op_self_membership(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         charter = create_co_op(
-            priv, boat_card, name="Test", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Test",
+            identity_dir=identity_dir,
         )
         members = list_co_op_members(charter.co_op_id, identity_dir)
         assert len(members) == 1
         assert members[0].boat_pub == boat_card.pub_key
         assert members[0].role == "admin"
 
-    def test_charter_signature_valid(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_charter_signature_valid(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         charter = create_co_op(
-            priv, boat_card, name="Test", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Test",
+            identity_dir=identity_dir,
         )
         # Verify charter signature
         charter_dict = charter.to_dict()
@@ -295,21 +313,20 @@ class TestCoOp:
         pub = _pub_key_from_base64(boat_card.pub_key)
         assert verify_json_sig(pub, charter_dict, sig)
 
-    def test_load_charter(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_load_charter(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         original = create_co_op(
-            priv, boat_card, name="Loaded Fleet", identity_dir=identity_dir,
+            priv,
+            boat_card,
+            name="Loaded Fleet",
+            identity_dir=identity_dir,
         )
         loaded = load_charter(original.co_op_id, identity_dir)
         assert loaded.name == "Loaded Fleet"
         assert loaded.co_op_id == original.co_op_id
         assert loaded.admin_sig == original.admin_sig
 
-    def test_list_co_ops(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_list_co_ops(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         create_co_op(priv, boat_card, name="Fleet A", identity_dir=identity_dir)
         # For a second co-op, we need a different co_op_id (different admin key)
@@ -325,30 +342,29 @@ class TestCoOp:
 
 
 class TestMembership:
-    def test_sign_membership(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_sign_membership(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_membership(
-            priv, co_op_id="test-co-op", boat_card=boat_card, role="member",
+            priv,
+            co_op_id="test-co-op",
+            boat_card=boat_card,
+            role="member",
         )
         assert record.co_op_id == "test-co-op"
         assert record.boat_pub == boat_card.pub_key
         assert record.role == "member"
         assert record.admin_sig != ""
 
-    def test_verify_membership_valid(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_verify_membership_valid(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_membership(
-            priv, co_op_id="test", boat_card=boat_card,
+            priv,
+            co_op_id="test",
+            boat_card=boat_card,
         )
         assert verify_membership(boat_card.pub_key, record)
 
-    def test_verify_membership_wrong_key(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_verify_membership_wrong_key(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_membership(priv, co_op_id="test", boat_card=boat_card)
 
@@ -359,9 +375,7 @@ class TestMembership:
         other_b64 = _pub_key_to_base64(other_pub)
         assert not verify_membership(other_b64, record)
 
-    def test_membership_json_roundtrip(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_membership_json_roundtrip(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_membership(priv, co_op_id="test", boat_card=boat_card)
         data = json.loads(record.to_json())
@@ -376,9 +390,7 @@ class TestMembership:
 
 
 class TestRevocation:
-    def test_sign_revocation(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_sign_revocation(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_revocation(
             priv,
@@ -391,21 +403,21 @@ class TestRevocation:
         assert record.reason == "voluntary_departure"
         assert record.admin_sig != ""
 
-    def test_verify_revocation(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_verify_revocation(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_revocation(
-            priv, co_op_id="test", boat_pub=boat_card.pub_key,
+            priv,
+            co_op_id="test",
+            boat_pub=boat_card.pub_key,
         )
         assert verify_revocation(boat_card.pub_key, record)
 
-    def test_revocation_json(
-        self, identity_dir: Path, boat_card: BoatCard
-    ) -> None:
+    def test_revocation_json(self, identity_dir: Path, boat_card: BoatCard) -> None:
         priv, _ = load_identity(identity_dir)
         record = sign_revocation(
-            priv, co_op_id="test", boat_pub=boat_card.pub_key,
+            priv,
+            co_op_id="test",
+            boat_pub=boat_card.pub_key,
         )
         data = json.loads(record.to_json())
         assert data["type"] == "revocation"

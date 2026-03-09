@@ -75,9 +75,14 @@ class BoatCard:
 def get_tailscale_ip() -> str | None:
     """Detect the local Tailscale IPv4 address, or None if unavailable."""
     try:
-        return subprocess.check_output(
-            ["tailscale", "ip", "-4"], text=True, stderr=subprocess.DEVNULL,
-        ).strip() or None
+        return (
+            subprocess.check_output(
+                ["tailscale", "ip", "-4"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            or None
+        )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
 
@@ -375,10 +380,7 @@ def create_co_op(
 
     # Co-op ID: unique per co-op (hash of admin fingerprint + name + timestamp)
     id_input = f"{boat_card.fingerprint}:{name}:{now}"
-    co_op_id = (
-        base64.urlsafe_b64encode(hashlib.sha256(id_input.encode()).digest())[:16]
-        .decode()
-    )
+    co_op_id = base64.urlsafe_b64encode(hashlib.sha256(id_input.encode()).digest())[:16].decode()
 
     # Build charter (without sig first, then sign)
     charter = Charter(
@@ -524,9 +526,7 @@ def load_charter(co_op_id: str, identity_dir: Path | None = None) -> Charter:
     )
 
 
-def list_co_op_members(
-    co_op_id: str, identity_dir: Path | None = None
-) -> list[MembershipRecord]:
+def list_co_op_members(co_op_id: str, identity_dir: Path | None = None) -> list[MembershipRecord]:
     """Load all membership records for a co-op from the filesystem."""
     identity_dir = identity_dir or _DEFAULT_IDENTITY_DIR
     members_dir = identity_dir.parent / "co-ops" / co_op_id / "members"

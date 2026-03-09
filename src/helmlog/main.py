@@ -1402,7 +1402,10 @@ def _build_parser() -> argparse.ArgumentParser:
     id_init.add_argument("--sail-number", required=True, metavar="NUM", help="Sail number")
     id_init.add_argument("--boat-name", required=True, metavar="NAME", help="Boat name")
     id_init.add_argument(
-        "--email", default=None, metavar="EMAIL", help="Owner email (for co-op)",
+        "--email",
+        default=None,
+        metavar="EMAIL",
+        help="Owner email (for co-op)",
     )
     id_init.add_argument("--force", action="store_true", help="Overwrite existing identity")
 
@@ -1415,7 +1418,10 @@ def _build_parser() -> argparse.ArgumentParser:
     coop_create = coop_sub.add_parser("create", help="Create a new co-op (you become admin)")
     coop_create.add_argument("--name", required=True, metavar="NAME", help="Co-op name")
     coop_create.add_argument(
-        "--area", action="append", default=None, metavar="AREA",
+        "--area",
+        action="append",
+        default=None,
+        metavar="AREA",
         help="Geographic area (repeatable)",
     )
 
@@ -1423,10 +1429,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
     coop_invite = coop_sub.add_parser("invite", help="Invite a boat to the co-op")
     coop_invite.add_argument(
-        "boat_card", metavar="BOAT_CARD.json", help="Path to invitee boat.json",
+        "boat_card",
+        metavar="BOAT_CARD.json",
+        help="Path to invitee boat.json",
     )
     coop_invite.add_argument(
-        "--co-op-id", default=None, metavar="ID", help="Co-op ID (if multiple)",
+        "--co-op-id",
+        default=None,
+        metavar="ID",
+        help="Co-op ID (if multiple)",
     )
 
     return parser

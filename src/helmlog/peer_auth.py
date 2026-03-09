@@ -139,7 +139,8 @@ def verify_peer_request(
         if delta > _RELAXED_WINDOW:
             logger.warning(
                 "Peer request timestamp {} is {}s old (beyond relaxed window)",
-                timestamp, int(delta),
+                timestamp,
+                int(delta),
             )
             # Per design doc: valid signature with out-of-window timestamp
             # logs a warning but does not reject

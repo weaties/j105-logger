@@ -28,9 +28,20 @@ from helmlog.peer_auth import (
 router = APIRouter(prefix="/co-op", tags=["peer"])
 
 # Fields allowed in track responses (explicit allowlist per data licensing)
-SHARED_TRACK_FIELDS = frozenset({
-    "LAT", "LON", "BSP", "HDG", "COG", "SOG", "TWS", "TWA", "AWS", "AWA",
-})
+SHARED_TRACK_FIELDS = frozenset(
+    {
+        "LAT",
+        "LON",
+        "BSP",
+        "HDG",
+        "COG",
+        "SOG",
+        "TWS",
+        "TWA",
+        "AWS",
+        "AWA",
+    }
+)
 
 _WIND_REF_TRUE = 0
 _WIND_REF_APPARENT = 2
@@ -129,7 +140,8 @@ async def peer_identity(request: Request) -> JSONResponse:
         return JSONResponse(card.to_dict())
     except FileNotFoundError:
         return JSONResponse(
-            {"detail": "No identity initialized"}, status_code=404,
+            {"detail": "No identity initialized"},
+            status_code=404,
         )
 
 
@@ -173,26 +185,30 @@ async def peer_sessions(
             try:
                 embargo = datetime.fromisoformat(row["embargo_until"])
                 if embargo > now:
-                    sessions.append({
-                        "session_id": row["id"],
-                        "status": "embargoed",
-                        "available_at": row["embargo_until"],
-                    })
+                    sessions.append(
+                        {
+                            "session_id": row["id"],
+                            "status": "embargoed",
+                            "available_at": row["embargo_until"],
+                        }
+                    )
                     continue
             except ValueError:
                 pass
 
-        sessions.append({
-            "session_id": row["id"],
-            "status": "available",
-            "name": row["name"],
-            "event": row["event"],
-            "race_num": row["race_num"],
-            "date": row["date"],
-            "start_utc": row["start_utc"],
-            "end_utc": row["end_utc"],
-            "session_type": row["session_type"],
-        })
+        sessions.append(
+            {
+                "session_id": row["id"],
+                "status": "available",
+                "name": row["name"],
+                "event": row["event"],
+                "race_num": row["race_num"],
+                "date": row["date"],
+                "start_utc": row["start_utc"],
+                "end_utc": row["end_utc"],
+                "session_type": row["session_type"],
+            }
+        )
 
     return JSONResponse({"sessions": sessions})
 
@@ -213,7 +229,8 @@ async def peer_session_track(
     # Verify session is shared with this co-op
     if not await storage.is_session_shared(session_id, co_op_id):
         return JSONResponse(
-            {"detail": "Session not shared with this co-op"}, status_code=404,
+            {"detail": "Session not shared with this co-op"},
+            status_code=404,
         )
 
     # Check embargo
@@ -224,8 +241,7 @@ async def peer_session_track(
                 embargo = datetime.fromisoformat(s["embargo_until"])
                 if embargo > datetime.now(UTC):
                     return JSONResponse(
-                        {"detail": "Session is under embargo",
-                         "available_at": s["embargo_until"]},
+                        {"detail": "Session is under embargo", "available_at": s["embargo_until"]},
                         status_code=403,
                     )
             except ValueError:
@@ -234,12 +250,14 @@ async def peer_session_track(
     # Load session time range
     db = storage._conn()
     cur = await db.execute(
-        "SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,),
+        "SELECT start_utc, end_utc FROM races WHERE id = ?",
+        (session_id,),
     )
     race = await cur.fetchone()
     if not race or not race["end_utc"]:
         return JSONResponse(
-            {"detail": "Session not found or still running"}, status_code=404,
+            {"detail": "Session not found or still running"},
+            status_code=404,
         )
 
     start = datetime.fromisoformat(race["start_utc"])
@@ -315,7 +333,8 @@ async def peer_session_results(
 
     if not await storage.is_session_shared(session_id, co_op_id):
         return JSONResponse(
-            {"detail": "Session not shared with this co-op"}, status_code=404,
+            {"detail": "Session not shared with this co-op"},
+            status_code=404,
         )
 
     results = await storage.list_race_results(session_id)

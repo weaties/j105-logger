@@ -109,7 +109,9 @@ async def fetch_shared_sessions(
                 return list(data.get("sessions", []))
             logger.warning(
                 "Peer {} returned {} for sessions: {}",
-                peer_ip, resp.status_code, resp.text[:200],
+                peer_ip,
+                resp.status_code,
+                resp.text[:200],
             )
     except Exception as exc:
         logger.warning("Failed to fetch sessions from {}: {}", peer_ip, exc)
@@ -138,7 +140,9 @@ async def fetch_session_track(
                 return list(data.get("track", []))
             logger.warning(
                 "Peer {} returned {} for track: {}",
-                peer_ip, resp.status_code, resp.text[:200],
+                peer_ip,
+                resp.status_code,
+                resp.text[:200],
             )
     except Exception as exc:
         logger.warning("Failed to fetch track from {}: {}", peer_ip, exc)
@@ -210,8 +214,11 @@ async def fetch_all_peer_sessions(
 
     async def _query(peer: dict[str, Any]) -> dict[str, Any]:
         sessions = await fetch_shared_sessions(
-            peer["tailscale_ip"], co_op_id,
-            private_key, fingerprint, port=port,
+            peer["tailscale_ip"],
+            co_op_id,
+            private_key,
+            fingerprint,
+            port=port,
         )
         return {
             "fingerprint": peer["fingerprint"],
@@ -223,7 +230,8 @@ async def fetch_all_peer_sessions(
         }
 
     results = await asyncio.gather(
-        *[_query(p) for p in peers], return_exceptions=True,
+        *[_query(p) for p in peers],
+        return_exceptions=True,
     )
 
     peer_data = []

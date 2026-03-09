@@ -26,7 +26,8 @@ if TYPE_CHECKING:
 def _client(storage: Storage) -> httpx.AsyncClient:
     app = create_app(storage)
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test",
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
     )
 
 
@@ -40,11 +41,15 @@ class TestPeerIdentity:
 
     @pytest.mark.asyncio
     async def test_identity_returns_card(
-        self, storage: Storage, tmp_path: Path,
+        self,
+        storage: Storage,
+        tmp_path: Path,
     ) -> None:
         identity_dir = tmp_path / ".helmlog" / "identity"
         init_identity(
-            identity_dir, sail_number="69", boat_name="Javelina",
+            identity_dir,
+            sail_number="69",
+            boat_name="Javelina",
             owner_email="test@example.com",
         )
         from helmlog.federation import load_identity as _real_load
@@ -80,16 +85,21 @@ class TestPeerSessions:
 
         # Create co-op membership
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Test Fleet",
-            co_op_pub=admin_pub_b64, membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Test Fleet",
+            co_op_pub=admin_pub_b64,
+            membership_json="{}",
             role="admin",
         )
 
         # Register peer
         await storage.save_co_op_peer(
-            co_op_id="coop1", boat_pub=peer_pub_b64,
-            fingerprint=peer_fp, membership_json="{}",
-            sail_number="42", boat_name="Peer Boat",
+            co_op_id="coop1",
+            boat_pub=peer_pub_b64,
+            fingerprint=peer_fp,
+            membership_json="{}",
+            sail_number="42",
+            boat_name="Peer Boat",
         )
 
         # Create a session and share it
@@ -98,8 +108,15 @@ class TestPeerSessions:
             "INSERT INTO races (name, event, race_num, date, start_utc,"
             " end_utc, session_type)"
             " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("Test Race", "CYC Wed", 1, "2026-03-08",
-             "2026-03-08T12:00:00Z", "2026-03-08T12:30:00Z", "race"),
+            (
+                "Test Race",
+                "CYC Wed",
+                1,
+                "2026-03-08",
+                "2026-03-08T12:00:00Z",
+                "2026-03-08T12:30:00Z",
+                "race",
+            ),
         )
         await db.commit()
         session_id = cur.lastrowid or 0
@@ -128,11 +145,16 @@ class TestPeerSessions:
 
     @pytest.mark.asyncio
     async def test_list_shared_sessions(
-        self, storage: Storage, setup: dict,
+        self,
+        storage: Storage,
+        setup: dict,
     ) -> None:
         path = "/co-op/coop1/sessions"
         headers = sign_request(
-            setup["peer_priv"], setup["peer_fp"], "GET", path,
+            setup["peer_priv"],
+            setup["peer_fp"],
+            "GET",
+            path,
         )
         async with _client(storage) as c:
             resp = await c.get(path, headers=headers)
@@ -144,11 +166,16 @@ class TestPeerSessions:
 
     @pytest.mark.asyncio
     async def test_session_not_shared_returns_404(
-        self, storage: Storage, setup: dict,
+        self,
+        storage: Storage,
+        setup: dict,
     ) -> None:
         path = "/co-op/coop1/sessions/99999/track"
         headers = sign_request(
-            setup["peer_priv"], setup["peer_fp"], "GET", path,
+            setup["peer_priv"],
+            setup["peer_fp"],
+            "GET",
+            path,
         )
         async with _client(storage) as c:
             resp = await c.get(path, headers=headers)
@@ -156,11 +183,16 @@ class TestPeerSessions:
 
     @pytest.mark.asyncio
     async def test_non_member_coop_rejected(
-        self, storage: Storage, setup: dict,
+        self,
+        storage: Storage,
+        setup: dict,
     ) -> None:
         path = "/co-op/other-coop/sessions"
         headers = sign_request(
-            setup["peer_priv"], setup["peer_fp"], "GET", path,
+            setup["peer_priv"],
+            setup["peer_fp"],
+            "GET",
+            path,
         )
         async with _client(storage) as c:
             resp = await c.get(path, headers=headers)

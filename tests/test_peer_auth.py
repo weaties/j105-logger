@@ -36,8 +36,12 @@ class TestSignRequest:
     def test_custom_timestamp_and_nonce(self, keypair: tuple) -> None:
         priv, _pub = keypair
         headers = sign_request(
-            priv, "fp123", "GET", "/path",
-            timestamp="2026-03-08T00:00:00Z", nonce="abc123",
+            priv,
+            "fp123",
+            "GET",
+            "/path",
+            timestamp="2026-03-08T00:00:00Z",
+            nonce="abc123",
         )
         assert headers[HDR_TIMESTAMP] == "2026-03-08T00:00:00Z"
         assert headers[HDR_NONCE] == "abc123"
@@ -72,7 +76,10 @@ class TestVerifyPeerRequest:
     def test_nonce_replay_rejected(self, keypair: tuple) -> None:
         priv, pub = keypair
         headers = sign_request(
-            priv, "fp123", "GET", "/path",
+            priv,
+            "fp123",
+            "GET",
+            "/path",
             nonce="unique-nonce-replay-test",
         )
         # First request succeeds

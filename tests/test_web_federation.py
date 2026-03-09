@@ -20,9 +20,7 @@ _FED = "helmlog.federation"
 
 def _client(storage: Storage) -> httpx.AsyncClient:
     app = create_app(storage)
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    )
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +55,10 @@ class TestIdentityAPI:
     @pytest.mark.asyncio
     async def test_get_identity_with_data(self, storage: Storage) -> None:
         await storage.save_boat_identity(
-            pub_key="abc", fingerprint="fp123",
-            sail_number="69", boat_name="Javelina",
+            pub_key="abc",
+            fingerprint="fp123",
+            sail_number="69",
+            boat_name="Javelina",
         )
         async with _client(storage) as c:
             with patch(f"{_FED}.load_identity", side_effect=FileNotFoundError):
@@ -72,17 +72,23 @@ class TestIdentityAPI:
         from helmlog.federation import BoatCard
 
         mock_card = BoatCard(
-            pub_key="testpub", fingerprint="testfp",
-            sail_number="42", boat_name="TestBoat",
+            pub_key="testpub",
+            fingerprint="testfp",
+            sail_number="42",
+            boat_name="TestBoat",
         )
         with (
             patch(f"{_FED}.identity_exists", return_value=False),
             patch(f"{_FED}.init_identity", return_value=mock_card),
         ):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/identity", json={
-                    "sail_number": "42", "boat_name": "TestBoat",
-                })
+                resp = await c.post(
+                    "/api/federation/identity",
+                    json={
+                        "sail_number": "42",
+                        "boat_name": "TestBoat",
+                    },
+                )
                 assert resp.status_code == 201
                 data = resp.json()
                 assert data["fingerprint"] == "testfp"
@@ -96,18 +102,26 @@ class TestIdentityAPI:
     @pytest.mark.asyncio
     async def test_init_identity_missing_fields(self, storage: Storage) -> None:
         async with _client(storage) as c:
-            resp = await c.post("/api/federation/identity", json={
-                "sail_number": "", "boat_name": "",
-            })
+            resp = await c.post(
+                "/api/federation/identity",
+                json={
+                    "sail_number": "",
+                    "boat_name": "",
+                },
+            )
             assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_init_identity_already_exists(self, storage: Storage) -> None:
         with patch(f"{_FED}.identity_exists", return_value=True):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/identity", json={
-                    "sail_number": "42", "boat_name": "Test",
-                })
+                resp = await c.post(
+                    "/api/federation/identity",
+                    json={
+                        "sail_number": "42",
+                        "boat_name": "Test",
+                    },
+                )
                 assert resp.status_code == 409
 
 
@@ -127,8 +141,10 @@ class TestCoOpsAPI:
     @pytest.mark.asyncio
     async def test_list_with_membership(self, storage: Storage) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet A",
-            co_op_pub="pub1", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet A",
+            co_op_pub="pub1",
+            membership_json="{}",
             role="admin",
         )
         async with _client(storage) as c:
@@ -142,9 +158,12 @@ class TestCoOpsAPI:
     async def test_create_coop_no_identity(self, storage: Storage) -> None:
         with patch(f"{_FED}.load_identity", side_effect=FileNotFoundError):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/co-ops", json={
-                    "name": "Test Fleet",
-                })
+                resp = await c.post(
+                    "/api/federation/co-ops",
+                    json={
+                        "name": "Test Fleet",
+                    },
+                )
                 assert resp.status_code == 409
 
     @pytest.mark.asyncio
@@ -153,8 +172,10 @@ class TestCoOpsAPI:
 
         priv, _ = generate_keypair()
         card = BoatCard(
-            pub_key="pub", fingerprint="fp",
-            sail_number="1", boat_name="Test",
+            pub_key="pub",
+            fingerprint="fp",
+            sail_number="1",
+            boat_name="Test",
             owner_email="test@example.com",
         )
         with patch(f"{_FED}.load_identity", return_value=(priv, card)):
@@ -168,20 +189,27 @@ class TestCoOpsAPI:
 
         priv, _ = generate_keypair()
         card = BoatCard(
-            pub_key="pub", fingerprint="fp",
-            sail_number="1", boat_name="Test",
+            pub_key="pub",
+            fingerprint="fp",
+            sail_number="1",
+            boat_name="Test",
         )
         with patch(f"{_FED}.load_identity", return_value=(priv, card)):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/co-ops", json={
-                    "name": "Test Fleet",
-                })
+                resp = await c.post(
+                    "/api/federation/co-ops",
+                    json={
+                        "name": "Test Fleet",
+                    },
+                )
                 assert resp.status_code == 422
                 assert "email" in resp.json()["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_create_coop_success(
-        self, storage: Storage, tmp_path: object,
+        self,
+        storage: Storage,
+        tmp_path: object,
     ) -> None:
         from pathlib import Path
 
@@ -190,14 +218,18 @@ class TestCoOpsAPI:
 
         identity_dir = Path(str(tmp_path)) / ".helmlog" / "identity"
         init_identity(
-            identity_dir, sail_number="69", boat_name="Javelina",
+            identity_dir,
+            sail_number="69",
+            boat_name="Javelina",
             owner_email="test@example.com",
         )
         priv, loaded_card = _real_load(identity_dir)
 
         mock_charter = Charter(
-            co_op_id="test-coop-id", name="Test Fleet",
-            areas=["Bay"], admin_boat_pub=loaded_card.pub_key,
+            co_op_id="test-coop-id",
+            name="Test Fleet",
+            areas=["Bay"],
+            admin_boat_pub=loaded_card.pub_key,
             admin_boat_fingerprint=loaded_card.fingerprint,
             created_at="2026-03-08T00:00:00Z",
         )
@@ -208,16 +240,22 @@ class TestCoOpsAPI:
             patch(f"{_FED}.list_co_op_members", return_value=[]),
         ):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/co-ops", json={
-                    "name": "Test Fleet", "areas": ["Bay"],
-                })
+                resp = await c.post(
+                    "/api/federation/co-ops",
+                    json={
+                        "name": "Test Fleet",
+                        "areas": ["Bay"],
+                    },
+                )
                 assert resp.status_code == 201
                 data = resp.json()
                 assert data["name"] == "Test Fleet"
 
     @pytest.mark.asyncio
     async def test_create_coop_saves_admin_as_peer(
-        self, storage: Storage, tmp_path: object,
+        self,
+        storage: Storage,
+        tmp_path: object,
     ) -> None:
         """Creating a co-op should save the admin boat as a peer."""
         from pathlib import Path
@@ -227,21 +265,28 @@ class TestCoOpsAPI:
 
         identity_dir = Path(str(tmp_path)) / ".helmlog" / "identity"
         init_identity(
-            identity_dir, sail_number="69", boat_name="Javelina",
+            identity_dir,
+            sail_number="69",
+            boat_name="Javelina",
             owner_email="test@example.com",
         )
         priv, loaded_card = _real_load(identity_dir)
 
         mock_charter = Charter(
-            co_op_id="test-coop-id", name="Test Fleet",
-            areas=[], admin_boat_pub=loaded_card.pub_key,
+            co_op_id="test-coop-id",
+            name="Test Fleet",
+            areas=[],
+            admin_boat_pub=loaded_card.pub_key,
             admin_boat_fingerprint=loaded_card.fingerprint,
             created_at="2026-03-08T00:00:00Z",
         )
         mock_member = MembershipRecord(
-            co_op_id="test-coop-id", boat_pub=loaded_card.pub_key,
-            sail_number="69", boat_name="Javelina",
-            role="admin", joined_at="2026-03-08T00:00:00Z",
+            co_op_id="test-coop-id",
+            boat_pub=loaded_card.pub_key,
+            sail_number="69",
+            boat_name="Javelina",
+            role="admin",
+            joined_at="2026-03-08T00:00:00Z",
         )
 
         with (
@@ -250,9 +295,12 @@ class TestCoOpsAPI:
             patch(f"{_FED}.list_co_op_members", return_value=[mock_member]),
         ):
             async with _client(storage) as c:
-                resp = await c.post("/api/federation/co-ops", json={
-                    "name": "Test Fleet",
-                })
+                resp = await c.post(
+                    "/api/federation/co-ops",
+                    json={
+                        "name": "Test Fleet",
+                    },
+                )
                 assert resp.status_code == 201
 
         # Admin boat should appear as a peer
@@ -275,15 +323,16 @@ class TestInviteAPI:
 
         priv, _ = generate_keypair()
         card = BoatCard(
-            pub_key="pub", fingerprint="fp",
-            sail_number="1", boat_name="Admin",
+            pub_key="pub",
+            fingerprint="fp",
+            sail_number="1",
+            boat_name="Admin",
         )
         with patch(f"{_FED}.load_identity", return_value=(priv, card)):
             async with _client(storage) as c:
                 resp = await c.post(
                     "/api/federation/co-ops/nonexistent/invite",
-                    json={"pub": "x", "fingerprint": "y",
-                           "sail_number": "1", "name": "Boat"},
+                    json={"pub": "x", "fingerprint": "y", "sail_number": "1", "name": "Boat"},
                 )
                 assert resp.status_code == 403
 
@@ -294,12 +343,16 @@ class TestInviteAPI:
 
         priv, _ = generate_keypair()
         card = BoatCard(
-            pub_key="pub", fingerprint="fp",
-            sail_number="1", boat_name="Admin",
+            pub_key="pub",
+            fingerprint="fp",
+            sail_number="1",
+            boat_name="Admin",
         )
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet",
-            co_op_pub="pub", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet",
+            co_op_pub="pub",
+            membership_json="{}",
             role="admin",
         )
         with patch(f"{_FED}.load_identity", return_value=(priv, card)):
@@ -312,7 +365,9 @@ class TestInviteAPI:
 
     @pytest.mark.asyncio
     async def test_invite_success(
-        self, storage: Storage, tmp_path: object,
+        self,
+        storage: Storage,
+        tmp_path: object,
     ) -> None:
         """Full invite flow — sign membership and persist peer."""
         from pathlib import Path
@@ -332,7 +387,9 @@ class TestInviteAPI:
 
         identity_dir = Path(str(tmp_path)) / ".helmlog" / "identity"
         init_identity(
-            identity_dir, sail_number="69", boat_name="Admin Boat",
+            identity_dir,
+            sail_number="69",
+            boat_name="Admin Boat",
             owner_email="admin@example.com",
         )
         priv, admin_card = _real_load(identity_dir)
@@ -342,8 +399,10 @@ class TestInviteAPI:
         co_op_dir.mkdir(parents=True)
 
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet",
-            co_op_pub=admin_card.pub_key, membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet",
+            co_op_pub=admin_card.pub_key,
+            membership_json="{}",
             role="admin",
         )
 
@@ -396,15 +455,16 @@ class TestSessionSharingAPI:
         cur = await db.execute(
             "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
             " VALUES (?, ?, ?, ?, ?, ?)",
-            ("Test Race", "CYC Wed", 1, "2026-03-08",
-             "2026-03-08T12:00:00Z", "race"),
+            ("Test Race", "CYC Wed", 1, "2026-03-08", "2026-03-08T12:00:00Z", "race"),
         )
         await db.commit()
         return cur.lastrowid or 0
 
     @pytest.mark.asyncio
     async def test_get_sharing_empty(
-        self, storage: Storage, session_id: int,
+        self,
+        storage: Storage,
+        session_id: int,
     ) -> None:
         async with _client(storage) as c:
             resp = await c.get(f"/api/sessions/{session_id}/sharing")
@@ -415,11 +475,15 @@ class TestSessionSharingAPI:
 
     @pytest.mark.asyncio
     async def test_share_and_list(
-        self, storage: Storage, session_id: int,
+        self,
+        storage: Storage,
+        session_id: int,
     ) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet A",
-            co_op_pub="pub1", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet A",
+            co_op_pub="pub1",
+            membership_json="{}",
             role="admin",
         )
         async with _client(storage) as c:
@@ -438,11 +502,15 @@ class TestSessionSharingAPI:
 
     @pytest.mark.asyncio
     async def test_unshare(
-        self, storage: Storage, session_id: int,
+        self,
+        storage: Storage,
+        session_id: int,
     ) -> None:
         await storage.save_co_op_membership(
-            co_op_id="coop1", co_op_name="Fleet A",
-            co_op_pub="pub1", membership_json="{}",
+            co_op_id="coop1",
+            co_op_name="Fleet A",
+            co_op_pub="pub1",
+            membership_json="{}",
             role="admin",
         )
         await storage.share_session(session_id, "coop1")
@@ -458,7 +526,9 @@ class TestSessionSharingAPI:
 
     @pytest.mark.asyncio
     async def test_share_not_member(
-        self, storage: Storage, session_id: int,
+        self,
+        storage: Storage,
+        session_id: int,
     ) -> None:
         async with _client(storage) as c:
             resp = await c.post(

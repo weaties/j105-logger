@@ -85,7 +85,8 @@ try:
     _STARTUP_SHA = _sp.check_output(  # noqa: S603, S607
         ["git", "-c", f"safe.directory={_repo_dir}", "rev-parse", "HEAD"],
         cwd=_repo_dir,
-        text=True, stderr=_sp.DEVNULL,
+        text=True,
+        stderr=_sp.DEVNULL,
     ).strip()
     del _sp, _repo_dir
 except Exception:  # noqa: BLE001
@@ -3094,9 +3095,7 @@ def create_app(
         behind = commits_behind(config)
         last = await storage.last_deployment()
         # Detect if on-disk code differs from what the running process loaded
-        restart_needed = bool(
-            _STARTUP_SHA and running["sha"] and running["sha"] != _STARTUP_SHA
-        )
+        restart_needed = bool(_STARTUP_SHA and running["sha"] and running["sha"] != _STARTUP_SHA)
         return JSONResponse(
             {
                 "running": {**running, "startup_sha": _STARTUP_SHA},
@@ -3229,7 +3228,8 @@ def create_app(
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> Response:
         return _templates.TemplateResponse(
-            request, "admin/federation.html",
+            request,
+            "admin/federation.html",
             _tpl_ctx(request, "/admin/federation"),
         )
 
@@ -3248,10 +3248,12 @@ def create_app(
                 identity["owner_email"] = card.owner_email
             except FileNotFoundError:
                 pass
-        return JSONResponse({
-            "identity": identity,
-            "boat_card_json": boat_card_json,
-        })
+        return JSONResponse(
+            {
+                "identity": identity,
+                "boat_card_json": boat_card_json,
+            }
+        )
 
     @app.post("/api/federation/identity", status_code=201)
     async def api_federation_identity_init(
@@ -3271,18 +3273,31 @@ def create_app(
             raise HTTPException(409, "Identity already exists")
 
         card = init_identity(
-            sail_number=sail, boat_name=name, owner_email=email,
+            sail_number=sail,
+            boat_name=name,
+            owner_email=email,
         )
         await storage.save_boat_identity(
-            pub_key=card.pub_key, fingerprint=card.fingerprint,
-            sail_number=card.sail_number, boat_name=card.boat_name,
+            pub_key=card.pub_key,
+            fingerprint=card.fingerprint,
+            sail_number=card.sail_number,
+            boat_name=card.boat_name,
         )
-        await _audit(request, "federation.identity.init",
-                     detail=f"{card.boat_name} ({card.fingerprint})", user=_user)
-        return JSONResponse({
-            "pub_key": card.pub_key, "fingerprint": card.fingerprint,
-            "sail_number": card.sail_number, "boat_name": card.boat_name,
-        }, status_code=201)
+        await _audit(
+            request,
+            "federation.identity.init",
+            detail=f"{card.boat_name} ({card.fingerprint})",
+            user=_user,
+        )
+        return JSONResponse(
+            {
+                "pub_key": card.pub_key,
+                "fingerprint": card.fingerprint,
+                "sail_number": card.sail_number,
+                "boat_name": card.boat_name,
+            },
+            status_code=201,
+        )
 
     @app.get("/api/federation/co-ops")
     async def api_federation_coops(
@@ -3309,8 +3324,8 @@ def create_app(
 
         if not card.owner_email:
             raise HTTPException(
-                422, "Co-op requires an owner email. "
-                "Re-initialize identity with an email address.",
+                422,
+                "Co-op requires an owner email. Re-initialize identity with an email address.",
             )
 
         body = await request.json()
@@ -3326,20 +3341,28 @@ def create_app(
         members = list_co_op_members(charter.co_op_id)
         if members:
             await storage.save_co_op_membership(
-                co_op_id=charter.co_op_id, co_op_name=charter.name,
-                co_op_pub=card.pub_key, membership_json=members[0].to_json(),
-                role="admin", joined_at=members[0].joined_at,
+                co_op_id=charter.co_op_id,
+                co_op_name=charter.name,
+                co_op_pub=card.pub_key,
+                membership_json=members[0].to_json(),
+                role="admin",
+                joined_at=members[0].joined_at,
             )
             # Also save the creating boat as a peer so it appears in the member list
             await storage.save_co_op_peer(
-                co_op_id=charter.co_op_id, boat_pub=card.pub_key,
+                co_op_id=charter.co_op_id,
+                boat_pub=card.pub_key,
                 fingerprint=card.fingerprint,
                 membership_json=members[0].to_json(),
                 sail_number=card.sail_number,
                 boat_name=card.boat_name,
             )
-        await _audit(request, "federation.co_op.create",
-                     detail=f"{charter.name} ({charter.co_op_id})", user=_user)
+        await _audit(
+            request,
+            "federation.co_op.create",
+            detail=f"{charter.name} ({charter.co_op_id})",
+            user=_user,
+        )
         return JSONResponse(charter.to_dict(), status_code=201)
 
     @app.post("/api/federation/co-ops/{co_op_id}/invite", status_code=201)
@@ -3364,17 +3387,22 @@ def create_app(
         missing = [f for f in required if not body.get(f)]
         if missing:
             raise HTTPException(
-                422, f"Boat card missing required fields: {', '.join(missing)}",
+                422,
+                f"Boat card missing required fields: {', '.join(missing)}",
             )
 
         invitee = BoatCard(
-            pub_key=body["pub"], fingerprint=body["fingerprint"],
-            sail_number=body["sail_number"], boat_name=body["name"],
+            pub_key=body["pub"],
+            fingerprint=body["fingerprint"],
+            sail_number=body["sail_number"],
+            boat_name=body["name"],
             owner_email=body.get("owner_email"),
         )
 
         record = sign_membership(
-            private_key, co_op_id=co_op_id, boat_card=invitee,
+            private_key,
+            co_op_id=co_op_id,
+            boat_card=invitee,
         )
 
         # Persist to filesystem
@@ -3388,7 +3416,8 @@ def create_app(
 
         # Persist to SQLite as peer
         await storage.save_co_op_peer(
-            co_op_id=co_op_id, boat_pub=invitee.pub_key,
+            co_op_id=co_op_id,
+            boat_pub=invitee.pub_key,
             fingerprint=invitee.fingerprint,
             membership_json=record.to_json(),
             sail_number=invitee.sail_number,
@@ -3396,7 +3425,8 @@ def create_app(
             tailscale_ip=body.get("tailscale_ip"),
         )
         await _audit(
-            request, "federation.invite",
+            request,
+            "federation.invite",
             detail=f"{invitee.boat_name} ({invitee.fingerprint}) → {co_op_id}",
             user=_user,
         )
@@ -3412,12 +3442,15 @@ def create_app(
             "admin_tailscale_ip": admin_card.tailscale_ip or "",
             "membership": record.to_dict(),
         }
-        return JSONResponse({
-            "boat_name": invitee.boat_name,
-            "fingerprint": invitee.fingerprint,
-            "membership": record.to_dict(),
-            "invite_bundle": invite_bundle,
-        }, status_code=201)
+        return JSONResponse(
+            {
+                "boat_name": invitee.boat_name,
+                "fingerprint": invitee.fingerprint,
+                "membership": record.to_dict(),
+                "invite_bundle": invite_bundle,
+            },
+            status_code=201,
+        )
 
     @app.post("/api/federation/join", status_code=201)
     async def api_federation_join(
@@ -3445,8 +3478,10 @@ def create_app(
 
         # Save co-op membership (this boat is a member, not admin)
         await storage.save_co_op_membership(
-            co_op_id=co_op_id, co_op_name=co_op_name,
-            co_op_pub=admin_pub, membership_json=membership_str,
+            co_op_id=co_op_id,
+            co_op_name=co_op_name,
+            co_op_pub=admin_pub,
+            membership_json=membership_str,
             role="member",
         )
 
@@ -3456,7 +3491,8 @@ def create_app(
 
             _, my_card = load_identity()
             await storage.save_co_op_peer(
-                co_op_id=co_op_id, boat_pub=my_card.pub_key,
+                co_op_id=co_op_id,
+                boat_pub=my_card.pub_key,
                 fingerprint=my_card.fingerprint,
                 membership_json=membership_str,
                 sail_number=my_card.sail_number,
@@ -3471,7 +3507,8 @@ def create_app(
         admin_boat_name = body.get("admin_boat_name", "").strip()
         admin_sail_number = body.get("admin_sail_number", "").strip()
         await storage.save_co_op_peer(
-            co_op_id=co_op_id, boat_pub=admin_pub,
+            co_op_id=co_op_id,
+            boat_pub=admin_pub,
             fingerprint=admin_fingerprint,
             membership_json="{}",
             sail_number=admin_sail_number,
@@ -3480,7 +3517,8 @@ def create_app(
         )
 
         await _audit(
-            request, "federation.join",
+            request,
+            "federation.join",
             detail=f"Joined {co_op_name} ({co_op_id})",
             user=_user,
         )
@@ -3499,14 +3537,20 @@ def create_app(
         memberships = await storage.list_co_op_memberships()
         sharing = await storage.get_session_sharing(session_id)
         shared_ids = {s["co_op_id"] for s in sharing}
-        return JSONResponse({
-            "sharing": sharing,
-            "co_ops": [
-                {"co_op_id": m["co_op_id"], "co_op_name": m["co_op_name"],
-                 "shared": m["co_op_id"] in shared_ids}
-                for m in memberships if m["status"] == "active"
-            ],
-        })
+        return JSONResponse(
+            {
+                "sharing": sharing,
+                "co_ops": [
+                    {
+                        "co_op_id": m["co_op_id"],
+                        "co_op_name": m["co_op_name"],
+                        "shared": m["co_op_id"] in shared_ids,
+                    }
+                    for m in memberships
+                    if m["status"] == "active"
+                ],
+            }
+        )
 
     @app.post("/api/sessions/{session_id}/share", status_code=201)
     async def api_session_share(
@@ -3523,11 +3567,14 @@ def create_app(
             raise HTTPException(404, "Not a member of this co-op")
         embargo_until = body.get("embargo_until") or None
         await storage.share_session(
-            session_id, co_op_id,
-            user_id=_user.get("id"), embargo_until=embargo_until,
+            session_id,
+            co_op_id,
+            user_id=_user.get("id"),
+            embargo_until=embargo_until,
         )
         await _audit(
-            request, "federation.session.share",
+            request,
+            "federation.session.share",
             detail=f"session {session_id} → {membership['co_op_name']}",
             user=_user,
         )
@@ -3544,7 +3591,8 @@ def create_app(
         if not removed:
             raise HTTPException(404, "Session was not shared with this co-op")
         await _audit(
-            request, "federation.session.unshare",
+            request,
+            "federation.session.unshare",
             detail=f"session {session_id} ✕ {co_op_id}",
             user=_user,
         )
@@ -3568,13 +3616,15 @@ def create_app(
             raise HTTPException(409, "Initialize identity first")  # noqa: B904
 
         peers = await fetch_all_peer_sessions(
-            storage, co_op_id, private_key, card.fingerprint,
+            storage,
+            co_op_id,
+            private_key,
+            card.fingerprint,
         )
         return JSONResponse({"peers": peers})
 
     @app.get(
-        "/api/federation/co-ops/{co_op_id}/peers/{fingerprint}"
-        "/sessions/{session_id}/track",
+        "/api/federation/co-ops/{co_op_id}/peers/{fingerprint}/sessions/{session_id}/track",
     )
     async def api_peer_session_track(
         request: Request,
@@ -3598,8 +3648,11 @@ def create_app(
             raise HTTPException(404, "Peer not found or no Tailscale IP")
 
         track = await fetch_session_track(
-            peer["tailscale_ip"], co_op_id, session_id,
-            private_key, card.fingerprint,
+            peer["tailscale_ip"],
+            co_op_id,
+            session_id,
+            private_key,
+            card.fingerprint,
         )
         return JSONResponse({"track": track, "count": len(track)})
 

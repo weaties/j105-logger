@@ -3470,8 +3470,16 @@ class Storage:
             "   tailscale_ip = excluded.tailscale_ip,"
             "   last_seen = excluded.last_seen,"
             "   membership_json = excluded.membership_json",
-            (co_op_id, boat_pub, fingerprint, sail_number, boat_name,
-             tailscale_ip, now, membership_json),
+            (
+                co_op_id,
+                boat_pub,
+                fingerprint,
+                sail_number,
+                boat_name,
+                tailscale_ip,
+                now,
+                membership_json,
+            ),
         )
         await db.commit()
 
@@ -3486,7 +3494,9 @@ class Storage:
         return [dict(r) for r in await cur.fetchall()]
 
     async def get_co_op_peer(
-        self, co_op_id: str, fingerprint: str,
+        self,
+        co_op_id: str,
+        fingerprint: str,
     ) -> dict[str, Any] | None:
         """Return a specific peer by co-op and fingerprint."""
         cur = await self._conn().execute(
