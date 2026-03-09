@@ -50,6 +50,9 @@ function render(data) {
     const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDuration(Math.round(s.duration_s)) + ')' : '';
     const typeClass = s.type === 'race' ? 'badge-race' : s.type === 'practice' ? 'badge-practice' : s.type === 'synthesized' ? 'badge-synthesized' : 'badge-debrief';
     const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
+    const peerBadge = s.peer_fingerprint
+      ? '<span class="badge badge-peer" title="Peer boat · ' + s.peer_fingerprint + '">&#9851; PEER</span>'
+      : '';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
     // --- Toggle buttons: Track, Video, Results, Crew, Sails, Notes, Transcript ---
@@ -118,7 +121,7 @@ function render(data) {
       : '';
 
     const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + s.name + '</a>';
-    return '<div class="card"><div class="session-name">' + nameLink + badge + videoLink + '</div>'
+    return '<div class="card"><div class="session-name">' + nameLink + badge + peerBadge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + parent
       + togglesHtml + trackPanel + playerPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel

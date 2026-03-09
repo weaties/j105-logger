@@ -1374,13 +1374,38 @@ def create_app(
         )
 
     # ------------------------------------------------------------------
+    # /api/co-op/peers  — list all known co-op peer boats
+    # ------------------------------------------------------------------
+
+    @app.get("/api/co-op/peers")
+    async def api_list_coop_peers(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        peers = await storage.list_all_co_op_peers()
+        # Strip sensitive key material before returning
+        safe = [
+            {
+                "co_op_id": p["co_op_id"],
+                "fingerprint": p["fingerprint"],
+                "sail_number": p["sail_number"],
+                "boat_name": p["boat_name"],
+                "tailscale_ip": p["tailscale_ip"],
+                "last_seen": p["last_seen"],
+            }
+            for p in peers
+        ]
+        return JSONResponse({"peers": safe})
+
+    # ------------------------------------------------------------------
     # /api/sessions/synthesize
     # ------------------------------------------------------------------
 
     @app.post("/api/sessions/synthesize")
     async def api_synthesize_session(
-        request: Request, _user: dict[str, Any] = Depends(require_auth("crew"))
-    ) -> JSONResponse:  # noqa: B008, E501
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
         import asyncio
         import uuid
 
@@ -1401,6 +1426,18 @@ def create_app(
         laps = int(body.get("laps", 2))
         seed = int(body.get("seed", 42))
         mark_sequence = body.get("mark_sequence", "")
+        peer_fingerprint: str | None = body.get("peer_fingerprint") or None
+        peer_co_op_id: str | None = body.get("peer_co_op_id") or None
+
+        # Validate peer_fingerprint if supplied
+        peer_boat: dict[str, Any] | None = None
+        if peer_fingerprint:
+            peer_boat = await storage.get_co_op_peer_by_fingerprint(peer_fingerprint)
+            if peer_boat is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Unknown peer fingerprint: {peer_fingerprint}",
+                )
 
         if course_type == "windward_leeward":
             legs = build_wl_course(start_lat, start_lon, wind_dir, leg_nm, laps)
@@ -1447,6 +1484,9 @@ def create_app(
         event = custom_event or default_event or "Synthesized"
 
         name = build_race_name(event, today, race_num, "synthesized")
+        if peer_boat:
+            boat_label = peer_boat.get("boat_name") or peer_boat.get("sail_number") or "peer"
+            name = f"{name} [{boat_label}]"
 
         start_utc = rows[0].ts
         end_utc = rows[-1].ts
@@ -1461,15 +1501,29 @@ def create_app(
             session_type="synthesized",
             source="synthesized",
             source_id=source_id,
+            peer_fingerprint=peer_fingerprint,
+            peer_co_op_id=peer_co_op_id,
         )
         await storage.import_synthesized_data(rows)
 
+        # Auto-share with co-op if peer_co_op_id given
+        if peer_co_op_id:
+            await storage.share_session(race_id, peer_co_op_id)
+
         duration_s = (end_utc - start_utc).total_seconds()
-        await _audit(request, "session.synthesize", detail=name, user=_user)
-        return JSONResponse(
-            {"id": race_id, "name": name, "points": len(rows), "duration_s": round(duration_s, 1)},
-            status_code=201,
-        )
+        detail = name + (f" [peer={peer_fingerprint}]" if peer_fingerprint else "")
+        await _audit(request, "session.synthesize", detail=detail, user=_user)
+
+        resp: dict[str, Any] = {
+            "id": race_id,
+            "name": name,
+            "points": len(rows),
+            "duration_s": round(duration_s, 1),
+        }
+        if peer_boat:
+            resp["peer_fingerprint"] = peer_fingerprint
+            resp["peer_boat_name"] = peer_boat.get("boat_name")
+        return JSONResponse(resp, status_code=201)
 
     # ------------------------------------------------------------------
     # /api/races/{id}/end
@@ -1741,6 +1795,7 @@ def create_app(
         cur = await db.execute(
             "SELECT r.id, r.name, r.event, r.race_num, r.date,"
             " r.start_utc, r.end_utc, r.session_type,"
+            " r.peer_fingerprint, r.peer_co_op_id,"
             " (SELECT COUNT(*) > 0 FROM positions p"
             "   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
             " ) AS has_track,"
@@ -1775,6 +1830,8 @@ def create_app(
                 "start_utc": start_utc.isoformat(),
                 "end_utc": end_utc.isoformat() if end_utc else None,
                 "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                "peer_fingerprint": row["peer_fingerprint"],
+                "peer_co_op_id": row["peer_co_op_id"],
                 "has_track": bool(row["has_track"]),
                 "first_video_url": row["first_video_url"],
                 "has_audio": arow is not None,

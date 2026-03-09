@@ -51,7 +51,10 @@ function renderHeader() {
   const s = _session;
   const typeClass = s.type === 'race' ? 'badge-race' : s.type === 'practice' ? 'badge-practice' : s.type === 'synthesized' ? 'badge-synthesized' : 'badge-debrief';
   const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
-  document.getElementById('session-name').innerHTML = esc(s.name) + badge;
+  const peerBadge = s.peer_fingerprint
+    ? '<span class="badge badge-peer" title="Peer boat \xb7 ' + s.peer_fingerprint + '">\u267b PEER</span>'
+    : '';
+  document.getElementById('session-name').innerHTML = esc(s.name) + badge + peerBadge;
 
   const start = fmtTime(s.start_utc);
   const end = s.end_utc ? fmtTime(s.end_utc) : 'in progress';

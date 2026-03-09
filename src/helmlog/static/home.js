@@ -937,14 +937,35 @@ async function loadPolar() {
 
 // ---- Synthesize race ----
 
-function toggleSynthPanel() {
+async function toggleSynthPanel() {
   const panel = document.getElementById('synth-panel');
-  panel.classList.toggle('hidden');
+  const hidden = panel.classList.toggle('hidden');
+  if (!hidden) await loadCoopPeers();
 }
 
 function onSynthCourseChange() {
   const v = document.getElementById('synth-course').value;
   document.getElementById('synth-marks-field').classList.toggle('hidden', v !== 'custom');
+}
+
+async function loadCoopPeers() {
+  try {
+    const resp = await fetch('/api/co-op/peers');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const sel = document.getElementById('synth-peer');
+    // Preserve selected value
+    const cur = sel.value;
+    // Remove all options except the first (local boat)
+    while (sel.options.length > 1) sel.remove(1);
+    for (const p of (data.peers || [])) {
+      const label = (p.boat_name || p.sail_number || p.fingerprint) +
+        (p.sail_number && p.boat_name ? ' (' + p.sail_number + ')' : '');
+      const opt = new Option(label, JSON.stringify({fp: p.fingerprint, coop: p.co_op_id}));
+      sel.add(opt);
+    }
+    if (cur) sel.value = cur;
+  } catch (_) {}
 }
 
 async function runSynthesize() {
@@ -966,6 +987,14 @@ async function runSynthesize() {
     };
     const marks = document.getElementById('synth-marks').value.trim();
     if (marks) body.mark_sequence = marks;
+    const peerVal = document.getElementById('synth-peer').value;
+    if (peerVal) {
+      try {
+        const peer = JSON.parse(peerVal);
+        if (peer.fp) body.peer_fingerprint = peer.fp;
+        if (peer.coop) body.peer_co_op_id = peer.coop;
+      } catch (_) {}
+    }
     const resp = await fetch('/api/sessions/synthesize', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
@@ -974,7 +1003,9 @@ async function runSynthesize() {
     if (resp.ok) {
       const data = await resp.json();
       const dur = Math.round(data.duration_s / 60);
-      result.textContent = data.name + ' — ' + data.points + ' points, ' + dur + ' min';
+      let msg = data.name + ' — ' + data.points + ' points, ' + dur + ' min';
+      if (data.peer_boat_name) msg += ' [' + data.peer_boat_name + ']';
+      result.textContent = msg;
       result.style.display = '';
       await loadState();
     } else {

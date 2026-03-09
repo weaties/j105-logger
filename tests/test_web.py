@@ -2549,3 +2549,143 @@ async def test_synthesize_invalid_course(storage: Storage) -> None:
         resp = await client.post("/api/sessions/synthesize", json={"course_type": "invalid"})
 
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Tests — co-op peer synthesis
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_coop_peers_empty(storage: Storage) -> None:
+    """GET /api/co-op/peers returns empty list when no peers registered."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/co-op/peers")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["peers"] == []
+
+
+@pytest.mark.asyncio
+async def test_list_coop_peers_with_data(storage: Storage) -> None:
+    """GET /api/co-op/peers returns known peers across all co-ops."""
+    await storage.save_co_op_peer(
+        co_op_id="coop-abc",
+        boat_pub="testpub123",
+        fingerprint="fp-boat-b",
+        membership_json='{"role": "member"}',
+        sail_number="USA-42",
+        boat_name="Scimitar",
+    )
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/co-op/peers")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["peers"]) == 1
+    peer = data["peers"][0]
+    assert peer["fingerprint"] == "fp-boat-b"
+    assert peer["sail_number"] == "USA-42"
+    assert peer["boat_name"] == "Scimitar"
+    assert peer["co_op_id"] == "coop-abc"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_for_peer_boat(storage: Storage) -> None:
+    """Synthesizing with peer_fingerprint tags the session to that peer boat."""
+    await storage.save_co_op_peer(
+        co_op_id="coop-abc",
+        boat_pub="testpub123",
+        fingerprint="fp-boat-b",
+        membership_json='{"role": "member"}',
+        sail_number="USA-42",
+        boat_name="Scimitar",
+    )
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/sessions/synthesize",
+            json={"peer_fingerprint": "fp-boat-b", "peer_co_op_id": "coop-abc"},
+        )
+
+    assert resp.status_code == 201
+    data = resp.json()
+    assert data["peer_fingerprint"] == "fp-boat-b"
+    assert data["peer_boat_name"] == "Scimitar"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_peer_session_appears_in_list(storage: Storage) -> None:
+    """Peer-attributed synthesized session shows peer_fingerprint in session list."""
+    await storage.save_co_op_peer(
+        co_op_id="coop-abc",
+        boat_pub="testpub123",
+        fingerprint="fp-boat-b",
+        membership_json='{"role": "member"}',
+        sail_number="USA-42",
+        boat_name="Scimitar",
+    )
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/api/sessions/synthesize",
+            json={"peer_fingerprint": "fp-boat-b", "peer_co_op_id": "coop-abc"},
+        )
+        resp = await client.get("/api/sessions", params={"type": "synthesized"})
+
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    peer_sessions = [s for s in sessions if s.get("peer_fingerprint") == "fp-boat-b"]
+    assert len(peer_sessions) == 1
+    assert peer_sessions[0]["peer_co_op_id"] == "coop-abc"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_unknown_peer_returns_422(storage: Storage) -> None:
+    """Synthesizing with an unknown peer_fingerprint returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/sessions/synthesize",
+            json={"peer_fingerprint": "fp-nonexistent"},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_synthesize_peer_auto_shares_with_coop(storage: Storage) -> None:
+    """When peer_co_op_id is given, the session is auto-shared with that co-op."""
+    await storage.save_co_op_peer(
+        co_op_id="coop-abc",
+        boat_pub="testpub123",
+        fingerprint="fp-boat-b",
+        membership_json='{"role": "member"}',
+        sail_number="USA-42",
+        boat_name="Scimitar",
+    )
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post(
+            "/api/sessions/synthesize",
+            json={"peer_fingerprint": "fp-boat-b", "peer_co_op_id": "coop-abc"},
+        )
+
+    assert resp.status_code == 201
+    race_id = resp.json()["id"]
+    assert await storage.is_session_shared(race_id, "coop-abc")

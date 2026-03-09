@@ -72,7 +72,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 28
+_CURRENT_VERSION: int = 29
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -649,6 +649,13 @@ _MIGRATIONS: dict[int, str] = {
             timestamp   TEXT NOT NULL,
             boat_fp     TEXT NOT NULL
         );
+    """,
+    29: """
+        -- Peer-attributed synthesized sessions (#238)
+        -- peer_fingerprint: fingerprint of the co-op peer this session represents
+        -- peer_co_op_id: co-op context (used to auto-share on creation)
+        ALTER TABLE races ADD COLUMN peer_fingerprint TEXT;
+        ALTER TABLE races ADD COLUMN peer_co_op_id TEXT;
     """,
 }
 
@@ -1288,6 +1295,8 @@ class Storage:
         session_type: str,
         source: str,
         source_id: str,
+        peer_fingerprint: str | None = None,
+        peer_co_op_id: str | None = None,
     ) -> int:
         """Insert a backfilled race row with provenance metadata. Returns race_id."""
         from datetime import UTC as _UTC
@@ -1298,8 +1307,9 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO races"
             " (name, event, race_num, date, start_utc, end_utc,"
-            "  session_type, source, source_id, imported_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  session_type, source, source_id, imported_at,"
+            "  peer_fingerprint, peer_co_op_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 event,
@@ -1311,6 +1321,8 @@ class Storage:
                 source,
                 source_id,
                 now,
+                peer_fingerprint,
+                peer_co_op_id,
             ),
         )
         await db.commit()
@@ -1568,6 +1580,8 @@ class Storage:
                 f"SELECT r.id AS id, r.session_type AS type, r.name AS name,"
                 f" r.event AS event, r.race_num AS race_num, r.date AS date,"
                 f" r.start_utc AS start_utc, r.end_utc AS end_utc,"
+                f" r.peer_fingerprint AS peer_fingerprint,"
+                f" r.peer_co_op_id AS peer_co_op_id,"
                 f" CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS has_audio,"
                 f" a.id AS audio_session_id,"
                 f" NULL AS parent_race_id, NULL AS parent_race_name,"
@@ -1617,6 +1631,7 @@ class Storage:
                 f" r.race_num AS race_num,"
                 f" COALESCE(r.date, substr(a.start_utc, 1, 10)) AS date,"
                 f" a.start_utc AS start_utc, a.end_utc AS end_utc,"
+                f" NULL AS peer_fingerprint, NULL AS peer_co_op_id,"
                 f" 1 AS has_audio, a.id AS audio_session_id,"
                 f" r.id AS parent_race_id, r.name AS parent_race_name,"
                 f" 0 AS has_track, NULL AS first_video_url,"
@@ -1663,6 +1678,8 @@ class Storage:
                     "start_utc": start_utc.isoformat(),
                     "end_utc": end_utc.isoformat() if end_utc else None,
                     "duration_s": round(duration_s, 1) if duration_s is not None else None,
+                    "peer_fingerprint": row["peer_fingerprint"],
+                    "peer_co_op_id": row["peer_co_op_id"],
                     "has_audio": bool(row["has_audio"]),
                     "audio_session_id": row["audio_session_id"],
                     "parent_race_id": row["parent_race_id"],
@@ -3561,6 +3578,32 @@ class Storage:
         )
         row = await cur.fetchone()
         return dict(row) if row else None
+
+    async def get_co_op_peer_by_fingerprint(self, fingerprint: str) -> dict[str, Any] | None:
+        """Return a peer by fingerprint alone (any co-op). First match if in multiple."""
+        cur = await self._conn().execute(
+            "SELECT id, co_op_id, boat_pub, fingerprint, sail_number,"
+            " boat_name, tailscale_ip, last_seen, membership_json"
+            " FROM co_op_peers WHERE fingerprint = ? LIMIT 1",
+            (fingerprint,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_all_co_op_peers(self) -> list[dict[str, Any]]:
+        """Return all known peers across all co-ops, deduplicated by fingerprint.
+
+        When a boat appears in multiple co-ops, only the first occurrence is returned.
+        Ordered by boat_name.
+        """
+        cur = await self._conn().execute(
+            "SELECT id, co_op_id, boat_pub, fingerprint, sail_number,"
+            " boat_name, tailscale_ip, last_seen, membership_json"
+            " FROM co_op_peers"
+            " GROUP BY fingerprint"
+            " ORDER BY boat_name",
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     # ------------------------------------------------------------------
     # Federation — nonce replay protection
