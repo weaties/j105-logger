@@ -215,6 +215,53 @@ class TestCoOpsAPI:
                 data = resp.json()
                 assert data["name"] == "Test Fleet"
 
+    @pytest.mark.asyncio
+    async def test_create_coop_saves_admin_as_peer(
+        self, storage: Storage, tmp_path: object,
+    ) -> None:
+        """Creating a co-op should save the admin boat as a peer."""
+        from pathlib import Path
+
+        from helmlog.federation import MembershipRecord, init_identity
+        from helmlog.federation import Charter
+        from helmlog.federation import load_identity as _real_load
+
+        identity_dir = Path(str(tmp_path)) / ".helmlog" / "identity"
+        init_identity(
+            identity_dir, sail_number="69", boat_name="Javelina",
+            owner_email="test@example.com",
+        )
+        priv, loaded_card = _real_load(identity_dir)
+
+        mock_charter = Charter(
+            co_op_id="test-coop-id", name="Test Fleet",
+            areas=[], admin_boat_pub=loaded_card.pub_key,
+            admin_boat_fingerprint=loaded_card.fingerprint,
+            created_at="2026-03-08T00:00:00Z",
+        )
+        mock_member = MembershipRecord(
+            co_op_id="test-coop-id", boat_pub=loaded_card.pub_key,
+            sail_number="69", boat_name="Javelina",
+            role="admin", joined_at="2026-03-08T00:00:00Z",
+        )
+
+        with (
+            patch(f"{_FED}.load_identity", return_value=(priv, loaded_card)),
+            patch(f"{_FED}.create_co_op", return_value=mock_charter),
+            patch(f"{_FED}.list_co_op_members", return_value=[mock_member]),
+        ):
+            async with _client(storage) as c:
+                resp = await c.post("/api/federation/co-ops", json={
+                    "name": "Test Fleet",
+                })
+                assert resp.status_code == 201
+
+        # Admin boat should appear as a peer
+        peers = await storage.list_co_op_peers("test-coop-id")
+        assert len(peers) == 1
+        assert peers[0]["boat_name"] == "Javelina"
+        assert peers[0]["fingerprint"] == loaded_card.fingerprint
+
 
 # ---------------------------------------------------------------------------
 # Invite API

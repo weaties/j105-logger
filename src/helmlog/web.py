@@ -3325,6 +3325,14 @@ def create_app(
                 co_op_pub=card.pub_key, membership_json=members[0].to_json(),
                 role="admin", joined_at=members[0].joined_at,
             )
+            # Also save the creating boat as a peer so it appears in the member list
+            await storage.save_co_op_peer(
+                co_op_id=charter.co_op_id, boat_pub=card.pub_key,
+                fingerprint=card.fingerprint,
+                membership_json=members[0].to_json(),
+                sail_number=card.sail_number,
+                boat_name=card.boat_name,
+            )
         await _audit(request, "federation.co_op.create",
                      detail=f"{charter.name} ({charter.co_op_id})", user=_user)
         return JSONResponse(charter.to_dict(), status_code=201)
