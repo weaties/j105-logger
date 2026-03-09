@@ -359,7 +359,7 @@ def create_app(
 
             request.state.user = _MOCK_ADMIN
             return await call_next(request)  # type: ignore[no-any-return]
-        if path in _PUBLIC_PATHS or path.startswith(("/static/",)):
+        if path in _PUBLIC_PATHS or path.startswith(("/static/", "/co-op/")):
             return await call_next(request)  # type: ignore[no-any-return]
         from http.cookies import SimpleCookie
 
