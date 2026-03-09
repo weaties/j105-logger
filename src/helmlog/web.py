@@ -3408,6 +3408,7 @@ def create_app(
             "admin_pub": admin_card.pub_key,
             "admin_fingerprint": admin_card.fingerprint,
             "admin_boat_name": admin_card.boat_name,
+            "admin_sail_number": admin_card.sail_number,
             "admin_tailscale_ip": admin_card.tailscale_ip or "",
             "membership": record.to_dict(),
         }
@@ -3468,10 +3469,12 @@ def create_app(
         # Save the admin as a peer so we can query them
         admin_tailscale_ip = body.get("admin_tailscale_ip", "").strip() or None
         admin_boat_name = body.get("admin_boat_name", "").strip()
+        admin_sail_number = body.get("admin_sail_number", "").strip()
         await storage.save_co_op_peer(
             co_op_id=co_op_id, boat_pub=admin_pub,
             fingerprint=admin_fingerprint,
             membership_json="{}",
+            sail_number=admin_sail_number,
             boat_name=admin_boat_name,
             tailscale_ip=admin_tailscale_ip,
         )
