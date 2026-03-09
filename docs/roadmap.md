@@ -59,8 +59,11 @@ design are complete; Phases 3–5 remain.
       `co_op_audit`, `request_nonces`, and `boat_identity` tables (schema v28);
       signed charter and membership records; revocation support.
 
-- [x] **Session sharing with embargo** — per-session co-op assignment, embargo timestamps,
-      event-name scoping; CLI: `helmlog co-op create/status/invite`.
+- [x] **Session sharing** — per-session co-op share/unshare via session detail page
+      (`POST /api/sessions/{id}/share`); storage, API, and data model complete.
+      ⚠️ Setting an embargo timestamp is supported by the API (`embargo_until` field)
+      but is not yet exposed in the webapp UI — embargo can only be set via the API
+      directly (tracked as a follow-on UI task).
 
 - [x] **Peer API** (`peer_api.py`) — `/peer/identity`, `/peer/sessions`,
       `/peer/sessions/{id}/track`, `/peer/sessions/{id}/results`; data field
@@ -87,9 +90,12 @@ design are complete; Phases 3–5 remain.
       `test_data_license_e2e.py`; Docker compose suite (Layer 3) via
       `tests/integration/docker-compose.yml`.
 
-- [x] **Soft delete / anonymization** — data suppression (hidden but queryable
-      for 30-day grace period), permanent hard delete, "Boat X" anonymization
-      with reversible mapping.
+- [x] **Delete / anonymization** — session hard delete (`DELETE /api/sessions/{id}`);
+      user account anonymization (email replaced, name/avatar cleared, auth sessions
+      purged via `DELETE /api/users/{id}`); diarized transcript speaker anonymization
+      with per-speaker redaction map. ⚠️ The "30-day soft-delete grace period with
+      recoverable suppression" described in earlier designs is not yet implemented —
+      all deletes are currently immediate and irreversible.
 
 - [x] **AIS exclusion** — 23 AIS PGNs and SK paths blocked at ingestion;
       non-member vessel tracking data never stored.
@@ -98,14 +104,22 @@ design are complete; Phases 3–5 remain.
       endpoints); rate limiting + volume-based auto-freeze deter scraping;
       own-boat data export unrestricted.
 
-- [x] **Audio PII deletion** — whole-recording deletion on crew PII request;
-      per-segment editing tracked as future capability.
+- [x] **Audio PII deletion** — whole-recording deletion on crew PII request
+      (`DELETE /api/audio/{id}`). ⚠️ API endpoint is complete but no UI button
+      is currently exposed in the webapp — deletion must be done via the API directly.
+      Per-segment editing is a future capability.
 
-- [x] **Processing offload audit trail** — offload events (what was sent,
-      where, when) logged for PII audit; TLS warning for non-Tailscale URLs.
+- [x] **Processing offload audit trail** — `transcribe.start` action recorded in
+      the audit table when a transcription job is triggered; application log records
+      which URL audio was sent to and how many chars/segments were returned. Warning
+      logged when `TRANSCRIBE_URL` uses plain HTTP (non-localhost) to alert about
+      unencrypted PII in transit.
 
-- [x] **GPS precision control** — configurable decimal places on export;
-      reduced precision (2 dp ≈ 1.1 km) for external API calls.
+- [x] **GPS precision control** — `?gps_precision=N` query parameter on export
+      endpoints (`/api/sessions/{id}/export`) reduces coordinate precision to N
+      decimal places (e.g. 2 dp ≈ 1.1 km resolution). ⚠️ No webapp UI; export
+      must be triggered via the API to use this. The peer API does not
+      currently enforce reduced precision on track data served to co-op members.
 
 - [x] **Auth hardening** — auth required on all data-reading GET endpoints;
       crew+ auth required for audio download/stream/transcript.
