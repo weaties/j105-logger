@@ -3470,6 +3470,32 @@ def create_app(
         if not all([co_op_id, co_op_name, admin_pub]):
             raise HTTPException(422, "Missing required fields in invite bundle")
 
+        # Verify the membership signature before accepting the bundle
+        if isinstance(membership_json, dict) and membership_json.get("admin_sig"):
+            from helmlog.federation import MembershipRecord, verify_membership
+
+            try:
+                m = membership_json
+                record = MembershipRecord(
+                    co_op_id=m.get("co_op_id", ""),
+                    boat_pub=m.get("boat_pub", ""),
+                    sail_number=m.get("sail_number", ""),
+                    boat_name=m.get("boat_name", ""),
+                    role=m.get("role", "member"),
+                    joined_at=m.get("joined_at", ""),
+                    owner_email=m.get("owner_email"),
+                    admin_sig=m.get("admin_sig", ""),
+                )
+                if not verify_membership(admin_pub, record):
+                    raise HTTPException(
+                        422,
+                        "Invite bundle has invalid signature — bundle may be tampered",
+                    )
+            except HTTPException:
+                raise
+            except Exception as exc:
+                raise HTTPException(422, f"Invalid invite bundle: {exc}") from exc
+
         import json as _json
 
         membership_str = (

@@ -13,6 +13,7 @@ from helmlog.federation import (
     fingerprint_from_pub_bytes,
     generate_keypair,
     init_identity,
+    sign_membership,
 )
 from helmlog.web import create_app
 
@@ -41,19 +42,19 @@ class TestJoinEndpoint:
 
     @pytest.mark.asyncio
     async def test_join_success(self, storage: Storage, identity_dir: Path) -> None:
+        from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
         from helmlog.federation import load_identity
 
         _, card = load_identity(identity_dir)
         admin_priv, admin_pub = generate_keypair()
         admin_pub_b64 = _pub_key_to_base64(admin_pub)
-        from cryptography.hazmat.primitives.serialization import (
-            Encoding,
-            PublicFormat,
-        )
-
         admin_fp = fingerprint_from_pub_bytes(
             admin_pub.public_bytes(Encoding.Raw, PublicFormat.Raw),
         )
+
+        # Generate a properly signed membership (matching real invite bundle)
+        membership = sign_membership(admin_priv, co_op_id="fleet1", boat_card=card)
 
         bundle = {
             "co_op_id": "fleet1",
@@ -63,7 +64,7 @@ class TestJoinEndpoint:
             "admin_boat_name": "Admin Boat",
             "admin_sail_number": "1",
             "admin_tailscale_ip": "100.64.0.1",
-            "membership": {"type": "membership", "co_op_id": "fleet1"},
+            "membership": membership.to_dict(),
         }
 
         with patch("helmlog.federation.load_identity", return_value=(None, card)):
@@ -87,6 +88,35 @@ class TestJoinEndpoint:
         assert len(admin_peers) == 1
         assert admin_peers[0]["boat_name"] == "Admin Boat"
         assert admin_peers[0]["tailscale_ip"] == "100.64.0.1"
+
+    @pytest.mark.asyncio
+    async def test_join_rejects_invalid_signature(self, storage: Storage) -> None:
+        """Join with a tampered/unsigned membership should be rejected with 422."""
+        admin_priv, admin_pub = generate_keypair()  # noqa: F841
+        admin_pub_b64 = _pub_key_to_base64(admin_pub)
+
+        bundle = {
+            "co_op_id": "fleet_bad",
+            "co_op_name": "Bad Fleet",
+            "admin_pub": admin_pub_b64,
+            "admin_fingerprint": "somefp",
+            "admin_boat_name": "Admin",
+            "admin_sail_number": "1",
+            "membership": {
+                "type": "membership",
+                "co_op_id": "fleet_bad",
+                "boat_pub": "fakepub==",
+                "sail_number": "99",
+                "boat_name": "Cheat Boat",
+                "role": "member",
+                "joined_at": "2026-01-01T00:00:00+00:00",
+                "admin_sig": "bm90YXZhbGlkc2lnbmF0dXJlYXRhbGw=",  # invalid sig
+            },
+        }
+
+        async with _client(storage) as c:
+            resp = await c.post("/api/federation/join", json=bundle)
+        assert resp.status_code == 422
 
     @pytest.mark.asyncio
     async def test_join_missing_fields(self, storage: Storage) -> None:
