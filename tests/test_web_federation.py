@@ -222,8 +222,7 @@ class TestCoOpsAPI:
         """Creating a co-op should save the admin boat as a peer."""
         from pathlib import Path
 
-        from helmlog.federation import MembershipRecord, init_identity
-        from helmlog.federation import Charter
+        from helmlog.federation import Charter, MembershipRecord, init_identity
         from helmlog.federation import load_identity as _real_load
 
         identity_dir = Path(str(tmp_path)) / ".helmlog" / "identity"

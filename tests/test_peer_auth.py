@@ -6,7 +6,7 @@ import base64
 
 import pytest
 
-from helmlog.federation import generate_keypair, sign_message
+from helmlog.federation import generate_keypair
 from helmlog.peer_auth import (
     HDR_BOAT,
     HDR_NONCE,

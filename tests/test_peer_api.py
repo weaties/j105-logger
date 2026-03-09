@@ -71,10 +71,6 @@ class TestPeerSessions:
         # Admin (this boat)
         admin_priv, admin_pub = generate_keypair()
         admin_pub_b64 = _pub_key_to_base64(admin_pub)
-        admin_fp = fingerprint_from_pub_bytes(
-            admin_pub.public_bytes(Encoding.Raw, PublicFormat.Raw),
-        )
-
         # Peer (remote boat)
         peer_priv, peer_pub = generate_keypair()
         peer_pub_b64 = _pub_key_to_base64(peer_pub)
