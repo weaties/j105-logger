@@ -275,6 +275,6 @@ async function inviteBoat(){
 }
 
 /* ──────────────── Init ──────────────── */
-loadIdentity().then(loadCoops);
+loadIdentity().then(loadCoops).catch(e=>console.error('Federation init error:',e));
 </script>
 {% endblock %}
