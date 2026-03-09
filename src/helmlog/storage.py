@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 28
+_CURRENT_VERSION: int = 29
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -574,6 +574,24 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_deployment_log_started
             ON deployment_log(started_at);
+    """,
+    29: """
+        -- Maneuver detection (#232)
+        CREATE TABLE IF NOT EXISTS maneuvers (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id   INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            type         TEXT    NOT NULL,
+            ts           TEXT    NOT NULL,
+            end_ts       TEXT,
+            duration_sec REAL,
+            loss_kts     REAL,
+            vmg_loss_kts REAL,
+            tws_bin      INTEGER,
+            twa_bin      INTEGER,
+            details      TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_maneuvers_session ON maneuvers(session_id);
+        CREATE INDEX IF NOT EXISTS idx_maneuvers_type    ON maneuvers(type);
     """,
     28: """
         -- Federation Phase 1: identity, co-op membership, session sharing
@@ -2602,6 +2620,52 @@ class Storage:
                     row["session_count"],
                     row["sample_count"],
                     built_at,
+                ),
+            )
+        await db.commit()
+
+    # ------------------------------------------------------------------
+    # Maneuvers
+    # ------------------------------------------------------------------
+
+    async def list_maneuvers_for_session(self, session_id: int) -> list[dict[str, Any]]:
+        """Return all maneuver rows for a session, ordered by ts."""
+        cur = await self._conn().execute(
+            "SELECT id, session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            " vmg_loss_kts, tws_bin, twa_bin, details"
+            " FROM maneuvers WHERE session_id = ? ORDER BY ts",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def replace_maneuvers_for_session(
+        self,
+        session_id: int,
+        maneuvers: list[dict[str, Any]],
+    ) -> None:
+        """Replace all maneuvers for a session atomically."""
+        import json as _json
+
+        db = self._conn()
+        await db.execute("DELETE FROM maneuvers WHERE session_id = ?", (session_id,))
+        for m in maneuvers:
+            await db.execute(
+                "INSERT INTO maneuvers"
+                " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+                "  vmg_loss_kts, tws_bin, twa_bin, details)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    m["type"],
+                    m["ts"],
+                    m.get("end_ts"),
+                    m.get("duration_sec"),
+                    m.get("loss_kts"),
+                    m.get("vmg_loss_kts"),
+                    m.get("tws_bin"),
+                    m.get("twa_bin"),
+                    _json.dumps(m.get("details", {})),
                 ),
             )
         await db.commit()

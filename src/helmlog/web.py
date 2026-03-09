@@ -1630,6 +1630,41 @@ def create_app(
         return JSONResponse({"type": "FeatureCollection", "features": [feature]})
 
     # ------------------------------------------------------------------
+    # /api/sessions/{id}/maneuvers  (maneuver detection, #232)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{session_id}/maneuvers")
+    async def api_session_maneuvers(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return detected maneuvers for a session."""
+        rows = await storage.list_maneuvers_for_session(session_id)
+        return JSONResponse({"session_id": session_id, "maneuvers": rows})
+
+    @app.post("/api/sessions/{session_id}/detect-maneuvers", status_code=200)
+    async def api_detect_maneuvers(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Trigger (or re-trigger) maneuver detection for a session."""
+        from helmlog.maneuver_detector import ManeuverConfig, detect_maneuvers
+
+        db = storage._conn()
+        cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        maneuvers = await detect_maneuvers(storage, session_id, ManeuverConfig())
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "detected": len(maneuvers),
+                "tacks": sum(1 for m in maneuvers if m.type == "tack"),
+                "gybes": sum(1 for m in maneuvers if m.type == "gybe"),
+            }
+        )
+
+    # ------------------------------------------------------------------
     # /api/sessions/{id}  (single session detail)
     # ------------------------------------------------------------------
 
