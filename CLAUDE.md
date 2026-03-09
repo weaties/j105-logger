@@ -16,7 +16,7 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v26) |
+| Storage | SQLite via `aiosqlite` (schema v28) |
 | Web interface | `fastapi` + `uvicorn` + `jinja2` templates |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
@@ -49,14 +49,19 @@ helmlog/
 │       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
 │       ├── cameras.py      # Insta360 X4 camera control via OSC HTTP API
 │       ├── can_reader.py   # CAN bus interface — legacy direct-CAN path only
+│       ├── deploy.py       # Self-update / deploy management logic
 │       ├── email.py        # SMTP email sending (welcome, new-device alerts)
 │       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
 │       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
+│       ├── federation.py   # Boat identity (Ed25519), co-op membership, signing
 │       ├── gaigps.py       # GaiGPS integration
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
 │       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
+│       ├── peer_api.py     # FastAPI router for inter-boat peer API endpoints
+│       ├── peer_auth.py    # Ed25519 request signing and verification middleware
+│       ├── peer_client.py  # Async HTTP client for querying peer boats
 │       ├── pipeline.py     # Video processing pipeline orchestration
 │       ├── polar.py        # Polar performance baseline builder
 │       ├── race_classifier.py  # Automated race/practice session classification
@@ -118,6 +123,11 @@ uv run ruff check --fix . && uv run ruff format .  # auto-fix
 helmlog run             # start the logger
 helmlog status          # show database row counts
 helmlog list-cameras    # show configured cameras and ping status
+helmlog identity init   # generate Ed25519 keypair + boat card
+helmlog identity show   # display current boat identity and fingerprint
+helmlog co-op create    # create a new co-op with this boat as moderator
+helmlog co-op status    # show co-op membership and peers
+helmlog co-op invite    # generate an invite bundle for a new boat
 helmlog --help          # full subcommand list
 ```
 
