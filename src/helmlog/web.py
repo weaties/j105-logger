@@ -76,6 +76,19 @@ def _get_git_info() -> str:
 
 
 _GIT_INFO: str = _get_git_info()
+# SHA the running process was started with — used to detect restart-needed
+_STARTUP_SHA: str = ""
+try:
+    import subprocess as _sp
+
+    _STARTUP_SHA = _sp.check_output(  # noqa: S603, S607
+        ["git", "rev-parse", "HEAD"],
+        cwd=str(Path(__file__).resolve().parents[2]),
+        text=True, stderr=_sp.DEVNULL,
+    ).strip()
+    del _sp
+except Exception:  # noqa: BLE001
+    pass
 
 # ---------------------------------------------------------------------------
 # Jinja2 templates + static files
@@ -3074,9 +3087,13 @@ def create_app(
         await fetch_latest(config)  # update origin refs before comparing
         behind = commits_behind(config)
         last = await storage.last_deployment()
+        # Detect if on-disk code differs from what the running process loaded
+        restart_needed = bool(
+            _STARTUP_SHA and running["sha"] and running["sha"] != _STARTUP_SHA
+        )
         return JSONResponse(
             {
-                "running": running,
+                "running": {**running, "startup_sha": _STARTUP_SHA},
                 "branch": config.branch,
                 "mode": config.mode,
                 "poll_interval": config.poll_interval,
@@ -3085,7 +3102,8 @@ def create_app(
                     "end": config.window_end,
                 },
                 "commits_behind": behind,
-                "update_available": behind > 0,
+                "update_available": behind > 0 or restart_needed,
+                "restart_needed": restart_needed,
                 "last_deploy": last,
             }
         )
