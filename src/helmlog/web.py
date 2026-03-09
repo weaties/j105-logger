@@ -3400,4 +3400,65 @@ def create_app(
             "membership": record.to_dict(),
         }, status_code=201)
 
+    # ── Session sharing ──────────────────────────────────────────────────
+
+    @app.get("/api/sessions/{session_id}/sharing")
+    async def api_session_sharing(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        memberships = await storage.list_co_op_memberships()
+        sharing = await storage.get_session_sharing(session_id)
+        shared_ids = {s["co_op_id"] for s in sharing}
+        return JSONResponse({
+            "sharing": sharing,
+            "co_ops": [
+                {"co_op_id": m["co_op_id"], "co_op_name": m["co_op_name"],
+                 "shared": m["co_op_id"] in shared_ids}
+                for m in memberships if m["status"] == "active"
+            ],
+        })
+
+    @app.post("/api/sessions/{session_id}/share", status_code=201)
+    async def api_session_share(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        body = await request.json()
+        co_op_id = body.get("co_op_id", "").strip()
+        if not co_op_id:
+            raise HTTPException(422, "co_op_id is required")
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership:
+            raise HTTPException(404, "Not a member of this co-op")
+        embargo_until = body.get("embargo_until") or None
+        await storage.share_session(
+            session_id, co_op_id,
+            user_id=_user.get("id"), embargo_until=embargo_until,
+        )
+        await _audit(
+            request, "federation.session.share",
+            detail=f"session {session_id} → {membership['co_op_name']}",
+            user=_user,
+        )
+        return JSONResponse({"status": "shared", "co_op_id": co_op_id}, status_code=201)
+
+    @app.delete("/api/sessions/{session_id}/share/{co_op_id}")
+    async def api_session_unshare(
+        request: Request,
+        session_id: int,
+        co_op_id: str,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        removed = await storage.unshare_session(session_id, co_op_id)
+        if not removed:
+            raise HTTPException(404, "Session was not shared with this co-op")
+        await _audit(
+            request, "federation.session.unshare",
+            detail=f"session {session_id} ✕ {co_op_id}",
+            user=_user,
+        )
+        return JSONResponse({"status": "unshared", "co_op_id": co_op_id})
+
     return app

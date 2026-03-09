@@ -383,3 +383,87 @@ class TestInviteAPI:
         # Verify membership file was written
         member_file = co_op_dir / f"{invitee_fp}.json"
         assert member_file.exists()
+
+
+# ---------------------------------------------------------------------------
+# Session Sharing API
+# ---------------------------------------------------------------------------
+
+
+class TestSessionSharingAPI:
+    @pytest.fixture
+    async def session_id(self, storage: Storage) -> int:
+        db = storage._conn()
+        cur = await db.execute(
+            "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            ("Test Race", "CYC Wed", 1, "2026-03-08",
+             "2026-03-08T12:00:00Z", "race"),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+    @pytest.mark.asyncio
+    async def test_get_sharing_empty(
+        self, storage: Storage, session_id: int,
+    ) -> None:
+        async with _client(storage) as c:
+            resp = await c.get(f"/api/sessions/{session_id}/sharing")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["sharing"] == []
+            assert data["co_ops"] == []
+
+    @pytest.mark.asyncio
+    async def test_share_and_list(
+        self, storage: Storage, session_id: int,
+    ) -> None:
+        await storage.save_co_op_membership(
+            co_op_id="coop1", co_op_name="Fleet A",
+            co_op_pub="pub1", membership_json="{}",
+            role="admin",
+        )
+        async with _client(storage) as c:
+            # Share
+            resp = await c.post(
+                f"/api/sessions/{session_id}/share",
+                json={"co_op_id": "coop1"},
+            )
+            assert resp.status_code == 201
+
+            # List — should show shared
+            resp = await c.get(f"/api/sessions/{session_id}/sharing")
+            data = resp.json()
+            assert len(data["sharing"]) == 1
+            assert data["co_ops"][0]["shared"] is True
+
+    @pytest.mark.asyncio
+    async def test_unshare(
+        self, storage: Storage, session_id: int,
+    ) -> None:
+        await storage.save_co_op_membership(
+            co_op_id="coop1", co_op_name="Fleet A",
+            co_op_pub="pub1", membership_json="{}",
+            role="admin",
+        )
+        await storage.share_session(session_id, "coop1")
+        async with _client(storage) as c:
+            resp = await c.delete(
+                f"/api/sessions/{session_id}/share/coop1",
+            )
+            assert resp.status_code == 200
+
+            # Verify unshared
+            resp = await c.get(f"/api/sessions/{session_id}/sharing")
+            assert resp.json()["sharing"] == []
+
+    @pytest.mark.asyncio
+    async def test_share_not_member(
+        self, storage: Storage, session_id: int,
+    ) -> None:
+        async with _client(storage) as c:
+            resp = await c.post(
+                f"/api/sessions/{session_id}/share",
+                json={"co_op_id": "nonexistent"},
+            )
+            assert resp.status_code == 404
