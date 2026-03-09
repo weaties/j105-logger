@@ -82,6 +82,18 @@ select.field{appearance:auto}
   <div id="invite-status" class="status"></div>
 </div>
 
+<!-- ═══════════════════ Join Co-op ═══════════════════ -->
+<div class="card" id="join-card" style="display:none">
+  <div class="label">Join a Co-op</div>
+  <p style="font-size:.8rem;color:#8892a4;margin:0 0 8px">Paste the invite bundle JSON that the co-op admin sent you.</p>
+  <div class="form-grid">
+    <textarea id="join-bundle-json" class="field"
+      placeholder='Paste the invite bundle JSON here...'></textarea>
+  </div>
+  <button class="btn-add" onclick="joinCoop()">Join Co-op</button>
+  <div id="join-status" class="status"></div>
+</div>
+
 <!-- ═══════════════════ Peer Sessions ═══════════════════ -->
 <div class="card" id="peer-sessions-card" style="display:none">
   <div class="label">Co-op Peer Sessions</div>
@@ -127,6 +139,7 @@ async function loadIdentity(){
         <button class="btn-sm btn-copy" onclick="copyBoatCard()">Copy boat card JSON</button>
       </div>`;
     document.getElementById('create-coop-card').style.display='';
+    document.getElementById('join-card').style.display='';
   }catch(e){
     el.innerHTML='<div class="empty" style="color:#ef4444">Failed to load identity: '+esc(e.message)+'</div>';
   }
@@ -273,13 +286,53 @@ async function inviteBoat(){
   });
   if(r.ok){
     const d=await r.json();
-    st.textContent='Invited '+esc(d.boat_name||'boat')+' successfully!';
     st.className='status ok';
+    if(d.invite_bundle){
+      st.innerHTML='Invited '+esc(d.boat_name||'boat')+' successfully!<br>'
+        +'<strong>Copy the invite bundle below and send it to them so they can join:</strong>';
+      const ta=document.createElement('textarea');
+      ta.className='field';ta.style.marginTop='8px';ta.readOnly=true;
+      ta.value=JSON.stringify(d.invite_bundle,null,2);
+      st.appendChild(ta);
+      const btn2=document.createElement('button');
+      btn2.className='btn-sm btn-copy';btn2.style.marginTop='6px';
+      btn2.textContent='Copy invite bundle';
+      btn2.onclick=()=>{navigator.clipboard.writeText(ta.value).then(()=>btn2.textContent='Copied!').catch(()=>{ta.select();document.execCommand('copy');btn2.textContent='Copied!'})};
+      st.appendChild(btn2);
+    }else{
+      st.textContent='Invited '+esc(d.boat_name||'boat')+' successfully!';
+    }
     document.getElementById('invite-card-json').value='';
-    setTimeout(()=>{st.className='status';loadCoops()},1200);
+    document.getElementById('invite-tailscale-ip').value='';
+    setTimeout(()=>{loadCoops()},1200);
   }else{
     const d=await r.json().catch(()=>({}));
     st.textContent=d.detail||'Invitation failed';st.className='status err';
+  }
+}
+
+/* ──────────────── Join Co-op ──────────────── */
+async function joinCoop(){
+  const bundleJson=document.getElementById('join-bundle-json').value.trim();
+  const st=document.getElementById('join-status');
+  if(!bundleJson){st.textContent='Paste the invite bundle JSON';st.className='status err';return}
+  let parsed;
+  try{parsed=JSON.parse(bundleJson)}catch(e){
+    st.textContent='Invalid JSON: '+e.message;st.className='status err';return;
+  }
+  const r=await fetch('/api/federation/join',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(parsed)
+  });
+  if(r.ok){
+    const d=await r.json();
+    st.textContent='Joined '+esc(d.co_op_name||'co-op')+' successfully!';
+    st.className='status ok';
+    document.getElementById('join-bundle-json').value='';
+    setTimeout(()=>{st.className='status';loadCoops().then(loadPeerSessions)},800);
+  }else{
+    const d=await r.json().catch(()=>({}));
+    st.textContent=d.detail||'Failed to join';st.className='status err';
   }
 }
 

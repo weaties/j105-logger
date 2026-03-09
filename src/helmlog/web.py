@@ -3400,11 +3400,75 @@ def create_app(
             detail=f"{invitee.boat_name} ({invitee.fingerprint}) → {co_op_id}",
             user=_user,
         )
+        # Build invite bundle — the invitee imports this to join
+        membership = await storage.get_co_op_membership(co_op_id)
+        invite_bundle = {
+            "co_op_id": co_op_id,
+            "co_op_name": membership["co_op_name"] if membership else "",
+            "admin_pub": admin_card.pub_key,
+            "admin_fingerprint": admin_card.fingerprint,
+            "admin_boat_name": admin_card.boat_name,
+            "admin_tailscale_ip": body.get("admin_tailscale_ip", ""),
+            "membership": record.to_dict(),
+        }
         return JSONResponse({
             "boat_name": invitee.boat_name,
             "fingerprint": invitee.fingerprint,
             "membership": record.to_dict(),
+            "invite_bundle": invite_bundle,
         }, status_code=201)
+
+    @app.post("/api/federation/join", status_code=201)
+    async def api_federation_join(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Join a co-op using an invite bundle from the admin boat."""
+        body = await request.json()
+        co_op_id = body.get("co_op_id", "").strip()
+        co_op_name = body.get("co_op_name", "").strip()
+        admin_pub = body.get("admin_pub", "").strip()
+        admin_fingerprint = body.get("admin_fingerprint", "").strip()
+        membership_json = body.get("membership")
+
+        if not all([co_op_id, co_op_name, admin_pub]):
+            raise HTTPException(422, "Missing required fields in invite bundle")
+
+        import json as _json
+
+        membership_str = (
+            _json.dumps(membership_json)
+            if isinstance(membership_json, dict)
+            else str(membership_json or "{}")
+        )
+
+        # Save co-op membership (this boat is a member, not admin)
+        await storage.save_co_op_membership(
+            co_op_id=co_op_id, co_op_name=co_op_name,
+            co_op_pub=admin_pub, membership_json=membership_str,
+            role="member",
+        )
+
+        # Save the admin as a peer so we can query them
+        admin_tailscale_ip = body.get("admin_tailscale_ip", "").strip() or None
+        admin_boat_name = body.get("admin_boat_name", "").strip()
+        await storage.save_co_op_peer(
+            co_op_id=co_op_id, boat_pub=admin_pub,
+            fingerprint=admin_fingerprint,
+            membership_json="{}",
+            boat_name=admin_boat_name,
+            tailscale_ip=admin_tailscale_ip,
+        )
+
+        await _audit(
+            request, "federation.join",
+            detail=f"Joined {co_op_name} ({co_op_id})",
+            user=_user,
+        )
+        return JSONResponse(
+            {"status": "joined", "co_op_id": co_op_id, "co_op_name": co_op_name},
+            status_code=201,
+        )
 
     # ── Session sharing ──────────────────────────────────────────────────
 
