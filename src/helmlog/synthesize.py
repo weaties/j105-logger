@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from helmlog.courses import CourseLeg
 
-from helmlog.courses import is_in_water
+from helmlog.courses import _BBOX_E, _BBOX_N, _BBOX_S, _BBOX_W, is_in_water
 
 # ---------------------------------------------------------------------------
 # J/105 polar performance table
@@ -268,6 +268,42 @@ def _water_at_stored_precision(lat: float, lon: float) -> bool:
     return is_in_water(round(lat, _POS_DECIMALS), round(lon, _POS_DECIMALS))
 
 
+def _segment_crosses_land(lat1: float, lon1: float, lat2: float, lon2: float) -> bool:
+    """Return True if the straight-line segment between two points crosses land.
+
+    Both endpoints may be in water, but the line between them could clip a
+    peninsula or island.  Checks intermediate points along the segment.
+    """
+    # Quick check: if the step is tiny (<~50m), endpoint check is sufficient.
+    # At this scale, both points in water means the segment can't meaningfully
+    # cross land (OSM coastline data is simplified to ~30m tolerance).
+    dlat = abs(lat2 - lat1)
+    dlon = abs(lon2 - lon1)
+    if dlat < 0.0005 and dlon < 0.0005:
+        return False
+    # Sample intermediate points — one every ~30m
+    steps = max(3, int(max(dlat, dlon) / 0.0003))
+    for i in range(1, steps):
+        frac = i / steps
+        mid_lat = lat1 + frac * (lat2 - lat1)
+        mid_lon = lon1 + frac * (lon2 - lon1)
+        if not is_in_water(mid_lat, mid_lon):
+            return True
+    return False
+
+
+def _clamp_to_bbox(lat: float, lon: float) -> tuple[float, float]:
+    """Clamp a position to stay inside the coastline data bounding box.
+
+    Leaves a small margin so the point isn't right on the edge where
+    is_in_water returns False.
+    """
+    margin = 0.002  # ~200m margin inside the bbox
+    lat = max(_BBOX_S + margin, min(_BBOX_N - margin, lat))
+    lon = max(_BBOX_W + margin, min(_BBOX_E - margin, lon))
+    return lat, lon
+
+
 def simulate(config: SynthConfig) -> list[SynthRow]:
     """Simulate a full race, returning 1 Hz data rows.
 
@@ -310,6 +346,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
         on_stbd = leg_idx % 2 == 0
         # Record initial bearing to mark for overshoot detection
         leg_initial_bearing = _bearing(lat, lon, leg.target.lat, leg.target.lon)
+        reached_mark = False
 
         while True:
             t = config.start_time + timedelta(seconds=elapsed)
@@ -418,7 +455,18 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
             new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
 
-            if not _water_at_stored_precision(new_lat, new_lon):
+            # Clamp to bounding box to prevent drifting outside coastline data
+            new_lat, new_lon = _clamp_to_bbox(new_lat, new_lon)
+
+            def _position_ok(
+                nlat: float, nlon: float, cur_lat: float = lat, cur_lon: float = lon
+            ) -> bool:
+                """Check endpoint is in water AND segment doesn't cross land."""
+                if not _water_at_stored_precision(nlat, nlon):
+                    return False
+                return not _segment_crosses_land(cur_lat, cur_lon, nlat, nlon)
+
+            if not _position_ok(new_lat, new_lon):
                 # About to sail onto land — force immediate tack away
                 on_stbd = not on_stbd
                 twa_target = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -430,7 +478,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 hdg_r = math.radians(heading)
                 new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
                 new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
-                if not _water_at_stored_precision(new_lat, new_lon):
+                new_lat, new_lon = _clamp_to_bbox(new_lat, new_lon)
+                if not _position_ok(new_lat, new_lon):
                     # Both tacks hit land — scan headings to find the best
                     # escape route toward the mark
                     brg_mark = _bearing(lat, lon, leg.target.lat, leg.target.lon)
@@ -440,7 +489,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                         pr = math.radians(probe)
                         tl = lat + spd_deg_s * math.cos(pr) * dt
                         tn = lon + spd_deg_s * math.sin(pr) * dt / math.cos(math.radians(lat))
-                        if _water_at_stored_precision(tl, tn):
+                        tl, tn = _clamp_to_bbox(tl, tn)
+                        if _position_ok(tl, tn):
                             diff = abs(((probe - brg_mark + 180) % 360) - 180)
                             if diff < best_diff:
                                 best_diff = diff
@@ -452,6 +502,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                         new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(
                             math.radians(lat)
                         )
+                        new_lat, new_lon = _clamp_to_bbox(new_lat, new_lon)
                     else:
                         new_lat, new_lon = lat, lon
 
@@ -486,19 +537,31 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             elapsed += dt
 
             if dist < 0.08:
+                reached_mark = True
                 break
             # Overshoot detection: if the bearing to the mark has swung more than
             # 90 deg from the initial approach bearing, we've sailed past it.
             brg_to_mark = _bearing(lat, lon, leg.target.lat, leg.target.lon)
             brg_diff = abs(((brg_to_mark - leg_initial_bearing + 180) % 360) - 180)
             if brg_diff > 90:
+                reached_mark = True
                 break
             if elapsed > 7200:
+                reached_mark = False
                 break
 
-        # Snap to mark so every lap rounds at the exact same geographic point
-        if _water_at_stored_precision(leg.target.lat, leg.target.lon):
+        # Only snap to mark if we actually reached it — don't teleport on timeout
+        if (
+            reached_mark
+            and _water_at_stored_precision(leg.target.lat, leg.target.lon)
+            and not _segment_crosses_land(lat, lon, leg.target.lat, leg.target.lon)
+        ):
             lat, lon = leg.target.lat, leg.target.lon
+
+        # If the leg timed out, abort the race — remaining legs would produce
+        # teleports and unrealistic tracks
+        if not reached_mark:
+            break
 
         # For the last leg, append a final row at the finish mark position
         # so the track ends exactly at the finish line (near the start).
@@ -556,7 +619,10 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 spd_deg_s = bsp / 3600.0 / 60.0
                 new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
                 new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
-                if _water_at_stored_precision(new_lat, new_lon):
+                new_lat, new_lon = _clamp_to_bbox(new_lat, new_lon)
+                if _water_at_stored_precision(new_lat, new_lon) and not _segment_crosses_land(
+                    lat, lon, new_lat, new_lon
+                ):
                     lat, lon = new_lat, new_lon
 
                 twa_actual = (twd - heading + 360) % 360
