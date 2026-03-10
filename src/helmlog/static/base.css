@@ -272,6 +272,45 @@ h1 {
   color: #c084fc;
 }
 
+.badge-synthesized {
+  background: #422006;
+  color: #fbbf24;
+}
+
+.badge-peer {
+  background: #1a3048;
+  color: #67c3f3;
+}
+
+/* --------------------------------------------------------------------------
+   Buttons — Synthesize
+   -------------------------------------------------------------------------- */
+
+.btn-synthesize {
+  background: #422006;
+  color: #fbbf24;
+  border: 1px solid #d97706;
+}
+.btn-synthesize:active {
+  background: #78350f;
+}
+
+/* --------------------------------------------------------------------------
+   Synth Map
+   -------------------------------------------------------------------------- */
+
+.synth-map {
+  height: 350px;
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+
+.synth-warning {
+  color: #fbbf24;
+  border-left: 3px solid #f59e0b;
+  padding-left: 8px;
+}
+
 /* --------------------------------------------------------------------------
    Form Fields
    -------------------------------------------------------------------------- */
