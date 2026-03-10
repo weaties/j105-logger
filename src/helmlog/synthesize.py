@@ -328,10 +328,24 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 port_off = abs(((brg - port_hdg + 180) % 360) - 180)
                 best_stbd = stbd_off <= port_off
 
+                # Layline overstand check — force tack when the boat
+                # reaches the layline so it doesn't overstand by more
+                # than ~4 boat lengths (J/105 LOA ≈ 35 ft ≈ 0.006 nm).
+                _MAX_OVERSTAND_NM = 0.023  # 4 × 35 ft
+                force_tack = False
+                if leg.upwind and dist > 0.08 and best_stbd != on_stbd:
+                    # other_off = angle from mark bearing to the tack
+                    # heading we'd switch to.  When small, the mark is
+                    # nearly fetchable on the other tack → at the layline.
+                    other_off = port_off if on_stbd else stbd_off
+                    overstand_nm = dist * math.sin(math.radians(min(other_off, 90)))
+                    if overstand_nm < _MAX_OVERSTAND_NM:
+                        force_tack = True
+
                 # When far from mark, allow staying on the non-optimal tack
                 # for variety (simulates tactical choices), but tack to the
-                # favoured side when the timer fires.
-                if dist < 0.15:
+                # favoured side when the timer fires or at the layline.
+                if dist < 0.15 or force_tack:
                     on_stbd = best_stbd
 
                 twa_target = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -340,7 +354,21 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 bsp = max(2.0, bsp)
 
                 tack_timer += dt
-                if tack_timer >= next_tack and not in_maneuver and dist >= 0.15:
+                if force_tack and not in_maneuver:
+                    # At the layline — initiate tack maneuver
+                    new_twa = opt_twa if on_stbd else (360.0 - opt_twa) % 360
+                    new_heading = (twd - new_twa + 360) % 360
+
+                    in_maneuver = True
+                    man_elapsed = 0.0
+                    man_start_hdg = heading
+                    man_target_hdg = new_heading
+                    man_start_bsp = bsp
+                    man_is_tack = True
+                    man_duration = rng.uniform(8, 12)
+                    tack_timer = 0.0
+                    next_tack = rng.uniform(120, 300)
+                elif tack_timer >= next_tack and not in_maneuver and dist >= 0.15:
                     # Tack to the side with better VMG toward the mark
                     want_stbd = best_stbd
                     if want_stbd == on_stbd:
