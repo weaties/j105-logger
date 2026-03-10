@@ -282,6 +282,8 @@ info "apt cleaned up and systemd reloaded."
 
 step "Resetting git repo to origin/main..."
 cd "$PROJECT_DIR"
+# Remove __pycache__ dirs that may be owned by the helmlog service account
+sudo find "$PROJECT_DIR" -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 git fetch origin
 git checkout main 2>/dev/null || git checkout -b main origin/main
 git reset --hard origin/main
