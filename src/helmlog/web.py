@@ -1643,7 +1643,11 @@ def create_app(
         raw_overrides = body.get("mark_overrides")
         mark_overrides: dict[str, tuple[float, float]] | None = None
         if isinstance(raw_overrides, dict):
-            mark_overrides = {k: (float(v["lat"]), float(v["lon"])) for k, v in raw_overrides.items() if isinstance(v, dict) and "lat" in v and "lon" in v}
+            mark_overrides = {
+                k: (float(v["lat"]), float(v["lon"]))
+                for k, v in raw_overrides.items()
+                if isinstance(v, dict) and "lat" in v and "lon" in v
+            }
 
         if course_type == "windward_leeward":
             legs = build_wl_course(start_lat, start_lon, wind_dir, leg_nm, laps, mark_overrides)

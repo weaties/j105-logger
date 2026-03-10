@@ -290,9 +290,7 @@ class TestLaylineOverstand:
 
         # 8 boat lengths = 8 * 35ft * 0.000165nm/ft ≈ 0.046 nm
         max_bl = max_overstand_nm / 0.006
-        assert max_bl < 8, (
-            f"Wind {wind_dir}°: max overstand {max_bl:.1f} BL (> 8)"
-        )
+        assert max_bl < 8, f"Wind {wind_dir}°: max overstand {max_bl:.1f} BL (> 8)"
 
 
 class TestLandAvoidance:
