@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 28
+_CURRENT_VERSION: int = 29
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -648,6 +648,10 @@ _MIGRATIONS: dict[int, str] = {
             timestamp   TEXT NOT NULL,
             boat_fp     TEXT NOT NULL
         );
+    """,
+    29: """
+        ALTER TABLE races ADD COLUMN peer_fingerprint TEXT;
+        ALTER TABLE races ADD COLUMN peer_co_op_id TEXT;
     """,
 }
 
@@ -1287,6 +1291,8 @@ class Storage:
         session_type: str,
         source: str,
         source_id: str,
+        peer_fingerprint: str | None = None,
+        peer_co_op_id: str | None = None,
     ) -> int:
         """Insert a backfilled race row with provenance metadata. Returns race_id."""
         from datetime import UTC as _UTC
@@ -1297,8 +1303,9 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO races"
             " (name, event, race_num, date, start_utc, end_utc,"
-            "  session_type, source, source_id, imported_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  session_type, source, source_id, imported_at,"
+            "  peer_fingerprint, peer_co_op_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 name,
                 event,
@@ -1310,6 +1317,8 @@ class Storage:
                 source,
                 source_id,
                 now,
+                peer_fingerprint,
+                peer_co_op_id,
             ),
         )
         await db.commit()
@@ -1317,6 +1326,62 @@ class Storage:
         assert race_id is not None
         logger.info("Imported race {} (source={}, source_id={})", race_id, source, source_id)
         return race_id
+
+    async def import_synthesized_data(self, rows: list[Any]) -> int:
+        """Bulk-insert synthesized instrument data from SynthRow objects.
+
+        Writes to: positions, headings, speeds, cogsog, depths, winds
+        (both true and apparent). Returns the number of rows written.
+        """
+        db = self._conn()
+        src_gps = 3  # synthetic GPS source address
+        src_inst = 7  # synthetic instrument source address
+
+        pos_rows = [(r.ts.isoformat(), src_gps, r.lat, r.lon) for r in rows]
+        hdg_rows = [(r.ts.isoformat(), src_inst, r.heading, None, None) for r in rows]
+        spd_rows = [(r.ts.isoformat(), src_inst, r.bsp) for r in rows]
+        cs_rows = [(r.ts.isoformat(), src_gps, r.cog, r.sog) for r in rows]
+        dep_rows = [(r.ts.isoformat(), src_inst, r.depth, None) for r in rows]
+        # True wind (reference=0 = boat-referenced TWA)
+        tw_rows = [(r.ts.isoformat(), src_inst, r.tws, r.twa, 0) for r in rows]
+        # Apparent wind (reference=2)
+        aw_rows = [(r.ts.isoformat(), src_inst, r.aws, r.awa, 2) for r in rows]
+
+        await db.executemany(
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+            " VALUES (?, ?, ?, ?)",
+            pos_rows,
+        )
+        await db.executemany(
+            "INSERT INTO headings (ts, source_addr, heading_deg, deviation_deg, variation_deg)"
+            " VALUES (?, ?, ?, ?, ?)",
+            hdg_rows,
+        )
+        await db.executemany(
+            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            spd_rows,
+        )
+        await db.executemany(
+            "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
+            cs_rows,
+        )
+        await db.executemany(
+            "INSERT INTO depths (ts, source_addr, depth_m, offset_m) VALUES (?, ?, ?, ?)",
+            dep_rows,
+        )
+        await db.executemany(
+            "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+            " VALUES (?, ?, ?, ?, ?)",
+            tw_rows,
+        )
+        await db.executemany(
+            "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+            " VALUES (?, ?, ?, ?, ?)",
+            aw_rows,
+        )
+        await db.commit()
+        logger.info("Imported {} synthesized data points", len(rows))
+        return len(rows)
 
     async def import_track_points(
         self,
@@ -1486,7 +1551,7 @@ class Storage:
         """
         db = self._conn()
 
-        include_races = session_type in (None, "race", "practice")
+        include_races = session_type in (None, "race", "practice", "synthesized")
         include_debriefs = session_type in (None, "debrief")
 
         parts: list[str] = []
@@ -1495,11 +1560,11 @@ class Storage:
         if include_races:
             race_where: list[str] = []
             race_params: list[Any] = []
-            if session_type in ("race", "practice"):
+            if session_type in ("race", "practice", "synthesized"):
                 race_where.append("r.session_type = ?")
                 race_params.append(session_type)
             else:
-                race_where.append("r.session_type IN ('race', 'practice')")
+                race_where.append("r.session_type IN ('race', 'practice', 'synthesized')")
             if q:
                 race_where.append("(r.name LIKE ? OR r.event LIKE ?)")
                 like = f"%{q}%"

@@ -1,0 +1,79 @@
+"""Tests for courses.py — CYC marks and course building."""
+
+from __future__ import annotations
+
+import pytest
+
+from helmlog.courses import (
+    CYC_MARKS,
+    CourseLeg,
+    build_custom_course,
+    build_triangle_course,
+    build_wl_course,
+    compute_buoy_marks,
+)
+
+
+class TestCYCMarks:
+    def test_all_marks_present(self) -> None:
+        expected = {"D", "E", "H", "I", "J", "K", "L", "M", "N", "P", "Q", "R", "T", "U", "V"}
+        assert set(CYC_MARKS.keys()) == expected
+
+    def test_mark_coordinates_in_puget_sound(self) -> None:
+        for key, m in CYC_MARKS.items():
+            assert 47.5 < m.lat < 47.8, f"Mark {key} lat out of range: {m.lat}"
+            assert -122.6 < m.lon < -122.3, f"Mark {key} lon out of range: {m.lon}"
+
+
+class TestComputeBuoyMarks:
+    def test_returns_all_six_marks(self) -> None:
+        marks = compute_buoy_marks(47.63, -122.40, 0.0)
+        assert set(marks.keys()) == {"S", "A", "O", "G", "X", "F"}
+
+    def test_finish_at_rc(self) -> None:
+        marks = compute_buoy_marks(47.63, -122.40, 180.0)
+        assert marks["F"].lat == 47.63
+        assert marks["F"].lon == -122.40
+
+    def test_windward_mark_upwind(self) -> None:
+        marks = compute_buoy_marks(47.63, -122.40, 0.0, 1.0)
+        # Wind from north: A should be north of RC
+        assert marks["A"].lat > 47.63
+
+
+class TestBuildWLCourse:
+    def test_two_laps_four_legs(self) -> None:
+        legs = build_wl_course(47.63, -122.40, 0.0, laps=2)
+        assert len(legs) == 4
+        assert all(isinstance(leg, CourseLeg) for leg in legs)
+
+    def test_alternating_upwind_downwind(self) -> None:
+        legs = build_wl_course(47.63, -122.40, 0.0, laps=2)
+        assert legs[0].upwind is True
+        assert legs[1].upwind is False
+        assert legs[2].upwind is True
+        assert legs[3].upwind is False
+
+
+class TestBuildTriangleCourse:
+    def test_three_legs(self) -> None:
+        legs = build_triangle_course(47.63, -122.40, 0.0)
+        assert len(legs) == 3
+
+
+class TestBuildCustomCourse:
+    def test_valid_cyc_sequence(self) -> None:
+        legs = build_custom_course("S-K-D-I-F", 47.63, -122.40, 0.0)
+        assert len(legs) == 4
+
+    def test_unknown_mark_raises(self) -> None:
+        with pytest.raises(ValueError, match="Unknown mark"):
+            build_custom_course("S-Z-F", 47.63, -122.40, 0.0)
+
+    def test_too_few_marks_raises(self) -> None:
+        with pytest.raises(ValueError, match="at least 2 marks"):
+            build_custom_course("S", 47.63, -122.40, 0.0)
+
+    def test_mixed_buoy_and_cyc(self) -> None:
+        legs = build_custom_course("S-A-K-F", 47.63, -122.40, 0.0)
+        assert len(legs) == 3
