@@ -44,7 +44,7 @@ def _get_git_info() -> str:
 
     try:
         _repo = str(Path(__file__).resolve().parents[2])
-        _git = ["git", "-c", f"safe.directory={_repo}"]
+        _git = ["git", "-c", f"safe.directory={_repo}", "--no-optional-locks"]
 
         def _run(args: list[str]) -> str:
             return subprocess.check_output(
@@ -1470,6 +1470,8 @@ def create_app(
         )
 
         rows = await asyncio.to_thread(simulate, config)
+        if not rows:
+            raise HTTPException(status_code=500, detail="Simulation produced no data points")
 
         today = local_today()
         date_str = today.isoformat()

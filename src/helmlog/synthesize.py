@@ -293,6 +293,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
         next_tack = rng.uniform(150, 300)
         in_maneuver = False
         on_stbd = leg_idx % 2 == 0
+        # Record initial bearing to mark for overshoot detection
+        leg_initial_bearing = _bearing(lat, lon, leg.target.lat, leg.target.lon)
 
         while True:
             t = config.start_time + timedelta(seconds=elapsed)
@@ -380,10 +382,11 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
 
             if dist < 0.08:
                 break
-            # Overshoot detection
-            if leg.upwind and lat > leg.target.lat + 0.0005:
-                break
-            if not leg.upwind and lat < leg.target.lat - 0.0005:
+            # Overshoot detection: if the bearing to the mark has swung more than
+            # 90° from the initial approach bearing, we've sailed past it.
+            brg_to_mark = _bearing(lat, lon, leg.target.lat, leg.target.lon)
+            brg_diff = abs(((brg_to_mark - leg_initial_bearing + 180) % 360) - 180)
+            if brg_diff > 90:
                 break
             if elapsed > 7200:
                 break

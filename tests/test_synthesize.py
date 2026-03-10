@@ -147,3 +147,30 @@ def test_simulate_bsp_range() -> None:
     bsps = [r.bsp for r in rows]
     assert min(bsps) >= 2.0
     assert max(bsps) <= 9.0
+
+
+def test_simulate_non_north_winds() -> None:
+    """Simulation should produce a full-length race for any wind direction.
+
+    Regression test for the lat-based overshoot bug: directions other than
+    north would trigger the overshoot condition immediately (since the windward
+    mark is not always to the north), producing only a handful of rows.
+    """
+    for wind_dir in [90.0, 135.0, 180.0, 225.0, 270.0]:
+        legs = build_wl_course(47.63, -122.40, wind_dir=wind_dir, leg_nm=1.0, laps=2)
+        config = SynthConfig(
+            start_lat=47.63,
+            start_lon=-122.40,
+            base_twd=wind_dir,
+            tws_low=8.0,
+            tws_high=14.0,
+            shift_interval=(600.0, 1200.0),
+            shift_magnitude=(5.0, 14.0),
+            legs=legs,
+            seed=42,
+            start_time=datetime(2026, 3, 8, 19, 0, 0, tzinfo=UTC),
+        )
+        rows = simulate(config)
+        assert len(rows) > 3000, (
+            f"wind_dir={wind_dir}: expected >3000 rows (full race), got {len(rows)}"
+        )
