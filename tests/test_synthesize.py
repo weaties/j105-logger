@@ -152,7 +152,7 @@ class TestSimulateWindAngles:
 
     # Start in open water mid-Sound to avoid land avoidance interference
     _START = (47.70, -122.44)
-    _MAX_DRIFT_NM = 0.35  # max acceptable drift from start at finish
+    _MAX_DRIFT_NM = 0.05  # max acceptable drift from start at finish
 
     def _run(self, wind_dir: float, laps: int = 1) -> list[SynthRow]:
         legs = build_wl_course(*self._START, wind_dir, 1.0, laps)

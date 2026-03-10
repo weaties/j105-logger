@@ -292,7 +292,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
 
     for leg_idx, leg in enumerate(config.legs):
         tack_timer = 0.0
-        next_tack = rng.uniform(150, 300)
+        # Downwind legs need fewer gybes than upwind tacks — longer intervals
+        next_tack = rng.uniform(200, 400) if leg.upwind else rng.uniform(300, 500)
         in_maneuver = False
         on_stbd = leg_idx % 2 == 0
         # Record initial bearing to mark for overshoot detection
@@ -318,7 +319,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                     in_maneuver = False
                     heading = man_target_hdg
                     tack_timer = 0.0
-                    next_tack = rng.uniform(120, 300)
+                    next_tack = rng.uniform(200, 400) if leg.upwind else rng.uniform(300, 500)
             else:
                 # Pick the tack/gybe with better VMG toward the mark
                 brg = _bearing(lat, lon, leg.target.lat, leg.target.lon)
@@ -328,13 +329,14 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 port_off = abs(((brg - port_hdg + 180) % 360) - 180)
                 best_stbd = stbd_off <= port_off
 
-                # Layline overstand check — force tack when the boat
+                # Layline overstand check — force tack/gybe when the boat
                 # is past the layline by more than ~4 boat lengths
                 # (J/105 LOA ≈ 35 ft ≈ 0.006 nm).
+                # Applies to both upwind and downwind legs.
                 _MAX_OVERSTAND_NM = 0.023  # 4 × 35 ft
                 force_tack = False
-                if leg.upwind and dist > 0.08 and best_stbd != on_stbd:
-                    # other_off = angle from mark bearing to the tack
+                if dist > 0.08 and best_stbd != on_stbd:
+                    # other_off = angle from mark bearing to the tack/gybe
                     # heading we'd switch to.  When small, the mark is
                     # nearly fetchable on the other tack (near layline).
                     # Perpendicular overstand = dist * sin(other_off).
@@ -343,8 +345,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                     if overstand_nm > _MAX_OVERSTAND_NM and other_off < opt_twa:
                         force_tack = True
 
-                # When close to mark, snap to the optimal tack
-                if dist < 0.15:
+                # When very close to mark, snap to the optimal tack
+                if dist < 0.10:
                     on_stbd = best_stbd
 
                 twa_target = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -355,7 +357,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 tack_timer += dt
                 if force_tack and not in_maneuver:
                     # At the layline — save current heading, then initiate
-                    # tack maneuver to the favoured tack
+                    # tack/gybe maneuver to the favoured tack
                     old_heading = heading  # current tack heading
                     on_stbd = best_stbd
                     new_twa = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -366,17 +368,17 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                     man_start_hdg = old_heading
                     man_target_hdg = new_heading
                     man_start_bsp = bsp
-                    man_is_tack = True
-                    man_duration = rng.uniform(8, 12)
+                    man_is_tack = leg.upwind
+                    man_duration = rng.uniform(8, 12) if leg.upwind else rng.uniform(5, 8)
                     tack_timer = 0.0
-                    next_tack = rng.uniform(120, 300)
-                elif tack_timer >= next_tack and not in_maneuver and dist >= 0.15:
+                    next_tack = rng.uniform(200, 400) if leg.upwind else rng.uniform(300, 500)
+                elif tack_timer >= next_tack and not in_maneuver and dist >= 0.10:
                     # Tack to the side with better VMG toward the mark
                     want_stbd = best_stbd
                     if want_stbd == on_stbd:
                         # Already on the favoured tack; reset timer and wait
                         tack_timer = 0.0
-                        next_tack = rng.uniform(120, 300)
+                        next_tack = rng.uniform(200, 400) if leg.upwind else rng.uniform(300, 500)
                     else:
                         on_stbd = want_stbd
                         new_twa = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -407,9 +409,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 # Recalculate position with new heading
                 hdg_r = math.radians(heading)
                 new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
-                new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(
-                    math.radians(lat)
-                )
+                new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
                 if not is_in_water(new_lat, new_lon):
                     # Both tacks hit land — scan headings to find the best
                     # escape route toward the mark
@@ -419,9 +419,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                     for probe in range(0, 360, 10):
                         pr = math.radians(probe)
                         tl = lat + spd_deg_s * math.cos(pr) * dt
-                        tn = lon + spd_deg_s * math.sin(pr) * dt / math.cos(
-                            math.radians(lat)
-                        )
+                        tn = lon + spd_deg_s * math.sin(pr) * dt / math.cos(math.radians(lat))
                         if is_in_water(tl, tn):
                             diff = abs(((probe - brg_mark + 180) % 360) - 180)
                             if diff < best_diff:
@@ -481,6 +479,34 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
         # Snap to mark so every lap rounds at the exact same geographic point
         if is_in_water(leg.target.lat, leg.target.lon):
             lat, lon = leg.target.lat, leg.target.lon
+
+        # For the last leg, append a final row at the finish mark position
+        # so the track ends exactly at the finish line (near the start).
+        if leg_idx == len(config.legs) - 1:
+            t = config.start_time + timedelta(seconds=elapsed)
+            twd, tws = wind.get(elapsed)
+            twa_actual = (twd - heading + 360) % 360
+            aws, awa = apparent_wind(tws, twa_actual, bsp)
+            cog = (heading + rng.gauss(0, 0.5)) % 360
+            sog = max(0, bsp + rng.gauss(0, 0.1))
+            depth = max(_DEPTH_FLOOR, base_depth + rng.gauss(0, 0.3))
+            rows.append(
+                SynthRow(
+                    ts=t,
+                    lat=round(lat, 7),
+                    lon=round(lon, 7),
+                    heading=round(heading, 1),
+                    bsp=round(bsp, 2),
+                    cog=round(cog, 1),
+                    sog=round(sog, 2),
+                    tws=round(tws, 2),
+                    twa=round(twa_actual, 1),
+                    aws=round(aws, 2),
+                    awa=round(awa, 1),
+                    depth=round(max(_DEPTH_FLOOR, depth), 1),
+                )
+            )
+            elapsed += dt
 
         # Mark rounding transition
         if leg_idx < len(config.legs) - 1:
