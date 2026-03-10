@@ -1697,7 +1697,7 @@ def create_app(
             peer_fingerprint=peer_fingerprint,
             peer_co_op_id=peer_co_op_id,
         )
-        await storage.import_synthesized_data(rows)
+        await storage.import_synthesized_data(rows, race_id=race_id)
 
         duration_s = (end_utc - start_utc).total_seconds()
         detail = name + (f" [peer={peer_fingerprint}]" if peer_fingerprint else "")
@@ -1731,11 +1731,26 @@ def create_app(
         start_utc = row["start_utc"]
         end_utc = row["end_utc"] or start_utc
 
-        pos_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions"
-            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
-            (start_utc, end_utc),
+        # Prefer race_id filter (exact match for synthesized sessions);
+        # fall back to time-range query for real instrument data.
+        rid_cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
         )
+        rid_row = await rid_cur.fetchone()
+        has_race_id = rid_row["cnt"] > 0 if rid_row else False
+
+        if has_race_id:
+            pos_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE race_id = ? ORDER BY ts",
+                (session_id,),
+            )
+        else:
+            pos_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                (start_utc, end_utc),
+            )
         positions = await pos_cur.fetchall()
         if not positions:
             return JSONResponse({"type": "FeatureCollection", "features": []})

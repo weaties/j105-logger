@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 29
+_CURRENT_VERSION: int = 30
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -652,6 +652,10 @@ _MIGRATIONS: dict[int, str] = {
     29: """
         ALTER TABLE races ADD COLUMN peer_fingerprint TEXT;
         ALTER TABLE races ADD COLUMN peer_co_op_id TEXT;
+    """,
+    30: """
+        ALTER TABLE positions ADD COLUMN race_id INTEGER REFERENCES races(id);
+        CREATE INDEX IF NOT EXISTS idx_positions_race_id ON positions (race_id);
     """,
 }
 
@@ -1327,7 +1331,7 @@ class Storage:
         logger.info("Imported race {} (source={}, source_id={})", race_id, source, source_id)
         return race_id
 
-    async def import_synthesized_data(self, rows: list[Any]) -> int:
+    async def import_synthesized_data(self, rows: list[Any], *, race_id: int) -> int:
         """Bulk-insert synthesized instrument data from SynthRow objects.
 
         Writes to: positions, headings, speeds, cogsog, depths, winds
@@ -1337,7 +1341,7 @@ class Storage:
         src_gps = 3  # synthetic GPS source address
         src_inst = 7  # synthetic instrument source address
 
-        pos_rows = [(r.ts.isoformat(), src_gps, r.lat, r.lon) for r in rows]
+        pos_rows = [(r.ts.isoformat(), src_gps, r.lat, r.lon, race_id) for r in rows]
         hdg_rows = [(r.ts.isoformat(), src_inst, r.heading, None, None) for r in rows]
         spd_rows = [(r.ts.isoformat(), src_inst, r.bsp) for r in rows]
         cs_rows = [(r.ts.isoformat(), src_gps, r.cog, r.sog) for r in rows]
@@ -1348,8 +1352,8 @@ class Storage:
         aw_rows = [(r.ts.isoformat(), src_inst, r.aws, r.awa, 2) for r in rows]
 
         await db.executemany(
-            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg, race_id)"
+            " VALUES (?, ?, ?, ?, ?)",
             pos_rows,
         )
         await db.executemany(
