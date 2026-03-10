@@ -330,19 +330,27 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 best_stbd = stbd_off <= port_off
 
                 # Layline overstand check — force tack/gybe when the boat
-                # is past the layline by more than ~4 boat lengths
-                # (J/105 LOA ≈ 35 ft ≈ 0.006 nm).
+                # is near the layline and past it by more than ~4 boat
+                # lengths (J/105 LOA ≈ 35 ft ≈ 0.006 nm).
                 # Applies to both upwind and downwind legs.
+                # Only activates within 0.4 nm of the mark (layline zone)
+                # and requires a 30 s cooldown after any maneuver.
                 _MAX_OVERSTAND_NM = 0.023  # 4 × 35 ft
+                _LAYLINE_ZONE_NM = 0.4  # only check near the mark
+                _LAYLINE_COOLDOWN_S = 30.0  # min seconds between forced maneuvers
                 force_tack = False
-                if dist > 0.08 and best_stbd != on_stbd:
+                if (
+                    0.08 < dist < _LAYLINE_ZONE_NM
+                    and best_stbd != on_stbd
+                    and tack_timer >= _LAYLINE_COOLDOWN_S
+                ):
                     # other_off = angle from mark bearing to the tack/gybe
                     # heading we'd switch to.  When small, the mark is
                     # nearly fetchable on the other tack (near layline).
                     # Perpendicular overstand = dist * sin(other_off).
                     other_off = port_off if on_stbd else stbd_off
                     overstand_nm = dist * math.sin(math.radians(min(other_off, 90)))
-                    if overstand_nm > _MAX_OVERSTAND_NM and other_off < opt_twa:
+                    if overstand_nm > _MAX_OVERSTAND_NM and other_off < 15.0:
                         force_tack = True
 
                 # When very close to mark, snap to the optimal tack
