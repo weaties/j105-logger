@@ -254,6 +254,18 @@ def _gybe_speed(progress: float, base_bsp: float) -> float:
 # ---------------------------------------------------------------------------
 
 _DEPTH_FLOOR = 2.0  # metres — Puget Sound racing areas are 10-200m+ deep
+_POS_DECIMALS = 7  # decimal places for stored lat/lon
+
+
+def _water_at_stored_precision(lat: float, lon: float) -> bool:
+    """Check is_in_water at the same precision stored in SynthRow.
+
+    The simulation operates at full float precision, but SynthRow rounds
+    lat/lon to ``_POS_DECIMALS`` places.  Right at the coastline boundary
+    the rounding can push a point from water to land.  This helper ensures
+    the *stored* position will pass the land check.
+    """
+    return is_in_water(round(lat, _POS_DECIMALS), round(lon, _POS_DECIMALS))
 
 
 def simulate(config: SynthConfig) -> list[SynthRow]:
@@ -406,7 +418,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
             new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
 
-            if not is_in_water(new_lat, new_lon):
+            if not _water_at_stored_precision(new_lat, new_lon):
                 # About to sail onto land — force immediate tack away
                 on_stbd = not on_stbd
                 twa_target = opt_twa if on_stbd else (360.0 - opt_twa) % 360
@@ -418,7 +430,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 hdg_r = math.radians(heading)
                 new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
                 new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
-                if not is_in_water(new_lat, new_lon):
+                if not _water_at_stored_precision(new_lat, new_lon):
                     # Both tacks hit land — scan headings to find the best
                     # escape route toward the mark
                     brg_mark = _bearing(lat, lon, leg.target.lat, leg.target.lon)
@@ -428,7 +440,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                         pr = math.radians(probe)
                         tl = lat + spd_deg_s * math.cos(pr) * dt
                         tn = lon + spd_deg_s * math.sin(pr) * dt / math.cos(math.radians(lat))
-                        if is_in_water(tl, tn):
+                        if _water_at_stored_precision(tl, tn):
                             diff = abs(((probe - brg_mark + 180) % 360) - 180)
                             if diff < best_diff:
                                 best_diff = diff
@@ -458,8 +470,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             rows.append(
                 SynthRow(
                     ts=t,
-                    lat=round(lat, 7),
-                    lon=round(lon, 7),
+                    lat=round(lat, _POS_DECIMALS),
+                    lon=round(lon, _POS_DECIMALS),
                     heading=round(heading, 1),
                     bsp=round(bsp, 2),
                     cog=round(cog, 1),
@@ -485,7 +497,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 break
 
         # Snap to mark so every lap rounds at the exact same geographic point
-        if is_in_water(leg.target.lat, leg.target.lon):
+        if _water_at_stored_precision(leg.target.lat, leg.target.lon):
             lat, lon = leg.target.lat, leg.target.lon
 
         # For the last leg, append a final row at the finish mark position
@@ -501,8 +513,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             rows.append(
                 SynthRow(
                     ts=t,
-                    lat=round(lat, 7),
-                    lon=round(lon, 7),
+                    lat=round(lat, _POS_DECIMALS),
+                    lon=round(lon, _POS_DECIMALS),
                     heading=round(heading, 1),
                     bsp=round(bsp, 2),
                     cog=round(cog, 1),
@@ -544,7 +556,7 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 spd_deg_s = bsp / 3600.0 / 60.0
                 new_lat = lat + spd_deg_s * math.cos(hdg_r) * dt
                 new_lon = lon + spd_deg_s * math.sin(hdg_r) * dt / math.cos(math.radians(lat))
-                if is_in_water(new_lat, new_lon):
+                if _water_at_stored_precision(new_lat, new_lon):
                     lat, lon = new_lat, new_lon
 
                 twa_actual = (twd - heading + 360) % 360
@@ -556,8 +568,8 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 rows.append(
                     SynthRow(
                         ts=t,
-                        lat=round(lat, 7),
-                        lon=round(lon, 7),
+                        lat=round(lat, _POS_DECIMALS),
+                        lon=round(lon, _POS_DECIMALS),
                         heading=round(heading, 1),
                         bsp=round(bsp, 2),
                         cog=round(cog, 1),
