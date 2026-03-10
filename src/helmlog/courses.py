@@ -246,20 +246,19 @@ def build_wl_course(
     leg_nm: float = 1.0,
     laps: int = 2,
 ) -> list[CourseLeg]:
-    """Build a windward/leeward course: (A -> X) × laps -> A -> F.
+    """Build a windward/leeward course: (A -> X) × laps -> F.
 
-    One lap is a full windward-leeward circuit (A then X).
-    The course always finishes with a final beat to A then a run to F.
-    E.g. laps=1: A -> X -> A -> F, laps=2: A -> X -> A -> X -> A -> F.
+    One lap is a full windward-leeward circuit (beat to A, run to X).
+    After all laps, the boat beats from X back to the finish at RC.
+    E.g. laps=1: A -> X -> F, laps=2: A -> X -> A -> X -> F.
     """
     marks = compute_buoy_marks(rc_lat, rc_lon, wind_dir, leg_nm)
     legs: list[CourseLeg] = []
     for _ in range(laps):
         legs.append(CourseLeg(marks["A"], upwind=True))
         legs.append(CourseLeg(marks["X"], upwind=False))
-    # Final beat to windward then run to finish at RC
-    legs.append(CourseLeg(marks["A"], upwind=True))
-    legs.append(CourseLeg(marks["F"], upwind=False))
+    # Beat from leeward mark back to finish at RC
+    legs.append(CourseLeg(marks["F"], upwind=True))
     return legs
 
 

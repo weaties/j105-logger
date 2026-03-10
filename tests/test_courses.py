@@ -46,9 +46,16 @@ class TestComputeBuoyMarks:
 class TestBuildWLCourse:
     def test_two_laps_plus_finish(self) -> None:
         legs = build_wl_course(47.63, -122.40, 0.0, laps=2)
-        # 2 laps × 2 legs + final beat to A + finish leg to F = 6
-        assert len(legs) == 6
+        # 2 laps × 2 legs + finish leg to F = 5
+        assert len(legs) == 5
         assert all(isinstance(leg, CourseLeg) for leg in legs)
+
+    def test_one_lap_visits_weather_mark_once(self) -> None:
+        legs = build_wl_course(47.63, -122.40, 0.0, laps=1)
+        # 1 lap: A -> X -> F = 3 legs
+        assert len(legs) == 3
+        weather_visits = sum(1 for leg in legs if leg.target.name == "Windward A")
+        assert weather_visits == 1
 
     def test_alternating_upwind_downwind(self) -> None:
         legs = build_wl_course(47.63, -122.40, 0.0, laps=2)
@@ -56,9 +63,8 @@ class TestBuildWLCourse:
         assert legs[1].upwind is False
         assert legs[2].upwind is True
         assert legs[3].upwind is False
-        # Final beat + finish
+        # Final beat from leeward to finish
         assert legs[4].upwind is True
-        assert legs[5].upwind is False
 
     def test_finishes_at_rc(self) -> None:
         legs = build_wl_course(47.63, -122.40, 0.0, laps=2)
