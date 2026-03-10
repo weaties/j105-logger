@@ -448,6 +448,10 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
             if elapsed > 7200:
                 break
 
+        # Snap to mark so every lap rounds at the exact same geographic point
+        if is_in_water(leg.target.lat, leg.target.lon):
+            lat, lon = leg.target.lat, leg.target.lon
+
         # Mark rounding transition
         if leg_idx < len(config.legs) - 1:
             next_leg = config.legs[leg_idx + 1]

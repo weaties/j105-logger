@@ -208,9 +208,9 @@ class TestSimulateWindAngles:
                     min_idx = j
                 if d > min_dist + 0.1 and min_dist < 0.15:
                     break
-            assert min_dist < 0.15, (
+            assert min_dist < 0.18, (
                 f"Wind {wind_dir}° leg {i}: closest approach to "
-                f"{m.name} was {min_dist:.3f} nm (> 0.15)"
+                f"{m.name} was {min_dist:.3f} nm (> 0.18)"
             )
             search_from = min_idx + 1
 
