@@ -63,9 +63,7 @@ def _make_psutil_mock(
 
     # Temperature — always provide a value
     _TempReading = namedtuple("_TempReading", ["label", "current"])
-    mock.sensors_temperatures.return_value = {
-        "cpu_thermal": [_TempReading(label="", current=50.0)]
-    }
+    mock.sensors_temperatures.return_value = {"cpu_thermal": [_TempReading(label="", current=50.0)]}
 
     # Fan
     if has_sensors_fans:
