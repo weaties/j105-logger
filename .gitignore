@@ -50,6 +50,16 @@ htmlcov/
 *.swp
 *.swo
 
+# Node.js (Playwright E2E tests)
+node_modules/
+package-lock.json
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # macOS
 .DS_Store
 **/.DS_Store

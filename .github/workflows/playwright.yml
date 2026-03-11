@@ -1,0 +1,72 @@
+name: Playwright E2E
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Python (app server) ──────────────────────────────────────
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 libsndfile1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      # ── Node.js (Playwright) ─────────────────────────────────────
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      # ── Run tests ────────────────────────────────────────────────
+      - name: Run Playwright tests
+        run: npx playwright test
+        env:
+          CI: "true"
+          AUTH_DISABLED: "true"
+          DB_PATH: ":memory:"
+
+      # ── Artifacts (always upload, even on failure) ───────────────
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload test results (traces, screenshots)
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14
+
+      # ── PR comment with results ──────────────────────────────────
+      - name: Post PR comment with test results
+        uses: daun/playwright-report-summary@v3
+        if: always()
+        with:
+          report-file: playwright-report/index.html
