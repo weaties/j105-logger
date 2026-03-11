@@ -23,7 +23,8 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | System monitoring | `psutil` + InfluxDB via `influxdb-client` |
 | Linting + formatting | `ruff` (line length 100; `E501` suppressed only in `web.py`) |
 | Type checking | `mypy` (strict) |
-| Testing | `pytest`, `pytest-asyncio`, `pytest-cov` |
+| Testing (unit/API) | `pytest`, `pytest-asyncio`, `pytest-cov` |
+| Testing (E2E/UI) | Playwright (Node.js) — headless Chromium |
 | Logging | `loguru` |
 | External data | `httpx` — Open-Meteo weather, NOAA CO-OPS tides |
 | YouTube metadata | `yt-dlp` |
@@ -78,6 +79,10 @@ helmlog/
 │           └── history.js  # History page logic
 │
 ├── tests/                  # pytest suite — runs on any machine, no hardware required
+│   └── e2e/                # Playwright browser tests (TypeScript)
+│       └── smoke.spec.ts   # Smoke tests — page loads, screenshots
+├── package.json            # Node.js deps for Playwright E2E only
+├── playwright.config.ts    # Playwright configuration
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
 ├── scripts/                # deploy.sh, setup.sh, transcribe_worker.py
 └── docs/                   # Architecture notes, setup guides
@@ -94,6 +99,14 @@ uv run ruff check .         # lint check
 uv run ruff format --check .  # format check
 uv run mypy src/            # type check
 uv run ruff check --fix . && uv run ruff format .  # auto-fix
+
+# E2E browser tests (requires Node.js)
+npm install                 # install Playwright (first time)
+npx playwright install chromium  # download browser (first time)
+npm run test:e2e            # run E2E tests headless
+npm run test:e2e:headed     # run with visible browser
+npm run test:e2e:ui         # interactive Playwright UI mode
+npm run test:e2e:update-snapshots  # update visual baselines
 
 helmlog run             # start the logger
 helmlog status          # show database row counts
@@ -226,6 +239,62 @@ Use `/data-license` to review code changes against the full policy.
 - **Pre-existing mypy errors in `web.py`** (do not fix unless explicitly asked):
   - `Item "None" of "datetime | None" has no attribute "isoformat"`
   - `Item "None" of "AudioRecorder | None" has no attribute "stop"` (x2)
+
+---
+
+## UI Testing (Playwright E2E)
+
+Browser-based end-to-end tests use **Playwright** (Node.js) with headless Chromium.
+These are separate from the pytest unit/API tests and live in `tests/e2e/`.
+
+### Setup (one time)
+
+```bash
+npm install                          # install @playwright/test
+npx playwright install chromium      # download Chromium binary
+```
+
+### Running tests
+
+```bash
+npm run test:e2e                     # headless (CI-compatible)
+npm run test:e2e:headed              # visible browser for debugging
+npm run test:e2e:ui                  # interactive Playwright UI mode
+```
+
+### How it works
+
+- **Config**: `playwright.config.ts` — defines browser, base URL, reporters
+- **Web server**: Playwright auto-starts the FastAPI app with `AUTH_DISABLED=true`
+  and `DB_PATH=:memory:` before tests run (see `webServer` in config)
+- **Screenshots**: captured on failure and saved to `test-results/screenshots/`.
+  Smoke tests also capture explicit screenshots of key pages for visual reference
+- **Traces**: retained on failure in `test-results/` — open with
+  `npx playwright show-trace test-results/<trace>.zip`
+- **HTML report**: generated in `playwright-report/` — open with
+  `npx playwright show-report`
+
+### Visual regression strategy
+
+- Smoke tests capture full-page screenshots of key pages (home, history)
+- Use `npm run test:e2e:update-snapshots` to update baseline snapshots
+- Snapshot comparisons use Playwright's built-in `toHaveScreenshot()` —
+  add assertions as the UI stabilizes
+
+### CI integration
+
+The `.github/workflows/playwright.yml` workflow:
+1. Runs on every pull request
+2. Starts the app server and runs Playwright tests headlessly
+3. Uploads `playwright-report/` and `test-results/` as artifacts (always, even on failure)
+4. Posts a PR comment with test results via `daun/playwright-report-summary@v3`
+
+### Adding new E2E tests
+
+Create `tests/e2e/<feature>.spec.ts` files. Tests have access to:
+- `page` — Playwright Page object for browser interaction
+- `request` — API context for direct HTTP requests
+- Base URL defaults to `http://localhost:8000`
 
 ---
 
