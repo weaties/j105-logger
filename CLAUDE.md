@@ -16,11 +16,12 @@ Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta a
 | Dependency management | `uv` |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
 | NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v28) |
+| Storage | SQLite via `aiosqlite` (schema v31) |
 | Web interface | `fastapi` + `uvicorn` + `jinja2` templates |
 | Audio recording | `sounddevice`, `soundfile` |
 | Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
 | System monitoring | `psutil` + InfluxDB via `influxdb-client` |
+| WLAN management | `nmcli` (NetworkManager) — `network.py` |
 | Linting + formatting | `ruff` (line length 100; `E501` suppressed only in `web.py`) |
 | Type checking | `mypy` (strict) |
 | Testing | `pytest`, `pytest-asyncio`, `pytest-cov` |
@@ -58,6 +59,7 @@ helmlog/
 │       ├── influx.py       # InfluxDB write helpers for system health metrics
 │       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
 │       ├── monitor.py      # psutil background task → InfluxDB every 60 s
+│       ├── network.py      # WLAN profile switching via nmcli (NetworkManager)
 │       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
 │       ├── peer_api.py     # FastAPI router for inter-boat peer API endpoints
 │       ├── peer_auth.py    # Ed25519 request signing and verification middleware
