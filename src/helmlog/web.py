@@ -2067,6 +2067,106 @@ def create_app(
         )
 
     # ------------------------------------------------------------------
+    # /api/sessions/{id}/maneuvers  (maneuver detection)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{session_id}/maneuvers")
+    async def api_session_maneuvers(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return detected maneuvers for a session, with nearest GPS position."""
+        import json as _json
+
+        rows = await storage.get_session_maneuvers(session_id)
+
+        # Enrich with nearest position so the front end can place map markers.
+        # Find the closest position by checking both before and after the
+        # maneuver timestamp and picking the one with the smallest time gap.
+        # Scope queries to the session's time range so positions from other
+        # sessions are never returned.
+        db = storage._conn()
+        race_cur = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,)
+        )
+        race_row = await race_cur.fetchone()
+        session_start = str(race_row["start_utc"])[:19] if race_row else None
+        session_end = str(race_row["end_utc"])[:19] if race_row else None
+
+        enriched = []
+        for row in rows:
+            d = dict(row)
+            ts_str = str(d["ts"])[:19]
+            # Position just before or at the maneuver time (within session)
+            before_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts <= ? AND ts >= ? AND race_id = ?"
+                " ORDER BY ts DESC LIMIT 1",
+                (ts_str, session_start, session_id),
+            )
+            before = await before_cur.fetchone()
+            # Position just after the maneuver time (within session)
+            after_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts > ? AND ts <= ? AND race_id = ?"
+                " ORDER BY ts LIMIT 1",
+                (ts_str, session_end, session_id),
+            )
+            after = await after_cur.fetchone()
+
+            # Pick the closer one by time delta
+            pos = None
+            if before and after:
+                from datetime import datetime as _dt
+
+                t_man = _dt.fromisoformat(ts_str)
+                t_before = _dt.fromisoformat(str(before["ts"])[:19])
+                t_after = _dt.fromisoformat(str(after["ts"])[:19])
+                pos = before if (t_man - t_before) <= (t_after - t_man) else after
+            else:
+                pos = before or after
+
+            d["lat"] = float(pos["latitude_deg"]) if pos else None
+            d["lon"] = float(pos["longitude_deg"]) if pos else None
+            if d.get("details") and isinstance(d["details"], str):
+                try:
+                    d["details"] = _json.loads(d["details"])
+                except Exception:
+                    d["details"] = {}
+            enriched.append(d)
+
+        return JSONResponse(enriched)
+
+    @app.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)
+    async def api_detect_maneuvers(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Trigger maneuver detection (or re-detection) for a session.
+
+        Returns immediately with the count of detected maneuvers.
+        """
+        from helmlog.maneuver_detector import detect_maneuvers
+
+        # Verify session exists
+        db = storage._conn()
+        cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+        if await cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        maneuvers = await detect_maneuvers(storage, session_id)
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "detected": len(maneuvers),
+                "tacks": sum(1 for m in maneuvers if m.type == "tack"),
+                "gybes": sum(1 for m in maneuvers if m.type == "gybe"),
+                "roundings": sum(1 for m in maneuvers if m.type == "rounding"),
+            },
+            status_code=202,
+        )
+
+    # ------------------------------------------------------------------
     # /api/sessions  (history browser)
     # ------------------------------------------------------------------
 
