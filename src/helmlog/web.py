@@ -1854,6 +1854,8 @@ def create_app(
         leg_nm = float(body.get("leg_distance_nm", 1.0))
         laps = int(body.get("laps", 2))
         seed = int(body.get("seed", 42))
+        raw_wind_seed = body.get("wind_seed")
+        wind_seed: int | None = int(raw_wind_seed) if raw_wind_seed is not None else None
         mark_sequence = body.get("mark_sequence", "")
         peer_fingerprint: str | None = body.get("peer_fingerprint") or None
         peer_co_op_id: str | None = body.get("peer_co_op_id") or None
@@ -1930,6 +1932,7 @@ def create_app(
             legs=legs,
             seed=seed,
             start_time=now,
+            wind_seed=wind_seed,
             header_response=header_response,
             collision_avoidance=collision_avoidance,
         )
@@ -1976,7 +1979,7 @@ def create_app(
         await storage.save_synth_wind_params(
             race_id,
             {
-                "seed": seed,
+                "seed": wind_seed if wind_seed is not None else seed,
                 "base_twd": wind_dir,
                 "tws_low": tws_low,
                 "tws_high": tws_high,

@@ -151,6 +151,58 @@ class TestSimulate:
         assert rows1[-1].lat == rows2[-1].lat
 
 
+class TestWindSeedSeparation:
+    """Verify wind_seed produces identical wind but different boat behaviour."""
+
+    def test_same_wind_seed_different_boat_seed(self) -> None:
+        """Two boats with same wind_seed but different seed get same TWD but different tracks."""
+        legs = build_wl_course(47.70, -122.44, 0.0, laps=1)
+        base = {
+            "start_lat": 47.70,
+            "start_lon": -122.44,
+            "base_twd": 0.0,
+            "tws_low": 10.0,
+            "tws_high": 12.0,
+            "shift_interval": (600.0, 1200.0),
+            "shift_magnitude": (5.0, 10.0),
+            "legs": legs,
+            "start_time": datetime(2025, 8, 10, 18, 0, 0, tzinfo=UTC),
+            "wind_seed": 999,
+        }
+        rows_a = simulate(SynthConfig(**base, seed=1))
+        rows_b = simulate(SynthConfig(**base, seed=2))
+        # Same wind field: TWS at the very first point (same position) is identical
+        assert rows_a[0].tws == rows_b[0].tws
+        # Different boat behaviour: positions should diverge after some time
+        diverged = any(
+            rows_a[i].lat != rows_b[i].lat or rows_a[i].lon != rows_b[i].lon
+            for i in range(min(len(rows_a), len(rows_b)))
+        )
+        assert diverged
+
+    def test_wind_seed_none_uses_seed(self) -> None:
+        """When wind_seed is None, seed drives both wind and boat (backwards-compatible)."""
+        legs = build_wl_course(47.70, -122.44, 0.0, laps=1)
+        cfg = SynthConfig(
+            start_lat=47.70,
+            start_lon=-122.44,
+            base_twd=0.0,
+            tws_low=10.0,
+            tws_high=12.0,
+            shift_interval=(600.0, 1200.0),
+            shift_magnitude=(5.0, 10.0),
+            legs=legs,
+            seed=42,
+            start_time=datetime(2025, 8, 10, 18, 0, 0, tzinfo=UTC),
+        )
+        rows1 = simulate(cfg)
+        rows2 = simulate(cfg)
+        # Fully deterministic — identical output
+        assert len(rows1) == len(rows2)
+        assert rows1[50].lat == rows2[50].lat
+        assert rows1[50].tws == rows2[50].tws
+
+
 class TestSimulateWindAngles:
     """Verify the simulation produces valid tracks at various wind angles."""
 

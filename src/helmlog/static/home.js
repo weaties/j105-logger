@@ -1392,7 +1392,8 @@ async function runSynthesize() {
       laps: parseInt(document.getElementById('synth-laps').value) || 2,
       start_lat: parseFloat(document.getElementById('synth-lat').value) || 47.63,
       start_lon: parseFloat(document.getElementById('synth-lon').value) || -122.40,
-      seed: _importedWindSeed != null ? _importedWindSeed : Math.floor(Math.random() * 100000),
+      seed: Math.floor(Math.random() * 100000),
+      wind_seed: _importedWindSeed != null ? _importedWindSeed : undefined,
     };
     // Pass imported wind params that aren't in the form (shift magnitude, leg distance)
     if (_importedWindParams) {

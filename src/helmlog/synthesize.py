@@ -267,6 +267,11 @@ class SynthConfig:
     legs: list[CourseLeg]
     seed: int
     start_time: datetime
+    wind_seed: int | None = None
+    """Seed for the WindField.  When None, ``seed`` is used for both the
+    wind model and the boat behaviour RNG (backwards-compatible default).
+    Set this to a shared value across boats to give them identical wind
+    while each boat's ``seed`` drives its own sailing RNG."""
     header_response: HeaderResponseConfig = _DEFAULT_HEADER_RESPONSE
     collision_avoidance: CollisionAvoidanceConfig = _DEFAULT_COLLISION_AVOIDANCE
 
@@ -433,6 +438,7 @@ def simulate(
             other boats at each timestamp.
     """
     rng = random.Random(config.seed)
+    w_seed = config.wind_seed if config.wind_seed is not None else config.seed
     wind = WindField(
         base_twd=config.base_twd,
         tws_low=config.tws_low,
@@ -441,7 +447,7 @@ def simulate(
         shift_magnitude=config.shift_magnitude,
         ref_lat=config.start_lat,
         ref_lon=config.start_lon,
-        seed=config.seed,
+        seed=w_seed,
     )
 
     # Collision avoidance index (#246)
