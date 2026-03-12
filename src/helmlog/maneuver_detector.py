@@ -596,16 +596,28 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
     gybes = detect_gybes(hdg_list, bsp_list, twa_list)
     roundings = detect_mark_roundings(hdg_list, bsp_list, twa_list)
 
-    # Cross-type deduplication: tacks/gybes are more specific than roundings,
-    # so when a rounding overlaps temporally with a tack or gybe, drop it.
-    tack_gybe_times = {m.ts for m in tacks + gybes}
-    deduped_roundings: list[Maneuver] = []
-    for r in roundings:
+    # Cross-type deduplication: roundings take priority over tacks/gybes.
+    # A heading change where TWA crosses the 90° boundary is definitionally a
+    # rounding (mark turn), not a tack or gybe.  When a rounding overlaps
+    # temporally with a tack or gybe, drop the tack/gybe and keep the rounding.
+    rounding_times = {m.ts for m in roundings}
+    deduped_tacks: list[Maneuver] = []
+    for t in tacks:
         too_close = any(
-            abs((r.ts - tg_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for tg_ts in tack_gybe_times
+            abs((t.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
         )
         if not too_close:
-            deduped_roundings.append(r)
+            deduped_tacks.append(t)
+    deduped_gybes: list[Maneuver] = []
+    for g in gybes:
+        too_close = any(
+            abs((g.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
+        )
+        if not too_close:
+            deduped_gybes.append(g)
+    tacks = deduped_tacks
+    gybes = deduped_gybes
+    deduped_roundings = list(roundings)
 
     # Remove consecutive roundings — in a real race a rounding is always
     # followed by a tack or gybe leg before the next rounding.  When two

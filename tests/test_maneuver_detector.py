@@ -449,6 +449,117 @@ class TestDetectMarkRoundings:
         assert len(gybes) == 0
 
 
+class TestNoTackGybeTransitionWithoutRounding:
+    """A tack→gybe transition implies a mark rounding. The detector must never
+    produce consecutive tack→gybe (or gybe→tack) maneuvers without an
+    intervening rounding."""
+
+    def _build_two_lap_race(
+        self,
+    ) -> tuple[
+        list[tuple[datetime, float]],
+        list[tuple[datetime, float]],
+        list[tuple[datetime, float]],
+    ]:
+        """Synthesise a 2-lap windward/leeward race at ~90° heading.
+
+        Pattern: tack leg → windward rounding → gybe leg → leeward rounding → repeat.
+        Returns (hdg, bsp, twa) aligned 1 Hz series.
+        """
+        hdg: list[tuple[datetime, float]] = []
+        twa: list[tuple[datetime, float]] = []
+        t = 0
+
+        def _steady(heading: float, twa_val: float, secs: int) -> int:
+            nonlocal t
+            for _ in range(secs):
+                ts = _BASE_TS + timedelta(seconds=t)
+                hdg.append((ts, heading))
+                twa.append((ts, twa_val))
+                t += 1
+            return t
+
+        def _turn(h1: float, h2: float, twa1: float, twa2: float, secs: int) -> int:
+            nonlocal t
+            for i in range(secs):
+                frac = i / max(secs - 1, 1)
+                diff_h = ((h2 - h1 + 180) % 360) - 180
+                diff_t = twa2 - twa1
+                ts = _BASE_TS + timedelta(seconds=t)
+                hdg.append((ts, (h1 + frac * diff_h) % 360))
+                twa.append((ts, twa1 + frac * diff_t))
+                t += 1
+            return t
+
+        for _ in range(2):  # 2 laps
+            # Upwind leg: tack at TWA 45°
+            _steady(50.0, 45.0, 30)
+            _turn(50.0, 310.0, 45.0, 45.0, 10)  # tack (80° heading, stays upwind)
+            _steady(310.0, 45.0, 30)
+
+            # Windward mark rounding: TWA crosses 90° (upwind→downwind)
+            _turn(310.0, 220.0, 45.0, 150.0, 10)  # rounding
+            _steady(220.0, 150.0, 10)
+
+            # Downwind leg: gybe at TWA 150°
+            _steady(220.0, 150.0, 30)
+            _turn(220.0, 140.0, 150.0, 150.0, 10)  # gybe (80° heading, stays downwind)
+            _steady(140.0, 150.0, 30)
+
+            # Leeward mark rounding: TWA crosses 90° (downwind→upwind)
+            _turn(140.0, 50.0, 150.0, 45.0, 10)  # rounding
+            _steady(50.0, 45.0, 10)
+
+        bsp = _const(hdg, 6.5)
+        return hdg, bsp, twa
+
+    def test_rounding_between_tack_and_gybe(self) -> None:
+        """In a 2-lap W/L race, every tack→gybe transition has an intervening rounding."""
+        hdg, bsp, twa = self._build_two_lap_race()
+        tacks = detect_tacks(hdg, bsp, twa)
+        gybes = detect_gybes(hdg, bsp, twa)
+        roundings = detect_mark_roundings(hdg, bsp, twa)
+        assert len(tacks) >= 1, "Expected at least one tack"
+        assert len(gybes) >= 1, "Expected at least one gybe"
+        assert len(roundings) >= 1, "Expected at least one rounding"
+
+        # Merge and sort by timestamp
+        from helmlog.maneuver_detector import _MIN_MANEUVER_GAP_S
+
+        rounding_times = {m.ts for m in roundings}
+        # Apply same dedup as detect_maneuvers: drop tacks/gybes overlapping roundings
+        deduped_tacks = [
+            t
+            for t in tacks
+            if not any(
+                abs((t.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
+            )
+        ]
+        deduped_gybes = [
+            g
+            for g in gybes
+            if not any(
+                abs((g.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
+            )
+        ]
+        all_m = sorted(deduped_tacks + deduped_gybes + roundings, key=lambda m: m.ts)
+
+        for i in range(1, len(all_m)):
+            prev_type = all_m[i - 1].type
+            curr_type = all_m[i].type
+            # tack→gybe or gybe→tack without rounding in between is a bug
+            if (
+                prev_type in ("tack", "gybe")
+                and curr_type in ("tack", "gybe")
+                and prev_type != curr_type
+            ):
+                pytest.fail(
+                    f"Maneuver #{i - 1} ({prev_type} at {all_m[i - 1].ts}) "
+                    f"→ #{i} ({curr_type} at {all_m[i].ts}) "
+                    f"without an intervening rounding"
+                )
+
+
 # ---------------------------------------------------------------------------
 # detect_maneuvers — integration with Storage
 # ---------------------------------------------------------------------------

@@ -2083,23 +2083,32 @@ def create_app(
         # Enrich with nearest position so the front end can place map markers.
         # Find the closest position by checking both before and after the
         # maneuver timestamp and picking the one with the smallest time gap.
+        # Scope queries to the session's time range so positions from other
+        # sessions are never returned.
         db = storage._conn()
+        race_cur = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,)
+        )
+        race_row = await race_cur.fetchone()
+        session_start = str(race_row["start_utc"])[:19] if race_row else None
+        session_end = str(race_row["end_utc"])[:19] if race_row else None
+
         enriched = []
         for row in rows:
             d = dict(row)
             ts_str = str(d["ts"])[:19]
-            # Position just before or at the maneuver time
+            # Position just before or at the maneuver time (within session)
             before_cur = await db.execute(
                 "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
-                (ts_str,),
+                " WHERE ts <= ? AND ts >= ? ORDER BY ts DESC LIMIT 1",
+                (ts_str, session_start),
             )
             before = await before_cur.fetchone()
-            # Position just after the maneuver time
+            # Position just after the maneuver time (within session)
             after_cur = await db.execute(
                 "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts > ? ORDER BY ts LIMIT 1",
-                (ts_str,),
+                " WHERE ts > ? AND ts <= ? ORDER BY ts LIMIT 1",
+                (ts_str, session_end),
             )
             after = await after_cur.fetchone()
 
