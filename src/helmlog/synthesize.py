@@ -204,6 +204,39 @@ class SynthRow:
 
 
 @dataclass(frozen=True)
+class HeaderResponseConfig:
+    """Configuration for probabilistic header/lift response.
+
+    Controls how realistically the synthesized boat responds to wind shifts.
+    On a beat the boat should tack on lifts; on a run it should gybe on
+    headers — but not on every shift.
+    """
+
+    reaction_probability: float = 0.70
+    """Base probability of responding to any detected shift (0-1)."""
+
+    min_shift_threshold: tuple[float, float] = (3.0, 8.0)
+    """Range (lo, hi) in degrees for per-shift notice threshold.
+    Each shift draws its own threshold from U(lo, hi); shifts smaller
+    than the drawn value are ignored."""
+
+    reaction_delay: tuple[float, float] = (10.0, 45.0)
+    """Range (lo, hi) in seconds of delay before executing a maneuver
+    after the crew 'notices' a shift."""
+
+    fatigue_start_frac: float = 0.70
+    """Fraction of total race elapsed before fatigue begins degrading
+    reaction probability (0-1, 1.0 = no fatigue)."""
+
+    fatigue_floor: float = 0.40
+    """Minimum reaction probability at the very end of the race."""
+
+
+# Sensible J/105 club-racer defaults
+_DEFAULT_HEADER_RESPONSE = HeaderResponseConfig()
+
+
+@dataclass(frozen=True)
 class SynthConfig:
     """Configuration for a synthesized race simulation."""
 
@@ -217,6 +250,7 @@ class SynthConfig:
     legs: list[CourseLeg]
     seed: int
     start_time: datetime
+    header_response: HeaderResponseConfig = _DEFAULT_HEADER_RESPONSE
 
 
 # ---------------------------------------------------------------------------
@@ -341,6 +375,18 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
     man_start_bsp = 0.0
     man_is_tack = True
 
+    # Header response state — tracks wind direction to detect shifts
+    # Use a separate RNG so header response draws don't perturb the base
+    # simulation's interval-tack / noise randomisation.
+    hrc = config.header_response
+    hr_rng = random.Random(config.seed ^ 0x48454144)  # "HEAD" in ASCII
+    prev_twd: float | None = None
+    # Pending header-triggered maneuver: (delay_remaining_s,)
+    header_delay_remaining = 0.0
+    header_tack_pending = False
+    # Estimate total race duration for fatigue curve (rough: ~10 min per leg)
+    est_total_s = len(config.legs) * 600.0
+
     for leg_idx, leg in enumerate(config.legs):
         tack_timer = 0.0
         # Downwind legs need fewer gybes than upwind tacks — longer intervals
@@ -350,6 +396,10 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
         # Record initial bearing to mark for overshoot detection
         leg_initial_bearing = _bearing(lat, lon, leg.target.lat, leg.target.lon)
         reached_mark = False
+        # Per-leg: draw a shift-notice threshold for next shift event
+        shift_notice_threshold = hr_rng.uniform(*hrc.min_shift_threshold)
+        header_tack_pending = False
+        header_delay_remaining = 0.0
 
         while True:
             t = config.start_time + timedelta(seconds=elapsed)
@@ -415,6 +465,70 @@ def simulate(config: SynthConfig) -> list[SynthRow]:
                 bsp = max(2.0, bsp)
 
                 tack_timer += dt
+
+                # --- Header response: detect wind shifts and react ---
+                if header_tack_pending:
+                    header_delay_remaining -= dt
+                    if header_delay_remaining <= 0:
+                        # Crew has decided to tack/gybe — execute it now
+                        header_tack_pending = False
+                        want_stbd = best_stbd
+                        if want_stbd != on_stbd and dist >= 0.10:
+                            on_stbd = want_stbd
+                            new_twa = opt_twa if on_stbd else (360.0 - opt_twa) % 360
+                            new_heading = (twd - new_twa + 360) % 360
+
+                            in_maneuver = True
+                            man_elapsed = 0.0
+                            man_start_hdg = heading
+                            man_target_hdg = new_heading
+                            man_start_bsp = bsp
+                            man_is_tack = leg.upwind
+                            man_duration = rng.uniform(8, 12) if leg.upwind else rng.uniform(5, 8)
+                            tack_timer = 0.0
+                            next_tack = (
+                                rng.uniform(200, 400) if leg.upwind else rng.uniform(300, 500)
+                            )
+
+                if prev_twd is not None and not in_maneuver and not header_tack_pending:
+                    twd_delta = ((twd - prev_twd + 180) % 360) - 180
+                    abs_delta = abs(twd_delta)
+
+                    if abs_delta >= shift_notice_threshold:
+                        # Classify: upwind lift = should tack, downwind header = should gybe
+                        # Lift (upwind): shift toward the boat's current tack
+                        #   stbd tack → positive delta is a lift
+                        #   port tack → negative delta is a lift
+                        # Header (downwind): shift away from current gybe
+                        is_favorable_shift = (on_stbd and twd_delta > 0) or (
+                            not on_stbd and twd_delta < 0
+                        )
+                        should_respond = (leg.upwind and is_favorable_shift) or (
+                            not leg.upwind and not is_favorable_shift
+                        )
+
+                        if should_respond and best_stbd != on_stbd and dist >= 0.10:
+                            # Apply fatigue degradation
+                            race_frac = min(1.0, elapsed / max(est_total_s, 1.0))
+                            if race_frac > hrc.fatigue_start_frac:
+                                fatigue_frac = (race_frac - hrc.fatigue_start_frac) / (
+                                    1.0 - hrc.fatigue_start_frac
+                                )
+                                prob = hrc.reaction_probability + fatigue_frac * (
+                                    hrc.fatigue_floor - hrc.reaction_probability
+                                )
+                            else:
+                                prob = hrc.reaction_probability
+
+                            if hr_rng.random() < prob:
+                                header_tack_pending = True
+                                header_delay_remaining = hr_rng.uniform(*hrc.reaction_delay)
+
+                        # Draw a new threshold for the next shift event
+                        shift_notice_threshold = hr_rng.uniform(*hrc.min_shift_threshold)
+
+                prev_twd = twd
+
                 if force_tack and not in_maneuver:
                     # At the layline — save current heading, then initiate
                     # tack/gybe maneuver to the favoured tack
