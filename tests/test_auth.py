@@ -47,6 +47,14 @@ async def _create_viewer_user(storage: Storage) -> tuple[int, str]:
     return user_id, session_id
 
 
+async def _create_crew_developer(storage: Storage) -> tuple[int, str]:
+    """Create a crew user with the developer flag set."""
+    user_id = await storage.create_user("crewdev@test.com", "Crew Dev", "crew", is_developer=True)
+    session_id = generate_token()
+    await storage.create_session(session_id, user_id, session_expires_at())
+    return user_id, session_id
+
+
 # ---------------------------------------------------------------------------
 # Storage auth CRUD
 # ---------------------------------------------------------------------------
@@ -228,6 +236,162 @@ async def test_admin_can_access_admin_route(storage: Storage) -> None:
         ) as client:
             resp = await client.get("/admin/users")
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Developer flag (orthogonal to role hierarchy)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_developer_flag_stored(storage: Storage) -> None:
+    """create_user with is_developer=True persists the flag."""
+    user_id = await storage.create_user("dev@x.com", "Dev", "crew", is_developer=True)
+    user = await storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["is_developer"] == 1
+
+
+@pytest.mark.asyncio
+async def test_is_developer_default_false(storage: Storage) -> None:
+    """create_user defaults is_developer to False."""
+    user_id = await storage.create_user("nodev@x.com", "NoDev", "crew")
+    user = await storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["is_developer"] == 0
+
+
+@pytest.mark.asyncio
+async def test_update_user_developer(storage: Storage) -> None:
+    """update_user_developer toggles the flag."""
+    user_id = await storage.create_user("toggle@x.com", None, "viewer")
+    await storage.update_user_developer(user_id, True)
+    user = await storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["is_developer"] == 1
+    await storage.update_user_developer(user_id, False)
+    user = await storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["is_developer"] == 0
+
+
+@pytest.mark.asyncio
+async def test_crew_without_developer_blocked_from_synthesize(storage: Storage) -> None:
+    """A crew user without developer flag gets 403 on synthesize."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        _, session_id = await _create_crew_user(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": session_id},
+        ) as client:
+            resp = await client.post(
+                "/api/sessions/synthesize",
+                json={},
+                headers={"content-type": "application/json"},
+            )
+        assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_crew_developer_can_access_synthesize(storage: Storage) -> None:
+    """A crew user with developer flag passes auth on synthesize."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        _, session_id = await _create_crew_developer(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": session_id},
+        ) as client:
+            resp = await client.post(
+                "/api/sessions/synthesize",
+                json={},
+                headers={"content-type": "application/json"},
+            )
+        # Should not be 403 (will be 422 or 500 due to missing body fields)
+        assert resp.status_code != 403
+
+
+@pytest.mark.asyncio
+async def test_api_me_includes_is_developer(storage: Storage) -> None:
+    """/api/me response includes is_developer field."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        _, session_id = await _create_crew_developer(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": session_id},
+        ) as client:
+            resp = await client.get("/api/me")
+        assert resp.status_code == 200
+        assert resp.json()["is_developer"] is True
+
+
+@pytest.mark.asyncio
+async def test_admin_toggle_developer(storage: Storage) -> None:
+    """Admin can toggle developer flag via PUT /admin/users/{id}/developer."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        target_id = await storage.create_user("target@x.com", "Target", "crew")
+        _, admin_session = await _create_admin_user(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": admin_session},
+        ) as client:
+            resp = await client.put(
+                f"/admin/users/{target_id}/developer",
+                json={"is_developer": True},
+            )
+        assert resp.status_code == 204
+        user = await storage.get_user_by_id(target_id)
+        assert user is not None
+        assert user["is_developer"] == 1
+
+
+@pytest.mark.asyncio
+async def test_invite_with_developer_flag(storage: Storage) -> None:
+    """Admin invite with is_developer creates token with flag; login propagates it."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        _, admin_session = await _create_admin_user(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": admin_session},
+            follow_redirects=False,
+        ) as client:
+            # Invite with developer flag
+            resp = await client.post(
+                "/admin/users/invite",
+                data={"email": "newdev@x.com", "role": "crew", "is_developer": "1"},
+            )
+            assert resp.status_code == 201
+            token = resp.json()["token"]
+
+            # Redeem the token
+            resp = await client.post("/login", data={"token": token, "next": "/"})
+            assert resp.status_code == 303
+
+        # Verify user was created with developer flag
+        user = await storage.get_user_by_email("newdev@x.com")
+        assert user is not None
+        assert user["is_developer"] == 1
+        assert user["role"] == "crew"
+
+
+@pytest.mark.asyncio
+async def test_list_users_includes_is_developer(storage: Storage) -> None:
+    """list_users includes the is_developer field."""
+    await storage.create_user("dev@x.com", "Dev", "crew", is_developer=True)
+    await storage.create_user("nodev@x.com", "NoDev", "viewer")
+    users = await storage.list_users()
+    devs = {u["email"]: u["is_developer"] for u in users}
+    assert devs["dev@x.com"] == 1
+    assert devs["nodev@x.com"] == 0
 
 
 # ---------------------------------------------------------------------------

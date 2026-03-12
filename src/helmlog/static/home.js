@@ -57,8 +57,8 @@ function render(s) {
   // --- Controls: hidden during debrief ---
   controlsDiv.classList.toggle('hidden', isDebrief);
 
-  // --- Synthesize button: visible when idle ---
-  btnSynth.classList.toggle('hidden', !isIdle);
+  // --- Synthesize button: visible when idle and user has developer flag ---
+  btnSynth.classList.toggle('hidden', !isIdle || !_isDeveloper);
 
   if(cur) {
     curCard.classList.remove('hidden');

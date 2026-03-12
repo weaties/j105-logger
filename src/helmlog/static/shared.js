@@ -92,8 +92,11 @@ document.addEventListener('DOMContentLoaded', function () {
   });
 });
 
+let _isDeveloper = false;
+
 function initNav() {
   fetch('/api/me').then(r => r.json()).then(u => {
+    _isDeveloper = !!u.is_developer;
     if (u.role === 'admin') {
       document.querySelectorAll('.admin-link').forEach(el => el.style.setProperty('display', 'inline', 'important'));
     }
