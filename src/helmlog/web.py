@@ -1835,7 +1835,12 @@ def create_app(
             validate_course_marks,
         )
         from helmlog.races import build_race_name, local_today
-        from helmlog.synthesize import HeaderResponseConfig, SynthConfig, simulate
+        from helmlog.synthesize import (
+            CollisionAvoidanceConfig,
+            HeaderResponseConfig,
+            SynthConfig,
+            simulate,
+        )
 
         body = await request.json()
         course_type = body.get("course_type", "windward_leeward")
@@ -1852,6 +1857,11 @@ def create_app(
         mark_sequence = body.get("mark_sequence", "")
         peer_fingerprint: str | None = body.get("peer_fingerprint") or None
         peer_co_op_id: str | None = body.get("peer_co_op_id") or None
+
+        # Collision avoidance — other boats' tracks to avoid (#246)
+        raw_other_tracks: list[list[dict[str, Any]]] | None = body.get("other_tracks")
+        min_separation_m = float(body.get("min_separation_m", 30.0))
+        collision_avoidance = CollisionAvoidanceConfig(min_separation_m=min_separation_m)
 
         # Header response model — probabilistic tacking on wind shifts (#247)
         hr_raw = body.get("header_response")
@@ -1921,9 +1931,10 @@ def create_app(
             seed=seed,
             start_time=now,
             header_response=header_response,
+            collision_avoidance=collision_avoidance,
         )
 
-        rows = await asyncio.to_thread(simulate, config)
+        rows = await asyncio.to_thread(simulate, config, raw_other_tracks)
         if not rows:
             raise HTTPException(status_code=500, detail="Simulation produced no data points")
 
