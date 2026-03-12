@@ -95,6 +95,25 @@ def _abs_total_change(hdg_series: list[float]) -> float:
     return abs(total)
 
 
+def _peak_change_index(hdg_series: list[float]) -> int:
+    """Index of the maximum absolute per-step heading change in a series.
+
+    Returns the index of the sample *after* the largest single-step change,
+    i.e. the point where the boat is turning fastest.  Falls back to 0 if
+    the series is too short.
+    """
+    if len(hdg_series) < 2:
+        return 0
+    best_idx = 1
+    best_val = 0.0
+    for i in range(1, len(hdg_series)):
+        change = abs(_heading_change(hdg_series[i - 1], hdg_series[i]))
+        if change > best_val:
+            best_val = change
+            best_idx = i
+    return best_idx
+
+
 def _bsp_loss(pre_bsp: list[float], window_bsp: list[float]) -> float | None:
     """Return baseline_bsp − min(window_bsp), or None if insufficient data."""
     if not pre_bsp or not window_bsp:
@@ -235,8 +254,12 @@ def _detect(
                 i += 1
                 continue
 
+        # Use the point of peak heading change as the maneuver timestamp so
+        # the GPS marker lands on the actual turn, not the window start.
+        peak_idx = _peak_change_index(window_hdg)
+        maneuver_start_ts = window_ts[peak_idx]
+
         # Enforce gap between consecutive maneuvers
-        maneuver_start_ts = window_ts[0]
         if last_maneuver_ts is not None:
             gap = (maneuver_start_ts - last_maneuver_ts).total_seconds()
             if gap < _MIN_MANEUVER_GAP_S:

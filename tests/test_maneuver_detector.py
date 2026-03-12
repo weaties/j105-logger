@@ -10,6 +10,7 @@ import pytest
 from helmlog.maneuver_detector import (
     _gybe_threshold,
     _heading_change,
+    _peak_change_index,
     _tack_threshold,
     detect_gybes,
     detect_maneuvers,
@@ -91,6 +92,20 @@ class TestHeadingChange:
     def test_180_degrees(self) -> None:
         result = abs(_heading_change(0.0, 180.0))
         assert result == pytest.approx(180.0)
+
+
+class TestPeakChangeIndex:
+    def test_peak_in_middle(self) -> None:
+        """Peak heading change in the middle of a series."""
+        # Steady 40, then a big jump to 120 at index 3, then steady
+        hdg = [40.0, 40.0, 40.0, 120.0, 120.0, 120.0]
+        assert _peak_change_index(hdg) == 3
+
+    def test_single_element(self) -> None:
+        assert _peak_change_index([90.0]) == 0
+
+    def test_empty(self) -> None:
+        assert _peak_change_index([]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +252,27 @@ class TestDetectTacks:
         assert len(maneuvers) == 1
         m = maneuvers[0]
         assert hdg[0][0] <= m.ts <= hdg[-1][0]
+
+    def test_maneuver_timestamp_at_peak_heading_change(self) -> None:
+        """Maneuver ts should land at the peak heading change, not the window start.
+
+        With 30 s of steady sailing then a 10 s tack, the peak heading
+        change occurs during the tack (indices 30-39), not at the window
+        start.  The maneuver timestamp must fall within the tack interval
+        so the GPS marker lands on the actual turn.
+        """
+        hdg = _make_tack_series(40.0, 320.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 6.0)
+        twa = _const(hdg, 45.0)
+        maneuvers = detect_tacks(hdg, bsp, twa)
+        assert len(maneuvers) == 1
+        m = maneuvers[0]
+        # The tack happens at indices 30..39 — the maneuver ts must be in that range
+        tack_start = hdg[30][0]
+        tack_end = hdg[39][0]
+        assert tack_start <= m.ts <= tack_end, (
+            f"Maneuver ts {m.ts} should be within tack interval [{tack_start}, {tack_end}]"
+        )
 
 
 # ---------------------------------------------------------------------------
