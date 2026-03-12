@@ -2067,6 +2067,57 @@ def create_app(
         )
 
     # ------------------------------------------------------------------
+    # /api/sessions/{id}/polar  (session polar comparison)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/sessions/{session_id}/polar")
+    async def api_session_polar(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        import helmlog.polar as _polar
+
+        data = await _polar.session_polar_comparison(storage, session_id)
+        if data is None:
+            return JSONResponse(
+                {"cells": [], "tws_bins": [], "twa_bins": [], "session_sample_count": 0}
+            )
+        return JSONResponse(
+            {
+                "cells": [
+                    {
+                        "tws": c.tws_bin,
+                        "twa": c.twa_bin,
+                        "baseline_mean": c.baseline_mean_bsp,
+                        "baseline_p90": c.baseline_p90_bsp,
+                        "session_mean": c.session_mean_bsp,
+                        "samples": c.session_sample_count,
+                        "delta": c.delta,
+                    }
+                    for c in data.cells
+                ],
+                "tws_bins": data.tws_bins,
+                "twa_bins": data.twa_bins,
+                "session_sample_count": data.session_sample_count,
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # /api/polar/rebuild
+    # ------------------------------------------------------------------
+
+    @app.post("/api/polar/rebuild", status_code=200)
+    async def api_polar_rebuild(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        import helmlog.polar as _polar
+
+        count = await _polar.build_polar_baseline(storage)
+        await _audit(request, "polar.rebuild", detail=f"{count} bins", user=_user)
+        return JSONResponse({"bins": count})
+
+    # ------------------------------------------------------------------
     # /api/sessions/{id}/maneuvers  (maneuver detection)
     # ------------------------------------------------------------------
 
