@@ -523,26 +523,20 @@ class TestNoTackGybeTransitionWithoutRounding:
         assert len(gybes) >= 1, "Expected at least one gybe"
         assert len(roundings) >= 1, "Expected at least one rounding"
 
-        # Merge and sort by timestamp
+        # Merge and sort by timestamp — apply same dedup as detect_maneuvers:
+        # tacks/gybes take priority, drop roundings that overlap with them.
         from helmlog.maneuver_detector import _MIN_MANEUVER_GAP_S
 
-        rounding_times = {m.ts for m in roundings}
-        # Apply same dedup as detect_maneuvers: drop tacks/gybes overlapping roundings
-        deduped_tacks = [
-            t
-            for t in tacks
+        tack_gybe_times = {m.ts for m in tacks + gybes}
+        deduped_roundings = [
+            r
+            for r in roundings
             if not any(
-                abs((t.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
+                abs((r.ts - tg_ts).total_seconds()) < _MIN_MANEUVER_GAP_S
+                for tg_ts in tack_gybe_times
             )
         ]
-        deduped_gybes = [
-            g
-            for g in gybes
-            if not any(
-                abs((g.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
-            )
-        ]
-        all_m = sorted(deduped_tacks + deduped_gybes + roundings, key=lambda m: m.ts)
+        all_m = sorted(tacks + gybes + deduped_roundings, key=lambda m: m.ts)
 
         for i in range(1, len(all_m)):
             prev_type = all_m[i - 1].type

@@ -302,8 +302,8 @@ def _detect(
     windows and rejects any where TWA crosses the 90° boundary (those are mark
     roundings).  When *upwind* is None and *require_twa_crossing* is False, no
     wind-angle filter is applied (GPS-only course changes).  When
-    *require_twa_crossing* is True, only windows where TWA crosses the 90°
-    boundary are kept (mark rounding detection).
+    *require_twa_crossing* is True, only windows where TWA clearly crosses the
+    90° boundary within the window itself are kept (mark rounding detection).
     """
     if len(hdg) < _DETECTION_WINDOW_S + 2:
         return []
@@ -342,31 +342,34 @@ def _detect(
 
             crosses_in_window = _twa_crosses_90(window_twa)
 
-            # Also check pre-window vs post-window TWA regime to catch cases
-            # where the window starts after the crossing has already begun.
-            pre_idx = max(0, i - _PRE_WINDOW_S)
-            pre_twa_vals = [
-                (v if v <= 180 else 360 - v)
-                for j in range(pre_idx, i)
-                if hdg[j][0] in twa_by_ts
-                for v in [twa_by_ts[hdg[j][0]]]
-            ]
-            post_end = min(n, i + _DETECTION_WINDOW_S + _PRE_WINDOW_S)
-            post_twa_vals = [
-                (v if v <= 180 else 360 - v)
-                for j in range(i + _DETECTION_WINDOW_S, post_end)
-                if hdg[j][0] in twa_by_ts
-                for v in [twa_by_ts[hdg[j][0]]]
-            ]
-            regime_changed = _twa_regime_changed(pre_twa_vals, post_twa_vals)
-
             if require_twa_crossing:
-                # Mark rounding: TWA must cross 90° in-window or regime must change
-                if not crosses_in_window and not regime_changed:
+                # Mark rounding: TWA must cross 90° within the detection window.
+                # The in-window check (first-third vs last-third) is the right
+                # granularity; the old pre/post regime check was too wide and
+                # caught natural wind shifts, producing false roundings.
+                if not crosses_in_window:
                     i += 1
                     continue
             elif upwind is not None:
-                # Tack/gybe: reject if TWA crosses 90° or regime changes
+                # Tack/gybe: reject if TWA crosses 90° (that's a rounding).
+                # Also check pre/post regime — if the sailing mode changes
+                # from upwind to downwind (or vice versa) around this event,
+                # it's a mark rounding even if the in-window check is borderline.
+                pre_idx = max(0, i - _PRE_WINDOW_S)
+                pre_twa_vals = [
+                    (v if v <= 180 else 360 - v)
+                    for j in range(pre_idx, i)
+                    if hdg[j][0] in twa_by_ts
+                    for v in [twa_by_ts[hdg[j][0]]]
+                ]
+                post_end = min(n, i + _DETECTION_WINDOW_S + _PRE_WINDOW_S)
+                post_twa_vals = [
+                    (v if v <= 180 else 360 - v)
+                    for j in range(i + _DETECTION_WINDOW_S, post_end)
+                    if hdg[j][0] in twa_by_ts
+                    for v in [twa_by_ts[hdg[j][0]]]
+                ]
+                regime_changed = _twa_regime_changed(pre_twa_vals, post_twa_vals)
                 if crosses_in_window or regime_changed:
                     i += 1
                     continue
@@ -596,35 +599,13 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
     gybes = detect_gybes(hdg_list, bsp_list, twa_list)
     roundings = detect_mark_roundings(hdg_list, bsp_list, twa_list)
 
-    # Cross-type deduplication: roundings take priority over tacks/gybes.
-    # A heading change where TWA crosses the 90° boundary is definitionally a
-    # rounding (mark turn), not a tack or gybe.  When a rounding overlaps
-    # temporally with a tack or gybe, drop the tack/gybe and keep the rounding.
-    rounding_times = {m.ts for m in roundings}
-    deduped_tacks: list[Maneuver] = []
-    for t in tacks:
-        too_close = any(
-            abs((t.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
-        )
-        if not too_close:
-            deduped_tacks.append(t)
-    deduped_gybes: list[Maneuver] = []
-    for g in gybes:
-        too_close = any(
-            abs((g.ts - r_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for r_ts in rounding_times
-        )
-        if not too_close:
-            deduped_gybes.append(g)
-    tacks = deduped_tacks
-    gybes = deduped_gybes
-    deduped_roundings = list(roundings)
-
-    # Remove consecutive roundings — in a real race a rounding is always
+    # Remove consecutive roundings first — in a real race a rounding is always
     # followed by a tack or gybe leg before the next rounding.  When two
     # roundings appear in a row, keep the one with the larger heading change.
+    # This runs BEFORE cross-type dedup so the tack/gybe list is still intact.
+    deduped_roundings = list(roundings)
     if len(deduped_roundings) > 1:
         deduped_roundings.sort(key=lambda m: m.ts)
-        # Merge all maneuver types and sort to check interleaving
         tg_sorted = sorted(tacks + gybes, key=lambda m: m.ts)
         filtered_roundings: list[Maneuver] = []
         for i, rnd in enumerate(deduped_roundings):
@@ -632,17 +613,28 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
                 filtered_roundings.append(rnd)
                 continue
             prev = filtered_roundings[-1]
-            # Check if there is a tack or gybe between prev rounding and this one
             has_intervening = any(prev.ts < tg.ts < rnd.ts for tg in tg_sorted)
             if has_intervening:
                 filtered_roundings.append(rnd)
             else:
-                # Consecutive roundings — keep the one with larger heading change
                 prev_hdg = prev.details.get("hdg_change_deg", 0)
                 rnd_hdg = rnd.details.get("hdg_change_deg", 0)
                 if rnd_hdg > prev_hdg:
                     filtered_roundings[-1] = rnd
         deduped_roundings = filtered_roundings
+
+    # Cross-type deduplication: tacks/gybes take priority over roundings.
+    # Tack and gybe detection is more constrained (must stay on one side of
+    # 90° TWA), making it the more reliable classification.  A rounding is
+    # only kept when no tack or gybe was detected for the same event.
+    tack_gybe_times = {m.ts for m in tacks + gybes}
+    deduped_roundings = [
+        r
+        for r in deduped_roundings
+        if not any(
+            abs((r.ts - tg_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for tg_ts in tack_gybe_times
+        )
+    ]
 
     # Annotate with TWS bin where available
     all_maneuvers: list[Maneuver] = []
