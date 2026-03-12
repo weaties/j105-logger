@@ -390,13 +390,11 @@ class TestDetectAll:
                 )
 
 
-def _build_tack_rounding_gybe_sequence() -> (
-    tuple[
-        list[tuple[datetime, float]],
-        list[tuple[datetime, float]],
-        list[tuple[datetime, float]],
-    ]
-):
+def _build_tack_rounding_gybe_sequence() -> tuple[
+    list[tuple[datetime, float]],
+    list[tuple[datetime, float]],
+    list[tuple[datetime, float]],
+]:
     """Build: steady upwind → tack → steady → rounding → steady downwind → gybe → steady."""
     hdg: list[tuple[datetime, float]] = []
     twa: list[tuple[datetime, float]] = []
@@ -438,13 +436,11 @@ def _build_tack_rounding_gybe_sequence() -> (
     return hdg, bsp, twa
 
 
-def _build_two_lap_race() -> (
-    tuple[
-        list[tuple[datetime, float]],
-        list[tuple[datetime, float]],
-        list[tuple[datetime, float]],
-    ]
-):
+def _build_two_lap_race() -> tuple[
+    list[tuple[datetime, float]],
+    list[tuple[datetime, float]],
+    list[tuple[datetime, float]],
+]:
     """Synthesise a 2-lap windward/leeward race.
 
     Pattern: tack leg → windward rounding → gybe leg → leeward rounding → repeat.

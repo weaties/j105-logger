@@ -1406,8 +1406,7 @@ class Storage:
             hdg_rows,
         )
         await db.executemany(
-            "INSERT INTO speeds (ts, source_addr, speed_kts, race_id)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT INTO speeds (ts, source_addr, speed_kts, race_id) VALUES (?, ?, ?, ?)",
             spd_rows,
         )
         await db.executemany(
