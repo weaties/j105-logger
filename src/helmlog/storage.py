@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 33
+_CURRENT_VERSION: int = 34
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -721,6 +721,10 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_synth_course_marks_session
             ON synth_course_marks(session_id);
+    """,
+    34: """
+        ALTER TABLE users ADD COLUMN is_developer INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE invite_tokens ADD COLUMN is_developer INTEGER NOT NULL DEFAULT 0;
     """,
 }
 
@@ -2868,7 +2872,9 @@ class Storage:
     # Auth: users, invite tokens, sessions
     # ------------------------------------------------------------------
 
-    async def create_user(self, email: str, name: str | None, role: str) -> int:
+    async def create_user(
+        self, email: str, name: str | None, role: str, *, is_developer: bool = False
+    ) -> int:
         """Insert a new user and return the new id."""
         from datetime import UTC
         from datetime import datetime as _datetime
@@ -2876,15 +2882,16 @@ class Storage:
         now = _datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
-            "INSERT INTO users (email, name, role, created_at) VALUES (?, ?, ?, ?)",
-            (email.lower().strip(), name, role, now),
+            "INSERT INTO users (email, name, role, created_at, is_developer)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (email.lower().strip(), name, role, now, int(is_developer)),
         )
         await db.commit()
         assert cur.lastrowid is not None
         return cur.lastrowid
 
     async def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
-        cols = "id, email, name, role, created_at, last_seen, avatar_path"
+        cols = "id, email, name, role, created_at, last_seen, avatar_path, is_developer"
         cur = await self._conn().execute(
             f"SELECT {cols} FROM users WHERE id = ?",
             (user_id,),
@@ -2893,7 +2900,7 @@ class Storage:
         return dict(row) if row else None
 
     async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
-        cols = "id, email, name, role, created_at, last_seen, avatar_path"
+        cols = "id, email, name, role, created_at, last_seen, avatar_path, is_developer"
         cur = await self._conn().execute(
             f"SELECT {cols} FROM users WHERE email = ?",
             (email.lower().strip(),),
@@ -2915,9 +2922,17 @@ class Storage:
         await db.execute("UPDATE users SET last_seen = ? WHERE id = ?", (now, user_id))
         await db.commit()
 
+    async def update_user_developer(self, user_id: int, is_developer: bool) -> None:
+        db = self._conn()
+        await db.execute(
+            "UPDATE users SET is_developer = ? WHERE id = ?", (int(is_developer), user_id)
+        )
+        await db.commit()
+
     async def list_users(self) -> list[dict[str, Any]]:
         cur = await self._conn().execute(
-            "SELECT id, email, name, role, created_at, last_seen FROM users ORDER BY created_at"
+            "SELECT id, email, name, role, created_at, last_seen, is_developer"
+            " FROM users ORDER BY created_at"
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
@@ -2929,18 +2944,20 @@ class Storage:
         role: str,
         created_by: int | None,
         expires_at: str,
+        *,
+        is_developer: bool = False,
     ) -> None:
         db = self._conn()
         await db.execute(
-            "INSERT INTO invite_tokens (token, email, role, created_by, expires_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (token, email.lower().strip(), role, created_by, expires_at),
+            "INSERT INTO invite_tokens (token, email, role, created_by, expires_at, is_developer)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (token, email.lower().strip(), role, created_by, expires_at, int(is_developer)),
         )
         await db.commit()
 
     async def get_invite_token(self, token: str) -> dict[str, Any] | None:
         cur = await self._conn().execute(
-            "SELECT token, email, role, created_by, expires_at, used_at"
+            "SELECT token, email, role, created_by, expires_at, used_at, is_developer"
             " FROM invite_tokens WHERE token = ?",
             (token,),
         )

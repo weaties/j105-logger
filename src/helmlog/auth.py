@@ -138,6 +138,34 @@ def require_auth(min_role: str = "viewer") -> Callable[..., Any]:
     return _dep
 
 
+async def require_developer(
+    request: Request,
+    session: Annotated[str | None, Cookie()] = None,
+) -> dict[str, Any]:
+    """FastAPI dependency that enforces the ``is_developer`` flag.
+
+    Must be used alongside ``require_auth()`` — this only checks the flag,
+    not the role rank.  Use as an additional ``Depends()`` on routes that
+    need developer access.
+    """
+    user = await _resolve_user(request, session)
+    if user is None:
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            raise HTTPException(
+                status_code=status.HTTP_307_TEMPORARY_REDIRECT,
+                headers={"Location": f"/login?next={request.url.path}"},
+            )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    if not user.get("is_developer"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Developer access required"
+        )
+
+    return user
+
+
 # ---------------------------------------------------------------------------
 # Token / session helpers (called from web.py routes)
 # ---------------------------------------------------------------------------

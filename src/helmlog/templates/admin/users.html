@@ -18,7 +18,7 @@ input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;paddi
 <h1>Admin — Users &amp; Sessions</h1>
 <div class="card">
 <h2>Users</h2>
-<table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Last seen</th><th></th></tr></thead>
+<table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Dev</th><th>Last seen</th><th></th></tr></thead>
 <tbody>{{ user_rows|safe }}</tbody>
 </table>
 </div>
@@ -29,6 +29,7 @@ input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;paddi
 <label>Name</label><input type="text" id="inv-name" placeholder="Optional"/>
 <label>Role</label>
 <select id="inv-role"><option value="viewer">viewer</option><option value="crew">crew</option><option value="admin">admin</option></select><br/>
+<label style="display:inline;cursor:pointer"><input type="checkbox" id="inv-developer"/> Developer</label><br/>
 <button class="btn" type="submit">Generate invite link</button>
 </form>
 <div id="invite-result"></div>
@@ -47,10 +48,12 @@ document.getElementById('invite-form').addEventListener('submit', async e => {
   const email = document.getElementById('inv-email').value;
   const name = document.getElementById('inv-name').value;
   const role = document.getElementById('inv-role').value;
+  const isDev = document.getElementById('inv-developer').checked;
   const fd = new FormData();
   fd.append('email', email);
   fd.append('name', name);
   fd.append('role', role);
+  if (isDev) fd.append('is_developer', '1');
   const r = await fetch('/admin/users/invite', {method:'POST', body:fd});
   const d = await r.json();
   document.getElementById('invite-result').textContent = d.invite_url || JSON.stringify(d);
@@ -59,6 +62,10 @@ async function changeRole(userId) {
   const role = prompt('New role (viewer/crew/admin):');
   if (!role) return;
   await fetch('/admin/users/' + userId + '/role', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({role})});
+  location.reload();
+}
+async function toggleDev(userId, value) {
+  await fetch('/admin/users/' + userId + '/developer', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({is_developer: !!value})});
   location.reload();
 }
 async function revokeSession(sid) {

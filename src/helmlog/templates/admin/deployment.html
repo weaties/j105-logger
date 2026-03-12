@@ -177,8 +177,10 @@ async function loadBranches(){
   const data=await r.json();
   const sel=document.getElementById('cfg-branch');
   const current=statusData?statusData.branch:'';
+  const standard=new Set(['main','live','stage']);
   sel.innerHTML='';
   for(const b of data.branches){
+    if(!_isDeveloper && !standard.has(b)) continue;
     const opt=document.createElement('option');
     opt.value=b;opt.textContent=b;
     if(b===current) opt.selected=true;

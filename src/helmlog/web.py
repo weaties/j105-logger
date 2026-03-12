@@ -340,6 +340,7 @@ def create_app(
         generate_token,
         invite_expires_at,
         require_auth,
+        require_developer,
         session_expires_at,
     )
 
@@ -426,6 +427,7 @@ def create_app(
                 "name": user.get("name"),
                 "role": user.get("role"),
                 "avatar_path": user.get("avatar_path"),
+                "is_developer": bool(user.get("is_developer")),
             }
         )
 
@@ -484,7 +486,9 @@ def create_app(
         # Find or create the user
         user = await storage.get_user_by_email(row["email"])
         if user is None:
-            user_id = await storage.create_user(row["email"], None, row["role"])
+            user_id = await storage.create_user(
+                row["email"], None, row["role"], is_developer=bool(row.get("is_developer"))
+            )
         else:
             user_id = user["id"]
 
@@ -663,8 +667,10 @@ def create_app(
         user_rows = "".join(
             f"<tr><td>{u['email']}</td><td>{u['name'] or '—'}</td>"
             f"<td>{_badge(u['role'])}</td>"
+            f"<td>{'&#9989;' if u.get('is_developer') else '—'}</td>"
             f"<td>{_local_ts(u['last_seen'])}</td>"
-            f'<td><button onclick="changeRole({u["id"]})" style="cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem">Change role</button></td>'  # noqa: E501
+            f'<td><button onclick="changeRole({u["id"]})" style="cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem">Change role</button>'  # noqa: E501
+            f' <button onclick="toggleDev({u["id"]},{1 if not u.get("is_developer") else 0})" style="cursor:pointer;background:none;border:1px solid #d97706;color:#fbbf24;border-radius:4px;padding:2px 8px;font-size:.8rem">{"Remove dev" if u.get("is_developer") else "Make dev"}</button></td>'  # noqa: E501
             f"</tr>"
             for u in users
         )
@@ -695,6 +701,7 @@ def create_app(
         email: str = Form(...),
         role: str = Form(...),
         name: str = Form(default=""),
+        is_developer: str = Form(default=""),
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> JSONResponse:
         if role not in ("admin", "crew", "viewer"):
@@ -703,11 +710,15 @@ def create_app(
         if not email:
             raise HTTPException(status_code=422, detail="email must not be blank")
         clean_name = name.strip() or None
+        dev_flag = is_developer in ("1", "on", "true")
         token = generate_token()
         base = str(request.base_url).rstrip("/")
-        await storage.create_invite_token(token, email, role, _user["id"], invite_expires_at())
+        await storage.create_invite_token(
+            token, email, role, _user["id"], invite_expires_at(), is_developer=dev_flag
+        )
         invite_url = f"{base}/login?token={token}"
-        await _audit(request, "user.invite", detail=f"{email} as {role}", user=_user)
+        dev_label = " +developer" if dev_flag else ""
+        await _audit(request, "user.invite", detail=f"{email} as {role}{dev_label}", user=_user)
 
         from helmlog.email import send_welcome_email, smtp_configured
 
@@ -735,6 +746,22 @@ def create_app(
             raise HTTPException(status_code=404, detail="User not found")
         await storage.update_user_role(user_id, role)
         await _audit(request, "user.role", detail=f"user={user_id} role={role}", user=_user)
+
+    @app.put("/admin/users/{user_id}/developer", status_code=204, include_in_schema=False)
+    async def admin_update_developer(
+        request: Request,
+        user_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        user = await storage.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        is_dev = bool(body.get("is_developer"))
+        await storage.update_user_developer(user_id, is_dev)
+        await _audit(
+            request, "user.developer", detail=f"user={user_id} is_developer={is_dev}", user=_user
+        )
 
     @app.delete("/admin/sessions/{session_id}", status_code=204, include_in_schema=False)
     async def admin_revoke_session(
@@ -1826,6 +1853,7 @@ def create_app(
     async def api_synthesize_session(
         request: Request,
         _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+        _dev: dict[str, Any] = Depends(require_developer),  # noqa: B008
     ) -> JSONResponse:
         from helmlog.courses import (
             CourseMark,
