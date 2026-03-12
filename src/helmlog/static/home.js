@@ -1209,13 +1209,20 @@ let _importedPeerInfo = null;
 
 async function loadCoopPeers() {
   try {
-    const resp = await fetch('/api/co-op/peers');
+    const resp = await fetch('/api/federation/co-ops');
     if (!resp.ok) return;
     const data = await resp.json();
+    // Flatten peers from all co-ops, tagging each with co_op_id
+    const allPeers = [];
+    for (const coop of (data.co_ops || [])) {
+      for (const p of (coop.peers || [])) {
+        allPeers.push({...p, co_op_id: coop.co_op_id});
+      }
+    }
     const sel = document.getElementById('synth-peer');
     const cur = sel.value;
     while (sel.options.length > 1) sel.remove(1);
-    for (const p of (data.peers || [])) {
+    for (const p of allPeers) {
       const label = (p.boat_name || p.sail_number || p.fingerprint) +
         (p.sail_number && p.boat_name ? ' (' + p.sail_number + ')' : '');
       const opt = new Option(label, JSON.stringify({fp: p.fingerprint, coop: p.co_op_id}));
@@ -1224,7 +1231,7 @@ async function loadCoopPeers() {
     if (cur) sel.value = cur;
 
     // Also populate peer session picker for wind model import
-    await loadPeerSessions(data.peers || []);
+    await loadPeerSessions(allPeers);
   } catch (_) {}
 }
 
