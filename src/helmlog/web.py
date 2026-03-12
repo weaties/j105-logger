@@ -1835,7 +1835,7 @@ def create_app(
             validate_course_marks,
         )
         from helmlog.races import build_race_name, local_today
-        from helmlog.synthesize import SynthConfig, simulate
+        from helmlog.synthesize import HeaderResponseConfig, SynthConfig, simulate
 
         body = await request.json()
         course_type = body.get("course_type", "windward_leeward")
@@ -1852,6 +1852,25 @@ def create_app(
         mark_sequence = body.get("mark_sequence", "")
         peer_fingerprint: str | None = body.get("peer_fingerprint") or None
         peer_co_op_id: str | None = body.get("peer_co_op_id") or None
+
+        # Header response model — probabilistic tacking on wind shifts (#247)
+        hr_raw = body.get("header_response")
+        if isinstance(hr_raw, dict):
+            header_response = HeaderResponseConfig(
+                reaction_probability=float(hr_raw.get("reaction_probability", 0.70)),
+                min_shift_threshold=(
+                    float(hr_raw.get("min_shift_threshold_low", 3.0)),
+                    float(hr_raw.get("min_shift_threshold_high", 8.0)),
+                ),
+                reaction_delay=(
+                    float(hr_raw.get("reaction_delay_low", 10.0)),
+                    float(hr_raw.get("reaction_delay_high", 45.0)),
+                ),
+                fatigue_start_frac=float(hr_raw.get("fatigue_start_frac", 0.70)),
+                fatigue_floor=float(hr_raw.get("fatigue_floor", 0.40)),
+            )
+        else:
+            header_response = HeaderResponseConfig()
 
         # Parse optional mark position overrides from user-dragged map markers
         raw_overrides = body.get("mark_overrides")
@@ -1901,6 +1920,7 @@ def create_app(
             legs=legs,
             seed=seed,
             start_time=now,
+            header_response=header_response,
         )
 
         rows = await asyncio.to_thread(simulate, config)

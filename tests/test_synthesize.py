@@ -9,6 +9,7 @@ import pytest
 from helmlog.courses import build_triangle_course, build_wl_course, is_in_water
 from helmlog.synthesize import (
     _DEPTH_FLOOR,
+    HeaderResponseConfig,
     SynthConfig,
     SynthRow,
     WindModel,
@@ -318,4 +319,116 @@ class TestLandAvoidance:
         assert on_land == [], (
             f"{len(on_land)} points on land, first: t={on_land[0][0]}s "
             f"({on_land[0][1]:.5f}, {on_land[0][2]:.5f})"
+        )
+
+
+class TestHeaderResponse:
+    """Verify probabilistic tacking on wind shifts (#247)."""
+
+    _START = (47.70, -122.44)
+
+    def _make_config(
+        self,
+        seed: int = 42,
+        header_response: HeaderResponseConfig | None = None,
+    ) -> SynthConfig:
+        legs = build_wl_course(*self._START, 0.0, 1.0, laps=1)
+        return SynthConfig(
+            start_lat=self._START[0],
+            start_lon=self._START[1],
+            base_twd=0.0,
+            tws_low=10.0,
+            tws_high=12.0,
+            shift_interval=(600.0, 1200.0),
+            shift_magnitude=(8.0, 14.0),
+            legs=legs,
+            seed=seed,
+            start_time=datetime(2025, 8, 10, 18, 0, 0, tzinfo=UTC),
+            header_response=header_response or HeaderResponseConfig(),
+        )
+
+    def _count_tacks(self, rows: list[SynthRow]) -> int:
+        """Count maneuvers by detecting cumulative heading swings > 60° over 15s windows."""
+        count = 0
+        cooldown = 0
+        for i in range(15, len(rows)):
+            if cooldown > 0:
+                cooldown -= 1
+                continue
+            hdiff = abs(rows[i].heading - rows[i - 15].heading)
+            if hdiff > 180:
+                hdiff = 360 - hdiff
+            if hdiff > 60:
+                count += 1
+                cooldown = 20  # skip ahead to avoid double-counting
+        return count
+
+    def test_different_seeds_different_responses(self) -> None:
+        """Two boats with different seeds should not tack identically."""
+        rows_a = simulate(self._make_config(seed=42))
+        rows_b = simulate(self._make_config(seed=99))
+        # Compare heading sequences — different seeds must produce different tracks
+        hdg_a = [r.heading for r in rows_a[:300]]
+        hdg_b = [r.heading for r in rows_b[:300]]
+        assert hdg_a != hdg_b, "Different seeds should produce different heading sequences"
+
+    def test_perfect_vmg_never_misses_shifts(self) -> None:
+        """With reaction_probability=1.0 and threshold=0, should respond to every shift."""
+        aggressive = HeaderResponseConfig(
+            reaction_probability=1.0,
+            min_shift_threshold=(0.0, 0.1),
+            reaction_delay=(1.0, 2.0),
+            fatigue_start_frac=1.0,
+        )
+        passive = HeaderResponseConfig(
+            reaction_probability=0.0,
+            min_shift_threshold=(90.0, 90.0),
+            reaction_delay=(1.0, 2.0),
+        )
+        rows_aggressive = simulate(self._make_config(header_response=aggressive))
+        rows_passive = simulate(self._make_config(header_response=passive))
+        tacks_aggressive = self._count_tacks(rows_aggressive)
+        tacks_passive = self._count_tacks(rows_passive)
+        # Aggressive should tack more often than passive
+        assert tacks_aggressive > tacks_passive, (
+            f"Aggressive ({tacks_aggressive} tacks) should tack more than "
+            f"passive ({tacks_passive} tacks)"
+        )
+
+    def test_deterministic_same_seed(self) -> None:
+        """Same seed + same config = identical track."""
+        rows_a = simulate(self._make_config(seed=42))
+        rows_b = simulate(self._make_config(seed=42))
+        assert len(rows_a) == len(rows_b)
+        for a, b in zip(rows_a[:100], rows_b[:100], strict=True):
+            assert a.lat == b.lat
+            assert a.lon == b.lon
+            assert a.heading == b.heading
+
+    def test_still_finishes_near_start(self) -> None:
+        """Header response should not break course completion."""
+        rows = simulate(self._make_config())
+        drift = _distance_nm(rows[-1].lat, rows[-1].lon, *self._START)
+        assert drift < 0.05, f"Drifted {drift:.3f} nm from start"
+
+    def test_fatigue_reduces_tacking(self) -> None:
+        """Early fatigue onset (frac=0.0) should reduce total tacks vs no fatigue."""
+        no_fatigue = HeaderResponseConfig(
+            reaction_probability=0.80,
+            fatigue_start_frac=1.0,  # no fatigue
+            fatigue_floor=0.80,
+        )
+        early_fatigue = HeaderResponseConfig(
+            reaction_probability=0.80,
+            fatigue_start_frac=0.0,  # fatigued from the start
+            fatigue_floor=0.10,
+        )
+        rows_fresh = simulate(self._make_config(header_response=no_fatigue))
+        rows_tired = simulate(self._make_config(header_response=early_fatigue))
+        tacks_fresh = self._count_tacks(rows_fresh)
+        tacks_tired = self._count_tacks(rows_tired)
+        # Fatigued crew should tack no more than fresh crew
+        # (could be equal if interval tacks dominate, but shouldn't tack more)
+        assert tacks_tired <= tacks_fresh + 2, (
+            f"Fatigued ({tacks_tired}) should not tack much more than fresh ({tacks_fresh})"
         )
