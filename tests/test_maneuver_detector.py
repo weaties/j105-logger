@@ -1,4 +1,4 @@
-"""Tests for maneuver_detector.py — tack/gybe detection from 1 Hz instrument data."""
+"""Tests for maneuver_detector.py — tack/gybe/rounding detection from 1 Hz instrument data."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ from helmlog.maneuver_detector import (
     _heading_change,
     _peak_change_index,
     _tack_threshold,
+    _twa_crosses_90,
     detect_gybes,
     detect_maneuvers,
+    detect_mark_roundings,
     detect_tacks,
 )
 
@@ -315,6 +317,129 @@ class TestDetectGybes:
 
 
 # ---------------------------------------------------------------------------
+# _twa_crosses_90 — helper
+# ---------------------------------------------------------------------------
+
+
+class TestTwaCrosses90:
+    def test_upwind_to_downwind(self) -> None:
+        """TWA from 45° to 135° → crosses 90°."""
+        values = [45.0] * 5 + [90.0] * 5 + [135.0] * 5
+        assert _twa_crosses_90(values) is True
+
+    def test_downwind_to_upwind(self) -> None:
+        """TWA from 140° to 50° → crosses 90°."""
+        values = [140.0] * 5 + [90.0] * 5 + [50.0] * 5
+        assert _twa_crosses_90(values) is True
+
+    def test_stays_upwind(self) -> None:
+        """TWA stays at 45° → no crossing."""
+        values = [45.0] * 15
+        assert _twa_crosses_90(values) is False
+
+    def test_stays_downwind(self) -> None:
+        """TWA stays at 150° → no crossing."""
+        values = [150.0] * 15
+        assert _twa_crosses_90(values) is False
+
+    def test_too_short(self) -> None:
+        """Fewer than 3 values → no crossing."""
+        assert _twa_crosses_90([45.0, 135.0]) is False
+
+
+# ---------------------------------------------------------------------------
+# detect_mark_roundings — pure function
+# ---------------------------------------------------------------------------
+
+
+class TestDetectMarkRoundings:
+    def test_windward_mark_rounding_detected(self) -> None:
+        """Heading change with TWA crossing from upwind to downwind → rounding."""
+        # Build a heading series with a 90° turn
+        hdg = _make_tack_series(0.0, 90.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 6.5)
+        # TWA transitions from 45° (upwind) to 135° (downwind) during the turn
+        twa = []
+        for i, (ts, _) in enumerate(hdg):
+            if i < 30:
+                twa.append((ts, 45.0))  # upwind before the mark
+            elif i < 40:
+                frac = (i - 30) / 9
+                twa.append((ts, 45.0 + frac * 90.0))  # transition through 90°
+            else:
+                twa.append((ts, 135.0))  # downwind after the mark
+        maneuvers = detect_mark_roundings(hdg, bsp, twa)
+        assert len(maneuvers) >= 1
+        assert all(m.type == "rounding" for m in maneuvers)
+
+    def test_leeward_mark_rounding_detected(self) -> None:
+        """Heading change with TWA crossing from downwind to upwind → rounding."""
+        hdg = _make_tack_series(180.0, 90.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 7.0)
+        # TWA transitions from 150° (downwind) to 50° (upwind)
+        twa = []
+        for i, (ts, _) in enumerate(hdg):
+            if i < 30:
+                twa.append((ts, 150.0))
+            elif i < 40:
+                frac = (i - 30) / 9
+                twa.append((ts, 150.0 - frac * 100.0))
+            else:
+                twa.append((ts, 50.0))
+        maneuvers = detect_mark_roundings(hdg, bsp, twa)
+        assert len(maneuvers) >= 1
+        assert all(m.type == "rounding" for m in maneuvers)
+
+    def test_tack_not_classified_as_rounding(self) -> None:
+        """Heading change with TWA staying upwind → not a rounding."""
+        hdg = _make_tack_series(40.0, 320.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 6.5)
+        twa = _const(hdg, 45.0)  # stays upwind throughout
+        maneuvers = detect_mark_roundings(hdg, bsp, twa)
+        assert len(maneuvers) == 0
+
+    def test_gybe_not_classified_as_rounding(self) -> None:
+        """Heading change with TWA staying downwind → not a rounding."""
+        hdg = _make_tack_series(180.0, 250.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 8.0)
+        twa = _const(hdg, 150.0)  # stays downwind throughout
+        maneuvers = detect_mark_roundings(hdg, bsp, twa)
+        assert len(maneuvers) == 0
+
+    def test_windward_mark_not_classified_as_tack(self) -> None:
+        """A mark rounding (TWA crosses 90°) must NOT appear as a tack."""
+        hdg = _make_tack_series(0.0, 90.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 6.5)
+        twa = []
+        for i, (ts, _) in enumerate(hdg):
+            if i < 30:
+                twa.append((ts, 45.0))
+            elif i < 40:
+                frac = (i - 30) / 9
+                twa.append((ts, 45.0 + frac * 90.0))
+            else:
+                twa.append((ts, 135.0))
+        tacks = detect_tacks(hdg, bsp, twa)
+        assert len(tacks) == 0
+
+    def test_windward_mark_not_classified_as_gybe(self) -> None:
+        """A mark rounding (TWA crosses 90°) must NOT appear as a gybe."""
+        hdg = _make_tack_series(0.0, 90.0, pre_steps=30, tack_steps=10, post_steps=30)
+        bsp = _const(hdg, 6.5)
+        twa = []
+        for i, (ts, _) in enumerate(hdg):
+            if i < 30:
+                twa.append((ts, 45.0))
+            elif i < 40:
+                frac = (i - 30) / 9
+                twa.append((ts, 45.0 + frac * 90.0))
+            else:
+                twa.append((ts, 135.0))
+        gybes = detect_gybes(hdg, bsp, twa)
+        assert len(gybes) == 0
+
+
+# ---------------------------------------------------------------------------
 # detect_maneuvers — integration with Storage
 # ---------------------------------------------------------------------------
 
@@ -391,7 +516,7 @@ async def test_detect_maneuvers_writes_to_db(storage: Storage) -> None:
     # Verify they're in DB
     stored = await storage.get_session_maneuvers(session_id)
     assert len(stored) == len(maneuvers)
-    assert stored[0]["type"] in ("tack", "gybe")
+    assert stored[0]["type"] in ("tack", "gybe", "rounding")
 
 
 @pytest.mark.asyncio

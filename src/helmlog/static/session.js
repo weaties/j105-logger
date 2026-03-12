@@ -764,7 +764,7 @@ function renderExports() {
 // Maneuvers
 // ---------------------------------------------------------------------------
 
-const _MANEUVER_COLORS = { tack: '#3b82f6', gybe: '#f97316' };
+const _MANEUVER_COLORS = { tack: '#3b82f6', gybe: '#f97316', rounding: '#22c55e' };
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
@@ -786,9 +786,11 @@ function renderManeuverCard() {
 
   const tacks = _maneuvers.filter(m => m.type === 'tack').length;
   const gybes = _maneuvers.filter(m => m.type === 'gybe').length;
+  const roundings = _maneuvers.filter(m => m.type === 'rounding').length;
   const summary = '<div style="color:#8892a4;font-size:.75rem;margin-bottom:6px">'
     + tacks + ' tack' + (tacks !== 1 ? 's' : '')
-    + (gybes ? ' &middot; ' + gybes + ' gybe' + (gybes !== 1 ? 's' : '') : '')
+    + ' &middot; ' + gybes + ' gybe' + (gybes !== 1 ? 's' : '')
+    + ' &middot; ' + roundings + ' rounding' + (roundings !== 1 ? 's' : '')
     + '</div>';
 
   let rows = _maneuvers.map((m, idx) => {

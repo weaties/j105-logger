@@ -2080,18 +2080,41 @@ def create_app(
 
         rows = await storage.get_session_maneuvers(session_id)
 
-        # Enrich with nearest position so the front end can place map markers
+        # Enrich with nearest position so the front end can place map markers.
+        # Find the closest position by checking both before and after the
+        # maneuver timestamp and picking the one with the smallest time gap.
         db = storage._conn()
         enriched = []
         for row in rows:
             d = dict(row)
             ts_str = str(d["ts"])[:19]
-            pos_cur = await db.execute(
-                "SELECT latitude_deg, longitude_deg FROM positions"
-                " WHERE ts >= ? ORDER BY ts LIMIT 1",
+            # Position just before or at the maneuver time
+            before_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts <= ? ORDER BY ts DESC LIMIT 1",
                 (ts_str,),
             )
-            pos = await pos_cur.fetchone()
+            before = await before_cur.fetchone()
+            # Position just after the maneuver time
+            after_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts > ? ORDER BY ts LIMIT 1",
+                (ts_str,),
+            )
+            after = await after_cur.fetchone()
+
+            # Pick the closer one by time delta
+            pos = None
+            if before and after:
+                from datetime import datetime as _dt
+
+                t_man = _dt.fromisoformat(ts_str)
+                t_before = _dt.fromisoformat(str(before["ts"])[:19])
+                t_after = _dt.fromisoformat(str(after["ts"])[:19])
+                pos = before if (t_man - t_before) <= (t_after - t_man) else after
+            else:
+                pos = before or after
+
             d["lat"] = float(pos["latitude_deg"]) if pos else None
             d["lon"] = float(pos["longitude_deg"]) if pos else None
             if d.get("details") and isinstance(d["details"], str):
@@ -2127,6 +2150,7 @@ def create_app(
                 "detected": len(maneuvers),
                 "tacks": sum(1 for m in maneuvers if m.type == "tack"),
                 "gybes": sum(1 for m in maneuvers if m.type == "gybe"),
+                "roundings": sum(1 for m in maneuvers if m.type == "rounding"),
             },
             status_code=202,
         )
