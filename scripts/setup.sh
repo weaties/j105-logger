@@ -684,6 +684,13 @@ sudo cp "$SCRIPT_DIR/loki/loki-config.yaml" /etc/loki/loki-config.yaml
 sudo mkdir -p /etc/promtail
 sudo cp "$SCRIPT_DIR/loki/promtail-config.yaml" /etc/promtail/promtail-config.yaml
 
+# Ensure loki/promtail groups exist (Debian packages create the users with
+# nogroup as primary group, but don't always create a matching group).
+getent group loki    >/dev/null 2>&1 || sudo groupadd -r loki
+getent group promtail >/dev/null 2>&1 || sudo groupadd -r promtail
+id -gn loki    | grep -qx loki    || sudo usermod -g loki    loki
+id -gn promtail | grep -qx promtail || sudo usermod -g promtail promtail
+
 # Data directories
 sudo mkdir -p /var/lib/loki /var/lib/promtail
 sudo chown loki:loki /var/lib/loki
@@ -829,6 +836,12 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/helmlog.conf /etc/nginx/sites-available/helmlog
+
+# .git/ ownership repair (deploy.sh may need to fix files owned by helmlog)
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /bin/chown -R ${CURRENT_USER}\:${CURRENT_USER} ${PROJECT_DIR}/.git/
+
+# helmlog service account — git as repo owner for web-triggered deploys
+helmlog ALL=(${CURRENT_USER}) NOPASSWD: /usr/bin/git
 EOF
 sudo chmod 440 "$SUDOERS_FILE"
 
