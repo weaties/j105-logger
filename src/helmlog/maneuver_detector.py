@@ -4,21 +4,19 @@ Detects tacks, gybes, and mark roundings from heading (HDG), boat speed (BSP),
 and true wind angle (TWA) data stored in SQLite. No hardware dependencies —
 input is decoded data structures.
 
-Algorithm (tack example):
-1. Align HDG, BSP, TWA by truncated-second timestamp key.
-2. Slide a 15 s window; sum signed heading changes (handles wrap-around).
-3. |ΔHDG| > 70° and mean TWA < 90° → tack candidate.
-4. BSP baseline: mean of pre-maneuver 30 s window.
-5. BSP loss: baseline − min(BSP in window).
-6. Duration: from first inflection to 90% BSP recovery.
+Two-phase algorithm:
+  Phase 1 — Event detection: slide a window over heading data and find all
+  significant heading changes (≥ threshold). One event per heading change.
 
-Mark rounding detection:
-  A heading change where TWA transitions across the 90° boundary (upwind ↔
-  downwind) is classified as a mark rounding rather than a tack or gybe.
-  The first and last thirds of the detection window are compared: if one is
-  upwind and the other downwind, it's a rounding.
+  Phase 2 — Classification via sailing state: for each event, measure the
+  mean TWA *before* and *after* the event (with a buffer to skip the
+  transition zone). If the boat stays upwind on both sides → tack. Stays
+  downwind → gybe. Crosses 90° → mark rounding.
 
-Phase 1 defaults (conservative): 70° tack threshold, 60° gybe threshold.
+This naturally prevents tack→gybe transitions without an intervening rounding
+because a state change is always classified as a rounding.
+
+Phase 1 defaults (conservative): 60° heading-change threshold.
 """
 
 from __future__ import annotations
@@ -36,13 +34,16 @@ if TYPE_CHECKING:
 # Constants (Phase 1 conservative defaults — §23 of federation-design.md)
 # ---------------------------------------------------------------------------
 
-_TACK_HDG_THRESHOLD: float = 70.0  # minimum total heading change for a tack (degrees)
-_GYBE_HDG_THRESHOLD: float = 60.0  # minimum total heading change for a gybe (degrees)
-_ROUNDING_HDG_THRESHOLD: float = 60.0  # minimum total heading change for a mark rounding
+_HDG_THRESHOLD: float = 60.0  # minimum heading change to detect any maneuver (degrees)
 _DETECTION_WINDOW_S: int = 15  # sliding window to accumulate heading change (seconds)
 _PRE_WINDOW_S: int = 30  # look-back for BSP baseline (seconds)
 _BSP_RECOVERY_FRACTION: float = 0.90  # fraction of baseline BSP to call "recovered"
 _MIN_MANEUVER_GAP_S: int = 20  # minimum gap between consecutive maneuvers (seconds)
+
+# State-classification buffers: measure TWA this many seconds before/after
+# the event peak, skipping _STATE_SKIP_S on each side to avoid the transition.
+_STATE_MEASURE_S: int = 10  # seconds of TWA to average for state determination
+_STATE_SKIP_S: int = 3  # seconds to skip on each side of the event peak
 
 # Wind reference codes (matches polar.py / storage.py convention)
 _WIND_REF_BOAT = 0  # wind_angle_deg is TWA (boat-referenced)
@@ -55,11 +56,11 @@ _WIND_REF_NORTH = 4  # wind_angle_deg is TWD (north-referenced)
 
 
 def _tack_threshold() -> float:
-    return _TACK_HDG_THRESHOLD
+    return _HDG_THRESHOLD
 
 
 def _gybe_threshold() -> float:
-    return _GYBE_HDG_THRESHOLD
+    return _HDG_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ def _gybe_threshold() -> float:
 class Maneuver:
     """A single detected sailing maneuver."""
 
-    type: str  # tack | gybe | rounding
+    type: str  # tack | gybe | rounding | maneuver
     ts: datetime  # UTC start of maneuver
     end_ts: datetime | None  # UTC end (BSP recovery), or None
     duration_sec: float | None  # seconds from start to recovery
@@ -161,159 +162,49 @@ def _twa_bin_value(twa_deg: float) -> int:
     return int(math.floor(twa_abs / 5)) * 5
 
 
+def _fold_twa(v: float) -> float:
+    """Fold a TWA value from [0, 360) to [0, 180]."""
+    return v if v <= 180 else 360 - v
+
+
 # ---------------------------------------------------------------------------
-# Core detection: pure functions (testable without Storage)
+# Phase 1: Detect heading-change events (type-agnostic)
 # ---------------------------------------------------------------------------
 
 
-def detect_tacks(
+@dataclass(frozen=True)
+class _HeadingEvent:
+    """A raw heading-change event before classification."""
+
+    ts: datetime  # timestamp at peak heading change
+    window_start_idx: int  # index into hdg list where the window started
+    hdg_change_deg: float  # absolute total heading change in window
+    loss_kts: float | None  # BSP loss vs pre-maneuver baseline
+    end_ts: datetime | None  # BSP recovery timestamp
+    duration_sec: float | None  # time to BSP recovery
+    twa_bin: int | None  # TWA bin at event time
+    tws_bin: int | None  # TWS bin at event time (populated later)
+
+
+def _detect_heading_events(
     hdg: list[tuple[datetime, float]],
     bsp: list[tuple[datetime, float]],
     twa: list[tuple[datetime, float]],
-) -> list[Maneuver]:
-    """Detect tacks from aligned 1 Hz heading, BSP, and TWA series.
+    threshold: float = _HDG_THRESHOLD,
+) -> list[_HeadingEvent]:
+    """Find all significant heading changes in the series.
 
-    Each argument is a list of (datetime, value) pairs, sorted by time.
-    Returns detected Maneuver objects (type="tack").
-    """
-    return _detect(hdg, bsp, twa, "tack", _TACK_HDG_THRESHOLD, upwind=True)
-
-
-def detect_gybes(
-    hdg: list[tuple[datetime, float]],
-    bsp: list[tuple[datetime, float]],
-    twa: list[tuple[datetime, float]],
-) -> list[Maneuver]:
-    """Detect gybes from aligned 1 Hz heading, BSP, and TWA series.
-
-    Each argument is a list of (datetime, value) pairs, sorted by time.
-    Returns detected Maneuver objects (type="gybe").
-    """
-    return _detect(hdg, bsp, twa, "gybe", _GYBE_HDG_THRESHOLD, upwind=False)
-
-
-def detect_course_changes(
-    cog: list[tuple[datetime, float]],
-    sog: list[tuple[datetime, float]],
-) -> list[Maneuver]:
-    """Detect significant course changes when no true wind data is available.
-
-    Uses COG and SOG (GPS-derived) instead of compass heading and boat speed.
-    Maneuvers are typed as ``"maneuver"`` because tack/gybe classification
-    requires TWA, which is absent in GPS-only sessions.
-
-    Uses the lower of the tack/gybe heading thresholds so that both types
-    of maneuver are captured.
-    """
-    threshold = min(_TACK_HDG_THRESHOLD, _GYBE_HDG_THRESHOLD)
-    return _detect(cog, sog, [], "maneuver", threshold, upwind=None)
-
-
-def detect_mark_roundings(
-    hdg: list[tuple[datetime, float]],
-    bsp: list[tuple[datetime, float]],
-    twa: list[tuple[datetime, float]],
-) -> list[Maneuver]:
-    """Detect mark roundings from aligned 1 Hz heading, BSP, and TWA series.
-
-    A mark rounding is a significant heading change where the TWA transitions
-    across the 90° boundary — the boat moves from upwind to downwind (windward
-    mark) or from downwind to upwind (leeward mark).  This distinguishes
-    roundings from tacks (which stay upwind) and gybes (which stay downwind).
-
-    Each argument is a list of (datetime, value) pairs, sorted by time.
-    Returns detected Maneuver objects (type="rounding").
-    """
-    return _detect(
-        hdg,
-        bsp,
-        twa,
-        "rounding",
-        _ROUNDING_HDG_THRESHOLD,
-        upwind=None,
-        require_twa_crossing=True,
-    )
-
-
-_TWA_CROSSING_MARGIN: float = 5.0  # min distance from 90° on each side to confirm crossing
-
-
-def _twa_crosses_90(twa_values: list[float]) -> bool:
-    """Return True if TWA transitions across the 90° boundary within the window.
-
-    Compares the mean TWA of the first third against the last third.  If one
-    is clearly upwind (<90° − margin) and the other clearly downwind
-    (>90° + margin), the boat is rounding a mark rather than performing a
-    tack or gybe.  The margin prevents noise near beam reach from triggering
-    false mark roundings.
-    """
-    if len(twa_values) < 3:
-        return False
-    third = max(len(twa_values) // 3, 1)
-    first_mean = sum(twa_values[:third]) / third
-    last_mean = sum(twa_values[-third:]) / third
-    # Both means must be clearly on opposite sides of 90°
-    upwind_thresh = 90.0 - _TWA_CROSSING_MARGIN
-    downwind_thresh = 90.0 + _TWA_CROSSING_MARGIN
-    first_upwind = first_mean < upwind_thresh
-    first_downwind = first_mean > downwind_thresh
-    last_upwind = last_mean < upwind_thresh
-    last_downwind = last_mean > downwind_thresh
-    return (first_upwind and last_downwind) or (first_downwind and last_upwind)
-
-
-def _twa_regime_changed(
-    pre_twa: list[float],
-    post_twa: list[float],
-) -> bool:
-    """Return True if the TWA regime changes from pre-window to post-window.
-
-    If pre-maneuver sailing is clearly upwind (mean TWA < 90° − margin) and
-    post-maneuver is clearly downwind (mean TWA > 90° + margin), or vice
-    versa, the event is a mark rounding.  The margin prevents noise near beam
-    reach from triggering false roundings.
-    """
-    if not pre_twa or not post_twa:
-        return False
-    pre_mean = sum(pre_twa) / len(pre_twa)
-    post_mean = sum(post_twa) / len(post_twa)
-    upwind_thresh = 90.0 - _TWA_CROSSING_MARGIN
-    downwind_thresh = 90.0 + _TWA_CROSSING_MARGIN
-    pre_upwind = pre_mean < upwind_thresh
-    pre_downwind = pre_mean > downwind_thresh
-    post_upwind = post_mean < upwind_thresh
-    post_downwind = post_mean > downwind_thresh
-    return (pre_upwind and post_downwind) or (pre_downwind and post_upwind)
-
-
-def _detect(
-    hdg: list[tuple[datetime, float]],
-    bsp: list[tuple[datetime, float]],
-    twa: list[tuple[datetime, float]],
-    maneuver_type: str,
-    threshold: float,
-    upwind: bool | None,
-    *,
-    require_twa_crossing: bool = False,
-) -> list[Maneuver]:
-    """Shared sliding-window detector for tacks, gybes, and mark roundings.
-
-    When *upwind* is True/False, the wind-angle filter selects upwind/downwind
-    windows and rejects any where TWA crosses the 90° boundary (those are mark
-    roundings).  When *upwind* is None and *require_twa_crossing* is False, no
-    wind-angle filter is applied (GPS-only course changes).  When
-    *require_twa_crossing* is True, only windows where TWA clearly crosses the
-    90° boundary within the window itself are kept (mark rounding detection).
+    Returns a list of heading-change events, each with timing and BSP metrics.
+    No classification (tack/gybe/rounding) is done here.
     """
     if len(hdg) < _DETECTION_WINDOW_S + 2:
         return []
 
-    # Build fast index: timestamp → value
     bsp_by_ts: dict[datetime, float] = dict(bsp)
     twa_by_ts: dict[datetime, float] = dict(twa)
 
-    maneuvers: list[Maneuver] = []
-    last_maneuver_ts: datetime | None = None
+    events: list[_HeadingEvent] = []
+    last_event_ts: datetime | None = None
     n = len(hdg)
 
     i = 0
@@ -327,75 +218,20 @@ def _detect(
             i += 1
             continue
 
-        # Wind-angle filtering:
-        # - tack (upwind=True): mean TWA < 90° and no regime change
-        # - gybe (upwind=False): mean TWA > 90° and no regime change
-        # - rounding (require_twa_crossing=True): TWA must cross the 90° boundary
-        # - course change (upwind=None, require_twa_crossing=False): no filter
-        if upwind is not None or require_twa_crossing:
-            window_twa_raw = [twa_by_ts[ts] for ts in window_ts if ts in twa_by_ts]
-            # Fold to [0, 180] — Signal K may report boat-referenced TWA in [0, 360).
-            window_twa = [v if v <= 180 else 360 - v for v in window_twa_raw]
-            if not window_twa:
-                i += 1
-                continue
-
-            crosses_in_window = _twa_crosses_90(window_twa)
-
-            if require_twa_crossing:
-                # Mark rounding: TWA must cross 90° within the detection window.
-                # The in-window check (first-third vs last-third) is the right
-                # granularity; the old pre/post regime check was too wide and
-                # caught natural wind shifts, producing false roundings.
-                if not crosses_in_window:
-                    i += 1
-                    continue
-            elif upwind is not None:
-                # Tack/gybe: reject if TWA crosses 90° (that's a rounding).
-                # Also check pre/post regime — if the sailing mode changes
-                # from upwind to downwind (or vice versa) around this event,
-                # it's a mark rounding even if the in-window check is borderline.
-                pre_idx = max(0, i - _PRE_WINDOW_S)
-                pre_twa_vals = [
-                    (v if v <= 180 else 360 - v)
-                    for j in range(pre_idx, i)
-                    if hdg[j][0] in twa_by_ts
-                    for v in [twa_by_ts[hdg[j][0]]]
-                ]
-                post_end = min(n, i + _DETECTION_WINDOW_S + _PRE_WINDOW_S)
-                post_twa_vals = [
-                    (v if v <= 180 else 360 - v)
-                    for j in range(i + _DETECTION_WINDOW_S, post_end)
-                    if hdg[j][0] in twa_by_ts
-                    for v in [twa_by_ts[hdg[j][0]]]
-                ]
-                regime_changed = _twa_regime_changed(pre_twa_vals, post_twa_vals)
-                if crosses_in_window or regime_changed:
-                    i += 1
-                    continue
-                mean_twa = sum(window_twa) / len(window_twa)
-                if upwind and mean_twa >= 90.0:
-                    i += 1
-                    continue
-                if not upwind and mean_twa <= 90.0:
-                    i += 1
-                    continue
-
-        # Use the point of peak heading change as the maneuver timestamp so
-        # the GPS marker lands on the actual turn, not the window start.
+        # Use the point of peak heading change as the event timestamp
         peak_idx = _peak_change_index(window_hdg)
-        maneuver_start_ts = window_ts[peak_idx]
+        event_ts = window_ts[peak_idx]
 
-        # Enforce gap between consecutive maneuvers
-        if last_maneuver_ts is not None:
-            gap = (maneuver_start_ts - last_maneuver_ts).total_seconds()
+        # Enforce gap between consecutive events
+        if last_event_ts is not None:
+            gap = (event_ts - last_event_ts).total_seconds()
             if gap < _MIN_MANEUVER_GAP_S:
                 i += 1
                 continue
 
         # BSP metrics
-        pre_start = maneuver_start_ts - timedelta(seconds=_PRE_WINDOW_S)
-        pre_bsp = [v for ts, v in bsp if pre_start <= ts < maneuver_start_ts]
+        pre_start = event_ts - timedelta(seconds=_PRE_WINDOW_S)
+        pre_bsp = [v for ts, v in bsp if pre_start <= ts < event_ts]
         window_bsp = [bsp_by_ts[ts] for ts in window_ts if ts in bsp_by_ts]
         loss = _bsp_loss(pre_bsp, window_bsp)
 
@@ -405,7 +241,7 @@ def _detect(
             else (sum(window_bsp) / len(window_bsp) if window_bsp else 0.0)
         )
 
-        # BSP recovery: look in post-window data
+        # BSP recovery
         post_window_end = i + _DETECTION_WINDOW_S
         post_ts_bsp = [
             (hdg[j][0], bsp_by_ts[hdg[j][0]])
@@ -414,29 +250,194 @@ def _detect(
         ]
         end_ts, duration = _bsp_recovery_ts(baseline, post_ts_bsp)
 
-        # TWA/TWS bins
+        # TWA bin
         twa_vals = [twa_by_ts[ts] for ts in window_ts if ts in twa_by_ts]
         twa_val = sum(twa_vals) / len(twa_vals) if twa_vals else None
         twa_bin = _twa_bin_value(twa_val) if twa_val is not None else None
 
-        maneuver = Maneuver(
-            type=maneuver_type,
-            ts=maneuver_start_ts,
-            end_ts=end_ts,
-            duration_sec=duration,
-            loss_kts=loss,
-            vmg_loss_kts=None,
-            tws_bin=None,  # populated by detect_maneuvers when TWS data is available
-            twa_bin=twa_bin,
-            details={"hdg_change_deg": round(total_change, 1)},
+        events.append(
+            _HeadingEvent(
+                ts=event_ts,
+                window_start_idx=i,
+                hdg_change_deg=round(total_change, 1),
+                loss_kts=loss,
+                end_ts=end_ts,
+                duration_sec=duration,
+                twa_bin=twa_bin,
+                tws_bin=None,
+            )
         )
-        maneuvers.append(maneuver)
-        last_maneuver_ts = maneuver_start_ts
+        last_event_ts = event_ts
 
         # Skip past this window to avoid re-detecting the same event
         i += _DETECTION_WINDOW_S
 
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Classify events using sailing state before/after
+# ---------------------------------------------------------------------------
+
+
+def _classify_events(
+    events: list[_HeadingEvent],
+    twa: list[tuple[datetime, float]],
+) -> list[Maneuver]:
+    """Classify heading-change events as tack, gybe, or rounding.
+
+    For each event, measures the mean TWA in a window *before* and *after*
+    the event (skipping a buffer around the peak to avoid the transition).
+
+    - Both sides upwind (< 90°) → tack
+    - Both sides downwind (> 90°) → gybe
+    - Sides differ → rounding (mark rounding)
+    """
+    if not events:
+        return []
+
+    # Build a sorted list for efficient range queries
+    twa_sorted = sorted(twa, key=lambda x: x[0])
+    twa_times = [t for t, _ in twa_sorted]
+    twa_values = [_fold_twa(v) for _, v in twa_sorted]
+
+    def _mean_twa_in_range(start: datetime, end: datetime) -> float | None:
+        """Mean folded TWA in [start, end). Returns None if no data."""
+        import bisect
+
+        lo = bisect.bisect_left(twa_times, start)
+        hi = bisect.bisect_left(twa_times, end)
+        if lo >= hi:
+            return None
+        vals = twa_values[lo:hi]
+        return sum(vals) / len(vals)
+
+    maneuvers: list[Maneuver] = []
+    for event in events:
+        # Measure sailing state BEFORE the event (skip buffer around peak)
+        pre_end = event.ts - timedelta(seconds=_STATE_SKIP_S)
+        pre_start = pre_end - timedelta(seconds=_STATE_MEASURE_S)
+        pre_mean = _mean_twa_in_range(pre_start, pre_end)
+
+        # Measure sailing state AFTER the event
+        post_start = event.ts + timedelta(seconds=_STATE_SKIP_S)
+        post_end = post_start + timedelta(seconds=_STATE_MEASURE_S)
+        post_mean = _mean_twa_in_range(post_start, post_end)
+
+        # Classify
+        if pre_mean is not None and post_mean is not None:
+            pre_upwind = pre_mean < 90.0
+            post_upwind = post_mean < 90.0
+
+            if pre_upwind == post_upwind:
+                # Same sailing mode → tack or gybe
+                maneuver_type = "tack" if pre_upwind else "gybe"
+            else:
+                # Mode changed → mark rounding
+                maneuver_type = "rounding"
+        elif pre_mean is not None:
+            # Only have pre-data; classify by what we know
+            maneuver_type = "tack" if pre_mean < 90.0 else "gybe"
+        elif post_mean is not None:
+            maneuver_type = "tack" if post_mean < 90.0 else "gybe"
+        else:
+            # No TWA data at all
+            maneuver_type = "maneuver"
+
+        maneuvers.append(
+            Maneuver(
+                type=maneuver_type,
+                ts=event.ts,
+                end_ts=event.end_ts,
+                duration_sec=event.duration_sec,
+                loss_kts=event.loss_kts,
+                vmg_loss_kts=None,
+                tws_bin=event.tws_bin,
+                twa_bin=event.twa_bin,
+                details={"hdg_change_deg": event.hdg_change_deg},
+            )
+        )
+
     return maneuvers
+
+
+# ---------------------------------------------------------------------------
+# Core detection: pure functions (testable without Storage)
+# ---------------------------------------------------------------------------
+
+
+def detect_all(
+    hdg: list[tuple[datetime, float]],
+    bsp: list[tuple[datetime, float]],
+    twa: list[tuple[datetime, float]],
+    threshold: float = _HDG_THRESHOLD,
+) -> list[Maneuver]:
+    """Detect and classify all maneuvers from aligned 1 Hz instrument data.
+
+    Two-phase approach:
+    1. Find all significant heading changes (≥ threshold)
+    2. Classify each using the sailing state (TWA) before/after the event
+
+    Each argument is a list of (datetime, value) pairs, sorted by time.
+    Returns detected Maneuver objects sorted by timestamp.
+    """
+    events = _detect_heading_events(hdg, bsp, twa, threshold)
+    return _classify_events(events, twa)
+
+
+def detect_tacks(
+    hdg: list[tuple[datetime, float]],
+    bsp: list[tuple[datetime, float]],
+    twa: list[tuple[datetime, float]],
+) -> list[Maneuver]:
+    """Detect tacks from aligned 1 Hz heading, BSP, and TWA series."""
+    return [m for m in detect_all(hdg, bsp, twa) if m.type == "tack"]
+
+
+def detect_gybes(
+    hdg: list[tuple[datetime, float]],
+    bsp: list[tuple[datetime, float]],
+    twa: list[tuple[datetime, float]],
+) -> list[Maneuver]:
+    """Detect gybes from aligned 1 Hz heading, BSP, and TWA series."""
+    return [m for m in detect_all(hdg, bsp, twa) if m.type == "gybe"]
+
+
+def detect_mark_roundings(
+    hdg: list[tuple[datetime, float]],
+    bsp: list[tuple[datetime, float]],
+    twa: list[tuple[datetime, float]],
+) -> list[Maneuver]:
+    """Detect mark roundings from aligned 1 Hz heading, BSP, and TWA series."""
+    return [m for m in detect_all(hdg, bsp, twa) if m.type == "rounding"]
+
+
+def detect_course_changes(
+    cog: list[tuple[datetime, float]],
+    sog: list[tuple[datetime, float]],
+) -> list[Maneuver]:
+    """Detect significant course changes when no true wind data is available.
+
+    Uses COG and SOG (GPS-derived) instead of compass heading and boat speed.
+    Maneuvers are typed as ``"maneuver"`` because tack/gybe classification
+    requires TWA, which is absent in GPS-only sessions.
+    """
+    events = _detect_heading_events(cog, sog, [], _HDG_THRESHOLD)
+    # No TWA → all events are unclassified "maneuver"
+    return [
+        Maneuver(
+            type="maneuver",
+            ts=e.ts,
+            end_ts=e.end_ts,
+            duration_sec=e.duration_sec,
+            loss_kts=e.loss_kts,
+            vmg_loss_kts=None,
+            tws_bin=None,
+            twa_bin=None,
+            details={"hdg_change_deg": e.hdg_change_deg},
+        )
+        for e in events
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +448,8 @@ def _detect(
 async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
     """Detect all maneuvers in a completed session and persist them.
 
-    Reads instrument data from storage, runs tack + gybe detection, writes
-    results to the maneuvers table (replaces any previous results for the
+    Reads instrument data from storage, runs unified detection + classification,
+    writes results to the maneuvers table (replaces any previous results for the
     session — idempotent).
 
     Returns the list of detected Maneuver objects.
@@ -471,15 +472,25 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
         logger.warning("detect_maneuvers: session {} has invalid timestamps", session_id)
         return []
 
-    # Load instrument data; fall back to cogsog (GPS) when direct sensor data absent
-    headings_raw = await storage.query_range("headings", start, end)
-    speeds_raw = await storage.query_range("speeds", start, end)
-    winds_raw = await storage.query_range("winds", start, end)
+    # Load instrument data scoped to session_id where possible (race_id column).
+    # This prevents data from overlapping synthesized sessions being mixed.
+    # Fall back to unscoped query for real sailing data where race_id is NULL.
+    headings_raw = await storage.query_range("headings", start, end, race_id=session_id)
+    if not headings_raw:
+        headings_raw = await storage.query_range("headings", start, end)
+    speeds_raw = await storage.query_range("speeds", start, end, race_id=session_id)
+    if not speeds_raw:
+        speeds_raw = await storage.query_range("speeds", start, end)
+    winds_raw = await storage.query_range("winds", start, end, race_id=session_id)
+    if not winds_raw:
+        winds_raw = await storage.query_range("winds", start, end)
 
-    # Fetch cogsog only if needed — avoids unnecessary query when instruments are present
+    # Fetch cogsog only if needed
     cogsog_raw: list[dict[str, Any]] = []
     if not headings_raw or not speeds_raw:
-        cogsog_raw = await storage.query_range("cogsog", start, end)
+        cogsog_raw = await storage.query_range("cogsog", start, end, race_id=session_id)
+        if not cogsog_raw:
+            cogsog_raw = await storage.query_range("cogsog", start, end)
 
     if not headings_raw and not cogsog_raw:
         logger.info(
@@ -497,8 +508,7 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
         await storage.write_maneuvers(session_id, [])
         return []
 
-    # Build time-keyed series (first record per second wins); prefer instrument
-    # data and fall back to GPS-derived cogsog when instruments are absent.
+    # Build time-keyed series (first record per second wins)
     hdg_series: dict[str, float] = {}
     if headings_raw:
         for r in headings_raw:
@@ -566,6 +576,7 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
 
     hdg_list = [(_parse_key(k), hdg_series[k]) for k in all_keys]
     bsp_list = [(_parse_key(k), bsp_series[k]) for k in all_keys]
+
     # TWA: use aligned keys, fall back to interpolated constant if missing
     twa_keys = sorted(twa_series)
     if twa_keys:
@@ -595,50 +606,12 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
         )
         return course_changes
 
-    tacks = detect_tacks(hdg_list, bsp_list, twa_list)
-    gybes = detect_gybes(hdg_list, bsp_list, twa_list)
-    roundings = detect_mark_roundings(hdg_list, bsp_list, twa_list)
-
-    # Remove consecutive roundings first — in a real race a rounding is always
-    # followed by a tack or gybe leg before the next rounding.  When two
-    # roundings appear in a row, keep the one with the larger heading change.
-    # This runs BEFORE cross-type dedup so the tack/gybe list is still intact.
-    deduped_roundings = list(roundings)
-    if len(deduped_roundings) > 1:
-        deduped_roundings.sort(key=lambda m: m.ts)
-        tg_sorted = sorted(tacks + gybes, key=lambda m: m.ts)
-        filtered_roundings: list[Maneuver] = []
-        for i, rnd in enumerate(deduped_roundings):
-            if i == 0:
-                filtered_roundings.append(rnd)
-                continue
-            prev = filtered_roundings[-1]
-            has_intervening = any(prev.ts < tg.ts < rnd.ts for tg in tg_sorted)
-            if has_intervening:
-                filtered_roundings.append(rnd)
-            else:
-                prev_hdg = prev.details.get("hdg_change_deg", 0)
-                rnd_hdg = rnd.details.get("hdg_change_deg", 0)
-                if rnd_hdg > prev_hdg:
-                    filtered_roundings[-1] = rnd
-        deduped_roundings = filtered_roundings
-
-    # Cross-type deduplication: tacks/gybes take priority over roundings.
-    # Tack and gybe detection is more constrained (must stay on one side of
-    # 90° TWA), making it the more reliable classification.  A rounding is
-    # only kept when no tack or gybe was detected for the same event.
-    tack_gybe_times = {m.ts for m in tacks + gybes}
-    deduped_roundings = [
-        r
-        for r in deduped_roundings
-        if not any(
-            abs((r.ts - tg_ts).total_seconds()) < _MIN_MANEUVER_GAP_S for tg_ts in tack_gybe_times
-        )
-    ]
+    # Unified detection + classification
+    all_maneuvers = detect_all(hdg_list, bsp_list, twa_list)
 
     # Annotate with TWS bin where available
-    all_maneuvers: list[Maneuver] = []
-    for m in tacks + gybes + deduped_roundings:
+    annotated: list[Maneuver] = []
+    for m in all_maneuvers:
         ts_key = m.ts.isoformat()[:19]
         tws_val = tws_series.get(ts_key)
         if tws_val is not None:
@@ -647,7 +620,7 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
             tws_bin = max(0, int(math.floor(tws_val)))
         else:
             tws_bin = None
-        all_maneuvers.append(
+        annotated.append(
             Maneuver(
                 type=m.type,
                 ts=m.ts,
@@ -661,15 +634,17 @@ async def detect_maneuvers(storage: Storage, session_id: int) -> list[Maneuver]:
             )
         )
 
-    # Sort by timestamp
-    all_maneuvers.sort(key=lambda m: m.ts)
+    annotated.sort(key=lambda m: m.ts)
 
-    await storage.write_maneuvers(session_id, all_maneuvers)
+    await storage.write_maneuvers(session_id, annotated)
+    tacks = sum(1 for m in annotated if m.type == "tack")
+    gybes = sum(1 for m in annotated if m.type == "gybe")
+    roundings = sum(1 for m in annotated if m.type == "rounding")
     logger.info(
         "detect_maneuvers: session {} → {} tacks, {} gybes, {} roundings",
         session_id,
-        len(tacks),
-        len(gybes),
-        len(deduped_roundings),
+        tacks,
+        gybes,
+        roundings,
     )
-    return all_maneuvers
+    return annotated

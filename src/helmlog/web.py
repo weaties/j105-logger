@@ -2100,15 +2100,17 @@ def create_app(
             # Position just before or at the maneuver time (within session)
             before_cur = await db.execute(
                 "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts <= ? AND ts >= ? ORDER BY ts DESC LIMIT 1",
-                (ts_str, session_start),
+                " WHERE ts <= ? AND ts >= ? AND race_id = ?"
+                " ORDER BY ts DESC LIMIT 1",
+                (ts_str, session_start, session_id),
             )
             before = await before_cur.fetchone()
             # Position just after the maneuver time (within session)
             after_cur = await db.execute(
                 "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts > ? AND ts <= ? ORDER BY ts LIMIT 1",
-                (ts_str, session_end),
+                " WHERE ts > ? AND ts <= ? AND race_id = ?"
+                " ORDER BY ts LIMIT 1",
+                (ts_str, session_end, session_id),
             )
             after = await after_cur.fetchone()
 

@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 31
+_CURRENT_VERSION: int = 32
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -675,6 +675,21 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_maneuvers_session ON maneuvers(session_id);
         CREATE INDEX IF NOT EXISTS idx_maneuvers_type ON maneuvers(type);
     """,
+    32: """
+        -- Add race_id to instrument tables so overlapping synthesized sessions
+        -- can be distinguished.  Real sailing data has no overlaps, but the
+        -- synthesizer generates sessions with overlapping timestamp ranges.
+        ALTER TABLE headings ADD COLUMN race_id INTEGER REFERENCES races(id);
+        ALTER TABLE speeds   ADD COLUMN race_id INTEGER REFERENCES races(id);
+        ALTER TABLE winds    ADD COLUMN race_id INTEGER REFERENCES races(id);
+        ALTER TABLE cogsog   ADD COLUMN race_id INTEGER REFERENCES races(id);
+        ALTER TABLE depths   ADD COLUMN race_id INTEGER REFERENCES races(id);
+        CREATE INDEX IF NOT EXISTS idx_headings_race_id ON headings(race_id);
+        CREATE INDEX IF NOT EXISTS idx_speeds_race_id   ON speeds(race_id);
+        CREATE INDEX IF NOT EXISTS idx_winds_race_id    ON winds(race_id);
+        CREATE INDEX IF NOT EXISTS idx_cogsog_race_id   ON cogsog(race_id);
+        CREATE INDEX IF NOT EXISTS idx_depths_race_id   ON depths(race_id);
+    """,
 }
 
 # Canonical order for the 5 J105 positions + one-off guests
@@ -906,11 +921,18 @@ class Storage:
         table: str,
         start: datetime,
         end: datetime,
+        *,
+        race_id: int | None = None,
     ) -> list[dict[str, Any]]:
         """Return all rows in [start, end] from the given table.
 
         Timestamps are compared as ISO strings (lexicographic order works for
         UTC ISO 8601 with consistent formatting).
+
+        If *race_id* is provided **and** the table has a ``race_id`` column,
+        an additional filter is applied so that only rows belonging to that
+        session are returned.  This prevents data from overlapping synthesized
+        sessions from being mixed together.
         """
         _ALLOWED_TABLES = {
             "headings",
@@ -925,10 +947,13 @@ class Storage:
             raise ValueError(f"Unknown table: {table!r}")
 
         db = self._conn()
-        cur = await db.execute(
-            f"SELECT * FROM {table} WHERE ts >= ? AND ts <= ? ORDER BY ts",  # noqa: S608
-            (_ts(start), _ts(end)),
-        )
+        params: list[Any] = [_ts(start), _ts(end)]
+        sql = f"SELECT * FROM {table} WHERE ts >= ? AND ts <= ?"  # noqa: S608
+        if race_id is not None and table != "environmental":
+            sql += " AND race_id = ?"
+            params.append(race_id)
+        sql += " ORDER BY ts"
+        cur = await db.execute(sql, params)
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
 
@@ -1360,14 +1385,14 @@ class Storage:
         src_inst = 7  # synthetic instrument source address
 
         pos_rows = [(r.ts.isoformat(), src_gps, r.lat, r.lon, race_id) for r in rows]
-        hdg_rows = [(r.ts.isoformat(), src_inst, r.heading, None, None) for r in rows]
-        spd_rows = [(r.ts.isoformat(), src_inst, r.bsp) for r in rows]
-        cs_rows = [(r.ts.isoformat(), src_gps, r.cog, r.sog) for r in rows]
-        dep_rows = [(r.ts.isoformat(), src_inst, r.depth, None) for r in rows]
+        hdg_rows = [(r.ts.isoformat(), src_inst, r.heading, None, None, race_id) for r in rows]
+        spd_rows = [(r.ts.isoformat(), src_inst, r.bsp, race_id) for r in rows]
+        cs_rows = [(r.ts.isoformat(), src_gps, r.cog, r.sog, race_id) for r in rows]
+        dep_rows = [(r.ts.isoformat(), src_inst, r.depth, None, race_id) for r in rows]
         # True wind (reference=0 = boat-referenced TWA)
-        tw_rows = [(r.ts.isoformat(), src_inst, r.tws, r.twa, 0) for r in rows]
+        tw_rows = [(r.ts.isoformat(), src_inst, r.tws, r.twa, 0, race_id) for r in rows]
         # Apparent wind (reference=2)
-        aw_rows = [(r.ts.isoformat(), src_inst, r.aws, r.awa, 2) for r in rows]
+        aw_rows = [(r.ts.isoformat(), src_inst, r.aws, r.awa, 2, race_id) for r in rows]
 
         await db.executemany(
             "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg, race_id)"
@@ -1375,30 +1400,36 @@ class Storage:
             pos_rows,
         )
         await db.executemany(
-            "INSERT INTO headings (ts, source_addr, heading_deg, deviation_deg, variation_deg)"
-            " VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO headings"
+            " (ts, source_addr, heading_deg, deviation_deg, variation_deg, race_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             hdg_rows,
         )
         await db.executemany(
-            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            "INSERT INTO speeds (ts, source_addr, speed_kts, race_id)"
+            " VALUES (?, ?, ?, ?)",
             spd_rows,
         )
         await db.executemany(
-            "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
+            "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts, race_id)"
+            " VALUES (?, ?, ?, ?, ?)",
             cs_rows,
         )
         await db.executemany(
-            "INSERT INTO depths (ts, source_addr, depth_m, offset_m) VALUES (?, ?, ?, ?)",
+            "INSERT INTO depths (ts, source_addr, depth_m, offset_m, race_id)"
+            " VALUES (?, ?, ?, ?, ?)",
             dep_rows,
         )
         await db.executemany(
-            "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
-            " VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO winds"
+            " (ts, source_addr, wind_speed_kts, wind_angle_deg, reference, race_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             tw_rows,
         )
         await db.executemany(
-            "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
-            " VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO winds"
+            " (ts, source_addr, wind_speed_kts, wind_angle_deg, reference, race_id)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
             aw_rows,
         )
         await db.commit()
