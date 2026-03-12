@@ -1206,6 +1206,8 @@ function onSynthCourseChange() {
 // Track data imported from peer for collision avoidance (#246)
 let _importedPeerTracks = null;
 let _importedPeerInfo = null;
+let _importedWindSeed = null;
+let _importedWindParams = null;  // full wind params for shift magnitude, leg distance, etc.
 
 async function loadCoopPeers() {
   try {
@@ -1296,6 +1298,9 @@ async function importPeerWindModel() {
     const wp = wfData.wind_params;
 
     // Pre-fill synthesis form from imported wind model
+    // The seed is critical — it determines the entire wind field (shifts, puffs, gradients)
+    _importedWindSeed = wp.seed;
+    _importedWindParams = wp;
     document.getElementById('synth-wind-dir').value = Math.round(wp.base_twd);
     document.getElementById('synth-tws-lo').value = wp.tws_low;
     document.getElementById('synth-tws-hi').value = wp.tws_high;
@@ -1387,8 +1392,17 @@ async function runSynthesize() {
       laps: parseInt(document.getElementById('synth-laps').value) || 2,
       start_lat: parseFloat(document.getElementById('synth-lat').value) || 47.63,
       start_lon: parseFloat(document.getElementById('synth-lon').value) || -122.40,
-      seed: Math.floor(Math.random() * 100000),
+      seed: _importedWindSeed != null ? _importedWindSeed : Math.floor(Math.random() * 100000),
     };
+    // Pass imported wind params that aren't in the form (shift magnitude, leg distance)
+    if (_importedWindParams) {
+      if (_importedWindParams.shift_magnitude_lo != null)
+        body.shift_magnitude_low = _importedWindParams.shift_magnitude_lo;
+      if (_importedWindParams.shift_magnitude_hi != null)
+        body.shift_magnitude_high = _importedWindParams.shift_magnitude_hi;
+      if (_importedWindParams.leg_distance_nm != null)
+        body.leg_distance_nm = _importedWindParams.leg_distance_nm;
+    }
     if (Object.keys(_synthMarkOverrides).length > 0) {
       body.mark_overrides = _synthMarkOverrides;
     }
@@ -1439,6 +1453,11 @@ async function runSynthesize() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Generate';
+    // Clear imported state so next local synthesis gets a fresh seed
+    _importedWindSeed = null;
+    _importedWindParams = null;
+    _importedPeerTracks = null;
+    _importedPeerInfo = null;
   }
 }
 
