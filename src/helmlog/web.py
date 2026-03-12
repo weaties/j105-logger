@@ -2123,6 +2123,29 @@ def create_app(
         marks = await storage.get_synth_course_marks(session_id)
         elapsed_s = max(0.0, min(elapsed_s, params["duration_s"]))
 
+        # Compute bounding box from marks + 0.5 nm padding on all sides
+        import math
+
+        pad_nm = 0.5
+        if marks:
+            mark_lats = [m["lat"] for m in marks]
+            mark_lons = [m["lon"] for m in marks]
+            center_lat = (min(mark_lats) + max(mark_lats)) / 2
+            cos_ref = math.cos(math.radians(center_lat))
+            lat_min = min(mark_lats) - pad_nm / 60.0
+            lat_max = max(mark_lats) + pad_nm / 60.0
+            lon_min = min(mark_lons) - pad_nm / 60.0 / cos_ref
+            lon_max = max(mark_lons) + pad_nm / 60.0 / cos_ref
+        else:
+            cos_ref = math.cos(math.radians(params["ref_lat"]))
+            lat_min = params["ref_lat"] - pad_nm / 60.0
+            lat_max = params["ref_lat"] + pad_nm / 60.0
+            lon_min = params["ref_lon"] - pad_nm / 60.0 / cos_ref
+            lon_max = params["ref_lon"] + pad_nm / 60.0 / cos_ref
+
+        # Capture bounds for the thread
+        bounds = (lat_min, lat_max, lon_min, lon_max)
+
         def _compute() -> list[dict[str, float]]:
             wf = WindField(
                 base_twd=params["base_twd"],
@@ -2135,22 +2158,13 @@ def create_app(
                 ref_lon=params["ref_lon"],
                 seed=params["seed"],
             )
-            import math
-
-            cos_ref = math.cos(math.radians(params["ref_lat"]))
-            half_nm = 0.75
-            half_deg_lat = half_nm / 60.0
-            half_deg_lon = half_nm / 60.0 / cos_ref
-            lat_min = params["ref_lat"] - half_deg_lat
-            lat_max = params["ref_lat"] + half_deg_lat
-            lon_min = params["ref_lon"] - half_deg_lon
-            lon_max = params["ref_lon"] + half_deg_lon
+            b_lat_min, b_lat_max, b_lon_min, b_lon_max = bounds
 
             cells: list[dict[str, float]] = []
             for r in range(grid_size):
-                lat = lat_min + (lat_max - lat_min) * r / (grid_size - 1)
+                lat = b_lat_min + (b_lat_max - b_lat_min) * r / (grid_size - 1)
                 for c in range(grid_size):
-                    lon = lon_min + (lon_max - lon_min) * c / (grid_size - 1)
+                    lon = b_lon_min + (b_lon_max - b_lon_min) * c / (grid_size - 1)
                     twd, tws = wf.at(elapsed_s, lat, lon)
                     cells.append(
                         {
@@ -2164,10 +2178,6 @@ def create_app(
 
         cells = await asyncio.to_thread(_compute)
 
-        import math
-
-        cos_ref = math.cos(math.radians(params["ref_lat"]))
-        half_nm = 0.75
         return JSONResponse(
             {
                 "elapsed_s": elapsed_s,
@@ -2178,10 +2188,10 @@ def create_app(
                 "grid": {
                     "rows": grid_size,
                     "cols": grid_size,
-                    "lat_min": round(params["ref_lat"] - half_nm / 60.0, 6),
-                    "lat_max": round(params["ref_lat"] + half_nm / 60.0, 6),
-                    "lon_min": round(params["ref_lon"] - half_nm / 60.0 / cos_ref, 6),
-                    "lon_max": round(params["ref_lon"] + half_nm / 60.0 / cos_ref, 6),
+                    "lat_min": round(lat_min, 6),
+                    "lat_max": round(lat_max, 6),
+                    "lon_min": round(lon_min, 6),
+                    "lon_max": round(lon_max, 6),
                     "cells": cells,
                 },
                 "marks": marks,
