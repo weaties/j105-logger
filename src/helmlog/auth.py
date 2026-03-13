@@ -53,7 +53,6 @@ _MOCK_ADMIN: dict[str, Any] = {
     "created_at": "1970-01-01T00:00:00+00:00",
     "last_seen": None,
     "is_active": 1,
-    "is_developer": 1,
 }
 
 
