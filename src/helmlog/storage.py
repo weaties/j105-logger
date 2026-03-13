@@ -71,7 +71,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 34
+_CURRENT_VERSION: int = 35
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -725,6 +725,22 @@ _MIGRATIONS: dict[int, str] = {
     34: """
         ALTER TABLE users ADD COLUMN is_developer INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE invite_tokens ADD COLUMN is_developer INTEGER NOT NULL DEFAULT 0;
+    """,
+    35: """
+        CREATE TABLE IF NOT EXISTS boat_settings (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id          INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            ts               TEXT NOT NULL,
+            parameter        TEXT NOT NULL,
+            value            TEXT NOT NULL,
+            source           TEXT NOT NULL,
+            extraction_run_id INTEGER,
+            created_at       TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_boat_settings_race_ts
+            ON boat_settings(race_id, ts);
+        CREATE INDEX IF NOT EXISTS idx_boat_settings_extraction_run
+            ON boat_settings(extraction_run_id);
     """,
 }
 
@@ -3841,6 +3857,89 @@ class Storage:
         )
         await db.commit()
         return cur.lastrowid or 0
+
+    # ------------------------------------------------------------------
+    # Boat settings
+    # ------------------------------------------------------------------
+
+    async def create_boat_settings(
+        self,
+        race_id: int | None,
+        entries: list[dict[str, str]],
+        source: str,
+        extraction_run_id: int | None = None,
+    ) -> list[int]:
+        """Insert one or more boat setting entries.
+
+        Each entry must have ``ts``, ``parameter``, and ``value`` keys.
+        Returns a list of inserted row IDs.
+        """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        from helmlog.boat_settings import PARAMETER_NAMES
+
+        db = self._conn()
+        now = _datetime.now(UTC).isoformat()
+        ids: list[int] = []
+        for entry in entries:
+            param = entry["parameter"]
+            if param not in PARAMETER_NAMES:
+                raise ValueError(f"Unknown parameter: {param!r}")
+            cur = await db.execute(
+                "INSERT INTO boat_settings"
+                " (race_id, ts, parameter, value, source, extraction_run_id, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (race_id, entry["ts"], param, entry["value"], source, extraction_run_id, now),
+            )
+            ids.append(cur.lastrowid or 0)
+        await db.commit()
+        return ids
+
+    async def list_boat_settings(self, race_id: int) -> list[dict[str, Any]]:
+        """Return all boat settings for a race, ordered by timestamp."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, race_id, ts, parameter, value, source, extraction_run_id, created_at"
+            " FROM boat_settings WHERE race_id = ? ORDER BY ts, id",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def current_boat_settings(self, race_id: int) -> list[dict[str, Any]]:
+        """Return the latest value for each parameter in a race.
+
+        Uses a window function to pick the most recent entry per parameter.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, race_id, ts, parameter, value, source, extraction_run_id, created_at"
+            " FROM boat_settings"
+            " WHERE race_id = ? AND id IN ("
+            "   SELECT id FROM ("
+            "     SELECT id, ROW_NUMBER() OVER (PARTITION BY parameter ORDER BY ts DESC, id DESC)"
+            "       AS rn"
+            "     FROM boat_settings WHERE race_id = ?"
+            "   ) WHERE rn = 1"
+            " ) ORDER BY parameter",
+            (race_id, race_id),
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def delete_boat_settings_extraction_run(self, extraction_run_id: int) -> int:
+        """Delete all boat settings from a specific extraction run.
+
+        Returns the number of deleted rows.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "DELETE FROM boat_settings WHERE extraction_run_id = ?",
+            (extraction_run_id,),
+        )
+        await db.commit()
+        return cur.rowcount
 
     # ------------------------------------------------------------------
     # Helpers

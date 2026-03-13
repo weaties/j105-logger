@@ -3192,6 +3192,100 @@ def create_app(
         return JSONResponse(result, headers={"Access-Control-Allow-Origin": "*"})
 
     # ------------------------------------------------------------------
+    # /api/boat-settings
+    # ------------------------------------------------------------------
+
+    from helmlog.boat_settings import (  # noqa: E501, PLC0415
+        CATEGORY_ORDER,
+        PARAMETER_NAMES,
+        WEIGHT_DISTRIBUTION_PRESETS,
+        parameters_by_category,
+    )
+
+    @app.get("/api/boat-settings/parameters")
+    async def api_boat_settings_parameters(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return the canonical parameter definitions grouped by category."""
+        grouped = parameters_by_category()
+        result = []
+        for cat, label in CATEGORY_ORDER:
+            params = [
+                {"name": p.name, "label": p.label, "unit": p.unit, "input_type": p.input_type}
+                for p in grouped[cat]
+            ]
+            result.append({"category": cat, "label": label, "parameters": params})
+        return JSONResponse(
+            {"categories": result, "weight_distribution_presets": list(WEIGHT_DISTRIBUTION_PRESETS)}
+        )
+
+    @app.post("/api/boat-settings", status_code=201)
+    async def api_create_boat_settings(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Create one or more boat setting entries.
+
+        Body: ``{"race_id": int|null, "source": str, "entries": [{"ts": str, "parameter": str, "value": str}, ...]}``
+        """
+        body = await request.json()
+        race_id: int | None = body.get("race_id")
+        source: str = body.get("source", "manual")
+        extraction_run_id: int | None = body.get("extraction_run_id")
+        entries: list[dict[str, str]] = body.get("entries", [])
+        if not entries:
+            raise HTTPException(status_code=400, detail="entries is required and must be non-empty")
+        for e in entries:
+            if not all(k in e for k in ("ts", "parameter", "value")):
+                raise HTTPException(
+                    status_code=400, detail="Each entry must have ts, parameter, and value"
+                )
+            if e["parameter"] not in PARAMETER_NAMES:
+                raise HTTPException(
+                    status_code=400, detail=f"Unknown parameter: {e['parameter']!r}"
+                )
+        try:
+            ids = await storage.create_boat_settings(race_id, entries, source, extraction_run_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        await _audit(request, "boat_settings.create", detail=f"{len(ids)} entries", user=_user)
+        return JSONResponse({"ids": ids}, status_code=201)
+
+    @app.get("/api/boat-settings")
+    async def api_list_boat_settings(
+        race_id: int = Query(...),
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """List all boat settings for a race, ordered by timestamp."""
+        rows = await storage.list_boat_settings(race_id)
+        return JSONResponse(rows)
+
+    @app.get("/api/boat-settings/current")
+    async def api_current_boat_settings(
+        race_id: int = Query(...),
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return the latest value for each parameter in a race."""
+        rows = await storage.current_boat_settings(race_id)
+        return JSONResponse(rows)
+
+    @app.delete("/api/boat-settings/extraction-run/{extraction_run_id}", status_code=200)
+    async def api_delete_boat_settings_extraction_run(
+        request: Request,
+        extraction_run_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Delete all settings from a specific extraction run."""
+        count = await storage.delete_boat_settings_extraction_run(extraction_run_id)
+        await _audit(
+            request,
+            "boat_settings.delete_run",
+            detail=f"run={extraction_run_id} deleted={count}",
+            user=_user,
+        )
+        return JSONResponse({"deleted": count})
+
+    # ------------------------------------------------------------------
     # /api/sails  &  /api/sessions/{id}/sails
     # ------------------------------------------------------------------
 

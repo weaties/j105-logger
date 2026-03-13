@@ -963,3 +963,123 @@ def test_url_at_generates_correct_link() -> None:
 
     link = vs.url_at(sync + timedelta(seconds=90))
     assert link == "https://youtu.be/dQw4w9WgXcQ?t=90"
+
+
+# ---------------------------------------------------------------------------
+# Boat settings tests
+# ---------------------------------------------------------------------------
+
+_BS_DATE = "2026-03-12"
+_BS_START = datetime(2026, 3, 12, 14, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+class TestBoatSettings:
+    async def _make_race(self, storage: Storage) -> int:
+        race = await storage.start_race("Regatta", _BS_START, _BS_DATE, 1, "20260312-Regatta-1")
+        assert race.id is not None
+        return race.id
+
+    async def test_create_and_list(self, storage: Storage) -> None:
+        """Create settings and list them back."""
+        race_id = await self._make_race(storage)
+        ts = _BS_START.isoformat()
+        ids = await storage.create_boat_settings(
+            race_id,
+            [
+                {"ts": ts, "parameter": "backstay", "value": "3.5"},
+                {"ts": ts, "parameter": "vang", "value": "2.0"},
+            ],
+            source="manual",
+        )
+        assert len(ids) == 2
+        rows = await storage.list_boat_settings(race_id)
+        assert len(rows) == 2
+        params = {r["parameter"] for r in rows}
+        assert params == {"backstay", "vang"}
+
+    async def test_create_rejects_unknown_parameter(self, storage: Storage) -> None:
+        """Unknown parameter names are rejected."""
+        race_id = await self._make_race(storage)
+        ts = _BS_START.isoformat()
+        with pytest.raises(ValueError, match="Unknown parameter"):
+            await storage.create_boat_settings(
+                race_id,
+                [{"ts": ts, "parameter": "not_a_real_param", "value": "1"}],
+                source="manual",
+            )
+
+    async def test_current_returns_latest_per_parameter(self, storage: Storage) -> None:
+        """current_boat_settings returns only the most recent value per param."""
+        race_id = await self._make_race(storage)
+        ts1 = _BS_START.isoformat()
+        ts2 = (_BS_START + timedelta(seconds=60)).isoformat()
+        await storage.create_boat_settings(
+            race_id,
+            [{"ts": ts1, "parameter": "backstay", "value": "3.0"}],
+            source="manual",
+        )
+        await storage.create_boat_settings(
+            race_id,
+            [
+                {"ts": ts2, "parameter": "backstay", "value": "4.0"},
+                {"ts": ts2, "parameter": "vang", "value": "1.5"},
+            ],
+            source="manual",
+        )
+        current = await storage.current_boat_settings(race_id)
+        by_param = {r["parameter"]: r["value"] for r in current}
+        assert by_param["backstay"] == "4.0"
+        assert by_param["vang"] == "1.5"
+        assert len(current) == 2
+
+    async def test_delete_extraction_run(self, storage: Storage) -> None:
+        """Deleting an extraction run removes only those entries."""
+        race_id = await self._make_race(storage)
+        ts = _BS_START.isoformat()
+        await storage.create_boat_settings(
+            race_id,
+            [{"ts": ts, "parameter": "backstay", "value": "3.0"}],
+            source="manual",
+        )
+        await storage.create_boat_settings(
+            race_id,
+            [{"ts": ts, "parameter": "vang", "value": "2.0"}],
+            source="transcript:whisper-base",
+            extraction_run_id=42,
+        )
+        count = await storage.delete_boat_settings_extraction_run(42)
+        assert count == 1
+        rows = await storage.list_boat_settings(race_id)
+        assert len(rows) == 1
+        assert rows[0]["parameter"] == "backstay"
+
+    async def test_cascade_delete_with_race(self, storage: Storage) -> None:
+        """Settings are removed when the parent race is deleted."""
+        race_id = await self._make_race(storage)
+        ts = _BS_START.isoformat()
+        await storage.create_boat_settings(
+            race_id,
+            [{"ts": ts, "parameter": "cunningham", "value": "0"}],
+            source="manual",
+        )
+        db = storage._conn()
+        await db.execute("DELETE FROM races WHERE id = ?", (race_id,))
+        await db.commit()
+        rows = await storage.list_boat_settings(race_id)
+        assert rows == []
+
+    async def test_list_empty_for_new_race(self, storage: Storage) -> None:
+        """list_boat_settings returns [] for a race with no settings."""
+        race_id = await self._make_race(storage)
+        assert await storage.list_boat_settings(race_id) == []
+
+    async def test_null_race_id_allowed(self, storage: Storage) -> None:
+        """Settings can be created with race_id=None (dock setup)."""
+        ts = _BS_START.isoformat()
+        ids = await storage.create_boat_settings(
+            None,
+            [{"ts": ts, "parameter": "shroud_tension_upper", "value": "28"}],
+            source="manual",
+        )
+        assert len(ids) == 1
