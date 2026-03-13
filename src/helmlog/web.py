@@ -3621,6 +3621,21 @@ def create_app(
         rows = await storage.current_boat_settings(race_id)
         return JSONResponse(rows)
 
+    @app.get("/api/boat-settings/resolve")
+    async def api_resolve_boat_settings(
+        race_id: int = Query(...),
+        as_of: str = Query(...),
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Resolve boat settings at a specific timestamp for a race.
+
+        Merges race-specific settings over boat-level defaults.  Each entry
+        includes ``supersedes_value`` / ``supersedes_source`` when a race-level
+        value overrides a boat-level default.
+        """
+        rows = await storage.resolve_boat_settings(race_id, as_of)
+        return JSONResponse(rows)
+
     @app.delete("/api/boat-settings/extraction-run/{extraction_run_id}", status_code=200)
     async def api_delete_boat_settings_extraction_run(
         request: Request,
