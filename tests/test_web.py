@@ -2631,3 +2631,16 @@ async def test_boat_settings_delete_extraction_run(storage: Storage) -> None:
 
         resp = await client.get(f"/api/boat-settings?race_id={race_id}")
         assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_home_page_has_setup_panel(storage: Storage) -> None:
+    """GET / includes the boat setup accordion card."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="setup-card"' in resp.text
+    assert "Boat Setup" in resp.text
