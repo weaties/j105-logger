@@ -290,3 +290,152 @@ studying:
   The existing `insta360.py` metadata extraction and `video.py` sync-point model
   provide a foundation. Storage is the main architectural question — Pi disk is
   precious, but a 90-day / 1000-minute model with cloud offload could work.
+
+---
+
+## IDX-010: Agentic manual testing — Claude Code as a browser tester
+
+- **Date captured:** 2026-03-13
+- **Origin:** PR #262 (Playwright E2E scaffold) + Simon Willison's agentic manual testing patterns (simonwillison.net/guides/agentic-engineering-patterns/agentic-manual-testing/)
+- **Status:** `raw`
+- **Related:** PR #262 (Playwright infrastructure), `/tdd` skill, `tests/e2e/`
+
+**Description:**
+PR #262 scaffolds Playwright E2E testing for HelmLog — `playwright.config.ts`,
+smoke tests, CI workflow. That gives us regression testing in CI. But Willison's
+article describes a more ambitious pattern: agents using browser automation
+*during development* to interactively test UI changes they've just made.
+
+The core insight from Willison: "The defining characteristic of a coding agent is
+that it can execute the code that it writes." For web UIs, this means the agent
+should spin up the dev server, navigate the UI with Playwright, take screenshots,
+verify behavior, and fix issues — all before committing. Key patterns:
+
+1. **Agent-driven exploratory testing** — after making a UI change, Claude Code
+   runs Playwright to navigate the affected pages, screenshots the result, and
+   visually verifies the change looks correct. This catches CSS regressions,
+   broken layouts, and rendering issues that unit tests miss.
+
+2. **Documented test runs (Showboat pattern)** — Willison's `showboat` tool
+   records manual testing as Markdown documents with embedded commands, outputs,
+   and screenshots. HelmLog could adopt a similar pattern: after implementing a
+   UI feature, Claude Code produces a test-run document proving the feature works.
+   This is especially valuable for PR review — reviewers see screenshots, not
+   just code diffs.
+
+3. **Red-green TDD from manual findings** — when exploratory testing reveals an
+   issue, the agent writes a failing test first (red), then fixes the code
+   (green). This converts manual testing discoveries into permanent regression
+   coverage. Complements the existing `/tdd` skill.
+
+4. **API exercising via curl** — for non-UI changes, agents should `curl` API
+   endpoints after implementation to verify behavior with real HTTP requests,
+   not just `httpx.AsyncClient` in-process tests.
+
+**What HelmLog already has:**
+- PR #262's Playwright config with auto-start of the FastAPI server
+- Screenshot-on-failure and trace retention
+- The `/tdd` skill for test-driven development
+- `httpx.AsyncClient` + `ASGITransport` for in-process API testing
+
+**What's missing / design questions:**
+- **Claude Code + Playwright integration:** Can Claude Code run `npx playwright
+  test` mid-conversation and interpret results? Can it take ad-hoc screenshots
+  via Playwright's API? The tooling exists (PR #262) but the workflow pattern
+  isn't established.
+- **Screenshot review:** Claude Code can read images. A workflow of "run
+  Playwright → screenshot → read screenshot → verify" could work today.
+- **Test-run documentation:** Should we adopt a showboat-like pattern for
+  recording exploratory test sessions? Or is the PR description + screenshots
+  sufficient?
+- **Scope creep risk:** Agentic manual testing is powerful but slow. Need clear
+  guidance on when to use it (UI changes, new pages) vs. when unit/integration
+  tests suffice (API logic, data processing).
+
+**Notes:**
+- *2026-03-13:* Initial capture. PR #262 is currently open — once merged, the
+  Playwright infrastructure is in place. The next step would be establishing a
+  workflow pattern (possibly a new skill or extension of `/tdd`) for Claude Code
+  to use Playwright interactively during UI development. Start simple: after any
+  template/CSS/JS change, run the smoke suite and screenshot the affected page.
+
+---
+
+## IDX-011: Write derived data back to B&G network — live polar performance gauge
+
+- **Date captured:** 2026-03-13
+- **Origin:** Conversation about surfacing computed metrics on B&G instrument displays during racing
+- **Status:** `raw`
+- **Related:** `polar.py`, `sk_reader.py`, `can_reader.py`, `nmea2000.py`, IDX-005 (tuning auto-population)
+
+**Description:**
+HelmLog reads instrument data from the B&G network (via Signal K or direct CAN)
+and stores it. But the data flow is one-directional — read only. The idea: compute
+derived metrics in real time (e.g., percentage of as-sailed polar target) and
+**write them back** to the NMEA 2000 / Signal K network so they appear on B&G
+MFDs, Vulcan displays, or any other NMEA 2000 gauge on the boat.
+
+The killer use case: a gauge on the helm display showing "you're at 94% of your
+historical polar for this TWS/TWA" — not a theoretical polar from a design office,
+but *your* boat's actual as-sailed performance baseline built from your own race
+data (`polar.py`). The sailor sees immediately whether they're above or below
+their personal benchmark without looking at a separate screen.
+
+**Two write-back paths:**
+
+1. **Signal K PUT/Delta API** — Signal K Server supports writing values back via
+   its HTTP PUT or WebSocket delta interface. HelmLog could publish to a custom
+   Signal K path like `performance.polarRatio` or use the standard
+   `performance.polarSpeedRatio`. Signal K plugins (like the Instrument Display
+   plugin or KIP) can render these on web-based displays. B&G integration
+   depends on whether the Signal K → NMEA 2000 gateway is configured for
+   bidirectional flow (via `signalk-to-nmea2000` plugin).
+
+2. **Direct CAN bus write** — The Pi's CAN hat can transmit frames directly.
+   `python-can` supports `bus.send(can.Message(...))`. Would need to encode
+   a suitable PGN (possibly PGN 130578 Vessel Speed Performance or a
+   manufacturer-proprietary PGN). This bypasses Signal K entirely but requires
+   careful bus arbitration — writing garbage to a live NMEA 2000 bus during
+   racing could cause real problems.
+
+**Potential derived metrics to publish:**
+- Polar performance ratio (BSP / polar target BSP for current TWS/TWA)
+- VMG efficiency (actual VMG / optimal VMG)
+- Target boat speed for current conditions
+- Heel angle vs. optimal heel for the point of sail
+- Performance trend (improving / degrading over last N minutes)
+
+**Key design questions:**
+- **Safety:** Writing to a live NMEA 2000 bus during racing is not something to
+  get wrong. Bad data on a display could cause poor decisions. Need fail-safe
+  behavior — if HelmLog loses confidence in its computation (stale wind data,
+  insufficient polar baseline), it should stop publishing rather than show
+  misleading numbers.
+- **Signal K vs. direct CAN:** Signal K PUT is the cleaner path — it goes
+  through the server's validation and plugin ecosystem. Direct CAN is more
+  universal (works without Signal K) but riskier and harder to debug.
+- **NMEA 2000 compliance:** Devices on an NMEA 2000 network need a unique
+  source address and should follow the address claim protocol (PGN 60928).
+  Just blasting frames without claiming an address is technically non-compliant
+  and could conflict with other devices.
+- **Latency:** Polar lookup needs to be fast enough for real-time display
+  updates (~1 Hz). Current `lookup_polar()` queries SQLite — may need an
+  in-memory cache of the polar table for the active session.
+- **Display configuration:** Even if HelmLog publishes the data, the user still
+  needs to configure a gauge on their B&G MFD to show it. For custom PGNs this
+  may not be straightforward. Signal K web displays (KIP, Instrument Panel) are
+  more flexible.
+- **Which polar?** The as-sailed polar from `polar.py` is the most interesting
+  (it's *your* boat), but it requires enough historical race data to be
+  meaningful. Need a fallback for new boats with no baseline yet.
+
+**Notes:**
+- *2026-03-13:* Initial capture. This would be a game-changer for on-the-water
+  use — HelmLog goes from a passive logger to an active performance instrument.
+  Signal K PUT is probably the right starting path since HelmLog already connects
+  via WebSocket. The `signalk-to-nmea2000` plugin can handle the gateway to B&G
+  displays if configured. Start with polar performance ratio as the single
+  metric — it's the most universally useful and the computation already exists
+  in `polar.py`. IDX-005 (tuning auto-population) is complementary — together
+  they form a feedback loop: historical data informs both setup and on-water
+  performance tracking.
