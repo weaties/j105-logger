@@ -126,6 +126,9 @@ function render(s) {
   } else {
     todaySummary.classList.add('hidden');
   }
+
+  // --- Refresh boat setup values when race changes ---
+  refreshSetupForRace();
 }
 
 function tick() {
@@ -250,6 +253,170 @@ async function saveCrew() {
   } else {
     pendingCrew = crew;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Boat Setup Panel
+// ---------------------------------------------------------------------------
+
+let setupExpanded = false;
+let setupCatExpanded = { sail_controls: true };
+let setupParams = null;
+let setupCurrentValues = {};
+let _setupSaveTimers = {};
+
+function toggleSetup() {
+  setupExpanded = !setupExpanded;
+  document.getElementById('setup-body').style.display = setupExpanded ? '' : 'none';
+  document.getElementById('setup-chevron').textContent = setupExpanded ? '\u25BC' : '\u25B6';
+  if (setupExpanded && !setupParams) loadSetupParams();
+}
+
+function toggleSetupCat(cat) {
+  setupCatExpanded[cat] = !setupCatExpanded[cat];
+  const body = document.getElementById('setup-cat-' + cat);
+  const chev = document.getElementById('setup-cat-chev-' + cat);
+  if (body) body.style.display = setupCatExpanded[cat] ? '' : 'none';
+  if (chev) chev.textContent = setupCatExpanded[cat] ? '\u25BC' : '\u25B6';
+}
+
+async function loadSetupParams() {
+  try {
+    const r = await fetch('/api/boat-settings/parameters');
+    const data = await r.json();
+    setupParams = data;
+    renderSetupPanel(data);
+    await loadSetupCurrentValues();
+  } catch (e) { console.error('setup params error', e); }
+}
+
+function renderSetupPanel(data) {
+  const container = document.getElementById('setup-categories');
+  const role = typeof _userRole !== 'undefined' ? _userRole : 'viewer';
+  const canEdit = role === 'admin' || role === 'crew';
+  let html = '';
+  for (const cat of data.categories) {
+    const isOpen = setupCatExpanded[cat.category] || false;
+    html += '<div class="setup-cat-header" onclick="toggleSetupCat(\'' + cat.category + '\')">';
+    html += '<span class="setup-cat-label">' + cat.label + '</span>';
+    html += '<span class="setup-cat-chevron" id="setup-cat-chev-' + cat.category + '">'
+      + (isOpen ? '\u25BC' : '\u25B6') + '</span>';
+    html += '</div>';
+    html += '<div class="setup-cat-body" id="setup-cat-' + cat.category + '" style="display:'
+      + (isOpen ? '' : 'none') + '">';
+    for (const p of cat.parameters) {
+      const curVal = setupCurrentValues[p.name] || '';
+      html += '<div class="setup-row">';
+      html += '<span class="setup-label">' + escHtml(p.label) + '</span>';
+      if (p.name === 'weight_distribution') {
+        html += '<select class="setup-select' + (curVal ? ' has-value' : '') + '" '
+          + 'id="setup-' + p.name + '" '
+          + (canEdit ? 'onchange="onSetupChange(\'' + p.name + '\')"' : 'disabled')
+          + '>';
+        html += '<option value="">--</option>';
+        for (const preset of data.weight_distribution_presets) {
+          const sel = curVal === preset ? ' selected' : '';
+          html += '<option value="' + escAttr(preset) + '"' + sel + '>'
+            + escHtml(preset) + '</option>';
+        }
+        html += '</select>';
+      } else {
+        html += '<input class="setup-input' + (curVal ? ' has-value' : '') + '" '
+          + 'type="number" step="any" id="setup-' + p.name + '" '
+          + 'value="' + escAttr(curVal) + '" '
+          + 'inputmode="decimal" '
+          + (canEdit ? 'onchange="onSetupChange(\'' + p.name + '\')"' : 'readonly')
+          + ' placeholder="\u2014"/>';
+      }
+      if (p.unit) html += '<span class="setup-unit">' + escHtml(p.unit) + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+  }
+  container.innerHTML = html;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function escAttr(s) {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+}
+
+async function loadSetupCurrentValues() {
+  // Always load boat-level settings (race_id=null) for the manual UI.
+  try {
+    const r = await fetch('/api/boat-settings/current');
+    const rows = await r.json();
+    setupCurrentValues = {};
+    for (const row of rows) {
+      setupCurrentValues[row.parameter] = row.value;
+      const el = document.getElementById('setup-' + row.parameter);
+      if (el) {
+        el.value = row.value;
+        el.classList.toggle('has-value', !!row.value);
+      }
+    }
+    updateSetupSummary();
+  } catch (e) { console.error('setup current error', e); }
+}
+
+function updateSetupSummary() {
+  const count = Object.keys(setupCurrentValues).length;
+  const el = document.getElementById('setup-summary');
+  if (el) el.textContent = count > 0 ? count + ' set' : '';
+}
+
+function onSetupChange(paramName) {
+  const el = document.getElementById('setup-' + paramName);
+  if (!el) return;
+  const val = el.value.trim();
+  el.classList.toggle('has-value', !!val);
+  if (!val) return;
+  setupCurrentValues[paramName] = val;
+  updateSetupSummary();
+  // Debounce save — 500ms after last change
+  if (_setupSaveTimers[paramName]) clearTimeout(_setupSaveTimers[paramName]);
+  _setupSaveTimers[paramName] = setTimeout(() => saveSetupValue(paramName, val), 500);
+}
+
+async function saveSetupValue(paramName, value) {
+  // Manual UI settings are boat-level (race_id=null), not per-race.
+  // Per-race settings come from transcript extraction with a race_id.
+  const ts = new Date().toISOString();
+  try {
+    const resp = await fetch('/api/boat-settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        race_id: null,
+        source: 'manual',
+        entries: [{ ts: ts, parameter: paramName, value: value }]
+      })
+    });
+    if (resp.ok) {
+      showSetupStatus('Saved ' + paramName.replace(/_/g, ' '));
+    } else {
+      showSetupStatus('Error saving ' + paramName.replace(/_/g, ' '), true);
+    }
+  } catch (e) {
+    console.error('setup save error', e);
+    showSetupStatus('Error saving', true);
+  }
+}
+
+function showSetupStatus(msg, isError) {
+  const el = document.getElementById('setup-status');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.color = isError ? '#fca5a5' : '#4ade80';
+  el.style.display = '';
+  setTimeout(() => { el.style.display = 'none'; }, 2000);
+}
+
+// Reload setup values when race state changes
+function refreshSetupForRace() {
+  if (setupParams) loadSetupCurrentValues();
 }
 
 async function startSession(type) {

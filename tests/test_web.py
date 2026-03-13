@@ -2483,3 +2483,194 @@ async def test_camera_admin_page_loads(storage: Storage) -> None:
     assert resp.status_code == 200
     assert "Cameras" in resp.text
     assert "Add Camera" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Boat settings API tests
+# ---------------------------------------------------------------------------
+
+_BS_START_UTC = datetime(2026, 3, 12, 14, 0, 0, tzinfo=UTC)
+
+
+async def _make_race_for_settings(client: httpx.AsyncClient) -> int:
+    """Set an event and start a race, return race_id."""
+    await client.post("/api/event", json={"event_name": "SettingsTest"})
+    resp = await client.post("/api/races/start")
+    assert resp.status_code == 201
+    return resp.json()["id"]
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_parameters(storage: Storage) -> None:
+    """GET /api/boat-settings/parameters returns canonical definitions."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/boat-settings/parameters")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "categories" in data
+    assert "weight_distribution_presets" in data
+    cats = [c["category"] for c in data["categories"]]
+    assert "sail_controls" in cats
+    assert "rig" in cats
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_create_and_list(storage: Storage) -> None:
+    """POST /api/boat-settings creates entries; GET lists them."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _make_race_for_settings(client)
+        ts = _BS_START_UTC.isoformat()
+        resp = await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [
+                    {"ts": ts, "parameter": "backstay", "value": "3.5"},
+                    {"ts": ts, "parameter": "vang", "value": "2.0"},
+                ],
+            },
+        )
+        assert resp.status_code == 201
+        assert len(resp.json()["ids"]) == 2
+
+        resp = await client.get(f"/api/boat-settings?race_id={race_id}")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 2
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_current(storage: Storage) -> None:
+    """GET /api/boat-settings/current returns latest per parameter."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _make_race_for_settings(client)
+        ts1 = _BS_START_UTC.isoformat()
+        ts2 = datetime(2026, 3, 12, 14, 1, 0, tzinfo=UTC).isoformat()
+        await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [{"ts": ts1, "parameter": "backstay", "value": "3.0"}],
+            },
+        )
+        await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [{"ts": ts2, "parameter": "backstay", "value": "4.5"}],
+            },
+        )
+        resp = await client.get(f"/api/boat-settings/current?race_id={race_id}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data) == 1
+        assert data[0]["value"] == "4.5"
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_rejects_unknown_param(storage: Storage) -> None:
+    """POST /api/boat-settings with unknown parameter returns 400."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _make_race_for_settings(client)
+        resp = await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [
+                    {"ts": _BS_START_UTC.isoformat(), "parameter": "fake_param", "value": "1"}
+                ],
+            },
+        )
+        assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_delete_extraction_run(storage: Storage) -> None:
+    """DELETE extraction run removes only those entries."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _make_race_for_settings(client)
+        ts = _BS_START_UTC.isoformat()
+        await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [{"ts": ts, "parameter": "backstay", "value": "3.0"}],
+            },
+        )
+        await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "transcript:whisper-base",
+                "extraction_run_id": 99,
+                "entries": [{"ts": ts, "parameter": "vang", "value": "2.0"}],
+            },
+        )
+        resp = await client.delete("/api/boat-settings/extraction-run/99")
+        assert resp.status_code == 200
+        assert resp.json()["deleted"] == 1
+
+        resp = await client.get(f"/api/boat-settings?race_id={race_id}")
+        assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_boat_settings_null_race_id(storage: Storage) -> None:
+    """Boat settings can be saved and loaded without a race (dock setup)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        ts = "2024-08-01T10:00:00Z"
+        resp = await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": None,
+                "source": "manual",
+                "entries": [{"ts": ts, "parameter": "shroud_tension_upper", "value": "28"}],
+            },
+        )
+        assert resp.status_code == 201
+
+        resp = await client.get("/api/boat-settings/current")
+        assert resp.status_code == 200
+        rows = resp.json()
+        assert len(rows) == 1
+        assert rows[0]["parameter"] == "shroud_tension_upper"
+        assert rows[0]["value"] == "28"
+
+        resp = await client.get("/api/boat-settings")
+        assert resp.status_code == 200
+        assert len(resp.json()) == 1
+
+
+@pytest.mark.asyncio
+async def test_home_page_has_setup_panel(storage: Storage) -> None:
+    """GET / includes the boat setup accordion card."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="setup-card"' in resp.text
+    assert "Boat Setup" in resp.text

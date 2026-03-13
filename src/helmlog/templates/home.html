@@ -77,6 +77,20 @@
   <button class="btn btn-danger" style="margin-top:12px" onclick="stopDebrief()">STOP DEBRIEF</button>
 </div>
 
+<div class="card" id="setup-card">
+  <div class="crew-header" onclick="toggleSetup()">
+    <span class="label" style="margin-bottom:0">Boat Setup</span>
+    <span style="display:flex;align-items:center;gap:8px">
+      <span id="setup-summary" style="font-size:.78rem;color:#8892a4"></span>
+      <span id="setup-chevron" style="color:#8892a4;font-size:.85rem">&#9654;</span>
+    </span>
+  </div>
+  <div id="setup-body" style="display:none;margin-top:10px">
+    <div id="setup-categories"></div>
+    <div id="setup-status" style="font-size:.78rem;color:#8892a4;margin-top:6px;display:none"></div>
+  </div>
+</div>
+
 <div class="card hidden" id="instruments-card">
   <div class="crew-header" onclick="toggleInstruments()">
     <span class="label" style="margin-bottom:0">Instruments</span>
