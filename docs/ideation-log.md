@@ -439,3 +439,76 @@ their personal benchmark without looking at a separate screen.
   in `polar.py`. IDX-005 (tuning auto-population) is complementary — together
   they form a feedback loop: historical data informs both setup and on-water
   performance tracking.
+
+---
+
+## IDX-012: GRIB wind forecasts for race-area weather prediction
+
+- **Date captured:** 2026-03-13
+- **Origin:** Conversation about using GRIB files to predict wind in the racing area
+- **Status:** `raw`
+- **Related:** `external.py` (Open-Meteo weather), IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `polar.py`
+
+**Description:**
+HelmLog currently fetches **current** weather observations via Open-Meteo
+(`external.py`). The idea: download GRIB (GRIdded Binary) forecast files to
+get **predicted** wind speed, direction, and shifts for the waters where the
+boat will be racing. This is the data competitive sailors study before race day
+— the same data that drives tools like PredictWind, Squid, and LuckGrib.
+
+**Use cases:**
+- **Pre-race planning:** Show forecast wind speed/direction over the race area
+  for the next 6–48 hours. Overlay on a chart with the race course.
+- **Shift prediction:** GRIB data at multiple forecast hours reveals when and
+  how wind is expected to shift — the single most important tactical input for
+  upwind racing. Show predicted shift timeline on the session page.
+- **Tuning selection:** Combine forecast wind range with IDX-005 (tuning
+  auto-population) — "tomorrow's forecast is 12–18 kts from 220°, here are
+  your tuning settings for that range."
+- **Post-race comparison:** Compare what GRIB predicted vs. what the boat
+  actually measured. Over time this builds a model of how reliable the forecast
+  is for your specific racing area (local effects, thermal patterns).
+- **Live performance context:** If IDX-011 (write-back to B&G) is implemented,
+  the forecast wind could be displayed alongside actual wind — "forecast said
+  14 kts, you're seeing 11 kts, expect it to build."
+
+**GRIB data sources:**
+- **GFS (NOAA)** — Global, free, 0.25° resolution (~28 km), 3-hour intervals,
+  384-hour forecasts. Accessible via NOMADS or Open-Meteo's GFS endpoint.
+  Good enough for open-water racing.
+- **HRRR (NOAA)** — US-only, free, 3 km resolution, hourly, 18-hour forecasts.
+  Much better for coastal/bay racing (e.g., SF Bay, Chesapeake, Long Island
+  Sound) where local topography drives wind patterns.
+- **NAM (NOAA)** — North America, free, 3–12 km resolution. Good middle ground.
+- **ECMWF (European)** — Generally the best global model, but commercial access
+  is expensive. Some data available via Open-Meteo.
+- **Open-Meteo forecast API** — Already integrated in `external.py`. Provides
+  hourly forecasts from multiple models via a simple JSON API — no GRIB parsing
+  needed. May be sufficient without raw GRIB files.
+
+**Key design questions:**
+- **GRIB vs. JSON API:** Raw GRIB files are large (tens of MB) and require
+  parsing libraries (`cfgrib`, `eccodes`, `xarray`). Open-Meteo already wraps
+  GFS/ECMWF into a JSON API that HelmLog uses — extending the existing
+  `fetch_weather()` to pull hourly forecasts might be simpler than GRIB parsing.
+  Raw GRIB only wins if you need custom interpolation or offline access.
+- **Storage on Pi:** GRIB files are big. If fetching raw GRIB, need a retention
+  policy. If using the JSON API, it's just a few KB per forecast fetch.
+- **Racing area definition:** How does HelmLog know *where* you're racing? GPS
+  position during the session is obvious, but for pre-race planning you'd need
+  a configured "home waters" location or a way to set a race area.
+- **Visualization:** Time-series wind chart? Wind barbs on a map? Simple table?
+  The session page already has a track map — overlaying forecast wind arrows
+  would be powerful but complex.
+- **Offline access:** Boats may not have internet at the race course. Could
+  download GRIB/forecast data while on wifi (at the dock, morning of race day)
+  and cache locally for the day.
+
+**Notes:**
+- *2026-03-13:* Initial capture. The simplest first step might be extending
+  `external.py`'s Open-Meteo integration to fetch multi-hour forecasts (not
+  just current conditions) and displaying them on the session or home page.
+  That avoids GRIB parsing entirely and gets 80% of the value. Raw GRIB is
+  a later optimization for offline use or higher-resolution coastal models
+  like HRRR. Connects well with IDX-005 (tuning from wind range) and IDX-011
+  (write-back to displays).
