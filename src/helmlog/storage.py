@@ -3454,7 +3454,8 @@ class Storage:
 
     async def list_users(self) -> list[dict[str, Any]]:
         cur = await self._conn().execute(
-            "SELECT id, email, name, role, created_at, last_seen, is_developer"
+            "SELECT id, email, name, role, created_at, last_seen, is_developer,"
+            " weight_lbs"
             " FROM users ORDER BY created_at"
         )
         rows = await cur.fetchall()

@@ -5,10 +5,15 @@
 h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}
 .card{background:#131f35;border-radius:12px;padding:24px;text-align:center}
 .avatar{width:128px;height:128px;border-radius:50%;object-fit:cover;cursor:pointer;border:3px solid {{ role_color }};margin-bottom:16px}
-.name{font-size:1.2rem;font-weight:600;margin-bottom:4px}
 .email{color:#8892a4;font-size:.85rem;margin-bottom:8px}
 .role{background:{{ role_color }}22;color:{{ role_color }};padding:2px 10px;border-radius:4px;font-size:.8rem;display:inline-block}
 a{color:#7eb8f7;text-decoration:none}
+.profile-field{text-align:left;margin-top:18px}
+.profile-field label{color:#8892a4;font-size:.85rem}
+.profile-input{width:100%;padding:8px;border-radius:6px;border:1px solid #2a3a5c;background:#0d1829;color:#e0e6ed;margin-top:4px;font-size:1rem;box-sizing:border-box}
+.profile-row{display:flex;gap:8px;align-items:flex-end;margin-top:4px}
+.profile-row .profile-input{flex:1;margin-top:0}
+.profile-row .btn{flex-shrink:0}
 </style>
 {% endblock %}
 {% block content %}
@@ -16,19 +21,26 @@ a{color:#7eb8f7;text-decoration:none}
 <div class="card">
   <img class="avatar" id="avatar" src="{{ avatar_url }}" alt="avatar" onclick="document.getElementById('file').click()"/>
   <input type="file" id="file" accept="image/*" style="display:none"/>
-  <div class="name">{{ name }}</div>
   <div class="email">{{ email }}</div>
   <div class="role">{{ role }}</div>
-  <div style="margin-top:18px;text-align:left">
-    <label style="color:#8892a4;font-size:.85rem">Body Weight (lbs)</label>
+  <div class="profile-field">
+    <label for="name-input">Display Name</label>
+    <div class="profile-row">
+      <input type="text" id="name-input" class="profile-input" value="{{ name }}" placeholder="Your name"/>
+      <button class="btn btn-secondary" style="font-size:.85rem;padding:8px 16px" onclick="saveName()">Save</button>
+    </div>
+  </div>
+  <div class="profile-field">
+    <label>Body Weight (lbs)</label>
     <p style="color:#6b7a90;font-size:.75rem;margin:4px 0 0">Weight is biometric data. By saving, you consent to its storage for crew weight tracking. You may clear it at any time by saving an empty value.</p>
     <label style="display:flex;align-items:center;gap:6px;margin-top:6px;color:#8892a4;font-size:.85rem;cursor:pointer">
       <input type="checkbox" id="bio-consent" {% if bio_consent %}checked{% endif %}/> I consent to biometric data storage
     </label>
-    <input type="number" id="weight-input" step="0.1" min="0" max="500"
-           value="{{ weight_lbs or '' }}" placeholder="—"
-           style="width:100%;padding:8px;border-radius:6px;border:1px solid #2a3a5c;background:#0d1829;color:#e0e6ed;margin-top:4px;font-size:1rem"/>
-    <button class="btn btn-secondary" style="margin-top:8px;font-size:.85rem;padding:8px 16px" onclick="saveWeight()">Save Weight</button>
+    <div class="profile-row">
+      <input type="number" id="weight-input" class="profile-input" step="0.1" min="0" max="500"
+             value="{{ weight_lbs or '' }}" placeholder="—"/>
+      <button class="btn btn-secondary" style="font-size:.85rem;padding:8px 16px" onclick="saveWeight()">Save</button>
+    </div>
   </div>
 </div>
 {% endblock %}
@@ -47,6 +59,20 @@ document.getElementById('file').addEventListener('change', async e => {
     alert(d.detail || 'Upload failed');
   }
 });
+async function saveName() {
+  const name = document.getElementById('name-input').value.trim();
+  if (!name) { alert('Name must not be blank.'); return; }
+  const r = await fetch('/api/me/name', {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: name})
+  });
+  if (r.ok) window.location.reload();
+  else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Failed to save name');
+  }
+}
 async function saveWeight() {
   const v = document.getElementById('weight-input').value;
   const weight = v ? parseFloat(v) : null;

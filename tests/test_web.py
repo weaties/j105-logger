@@ -964,6 +964,8 @@ async def test_crew_users_endpoint(storage: Storage) -> None:
     names = [u["name"] for u in data["users"]]
     assert "Alice" in names
     assert "Bob" in names
+    # weight_lbs should be present in user records for crew weight defaulting
+    assert all("weight_lbs" in u for u in data["users"])
 
 
 @pytest.mark.asyncio
@@ -3179,6 +3181,29 @@ async def test_patch_weight_invalid_type(storage: Storage) -> None:
     ) as client:
         resp = await client.patch("/api/me/weight", json={"weight_lbs": "heavy"})
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_name_updates_display_name(storage: Storage) -> None:
+    """PATCH /api/me/name updates the user's display name."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/me/name", json={"name": "New Name"})
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_patch_name_rejects_blank(storage: Storage) -> None:
+    """PATCH /api/me/name rejects blank name."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/me/name", json={"name": ""})
+    assert resp.status_code == 422
+    assert "blank" in resp.json()["detail"].lower()
 
 
 # ---------------------------------------------------------------------------

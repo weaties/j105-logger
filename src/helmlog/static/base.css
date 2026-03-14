@@ -768,8 +768,9 @@ nav.site-nav {
 .crew-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 8px;
+  flex-wrap: wrap;
 }
 
 .crew-pos {
@@ -814,6 +815,38 @@ nav.site-nav {
 
 .crew-select.has-value {
   border-color: #22c55e;
+}
+
+.crew-weight {
+  width: 68px;
+  flex-shrink: 0;
+  background: #0a1628;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  padding: 8px 6px;
+  color: #e8eaf0;
+  font-size: 0.8rem;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+
+.crew-weight::-webkit-outer-spin-button,
+.crew-weight::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.crew-weight:focus {
+  border-color: #2563eb;
+  outline: none;
+}
+
+.crew-total-weight {
+  font-size: 0.78rem;
+  color: #8892a4;
+  margin-top: 8px;
+  text-align: right;
+  display: none;
 }
 
 .sailor-chip {

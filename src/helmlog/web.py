@@ -499,6 +499,18 @@ def create_app(
                 )
         await storage.update_user_weight(_user["id"], weight)
 
+    @app.patch("/api/me/name", status_code=204)
+    async def api_update_my_name(
+        request: Request,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> None:
+        """Update the current user's display name."""
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="Name must not be blank")
+        await storage.update_user_profile(_user["id"], name, None)
+
     def _login_ctx(next_url: str, error_html: str = "") -> dict[str, Any]:
         from helmlog.oauth import enabled_providers
 

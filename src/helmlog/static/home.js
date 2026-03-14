@@ -177,7 +177,7 @@ let crewExpanded = false;
 let _crewMetaLoaded = false;
 let _crewLoadedForRaceId = null;
 let _crewPositions = [];   // [{id, name, display_order}]
-let _crewUsers = [];       // [{id, name, email, role}]
+let _crewUsers = [];       // [{id, name, email, role, weight_lbs}]
 let _crewSaveTimer = null;
 
 let instExpanded = false;
@@ -228,8 +228,15 @@ function renderCrewRows() {
     }
     if (canEdit) html += '<option value="__new__">+ Add new...</option>';
     html += '</select>';
+    html += '<input type="number" class="crew-weight" data-field="body" step="0.1" min="0" max="500"'
+      + ' placeholder="Body lbs" title="Body weight (lbs)"'
+      + (canEdit ? ' onchange="onCrewWeightChange()"' : ' disabled') + '/>';
+    html += '<input type="number" class="crew-weight" data-field="gear" step="0.1" min="0" max="100"'
+      + ' placeholder="Gear lbs" title="Gear weight (lbs)"'
+      + (canEdit ? ' onchange="onCrewWeightChange()"' : ' disabled') + '/>';
     html += '</div>';
   }
+  html += '<div id="crew-total-weight" class="crew-total-weight"></div>';
   container.innerHTML = html;
 }
 
@@ -266,17 +273,26 @@ function setCrewInputs(crew) {
   rows.forEach(row => {
     const posId = parseInt(row.dataset.posId);
     const sel = row.querySelector('.crew-select');
+    const bodyInput = row.querySelector('.crew-weight[data-field="body"]');
+    const gearInput = row.querySelector('.crew-weight[data-field="gear"]');
     sel.value = '';
     sel.classList.remove('has-value');
+    bodyInput.value = '';
+    gearInput.value = '';
     if (crew) {
       const entry = crew.find(c => c.position_id === posId);
-      if (entry && entry.user_id) {
-        sel.value = String(entry.user_id);
-        sel.classList.add('has-value');
+      if (entry) {
+        if (entry.user_id) {
+          sel.value = String(entry.user_id);
+          sel.classList.add('has-value');
+        }
+        if (entry.body_weight != null) bodyInput.value = entry.body_weight;
+        if (entry.gear_weight != null) gearInput.value = entry.gear_weight;
       }
     }
   });
   refreshCrewDropdowns();
+  updateCrewTotalWeight();
 }
 
 function getCrewFromInputs() {
@@ -286,7 +302,18 @@ function getCrewFromInputs() {
     const posId = parseInt(row.dataset.posId);
     const sel = row.querySelector('.crew-select');
     const userId = sel.value ? parseInt(sel.value) : null;
-    if (userId) crew.push({position_id: posId, user_id: userId});
+    const bodyVal = row.querySelector('.crew-weight[data-field="body"]').value;
+    const gearVal = row.querySelector('.crew-weight[data-field="gear"]').value;
+    const bodyWeight = bodyVal ? parseFloat(bodyVal) : null;
+    const gearWeight = gearVal ? parseFloat(gearVal) : null;
+    if (userId || bodyWeight != null || gearWeight != null) {
+      crew.push({
+        position_id: posId,
+        user_id: userId,
+        body_weight: bodyWeight,
+        gear_weight: gearWeight,
+      });
+    }
   });
   return crew;
 }
@@ -295,6 +322,35 @@ function updateCrewSummary(crew) {
   const filled = crew ? crew.filter(c => c.user_id || c.user_name).length : 0;
   const el = document.getElementById('crew-summary');
   if (el) el.textContent = filled > 0 ? filled + ' assigned' : '';
+}
+
+function onCrewWeightChange() {
+  updateCrewTotalWeight();
+  // Debounced auto-save
+  if (_crewSaveTimer) clearTimeout(_crewSaveTimer);
+  const statusEl = document.getElementById('crew-status');
+  if (statusEl) { statusEl.style.display = ''; statusEl.textContent = 'Saving...'; }
+  _crewSaveTimer = setTimeout(() => saveCrew(), 600);
+}
+
+function updateCrewTotalWeight() {
+  const el = document.getElementById('crew-total-weight');
+  if (!el) return;
+  let totalBody = 0, totalGear = 0, count = 0;
+  document.querySelectorAll('#crew-rows .crew-row').forEach(row => {
+    const bv = parseFloat(row.querySelector('.crew-weight[data-field="body"]').value);
+    const gv = parseFloat(row.querySelector('.crew-weight[data-field="gear"]').value);
+    if (!isNaN(bv)) { totalBody += bv; count++; }
+    if (!isNaN(gv)) totalGear += gv;
+  });
+  const total = totalBody + totalGear;
+  if (count > 0) {
+    el.textContent = 'Total crew weight: ' + total.toFixed(1) + ' lbs'
+      + ' (body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')';
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
 }
 
 async function onCrewChange(selectEl) {
@@ -325,6 +381,22 @@ async function onCrewChange(selectEl) {
     opt.value = newUserId;
     selectEl.appendChild(opt);
     selectEl.value = newUserId;
+  }
+  // Auto-default body weight from user profile when user is selected
+  if (selectEl) {
+    const row = selectEl.closest('.crew-row');
+    const bodyInput = row.querySelector('.crew-weight[data-field="body"]');
+    const uid = selectEl.value ? parseInt(selectEl.value) : null;
+    if (uid) {
+      const user = _crewUsers.find(u => u.id === uid);
+      if (user && user.weight_lbs != null && !bodyInput.value) {
+        bodyInput.value = user.weight_lbs;
+      }
+    } else {
+      bodyInput.value = '';
+      row.querySelector('.crew-weight[data-field="gear"]').value = '';
+    }
+    updateCrewTotalWeight();
   }
   refreshCrewDropdowns();
   // Debounced auto-save
