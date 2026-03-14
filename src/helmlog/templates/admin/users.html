@@ -84,9 +84,6 @@ document.getElementById('invite-form').addEventListener('submit', async e => {
   const d = await r.json();
   document.getElementById('invite-result').textContent = d.invite_url || JSON.stringify(d);
 });
-async function toggleDev(userId, value) {
-  await fetch('/admin/users/' + userId + '/developer', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({is_developer: !!value})});
-}
 async function revokeSession(sid) {
   await fetch('/admin/sessions/' + sid, {method:'DELETE'});
   location.reload();
@@ -125,6 +122,11 @@ function editUser(userId) {
   roleHtml += '</select>';
   roleTd.innerHTML = roleHtml;
 
+  // Dev checkbox → enable
+  const devTd = row.querySelector('.u-dev');
+  const devCb = devTd ? devTd.querySelector('input[type="checkbox"]') : null;
+  if (devCb) { devCb.disabled = false; devCb.style.cursor = 'pointer'; }
+
   // Weight → input
   if (weightTd) {
     weightTd.innerHTML = '<input class="edit-input" id="edit-weight-'+userId+'" type="number" step="0.1" min="0" max="500" value="'+curWeight+'" placeholder="lbs" style="width:80px" />';
@@ -146,8 +148,12 @@ async function saveUser(userId) {
   const weightVal = weightEl ? weightEl.value.trim() : '';
   if (!email) { alert('Email is required'); return; }
 
+  const row = document.querySelector('tr[data-uid="' + userId + '"]');
+  const devCb = row ? row.querySelector('.u-dev input[type="checkbox"]') : null;
+
   const payload = {name: name || null, email: email};
   if (roleEl) payload.role = roleEl.value;
+  if (devCb) payload.is_developer = devCb.checked;
   if (weightEl) payload.weight_lbs = weightVal ? parseFloat(weightVal) : null;
 
   const r = await fetch('/admin/users/' + userId, {

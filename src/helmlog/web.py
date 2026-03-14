@@ -1063,7 +1063,7 @@ def create_app(
             f'<td class="u-email" data-label="Email">{_esc(u["email"])}</td>'
             f'<td class="u-name" data-label="Name">{_esc(u["name"] or "")}</td>'
             f'<td class="u-role" data-label="Role" data-role="{u["role"]}">{_badge(u["role"])}</td>'
-            f'<td class="u-dev" data-label="Dev"><input type="checkbox" onchange="toggleDev({u["id"]},this.checked)" {"checked" if u.get("is_developer") else ""} style="width:18px;height:18px;cursor:pointer"/></td>'  # noqa: E501
+            f'<td class="u-dev" data-label="Dev"><input type="checkbox" {"checked" if u.get("is_developer") else ""} disabled style="width:18px;height:18px"/></td>'  # noqa: E501
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
             f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:#22c55e;color:#4ade80">Edit</button></td>'  # noqa: E501
@@ -1208,6 +1208,9 @@ def create_app(
             if role not in ("viewer", "crew", "admin"):
                 raise HTTPException(status_code=422, detail="Invalid role")
             await storage.update_user_role(user_id, role)
+        # Developer flag update
+        if "is_developer" in body:
+            await storage.update_user_developer(user_id, bool(body["is_developer"]))
         # Weight update (admin bypass — no biometric consent required from admin)
         if "weight_lbs" in body:
             w = body["weight_lbs"]
@@ -1220,6 +1223,8 @@ def create_app(
             changes.append(f"email={email!r}")
         if role is not None:
             changes.append(f"role={role!r}")
+        if "is_developer" in body:
+            changes.append(f"is_developer={body['is_developer']!r}")
         if "weight_lbs" in body:
             changes.append(f"weight_lbs={body['weight_lbs']!r}")
         await _audit(
