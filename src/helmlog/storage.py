@@ -3386,6 +3386,18 @@ class Storage:
         )
         await db.commit()
 
+    async def update_user_profile(self, user_id: int, name: str | None, email: str | None) -> None:
+        """Update a user's name and/or email."""
+        db = self._conn()
+        if email is not None:
+            await db.execute(
+                "UPDATE users SET email = ? WHERE id = ?",
+                (email.lower().strip(), user_id),
+            )
+        if name is not None:
+            await db.execute("UPDATE users SET name = ? WHERE id = ?", (name, user_id))
+        await db.commit()
+
     async def list_users(self) -> list[dict[str, Any]]:
         cur = await self._conn().execute(
             "SELECT id, email, name, role, created_at, last_seen, is_developer"

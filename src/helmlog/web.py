@@ -1010,13 +1010,25 @@ def create_app(
             color = role_colors.get(role, "#8892a4")
             return f'<span style="background:{color}22;color:{color};padding:1px 7px;border-radius:4px;font-size:.75rem">{role}</span>'
 
+        def _esc(s: str) -> str:
+            return (
+                s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace('"', "&quot;")
+                .replace("'", "&#39;")
+            )
+
         user_rows = "".join(
-            f"<tr><td>{u['email']}</td><td>{u['name'] or '\u2014'}</td>"
+            f'<tr data-uid="{u["id"]}">'
+            f'<td class="u-email">{_esc(u["email"])}</td>'
+            f'<td class="u-name">{_esc(u["name"] or "")}</td>'
             f"<td>{_badge(u['role'])}</td>"
             f"<td>{'&#9989;' if u.get('is_developer') else '\u2014'}</td>"
             f"<td>{_local_ts(u['last_seen'])}</td>"
-            f'<td><button onclick="changeRole({u["id"]})" style="cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem">Change role</button>'  # noqa: E501
-            f' <button onclick="toggleDev({u["id"]},{1 if not u.get("is_developer") else 0})" style="cursor:pointer;background:none;border:1px solid #d97706;color:#fbbf24;border-radius:4px;padding:2px 8px;font-size:.8rem">{"Remove dev" if u.get("is_developer") else "Make dev"}</button></td>'  # noqa: E501
+            f'<td><button onclick="editUser({u["id"]})" class="ubtn" style="border-color:#22c55e;color:#4ade80">Edit</button>'  # noqa: E501
+            f' <button onclick="changeRole({u["id"]})" class="ubtn">Role</button>'
+            f' <button onclick="toggleDev({u["id"]},{1 if not u.get("is_developer") else 0})" class="ubtn" style="border-color:#d97706;color:#fbbf24">{"Remove dev" if u.get("is_developer") else "Make dev"}</button></td>'  # noqa: E501
             f"</tr>"
             for u in users
         )
@@ -1126,6 +1138,37 @@ def create_app(
         await storage.update_user_developer(user_id, is_dev)
         await _audit(
             request, "user.developer", detail=f"user={user_id} is_developer={is_dev}", user=_user
+        )
+
+    @app.put("/admin/users/{user_id}", status_code=204, include_in_schema=False)
+    async def admin_update_user(
+        request: Request,
+        user_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        """Update a user's name and/or email."""
+        user = await storage.get_user_by_id(user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found")
+        name = body.get("name")
+        email = body.get("email")
+        if email is not None:
+            email = email.strip()
+            if not email:
+                raise HTTPException(status_code=422, detail="email must not be blank")
+            # Check for email conflict
+            existing = await storage.get_user_by_email(email)
+            if existing and existing["id"] != user_id:
+                raise HTTPException(status_code=409, detail="Email already in use")
+        await storage.update_user_profile(user_id, name, email)
+        changes = []
+        if name is not None:
+            changes.append(f"name={name!r}")
+        if email is not None:
+            changes.append(f"email={email!r}")
+        await _audit(
+            request, "user.update", detail=f"user={user_id} {' '.join(changes)}", user=_user
         )
 
     @app.delete("/admin/sessions/{session_id}", status_code=204, include_in_schema=False)

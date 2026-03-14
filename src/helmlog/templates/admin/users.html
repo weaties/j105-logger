@@ -12,6 +12,12 @@ label{font-size:.85rem;color:#8892a4;display:block;margin-bottom:4px}
 input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem;margin-bottom:10px}
 .btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
 #invite-result{margin-top:12px;font-size:.85rem;color:#4ade80;word-break:break-all}
+.ubtn{cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:2px 8px;font-size:.8rem}
+.edit-input{background:#0a1628;border:1px solid #2563eb;border-radius:4px;padding:4px 6px;color:#e8eaf0;font-size:.85rem;width:100%}
+.edit-actions{margin-top:4px;display:flex;gap:4px}
+.edit-actions button{font-size:.75rem;padding:2px 8px;border-radius:4px;cursor:pointer;border:none}
+.edit-save{background:#22c55e;color:#fff}
+.edit-cancel{background:#374151;color:#8892a4}
 </style>
 {% endblock %}
 {% block content %}
@@ -19,7 +25,7 @@ input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;paddi
 <div class="card">
 <h2>Users</h2>
 <table><thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Dev</th><th>Last seen</th><th></th></tr></thead>
-<tbody>{{ user_rows|safe }}</tbody>
+<tbody id="user-tbody">{{ user_rows|safe }}</tbody>
 </table>
 </div>
 <div class="card">
@@ -83,6 +89,35 @@ async function revokeSession(sid) {
 async function revokeInvite(invId) {
   await fetch('/admin/invitations/' + invId + '/revoke', {method:'POST'});
   location.reload();
+}
+function editUser(userId) {
+  const row = document.querySelector('tr[data-uid="' + userId + '"]');
+  if (!row) return;
+  const emailTd = row.querySelector('.u-email');
+  const nameTd = row.querySelector('.u-name');
+  const curEmail = emailTd.textContent.trim();
+  const curName = nameTd.textContent.trim();
+  emailTd.innerHTML = '<input class="edit-input" id="edit-email-'+userId+'" value="'+curEmail.replace(/"/g,'&quot;')+'" />';
+  nameTd.innerHTML = '<input class="edit-input" id="edit-name-'+userId+'" value="'+curName.replace(/"/g,'&quot;')+'" placeholder="Display name" />'
+    + '<div class="edit-actions"><button class="edit-save" onclick="saveUser('+userId+')">Save</button>'
+    + '<button class="edit-cancel" onclick="location.reload()">Cancel</button></div>';
+  document.getElementById('edit-name-'+userId).focus();
+}
+async function saveUser(userId) {
+  const name = document.getElementById('edit-name-'+userId).value.trim();
+  const email = document.getElementById('edit-email-'+userId).value.trim();
+  if (!email) { alert('Email is required'); return; }
+  const r = await fetch('/admin/users/' + userId, {
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name: name || null, email: email})
+  });
+  if (r.ok) {
+    location.reload();
+  } else {
+    const d = await r.json().catch(()=>({}));
+    alert(d.detail || 'Failed to save');
+  }
 }
 </script>
 {% endblock %}
