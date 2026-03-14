@@ -1679,9 +1679,12 @@ function _addDiscussionMarkers() {
 
     const hasUnread = t.unread_count > 0;
     const markerColor = t.resolved ? '#4ade80' : hasUnread ? '#60a5fa' : '#a78bfa';
+    const markerStyle = t.resolved
+      ? 'width:14px;height:14px;background:transparent;border:2px solid #4ade80;border-radius:50%'
+      : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid #0a1628;border-radius:50%;box-shadow:0 0 4px ' + markerColor;
     const icon = L.divIcon({
       className: 'discussion-marker',
-      html: '<div style="width:14px;height:14px;background:' + markerColor + ';border:2px solid #0a1628;border-radius:50%;box-shadow:0 0 4px ' + markerColor + '"></div>',
+      html: '<div style="' + markerStyle + '"></div>',
       iconSize: [14, 14],
       iconAnchor: [7, 7],
     });
