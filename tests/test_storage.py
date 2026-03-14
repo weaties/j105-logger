@@ -117,9 +117,7 @@ class TestMigration:
         )
         await db.commit()
 
-        cur = await db.execute(
-            "SELECT type, point_of_sail FROM sails ORDER BY type"
-        )
+        cur = await db.execute("SELECT type, point_of_sail FROM sails ORDER BY type")
         rows = await cur.fetchall()
         by_type = {row["type"]: row["point_of_sail"] for row in rows}
         assert by_type["jib"] == "upwind"

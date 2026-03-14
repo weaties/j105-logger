@@ -3103,7 +3103,8 @@ class Storage:
         db = self._conn()
         where = "" if include_inactive else "WHERE active = 1"
         cur = await db.execute(
-            f"SELECT id, type, name, notes, active, point_of_sail FROM sails {where} ORDER BY type, name"
+            "SELECT id, type, name, notes, active, point_of_sail"
+            f" FROM sails {where} ORDER BY type, name"
         )
         rows = await cur.fetchall()
         return [
@@ -3256,9 +3257,7 @@ class Storage:
         for slot_type, sail_id in slot_map.items():
             if sail_id is None:
                 continue
-            cur = await db.execute(
-                "SELECT type FROM sails WHERE id = ?", (sail_id,)
-            )
+            cur = await db.execute("SELECT type FROM sails WHERE id = ?", (sail_id,))
             row = await cur.fetchone()
             if row is None:
                 msg = f"Sail id={sail_id} not found"
@@ -3334,9 +3333,7 @@ class Storage:
         """
         db = self._conn()
         # Get the sail's point_of_sail for filtering
-        cur = await db.execute(
-            "SELECT point_of_sail FROM sails WHERE id = ?", (sail_id,)
-        )
+        cur = await db.execute("SELECT point_of_sail FROM sails WHERE id = ?", (sail_id,))
         sail_row = await cur.fetchone()
         if sail_row is None:
             return []

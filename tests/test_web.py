@@ -2071,7 +2071,7 @@ async def test_add_sail_with_explicit_point_of_sail(storage: Storage) -> None:
 
 @pytest.mark.asyncio
 async def test_add_sail_default_point_of_sail(storage: Storage) -> None:
-    """POST /api/sails without point_of_sail defaults by type: jib→upwind, spinnaker→downwind, main→both."""
+    """POST /api/sails without point_of_sail defaults by type."""
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -2094,9 +2094,7 @@ async def test_update_sail_point_of_sail(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sail_id = await _add_sail(client, "main", "Full Main")
-        patch_resp = await client.patch(
-            f"/api/sails/{sail_id}", json={"point_of_sail": "upwind"}
-        )
+        patch_resp = await client.patch(f"/api/sails/{sail_id}", json={"point_of_sail": "upwind"})
         assert patch_resp.status_code == 200
         resp = await client.get("/api/sails")
     data = resp.json()
@@ -2124,9 +2122,7 @@ async def test_update_sail_invalid_point_of_sail_422(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sail_id = await _add_sail(client, "main", "Full Main")
-        resp = await client.patch(
-            f"/api/sails/{sail_id}", json={"point_of_sail": "sideways"}
-        )
+        resp = await client.patch(f"/api/sails/{sail_id}", json={"point_of_sail": "sideways"})
     assert resp.status_code == 422
 
 
@@ -2192,9 +2188,7 @@ async def test_set_sail_defaults_invalid_id_422(storage: Storage) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.put(
-            "/api/sails/defaults", json={"main_id": 999}
-        )
+        resp = await client.put("/api/sails/defaults", json={"main_id": 999})
     assert resp.status_code == 422
 
 
@@ -2206,9 +2200,7 @@ async def test_set_sail_defaults_wrong_type_422(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         jib_id = await _add_sail(client, "jib", "J1")
-        resp = await client.put(
-            "/api/sails/defaults", json={"main_id": jib_id}
-        )
+        resp = await client.put("/api/sails/defaults", json={"main_id": jib_id})
     assert resp.status_code == 422
 
 
@@ -2220,9 +2212,7 @@ async def test_clear_sail_defaults(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         main_id = await _add_sail(client, "main", "Full Main")
-        await client.put(
-            "/api/sails/defaults", json={"main_id": main_id}
-        )
+        await client.put("/api/sails/defaults", json={"main_id": main_id})
         # Clear
         resp = await client.put(
             "/api/sails/defaults",

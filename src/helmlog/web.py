@@ -1017,9 +1017,7 @@ def create_app(
         request: Request,
         _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
     ) -> Response:
-        return _templates.TemplateResponse(
-            request, "sails.html", _tpl_ctx(request, "/sails")
-        )
+        return _templates.TemplateResponse(request, "sails.html", _tpl_ctx(request, "/sails"))
 
     @app.get("/admin/boats", response_class=HTMLResponse, include_in_schema=False)
     async def admin_boats_page(request: Request) -> Response:
@@ -4119,7 +4117,9 @@ def create_app(
                 detail=f"Invalid point_of_sail {body.point_of_sail!r}. Must be one of {list(_POINT_OF_SAIL_VALUES)}",
             )
         try:
-            sail_id = await storage.add_sail(body.type, body.name, body.notes, point_of_sail=body.point_of_sail)
+            sail_id = await storage.add_sail(
+                body.type, body.name, body.notes, point_of_sail=body.point_of_sail
+            )
         except ValueError as exc:
             raise HTTPException(
                 status_code=409,
@@ -4203,7 +4203,10 @@ def create_app(
                 detail=f"Invalid point_of_sail {body.point_of_sail!r}. Must be one of {list(_POINT_OF_SAIL_VALUES)}",
             )
         found = await storage.update_sail(
-            sail_id, name=body.name, notes=body.notes, active=body.active,
+            sail_id,
+            name=body.name,
+            notes=body.notes,
+            active=body.active,
             point_of_sail=body.point_of_sail,
         )
         if not found:
