@@ -192,6 +192,8 @@ function toggleCrew() {
   crewExpanded = !crewExpanded;
   document.getElementById('crew-body').style.display = crewExpanded ? '' : 'none';
   document.getElementById('crew-chevron').textContent = crewExpanded ? '\u25BC' : '\u25B6';
+  const summaryEl = document.getElementById('crew-summary');
+  if (summaryEl) summaryEl.style.display = crewExpanded ? 'none' : '';
   if (crewExpanded && !_crewMetaLoaded) loadCrewMeta();
 }
 
@@ -266,6 +268,8 @@ function setCrewExpanded(expanded) {
   crewExpanded = expanded;
   document.getElementById('crew-body').style.display = crewExpanded ? '' : 'none';
   document.getElementById('crew-chevron').textContent = crewExpanded ? '\u25BC' : '\u25B6';
+  const summaryEl = document.getElementById('crew-summary');
+  if (summaryEl) summaryEl.style.display = crewExpanded ? 'none' : '';
 }
 
 function setCrewInputs(crew) {
@@ -319,9 +323,39 @@ function getCrewFromInputs() {
 }
 
 function updateCrewSummary(crew) {
+  const countEl = document.getElementById('crew-count');
+  const summaryEl = document.getElementById('crew-summary');
   const filled = crew ? crew.filter(c => c.user_id || c.user_name).length : 0;
-  const el = document.getElementById('crew-summary');
-  if (el) el.textContent = filled > 0 ? filled + ' assigned' : '';
+  if (countEl) countEl.textContent = filled > 0 ? filled + ' assigned' : '';
+  if (!summaryEl) return;
+  if (!crew || !filled) { summaryEl.innerHTML = ''; return; }
+  let totalBody = 0, totalGear = 0, hasWeight = false;
+  const parts = crew.filter(c => c.user_id || c.user_name).map(c => {
+    const pos = (c.position || '').charAt(0).toUpperCase() + (c.position || '').slice(1);
+    const name = c.attributed === false ? '<em>(not attributed)</em>' : escHtml(c.user_name || '\u2014');
+    let wt = '';
+    if (c.body_weight != null || c.gear_weight != null) {
+      hasWeight = true;
+      const b = c.body_weight || 0;
+      const g = c.gear_weight || 0;
+      totalBody += b;
+      totalGear += g;
+      wt = ' <span style="color:#6b7a90;font-size:.72rem">(' + (b ? b.toFixed(0) : '0');
+      if (g) wt += '+' + g.toFixed(0) + 'g';
+      wt += ')</span>';
+    }
+    return '<span style="color:#8892a4">' + escHtml(pos) + ':</span> ' + name + wt;
+  });
+  let html = parts.join(' &nbsp;\u00b7&nbsp; ');
+  if (hasWeight) {
+    const total = totalBody + totalGear;
+    html += '<div style="color:#8892a4;font-size:.75rem;margin-top:3px">'
+      + 'Total crew weight: ' + total.toFixed(0) + ' lbs'
+      + ' (body ' + totalBody.toFixed(0) + ' + gear ' + totalGear.toFixed(0) + ')</div>';
+  }
+  summaryEl.innerHTML = html;
+  // Show summary when collapsed, hide when expanded
+  summaryEl.style.display = crewExpanded ? 'none' : '';
 }
 
 function onCrewWeightChange() {
@@ -456,7 +490,11 @@ async function saveCrew() {
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(crew)
     });
-    updateCrewSummary(crew);
+    // Re-fetch resolved crew for summary (has position names, user names, weights)
+    const resolveUrl = isRace ? '/api/races/' + state.current_race.id + '/crew' : '/api/crew/defaults';
+    const rr = await fetch(resolveUrl);
+    const resolved = await rr.json();
+    updateCrewSummary(resolved.crew || []);
     // Sync crew_weight boat setting from crew totals
     if (isRace) await syncCrewWeightSetting(state.current_race.id);
     if (statusEl) { statusEl.textContent = 'Saved'; setTimeout(() => { statusEl.style.display = 'none'; }, 1500); }
