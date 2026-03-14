@@ -2555,6 +2555,37 @@ def create_app(
                 source="synthesized",
             )
 
+        # Auto-apply sail defaults for synthesized race (#311)
+        try:
+            sail_defaults = await storage.get_sail_defaults()
+            has_any = any(sail_defaults[t] is not None for t in ("main", "jib", "spinnaker"))
+            if has_any:
+                await storage.insert_sail_change(
+                    race_id,
+                    start_utc.isoformat(),
+                    main_id=sail_defaults["main"]["id"] if sail_defaults["main"] else None,
+                    jib_id=sail_defaults["jib"]["id"] if sail_defaults["jib"] else None,
+                    spinnaker_id=(
+                        sail_defaults["spinnaker"]["id"] if sail_defaults["spinnaker"] else None
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to auto-apply sail defaults for synth {}: {}", name, exc)
+
+        # Auto-detect maneuvers for synthesized race
+        async def _auto_detect_synth(rid: int) -> None:
+            try:
+                from helmlog.maneuver_detector import detect_maneuvers
+
+                maneuvers = await detect_maneuvers(storage, rid)
+                tacks = sum(1 for m in maneuvers if m.type == "tack")
+                gybes = sum(1 for m in maneuvers if m.type == "gybe")
+                logger.info("Synth auto-detected {} tacks, {} gybes for race {}", tacks, gybes, rid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Synth auto maneuver detection failed for race {}: {}", rid, exc)
+
+        asyncio.ensure_future(_auto_detect_synth(race_id))
+
         detail = name + (f" [peer={peer_fingerprint}]" if peer_fingerprint else "")
         await _audit(request, "session.synthesize", detail=detail, user=_user)
 
