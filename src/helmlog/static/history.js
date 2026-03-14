@@ -350,9 +350,11 @@ async function toggleHistoryCrew(sessionId) {
   const data = await r.json();
   const crew = data.crew || [];
   if (crew.length) {
-    el.innerHTML = '<div style="font-size:.82rem">' + crew.map(c =>
-      '<span style="color:#8892a4">' + c.position.charAt(0).toUpperCase() + c.position.slice(1) + ':</span> ' + c.sailor
-    ).join(' &nbsp;·&nbsp; ') + '</div>';
+    el.innerHTML = '<div style="font-size:.82rem">' + crew.map(c => {
+      const pos = c.position.charAt(0).toUpperCase() + c.position.slice(1);
+      const name = c.attributed ? (c.user_name || '\u2014') : '<em>(not attributed)</em>';
+      return '<span style="color:#8892a4">' + pos + ':</span> ' + name;
+    }).join(' &nbsp;·&nbsp; ') + '</div>';
   } else {
     el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No crew recorded</span>';
   }
