@@ -115,7 +115,20 @@ async function loadTrack() {
     _updateBoatSettingsForUtc(_utcForIndex(idx));
   });
 
+  // Right-click track → start discussion at that point
+  line.on('contextmenu', function(e) {
+    L.DomEvent.preventDefault(e);
+    const idx = _nearestIndex(e.latlng);
+    const utc = _utcForIndex(idx);
+    if (utc) {
+      _moveCursorToIndex(idx);
+      showNewThreadForm(utc.toISOString());
+      document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+  });
+
   _map.fitBounds(line.getBounds(), {padding: [20, 20]});
+  document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a discussion at that point';
 }
 
 function _nearestIndex(latlng) {
@@ -1586,6 +1599,7 @@ function _updateBoatSettingsForUtc(utcDate) {
 // ---------------------------------------------------------------------------
 
 let _threads = [];
+let _discussionMarkers = [];
 
 async function loadDiscussion() {
   const card = document.getElementById('discussion-card');
@@ -1597,6 +1611,7 @@ async function loadDiscussion() {
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
+  _addDiscussionMarkers();
   if (!_threads.length) {
     body.innerHTML = '<span style="color:#8892a4">No discussions yet. Start one with + New Thread above.</span>';
     return;
@@ -1627,12 +1642,82 @@ async function loadDiscussion() {
   }).join('');
 }
 
-function showNewThreadForm() {
+function _addDiscussionMarkers() {
+  _discussionMarkers.forEach(m => m.remove());
+  _discussionMarkers = [];
+  if (!_map || !_trackData) return;
+
+  _threads.forEach(t => {
+    if (!t.anchor_timestamp) return;
+    const ts = new Date(t.anchor_timestamp.endsWith('Z') || t.anchor_timestamp.includes('+') ? t.anchor_timestamp : t.anchor_timestamp + 'Z');
+    const idx = _indexForUtc(ts);
+    const latLng = _trackData.latLngs[idx];
+    if (!latLng) return;
+
+    const title = t.title ? esc(t.title) : 'Thread #' + t.id;
+    const unread = t.unread_count > 0 ? ' <span class="thread-unread">' + t.unread_count + '</span>' : '';
+    const resolvedTag = t.resolved ? '<div style="color:#4ade80;font-size:.7rem;margin-top:2px">&#10003; Resolved</div>' : '';
+    const author = t.author_name || t.author_email || 'Crew Member';
+    const count = t.comment_count === 1 ? '1 comment' : t.comment_count + ' comments';
+
+    const popup = '<div style="max-width:260px">'
+      + '<div style="font-weight:600;color:#e8eaf0;font-size:.82rem">' + title + unread + '</div>'
+      + '<div style="font-size:.7rem;color:#8892a4">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.anchor_timestamp) + '</div>'
+      + resolvedTag
+      + '<div id="discussion-marker-preview-' + t.id + '">'
+      + '<div style="font-size:.7rem;color:#8892a4;margin-top:4px">Loading\u2026</div></div>'
+      + '<div style="margin-top:6px"><a href="javascript:void(0)" onclick="openThread(' + t.id + ')" '
+      + 'style="color:#7eb8f7;font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
+      + '</div>';
+
+    const hasUnread = t.unread_count > 0;
+    const markerColor = t.resolved ? '#4ade80' : hasUnread ? '#60a5fa' : '#a78bfa';
+    const icon = L.divIcon({
+      className: 'discussion-marker',
+      html: '<div style="width:14px;height:14px;background:' + markerColor + ';border:2px solid #0a1628;border-radius:50%;box-shadow:0 0 4px ' + markerColor + '"></div>',
+      iconSize: [14, 14],
+      iconAnchor: [7, 7],
+    });
+    const marker = L.marker(latLng, {icon: icon})
+      .addTo(_map)
+      .bindPopup(popup, {maxWidth: 280, minWidth: 200});
+    marker.on('popupopen', function() { _loadMarkerPreview(t.id); });
+    _discussionMarkers.push(marker);
+  });
+}
+
+async function _loadMarkerPreview(threadId) {
+  const el = document.getElementById('discussion-marker-preview-' + threadId);
+  if (!el) return;
+  const r = await fetch('/api/threads/' + threadId);
+  if (!r.ok) { el.innerHTML = ''; return; }
+  const t = await r.json();
+  const comments = (t.comments || []).slice(-3);
+  if (!comments.length) {
+    el.innerHTML = '<div style="font-size:.72rem;color:#8892a4;margin-top:4px">No comments yet</div>';
+    return;
+  }
+  el.innerHTML = comments.map(c => {
+    const a = c.author_name || c.author_email || 'Crew Member';
+    const body = c.body.length > 100 ? c.body.slice(0, 100) + '\u2026' : c.body;
+    return '<div style="margin-top:4px;font-size:.72rem;border-left:2px solid #1e3050;padding-left:6px">'
+      + '<span style="color:#7dd3fc;font-weight:600">' + esc(a) + '</span> '
+      + '<span style="color:#c4cdd8">' + esc(body) + '</span></div>';
+  }).join('');
+}
+
+function showNewThreadForm(anchorTimestamp) {
   const body = document.getElementById('discussion-body');
   const form = document.createElement('div');
   form.className = 'thread-form';
   form.style.marginBottom = '10px';
-  form.innerHTML = '<div style="display:flex;gap:6px;margin-bottom:6px">'
+  const anchorLabel = anchorTimestamp ? fmtTime(anchorTimestamp) : '';
+  const anchorHidden = anchorTimestamp
+    ? '<input type="hidden" id="new-thread-anchor-ts" value="' + esc(anchorTimestamp) + '"/>'
+      + '<div style="font-size:.72rem;color:#f97316;margin-bottom:6px">Anchored to track at ' + anchorLabel + '</div>'
+    : '<input type="hidden" id="new-thread-anchor-ts" value=""/>';
+  form.innerHTML = anchorHidden
+    + '<div style="display:flex;gap:6px;margin-bottom:6px">'
     + '<input id="new-thread-title" placeholder="Thread title (optional)" style="flex:1"/>'
     + '<select id="new-thread-mark" style="width:auto"><option value="">No mark anchor</option>'
     + '<option value="start">Start</option>'
@@ -1653,10 +1738,12 @@ function showNewThreadForm() {
 async function submitNewThread() {
   const title = document.getElementById('new-thread-title').value.trim();
   const mark = document.getElementById('new-thread-mark').value || null;
+  const anchorTs = document.getElementById('new-thread-anchor-ts').value || null;
   const firstComment = document.getElementById('new-thread-body').value.trim();
   const payload = {};
   if (title) payload.title = title;
   if (mark) payload.mark_reference = mark;
+  if (anchorTs) payload.anchor_timestamp = anchorTs;
   const r = await fetch('/api/sessions/' + SESSION_ID + '/threads', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
   });
