@@ -1663,14 +1663,20 @@ function _addDiscussionMarkers() {
 
     const title = _threadTitle(t);
     const unread = t.unread_count > 0 ? ' <span class="thread-unread">' + t.unread_count + '</span>' : '';
-    const resolvedTag = t.resolved ? '<div style="color:#4ade80;font-size:.7rem;margin-top:2px">&#10003; Resolved</div>' : '';
+    const resolvedHtml = t.resolved
+      ? '<div style="color:#4ade80;font-size:.7rem;margin-top:2px">&#10003; Resolved</div>'
+        + (t.resolution_summary
+          ? '<div style="background:#0d2a1a;border:1px solid #22543d;border-radius:4px;padding:4px 6px;margin-top:3px;font-size:.7rem;color:#86efac">'
+            + esc(t.resolution_summary.length > 120 ? t.resolution_summary.slice(0, 120) + '\u2026' : t.resolution_summary) + '</div>'
+          : '')
+      : '';
     const author = t.author_name || t.author_email || 'Crew Member';
     const count = t.comment_count === 1 ? '1 comment' : t.comment_count + ' comments';
 
     const popup = '<div style="max-width:260px">'
       + '<div style="font-weight:600;color:#e8eaf0;font-size:.82rem">' + title + unread + '</div>'
       + '<div style="font-size:.7rem;color:#8892a4">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.anchor_timestamp) + '</div>'
-      + resolvedTag
+      + resolvedHtml
       + '<div id="discussion-marker-preview-' + t.id + '">'
       + '<div style="font-size:.7rem;color:#8892a4;margin-top:4px">Loading\u2026</div></div>'
       + '<div style="margin-top:6px"><a href="#" data-open-thread="' + t.id + '" '
