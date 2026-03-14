@@ -542,6 +542,9 @@ every co-op boat that participated — at their own position for that moment or 
   has enabled.
 - **No anonymity:** All comments identify the commenter by boat name, crew member
   name, and position. This encourages accountability and constructive discussion.
+  When a thread is anchored to a session, the commenter's position is resolved
+  from that session's crew list — the same person may show as "tactician" in one
+  race thread and "helm" in another if they switched roles between sessions.
 - **Taggability opt-out:** Users can make themselves untaggable in co-op
   discussions (hidden from @mention autocomplete), but if they do, they cannot
   participate in co-op-visible threads. You're either in the conversation or not.
