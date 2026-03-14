@@ -537,11 +537,32 @@ function renderCrewCollapsed() {
   const summary = document.getElementById('crew-summary');
   if (!summary) return;
   if (_sessionCrew.length) {
-    summary.innerHTML = _sessionCrew.map(c => {
+    let totalBody = 0, totalGear = 0, hasWeight = false;
+    const lines = _sessionCrew.map(c => {
       const pos = esc(c.position.charAt(0).toUpperCase() + c.position.slice(1));
       const name = c.attributed ? esc(c.user_name || '\u2014') : '<em>(not attributed)</em>';
-      return '<span style="color:#8892a4">' + pos + ':</span> ' + name;
-    }).join(' &nbsp;\u00b7&nbsp; ');
+      let wt = '';
+      if (c.body_weight != null || c.gear_weight != null) {
+        hasWeight = true;
+        const b = c.body_weight || 0;
+        const g = c.gear_weight || 0;
+        totalBody += b;
+        totalGear += g;
+        wt = ' <span style="color:#6b7a90;font-size:.75rem">('
+          + (b ? b.toFixed(0) : '0');
+        if (g) wt += '+' + g.toFixed(0) + 'g';
+        wt += ' lbs)</span>';
+      }
+      return '<span style="color:#8892a4">' + pos + ':</span> ' + name + wt;
+    });
+    let html = lines.join(' &nbsp;\u00b7&nbsp; ');
+    if (hasWeight) {
+      const total = totalBody + totalGear;
+      html += '<div style="color:#8892a4;font-size:.78rem;margin-top:4px">'
+        + 'Total crew weight: ' + total.toFixed(0) + ' lbs'
+        + ' (body ' + totalBody.toFixed(0) + ' + gear ' + totalGear.toFixed(0) + ')</div>';
+    }
+    summary.innerHTML = html;
   } else {
     summary.innerHTML = '<span style="color:#8892a4">No crew recorded</span>';
   }
@@ -565,6 +586,8 @@ async function loadCrewEditForm() {
     const label = esc(p.name.charAt(0).toUpperCase() + p.name.slice(1));
     const entry = _sessionCrew.find(c => c.position_id === p.id);
     const curVal = entry && entry.user_id ? String(entry.user_id) : '';
+    const bodyWt = entry && entry.body_weight != null ? entry.body_weight : '';
+    const gearWt = entry && entry.gear_weight != null ? entry.gear_weight : '';
     html += '<div class="crew-row" data-pos-id="' + p.id + '">';
     html += '<span class="crew-pos">' + label + '</span>';
     html += '<select class="crew-select' + (curVal ? ' has-value' : '') + '" '
@@ -583,9 +606,18 @@ async function loadCrewEditForm() {
       }
     }
     if (canEdit) html += '<option value="__new__">+ Add new...</option>';
-    html += '</select></div>';
+    html += '</select>';
+    html += '<input type="number" class="crew-weight" data-field="body" step="0.1" min="0" max="500"'
+      + ' placeholder="Body lbs" title="Body weight (lbs)" value="' + bodyWt + '"'
+      + (canEdit ? ' onchange="onSessionCrewWeightChange()"' : ' disabled') + '/>';
+    html += '<input type="number" class="crew-weight" data-field="gear" step="0.1" min="0" max="100"'
+      + ' placeholder="Gear lbs" title="Gear weight (lbs)" value="' + gearWt + '"'
+      + (canEdit ? ' onchange="onSessionCrewWeightChange()"' : ' disabled') + '/>';
+    html += '</div>';
   }
+  html += '<div id="session-crew-total" class="crew-total-weight"></div>';
   body.innerHTML = html;
+  _updateSessionCrewTotal();
 }
 
 function toggleCrewSection() {
@@ -628,13 +660,63 @@ async function onSessionCrewChange(selectEl) {
       } catch (e) { console.error('create placeholder error', e); }
     }
   }
-  // Save all crew
+  // Auto-default body weight from user profile when user is selected
+  if (selectEl) {
+    const row = selectEl.closest('.crew-row');
+    const bodyInput = row.querySelector('.crew-weight[data-field="body"]');
+    const uid = selectEl.value ? parseInt(selectEl.value) : null;
+    if (uid) {
+      const user = _sessionCrewUsers.find(u => u.id === uid);
+      if (user && user.weight_lbs != null && !bodyInput.value) {
+        bodyInput.value = user.weight_lbs;
+      }
+    } else {
+      bodyInput.value = '';
+      row.querySelector('.crew-weight[data-field="gear"]').value = '';
+    }
+  }
+  await _saveSessionCrew();
+}
+
+function onSessionCrewWeightChange() {
+  _updateSessionCrewTotal();
+  _saveSessionCrew();
+}
+
+function _updateSessionCrewTotal() {
+  const el = document.getElementById('session-crew-total');
+  if (!el) return;
+  let totalBody = 0, totalGear = 0, count = 0;
+  document.querySelectorAll('#crew-body .crew-row').forEach(row => {
+    const bv = parseFloat(row.querySelector('.crew-weight[data-field="body"]').value);
+    const gv = parseFloat(row.querySelector('.crew-weight[data-field="gear"]').value);
+    if (!isNaN(bv)) { totalBody += bv; count++; }
+    if (!isNaN(gv)) totalGear += gv;
+  });
+  const total = totalBody + totalGear;
+  if (count > 0) {
+    el.textContent = 'Total crew weight: ' + total.toFixed(1) + ' lbs'
+      + ' (body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')';
+    el.style.display = '';
+  } else {
+    el.style.display = 'none';
+  }
+}
+
+async function _saveSessionCrew() {
+  // Collect crew with weights
   const crew = [];
   document.querySelectorAll('#crew-body .crew-row').forEach(row => {
     const posId = parseInt(row.dataset.posId);
     const sel = row.querySelector('.crew-select');
     const userId = sel.value && sel.value !== '__new__' ? parseInt(sel.value) : null;
-    if (userId) crew.push({position_id: posId, user_id: userId});
+    const bodyVal = row.querySelector('.crew-weight[data-field="body"]').value;
+    const gearVal = row.querySelector('.crew-weight[data-field="gear"]').value;
+    const bodyWeight = bodyVal ? parseFloat(bodyVal) : null;
+    const gearWeight = gearVal ? parseFloat(gearVal) : null;
+    if (userId || bodyWeight != null || gearWeight != null) {
+      crew.push({position_id: posId, user_id: userId, body_weight: bodyWeight, gear_weight: gearWeight});
+    }
     sel.classList.toggle('has-value', !!sel.value && sel.value !== '__new__');
   });
   await fetch('/api/races/' + SESSION_ID + '/crew', {
@@ -642,6 +724,8 @@ async function onSessionCrewChange(selectEl) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(crew)
   });
+  // Sync crew_weight boat setting from crew totals
+  await _syncCrewWeightSetting();
   // Reload resolved crew and update summary
   const r = await fetch('/api/races/' + SESSION_ID + '/crew');
   const data = await r.json();
@@ -649,6 +733,31 @@ async function onSessionCrewChange(selectEl) {
   renderCrewCollapsed();
   // Refresh dropdowns to filter assigned users
   loadCrewEditForm();
+}
+
+async function _syncCrewWeightSetting() {
+  // Calculate total crew weight (body + gear) and save as crew_weight boat setting
+  let total = 0, hasAny = false;
+  document.querySelectorAll('#crew-body .crew-row').forEach(row => {
+    const bv = parseFloat(row.querySelector('.crew-weight[data-field="body"]').value);
+    const gv = parseFloat(row.querySelector('.crew-weight[data-field="gear"]').value);
+    if (!isNaN(bv)) { total += bv; hasAny = true; }
+    if (!isNaN(gv)) { total += gv; hasAny = true; }
+  });
+  if (!hasAny) return;
+  try {
+    await fetch('/api/boat-settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        race_id: SESSION_ID,
+        source: 'crew',
+        entries: [{ts: new Date().toISOString(), parameter: 'crew_weight', value: String(total.toFixed(1))}]
+      })
+    });
+    // Refresh boat settings panel if loaded
+    if (_bsParams && _bsLastAsOf) await _fetchAndRenderBoatSettings(_bsLastAsOf);
+  } catch (e) { console.error('sync crew_weight error', e); }
 }
 
 // ---------------------------------------------------------------------------

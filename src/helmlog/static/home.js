@@ -443,7 +443,8 @@ async function saveCrew() {
   const statusEl = document.getElementById('crew-status');
   try {
     let url, method;
-    if (state && state.current_race) {
+    const isRace = state && state.current_race;
+    if (isRace) {
       url = '/api/races/' + state.current_race.id + '/crew';
       method = 'POST';
     } else {
@@ -456,11 +457,37 @@ async function saveCrew() {
       body: JSON.stringify(crew)
     });
     updateCrewSummary(crew);
+    // Sync crew_weight boat setting from crew totals
+    if (isRace) await syncCrewWeightSetting(state.current_race.id);
     if (statusEl) { statusEl.textContent = 'Saved'; setTimeout(() => { statusEl.style.display = 'none'; }, 1500); }
   } catch (e) {
     if (statusEl) { statusEl.textContent = 'Save failed'; }
     console.error('crew save error', e);
   }
+}
+
+async function syncCrewWeightSetting(raceId) {
+  let total = 0, hasAny = false;
+  document.querySelectorAll('#crew-rows .crew-row').forEach(row => {
+    const bv = parseFloat(row.querySelector('.crew-weight[data-field="body"]').value);
+    const gv = parseFloat(row.querySelector('.crew-weight[data-field="gear"]').value);
+    if (!isNaN(bv)) { total += bv; hasAny = true; }
+    if (!isNaN(gv)) { total += gv; hasAny = true; }
+  });
+  if (!hasAny) return;
+  try {
+    await fetch('/api/boat-settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        race_id: raceId,
+        source: 'crew',
+        entries: [{ts: new Date().toISOString(), parameter: 'crew_weight', value: String(total.toFixed(1))}]
+      })
+    });
+    // Refresh setup panel if loaded
+    if (setupParams) loadSetupCurrentValues();
+  } catch (e) { console.error('sync crew_weight error', e); }
 }
 
 // ---------------------------------------------------------------------------
