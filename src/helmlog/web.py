@@ -2135,8 +2135,20 @@ def create_app(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("WLAN auto-revert error: {}", exc)
 
+        async def _auto_detect_maneuvers(rid: int) -> None:
+            try:
+                from helmlog.maneuver_detector import detect_maneuvers
+
+                maneuvers = await detect_maneuvers(storage, rid)
+                tacks = sum(1 for m in maneuvers if m.type == "tack")
+                gybes = sum(1 for m in maneuvers if m.type == "gybe")
+                logger.info("Auto-detected {} tacks, {} gybes for race {}", tacks, gybes, rid)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Auto maneuver detection failed for race {}: {}", rid, exc)
+
         asyncio.ensure_future(_stop_cameras(race_id))
         asyncio.ensure_future(_network_auto_switch_end())
+        asyncio.ensure_future(_auto_detect_maneuvers(race_id))
 
         if recorder is not None and _audio_session_id is not None:
             completed = await recorder.stop()
