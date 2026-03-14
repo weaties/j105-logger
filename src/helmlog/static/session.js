@@ -724,8 +724,6 @@ async function _saveSessionCrew() {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(crew)
   });
-  // Sync crew_weight boat setting from crew totals
-  await _syncCrewWeightSetting();
   // Reload resolved crew and update summary
   const r = await fetch('/api/races/' + SESSION_ID + '/crew');
   const data = await r.json();
@@ -733,31 +731,6 @@ async function _saveSessionCrew() {
   renderCrewCollapsed();
   // Refresh dropdowns to filter assigned users
   loadCrewEditForm();
-}
-
-async function _syncCrewWeightSetting() {
-  // Calculate total crew weight (body + gear) and save as crew_weight boat setting
-  let total = 0, hasAny = false;
-  document.querySelectorAll('#crew-body .crew-row').forEach(row => {
-    const bv = parseFloat(row.querySelector('.crew-weight[data-field="body"]').value);
-    const gv = parseFloat(row.querySelector('.crew-weight[data-field="gear"]').value);
-    if (!isNaN(bv)) { total += bv; hasAny = true; }
-    if (!isNaN(gv)) { total += gv; hasAny = true; }
-  });
-  if (!hasAny) return;
-  try {
-    await fetch('/api/boat-settings', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        race_id: SESSION_ID,
-        source: 'crew',
-        entries: [{ts: new Date().toISOString(), parameter: 'crew_weight', value: String(total.toFixed(1))}]
-      })
-    });
-    // Refresh boat settings panel if loaded
-    if (_bsParams && _bsLastAsOf) await _fetchAndRenderBoatSettings(_bsLastAsOf);
-  } catch (e) { console.error('sync crew_weight error', e); }
 }
 
 // ---------------------------------------------------------------------------
@@ -1760,15 +1733,37 @@ function _renderBoatSettingsPanel() {
   let anyValue = false;
 
   for (const cat of _bsParams.categories) {
+    // For the crew category, check if we have crew weight data OR parameter values
+    let crewWeightHtml = '';
+    if (cat.category === 'crew' && _sessionCrew && _sessionCrew.length) {
+      let totalBody = 0, totalGear = 0, hasW = false;
+      for (const c of _sessionCrew) {
+        if (c.body_weight != null) { totalBody += c.body_weight; hasW = true; }
+        if (c.gear_weight != null) { totalGear += c.gear_weight; hasW = true; }
+      }
+      if (hasW) {
+        const total = totalBody + totalGear;
+        crewWeightHtml = '<div class="bs-row">'
+          + '<span class="bs-label">Crew weight</span>'
+          + '<span class="bs-value">' + total.toFixed(1) + '</span>'
+          + '<span class="bs-unit">lbs</span>'
+          + '<span style="color:#6b7a90;font-size:.75rem;margin-left:6px">'
+          + '(body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')</span>'
+          + '</div>';
+      }
+    }
+
     // Check if any param in this category has a value
     const catHasValues = cat.parameters.some(p => byParam[p.name]);
-    if (!catHasValues) continue;
+    if (!catHasValues && !crewWeightHtml) continue;
+    if (crewWeightHtml) anyValue = true;
 
     html += '<div class="setup-cat-header" onclick="toggleSetupCatSession(\'' + cat.category + '\')">';
     html += '<span class="setup-cat-label">' + esc(cat.label) + '</span>';
     html += '<span class="setup-cat-chevron" id="bs-cat-chev-' + cat.category + '">\u25BC</span>';
     html += '</div>';
     html += '<div class="setup-cat-body" id="bs-cat-' + cat.category + '">';
+    html += crewWeightHtml;
 
     for (const p of cat.parameters) {
       const entry = byParam[p.name];
