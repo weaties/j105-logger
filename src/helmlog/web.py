@@ -227,6 +227,15 @@ class CrewEntry(BaseModel):
     gear_weight: float | None = None
 
 
+class WeightUpdate(BaseModel):
+    weight_lbs: float | None = None
+
+
+class PositionEntry(BaseModel):
+    name: str
+    display_order: int
+
+
 class BoatCreate(BaseModel):
     sail_number: str
     name: str | None = None
@@ -469,13 +478,25 @@ def create_app(
     @app.patch("/api/me/weight", status_code=204)
     async def api_update_my_weight(
         request: Request,
-        body: dict[str, Any],
+        body: WeightUpdate,
         _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
     ) -> None:
-        """Update the current user's body weight."""
-        weight = body.get("weight_lbs")
-        if weight is not None and not isinstance(weight, (int, float)):
-            raise HTTPException(status_code=422, detail="weight_lbs must be a number or null")
+        """Update the current user's body weight.
+
+        Weight is biometric data — requires biometric consent per data licensing policy.
+        """
+        weight = body.weight_lbs
+        if weight is not None:
+            consents = await storage.get_crew_consents(_user["id"])
+            bio_consent = next(
+                (c for c in consents if c["consent_type"] == "biometric" and c["granted"]),
+                None,
+            )
+            if not bio_consent:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Biometric consent required before storing weight data",
+                )
         await storage.update_user_weight(_user["id"], weight)
 
     def _login_ctx(next_url: str, error_html: str = "") -> dict[str, Any]:
@@ -1036,20 +1057,20 @@ def create_app(
             for u in users
         )
         sess_rows = "".join(
-            f"<tr><td>{s.get('email', '')}</td><td>{s.get('role', '')}</td>"
-            f"<td>{s.get('ip', '\u2014')}</td>"
+            f"<tr><td>{_esc(s.get('email') or '')}</td><td>{_esc(s.get('role') or '')}</td>"
+            f"<td>{_esc(s.get('ip') or '\u2014')}</td>"
             f"<td>{_local_ts(s['created_at'])}</td>"
             f"<td>{_local_ts(s['expires_at'])}</td>"
-            f'<td><button onclick="revokeSession(\'{s["session_id"]}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for s in sessions
         )
         invite_rows = "".join(
-            f"<tr><td>{inv['email']}</td><td>{inv.get('name') or '\u2014'}</td>"
+            f"<tr><td>{_esc(inv['email'])}</td><td>{_esc(inv.get('name') or '\u2014')}</td>"
             f"<td>{_badge(inv['role'])}</td>"
             f"<td>{'&#9989;' if inv.get('is_developer') else '\u2014'}</td>"
             f"<td>{_local_ts(inv['expires_at'])}</td>"
-            f'<td><button onclick="revokeInvite({inv["id"]})" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:2px 8px;font-size:.8rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for inv in pending_invitations
         )
@@ -3085,11 +3106,11 @@ def create_app(
     @app.post("/api/crew/positions", status_code=204)
     async def api_set_crew_positions(
         request: Request,
-        body: list[dict[str, Any]],
+        body: list[PositionEntry],
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> None:
         """Admin: set configured crew positions."""
-        await storage.set_crew_positions(body)
+        await storage.set_crew_positions([p.model_dump() for p in body])
         await _audit(request, "crew.positions.set", user=_user)
 
     # ------------------------------------------------------------------
@@ -4403,6 +4424,8 @@ def create_app(
         user_id = _user.get("id") or 0
         role = _user.get("role", "viewer")
         role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
+        consents = await storage.get_crew_consents(user_id) if user_id else []
+        bio_consent = any(c["consent_type"] == "biometric" and c["granted"] for c in consents)
         return _templates.TemplateResponse(
             request,
             "profile.html",
@@ -4415,6 +4438,8 @@ def create_app(
                 role_color=role_colors.get(role, "#8892a4"),
                 avatar_url=f"/avatars/{user_id}.jpg?v={int(time.time())}" if user_id else "",
                 weight_lbs=_user.get("weight_lbs"),
+                bio_consent=bio_consent,
+                user_id=user_id,
             ),
         )
 
@@ -4643,9 +4668,9 @@ def create_app(
     ) -> JSONResponse:
         """Set or revoke consent for a user."""
         consent_type = (body.get("consent_type") or "").strip()
-        if consent_type not in ("audio", "video", "name", "photo"):
+        if consent_type not in ("audio", "video", "name", "photo", "biometric"):
             raise HTTPException(
-                status_code=422, detail="consent_type must be audio/video/name/photo"
+                status_code=422, detail="consent_type must be audio/video/name/photo/biometric"
             )
         granted = bool(body.get("granted", True))
         row_id = await storage.set_crew_consent(user_id, consent_type, granted)

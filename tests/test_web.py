@@ -3136,3 +3136,101 @@ async def test_thread_with_anchor_timestamp(storage: Storage) -> None:
 
         resp = await client.get(f"/api/threads/{thread_id}")
         assert resp.json()["anchor_timestamp"] == ts
+
+
+# ---------------------------------------------------------------------------
+# Weight endpoint tests (#305)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_patch_weight_requires_biometric_consent(storage: Storage) -> None:
+    """PATCH /api/me/weight rejects weight update without biometric consent.
+
+    Note: when AUTH_DISABLED=true, the mock admin has id=None, so the consent
+    lookup returns empty and the 403 fires.
+    """
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/me/weight", json={"weight_lbs": 175.0})
+    assert resp.status_code == 403
+    assert "Biometric consent" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_patch_weight_null_clears_without_consent(storage: Storage) -> None:
+    """PATCH /api/me/weight with null weight clears it without needing consent."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/me/weight", json={"weight_lbs": None})
+    assert resp.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_patch_weight_invalid_type(storage: Storage) -> None:
+    """PATCH /api/me/weight rejects non-numeric weight."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.patch("/api/me/weight", json={"weight_lbs": "heavy"})
+    assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Consent / anonymize endpoint tests (#305)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_and_get_consent(storage: Storage) -> None:
+    """PUT then GET consent for a crew member."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        uid = await _make_crew_user(client, "ConsentPerson")
+        put_resp = await client.put(
+            f"/api/crew/{uid}/consents",
+            json={"consent_type": "audio", "granted": True},
+        )
+        assert put_resp.status_code == 200
+        assert put_resp.json()["granted"] is True
+
+        get_resp = await client.get(f"/api/crew/{uid}/consents")
+    assert get_resp.status_code == 200
+    consents = get_resp.json()
+    assert len(consents) == 1
+    assert consents[0]["consent_type"] == "audio"
+
+
+@pytest.mark.asyncio
+async def test_set_consent_invalid_type(storage: Storage) -> None:
+    """PUT consent with invalid type returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        uid = await _make_crew_user(client, "BadConsent")
+        resp = await client.put(
+            f"/api/crew/{uid}/consents",
+            json={"consent_type": "invalid", "granted": True},
+        )
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_anonymize_sailor(storage: Storage) -> None:
+    """POST anonymize replaces user name."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        uid = await _make_crew_user(client, "NamedSailor")
+        resp = await client.post(f"/api/crew/{uid}/anonymize")
+    assert resp.status_code == 200
+    assert resp.json()["rows_updated"] == 1

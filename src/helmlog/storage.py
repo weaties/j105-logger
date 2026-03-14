@@ -11,7 +11,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiosqlite
 from loguru import logger
@@ -45,6 +45,49 @@ class StorageConfig:
     """Configuration for the SQLite storage backend."""
 
     db_path: str = field(default_factory=lambda: os.environ.get("DB_PATH", "data/logger.db"))
+
+
+# ---------------------------------------------------------------------------
+# Crew TypedDicts (#305)
+# ---------------------------------------------------------------------------
+
+
+class CrewPosition(TypedDict):
+    id: int
+    name: str
+    display_order: int
+    created_at: str
+
+
+class CrewDefault(TypedDict):
+    id: int
+    race_id: int | None
+    position_id: int
+    user_id: int | None
+    attributed: int
+    body_weight: float | None
+    gear_weight: float | None
+    created_at: str
+    position: str
+    display_order: int
+    user_name: str | None
+    user_email: str | None
+
+
+class ResolvedCrew(CrewDefault):
+    source: str
+    supersedes_user_id: int | None
+    supersedes_user_name: str | None
+
+
+class CrewConsent(TypedDict):
+    id: int
+    user_id: int
+    consent_type: str
+    granted: int
+    granted_at: str
+    revoked_at: str | None
+    user_name: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -2175,12 +2218,13 @@ class Storage:
     # Crew positions & defaults (#305)
     # ------------------------------------------------------------------
 
-    async def get_crew_positions(self) -> list[dict[str, Any]]:
+    async def get_crew_positions(self) -> list[CrewPosition]:
         """Return configured crew positions ordered by display_order."""
         cur = await self._conn().execute(
             "SELECT id, name, display_order, created_at FROM crew_positions ORDER BY display_order"
         )
-        return [dict(r) for r in await cur.fetchall()]
+        rows: list[CrewPosition] = [dict(r) for r in await cur.fetchall()]  # type: ignore[misc]
+        return rows
 
     async def set_crew_positions(self, positions: list[dict[str, Any]]) -> None:
         """Admin: replace crew positions list.
@@ -2264,12 +2308,13 @@ class Storage:
         await db.commit()
         logger.debug("Crew defaults set for race_id={}: {} entries", race_id, len(crew))
 
-    async def get_crew_defaults(self, race_id: int | None) -> list[dict[str, Any]]:
+    async def get_crew_defaults(self, race_id: int | None) -> list[CrewDefault]:
         """Return crew entries for a specific level (boat or race).
 
         Results include joined position name and user name/email.
         """
         db = self._conn()
+        params: tuple[()] | tuple[int]
         if race_id is None:
             where, params = "cd.race_id IS NULL", ()
         else:
@@ -2286,9 +2331,10 @@ class Storage:
             " ORDER BY cp.display_order",
             params,
         )
-        return [dict(r) for r in await cur.fetchall()]
+        rows: list[CrewDefault] = [dict(r) for r in await cur.fetchall()]  # type: ignore[misc]
+        return rows
 
-    async def resolve_crew(self, race_id: int) -> list[dict[str, Any]]:
+    async def resolve_crew(self, race_id: int) -> list[ResolvedCrew]:
         """Merge boat-level defaults with race-level overrides.
 
         For each configured position, the race-level entry wins if present;
@@ -2298,11 +2344,11 @@ class Storage:
         boat_entries = await self.get_crew_defaults(None)
         race_entries = await self.get_crew_defaults(race_id)
 
-        boat_by_pos: dict[int, dict[str, Any]] = {e["position_id"]: e for e in boat_entries}
-        race_by_pos: dict[int, dict[str, Any]] = {e["position_id"]: e for e in race_entries}
+        boat_by_pos: dict[int, CrewDefault] = {e["position_id"]: e for e in boat_entries}
+        race_by_pos: dict[int, CrewDefault] = {e["position_id"]: e for e in race_entries}
 
         positions = await self.get_crew_positions()
-        result: list[dict[str, Any]] = []
+        result: list[ResolvedCrew] = []
 
         for pos in positions:
             pid = pos["id"]
@@ -2310,20 +2356,28 @@ class Storage:
             boat_row = boat_by_pos.get(pid)
 
             if race_row:
-                entry = dict(race_row)
-                entry["source"] = "race"
-                if boat_row and boat_row.get("user_id") != race_row.get("user_id"):
-                    entry["supersedes_user_id"] = boat_row.get("user_id")
-                    entry["supersedes_user_name"] = boat_row.get("user_name")
-                else:
-                    entry["supersedes_user_id"] = None
-                    entry["supersedes_user_name"] = None
+                entry: ResolvedCrew = {
+                    **race_row,
+                    "source": "race",
+                    "supersedes_user_id": (
+                        boat_row.get("user_id")
+                        if boat_row and boat_row.get("user_id") != race_row.get("user_id")
+                        else None
+                    ),
+                    "supersedes_user_name": (
+                        boat_row.get("user_name")
+                        if boat_row and boat_row.get("user_id") != race_row.get("user_id")
+                        else None
+                    ),
+                }
                 result.append(entry)
             elif boat_row:
-                entry = dict(boat_row)
-                entry["source"] = "boat"
-                entry["supersedes_user_id"] = None
-                entry["supersedes_user_name"] = None
+                entry = {
+                    **boat_row,
+                    "source": "boat",
+                    "supersedes_user_id": None,
+                    "supersedes_user_name": None,
+                }
                 result.append(entry)
 
         return result
@@ -2344,7 +2398,7 @@ class Storage:
         cur = await db.execute("SELECT id FROM users WHERE email = ?", (email,))
         row = await cur.fetchone()
         if row:
-            return row["id"]
+            return int(row["id"])
 
         cur = await db.execute(
             "INSERT INTO users (email, name, role, created_at) VALUES (?, ?, 'viewer', ?)",
@@ -4088,7 +4142,7 @@ class Storage:
         await db.commit()
         return cur.lastrowid or 0
 
-    async def get_crew_consents(self, user_id: int) -> list[dict[str, Any]]:
+    async def get_crew_consents(self, user_id: int | None) -> list[CrewConsent]:
         """Return all consent records for a user."""
         cur = await self._conn().execute(
             "SELECT cc.id, cc.user_id, cc.consent_type, cc.granted,"
@@ -4098,9 +4152,10 @@ class Storage:
             " WHERE cc.user_id = ?",
             (user_id,),
         )
-        return [dict(r) for r in await cur.fetchall()]
+        rows: list[CrewConsent] = [dict(r) for r in await cur.fetchall()]  # type: ignore[misc]
+        return rows
 
-    async def list_crew_consents(self) -> list[dict[str, Any]]:
+    async def list_crew_consents(self) -> list[CrewConsent]:
         """Return all consent records."""
         cur = await self._conn().execute(
             "SELECT cc.id, cc.user_id, cc.consent_type, cc.granted,"
@@ -4109,7 +4164,8 @@ class Storage:
             " LEFT JOIN users u ON u.id = cc.user_id"
             " ORDER BY u.name, cc.consent_type"
         )
-        return [dict(r) for r in await cur.fetchall()]
+        rows: list[CrewConsent] = [dict(r) for r in await cur.fetchall()]  # type: ignore[misc]
+        return rows
 
     async def anonymize_sailor(self, user_id: int, replacement: str = "Anonymous") -> int:
         """Anonymize a crew member by updating their user name. Returns rows updated."""

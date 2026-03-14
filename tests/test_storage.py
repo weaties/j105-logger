@@ -766,6 +766,46 @@ class TestCrewStorage:
         assert user is not None
         assert user["weight_lbs"] == 175.0
 
+    async def test_anonymize_sailor(self, storage: Storage) -> None:
+        """anonymize_sailor replaces user name with 'Anonymous'."""
+        uid = await storage.create_placeholder_user("RealName")
+        count = await storage.anonymize_sailor(uid)
+        assert count == 1
+        user = await storage.get_user_by_id(uid)
+        assert user is not None
+        assert user["name"] == "Anonymous"
+
+    async def test_anonymize_sailor_custom_replacement(self, storage: Storage) -> None:
+        """anonymize_sailor accepts a custom replacement name."""
+        uid = await storage.create_placeholder_user("SomePerson")
+        await storage.anonymize_sailor(uid, replacement="Redacted")
+        user = await storage.get_user_by_id(uid)
+        assert user is not None
+        assert user["name"] == "Redacted"
+
+    async def test_list_crew_consents(self, storage: Storage) -> None:
+        """list_crew_consents returns all consent records across users."""
+        uid1 = await storage.create_placeholder_user("Sailor1")
+        uid2 = await storage.create_placeholder_user("Sailor2")
+        await storage.set_crew_consent(uid1, "audio", True)
+        await storage.set_crew_consent(uid2, "video", False)
+        all_consents = await storage.list_crew_consents()
+        assert len(all_consents) == 2
+        types = {c["consent_type"] for c in all_consents}
+        assert types == {"audio", "video"}
+
+    async def test_consent_revoke(self, storage: Storage) -> None:
+        """Revoking consent sets granted=0 and records revoked_at."""
+        uid = await storage.create_placeholder_user("RevokeTest")
+        await storage.set_crew_consent(uid, "biometric", True)
+        consents = await storage.get_crew_consents(uid)
+        assert consents[0]["granted"] == 1
+        assert consents[0]["revoked_at"] is None
+        await storage.set_crew_consent(uid, "biometric", False)
+        consents = await storage.get_crew_consents(uid)
+        assert consents[0]["granted"] == 0
+        assert consents[0]["revoked_at"] is not None
+
 
 # ---------------------------------------------------------------------------
 # Boat registry tests
