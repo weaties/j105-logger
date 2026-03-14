@@ -382,7 +382,7 @@ function updateCrewTotalWeight() {
       el.innerHTML = '<strong>Total weight: ' + total.toFixed(1) + ' lbs</strong>'
         + ' <span style="color:#8892a4">=&nbsp;crew ' + totalBody.toFixed(1)
         + '&nbsp;+&nbsp;gear ' + totalGear.toFixed(1) + '</span>';
-      el.style.display = '';
+      el.style.display = 'block';
     } else {
       el.style.display = 'none';
     }
