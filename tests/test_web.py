@@ -3572,3 +3572,125 @@ async def test_anonymize_sailor(storage: Storage) -> None:
         resp = await client.post(f"/api/crew/{uid}/anonymize")
     assert resp.status_code == 200
     assert resp.json()["rows_updated"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #311 — Timestamped sail changes
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_put_sails_creates_sail_change(storage: Storage) -> None:
+    """PUT /api/sessions/{id}/sails creates a timestamped sail_changes row."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        main_id = await _add_sail(client, "main", "Full Main")
+
+        await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": main_id, "jib_id": None, "spinnaker_id": None},
+        )
+        changes_resp = await client.get(f"/api/sessions/{race_id}/sail-changes")
+    assert changes_resp.status_code == 200
+    changes = changes_resp.json()["changes"]
+    # At least the auto-applied defaults row + the PUT row
+    assert len(changes) >= 1
+    latest = changes[-1]
+    assert latest["main"] is not None
+    assert latest["main"]["id"] == main_id
+
+
+@pytest.mark.asyncio
+async def test_multiple_puts_get_returns_latest(storage: Storage) -> None:
+    """Multiple PUTs → GET returns latest; GET sail-changes returns full history."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        main1 = await _add_sail(client, "main", "Full Main")
+        main2 = await _add_sail(client, "main", "Reef 1")
+        jib1 = await _add_sail(client, "jib", "J1")
+
+        await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": main1, "jib_id": jib1, "spinnaker_id": None},
+        )
+        await client.put(
+            f"/api/sessions/{race_id}/sails",
+            json={"main_id": main2, "jib_id": jib1, "spinnaker_id": None},
+        )
+
+        # GET returns latest
+        get_resp = await client.get(f"/api/sessions/{race_id}/sails")
+        data = get_resp.json()
+        assert data["main"]["id"] == main2
+        assert data["jib"]["id"] == jib1
+
+        # GET sail-changes returns full history
+        changes_resp = await client.get(f"/api/sessions/{race_id}/sail-changes")
+        changes = changes_resp.json()["changes"]
+        # At least the 2 explicit PUTs
+        assert len(changes) >= 2
+        main_ids = [c["main"]["id"] for c in changes if c["main"] is not None]
+        assert main2 in main_ids
+
+
+@pytest.mark.asyncio
+async def test_sail_changes_404_unknown_session(storage: Storage) -> None:
+    """GET /api/sessions/{id}/sail-changes returns 404 for unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/99999/sail-changes")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_race_start_auto_applies_sail_defaults(storage: Storage) -> None:
+    """Starting a race auto-applies sail defaults as initial sail_changes row."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Create sails and set defaults
+        main_id = await _add_sail(client, "main", "Full Main")
+        jib_id = await _add_sail(client, "jib", "J1")
+        await client.put(
+            "/api/sails/defaults",
+            json={"main_id": main_id, "jib_id": jib_id, "spinnaker_id": None},
+        )
+
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+
+        # Session sails should reflect defaults
+        sails_resp = await client.get(f"/api/sessions/{race_id}/sails")
+        sails = sails_resp.json()
+        assert sails["main"] is not None
+        assert sails["main"]["id"] == main_id
+        assert sails["jib"] is not None
+        assert sails["jib"]["id"] == jib_id
+
+        # sail-changes should have the initial row
+        changes_resp = await client.get(f"/api/sessions/{race_id}/sail-changes")
+        changes = changes_resp.json()["changes"]
+        assert len(changes) >= 1
+        assert changes[0]["main"]["id"] == main_id
+
+
+@pytest.mark.asyncio
+async def test_v41_migration_creates_sail_changes_table(storage: Storage) -> None:
+    """Migration v41 creates the sail_changes table."""
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='sail_changes'"
+    )
+    row = await cur.fetchone()
+    assert row is not None

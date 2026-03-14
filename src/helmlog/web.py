@@ -2021,6 +2021,23 @@ def create_app(
         # Boat-level crew defaults auto-apply via resolve_crew() —
         # no explicit copy-forward needed (#305)
 
+        # Auto-apply sail defaults as initial sail_changes row (#311)
+        try:
+            sail_defaults = await storage.get_sail_defaults()
+            has_any = any(sail_defaults[t] is not None for t in ("main", "jib", "spinnaker"))
+            if has_any:
+                await storage.insert_sail_change(
+                    race.id,
+                    race.start_utc.isoformat(),
+                    main_id=sail_defaults["main"]["id"] if sail_defaults["main"] else None,
+                    jib_id=sail_defaults["jib"]["id"] if sail_defaults["jib"] else None,
+                    spinnaker_id=(
+                        sail_defaults["spinnaker"]["id"] if sail_defaults["spinnaker"] else None
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to auto-apply sail defaults for race {}: {}", race.name, exc)
+
         if recorder is not None and audio_config is not None:
             from helmlog.audio import AudioDeviceNotFoundError
 
@@ -4256,8 +4273,10 @@ def create_app(
                     ),
                 )
 
-        await storage.set_race_sails(
+        ts = datetime.now(UTC).isoformat()
+        await storage.insert_sail_change(
             session_id,
+            ts,
             main_id=body.main_id,
             jib_id=body.jib_id,
             spinnaker_id=body.spinnaker_id,
@@ -4265,6 +4284,18 @@ def create_app(
         sails = await storage.get_race_sails(session_id)
         await _audit(request, "sails.set", detail=str(session_id), user=_user)
         return JSONResponse(sails)
+
+    @app.get("/api/sessions/{session_id}/sail-changes")
+    async def api_get_sail_changes(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return the full sail change history for a session."""
+        race = await storage.get_race(session_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        changes = await storage.get_sail_change_history(session_id)
+        return JSONResponse({"changes": changes})
 
     # ------------------------------------------------------------------
     # /api/audio/{session_id}/download  &  /api/audio/{session_id}/stream
