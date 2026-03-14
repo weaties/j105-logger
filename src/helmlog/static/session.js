@@ -123,7 +123,7 @@ async function loadTrack() {
     if (utc) {
       _moveCursorToIndex(idx);
       showNewThreadForm(utc.toISOString());
-      document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
     }
   });
 
@@ -1700,7 +1700,7 @@ function _addDiscussionMarkers() {
             ev.preventDefault();
             marker.closePopup();
             openThread(threadId);
-            document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+            document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
           });
         }
       }
@@ -1827,6 +1827,7 @@ async function openThread(threadId) {
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
     + '</div>';
+  document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
 async function submitReply(threadId) {
