@@ -534,8 +534,12 @@ every co-op boat that participated — at their own position for that moment or 
 
 **Key design decisions (resolved):**
 
-- **Visibility is binary:** boat-private or co-op-visible. No sub-co-op cliques,
-  no per-boat sharing. The co-op is the trust boundary.
+- **Visibility is co-op-configurable:** The co-op decides which visibility tiers
+  are available. Options include boat-private, intra-boat (shared with specific
+  boats — e.g., a coach and their boats), and co-op-wide. The co-op admin
+  controls whether intra-boat threads are allowed or whether it's strictly
+  boat-private vs co-op-wide. Thread creators choose from the tiers the co-op
+  has enabled.
 - **No anonymity:** All comments identify the commenter by boat name, crew member
   name, and position. This encourages accountability and constructive discussion.
 - **Taggability opt-out:** Users can make themselves untaggable in co-op
@@ -575,6 +579,29 @@ resolve against that session's crew list.
 Delivered based on user notification preferences (ties into IDX-003). @mentions
 trigger notifications; thread updates may optionally notify participants.
 
+**Crew visibility rules:**
+
+Co-ops can configure crew visibility in threads:
+- Which crew details are visible to other boats (name, position, both, neither)
+- Whether crew from other boats can be @mentioned by name or only by position
+- These are co-op-level policies, not per-user choices — the co-op admin sets
+  the rules and they apply uniformly
+
+**Coach role in threads:**
+
+Coaches need special consideration:
+- A coach may work with multiple boats in the same co-op — they need to see
+  and participate in threads across their boats without being "crew" on any
+- Coaches may run intra-boat threads with a subset of their boats (e.g., a
+  coaching group within a larger co-op) — this is a key use case for the
+  intra-boat visibility tier
+- Should coaches have a distinct role in the thread system? Or is "coach" just
+  a crew position that happens to span boats?
+- Coach access to boat-private threads: does the boat owner grant access, or
+  does the co-op admin? Likely the boat owner — it's their data
+- Coaches may want to start threads that are visible only to their coached boats,
+  not the whole co-op — another argument for the intra-boat tier
+
 **Open design questions:**
 
 - How are marks identified? Need a mark model (start/finish line, windward mark,
@@ -589,11 +616,20 @@ trigger notifications; thread updates may optionally notify participants.
   layer and this is the race-analysis layer? Or does this subsume TGP?
 - Federation: are threads stored centrally (co-op server) or replicated across
   boats? Central is simpler but requires connectivity.
+- How does the coach role map to the existing auth/identity model? Is "coach" a
+  co-op-level role, a boat-level role, or both?
+- Can a coach be in multiple co-ops (coaching different fleets)? How does that
+  interact with thread visibility?
 
 **Notes:**
 - *2026-03-14:* Initial capture. Supersedes IDX-001 which was a vague sketch.
-  The key new insights are: binary visibility (no sub-groups), mandatory identity
+  The key new insights are: configurable visibility tiers, mandatory identity
   (no anonymity), taggability as participation gate, mark-level anchoring (not
   just timestamps), and extending the protest firewall to discussion content.
   The @mention system with position-based resolution against session crew lists
   is particularly powerful for post-race debrief across a fleet.
+- *2026-03-14:* Added co-op-configurable visibility rules (co-op decides whether
+  intra-boat threads are allowed), crew visibility policies, and coach role
+  considerations. Coaches are a key use case for the intra-boat tier — they
+  work across boats and need thread access patterns that don't map cleanly to
+  "crew on one boat." Open questions added around coach identity model.
