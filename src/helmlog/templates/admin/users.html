@@ -86,7 +86,6 @@ document.getElementById('invite-form').addEventListener('submit', async e => {
 });
 async function toggleDev(userId, value) {
   await fetch('/admin/users/' + userId + '/developer', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({is_developer: !!value})});
-  location.reload();
 }
 async function revokeSession(sid) {
   await fetch('/admin/sessions/' + sid, {method:'DELETE'});

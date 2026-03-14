@@ -1063,11 +1063,10 @@ def create_app(
             f'<td class="u-email" data-label="Email">{_esc(u["email"])}</td>'
             f'<td class="u-name" data-label="Name">{_esc(u["name"] or "")}</td>'
             f'<td class="u-role" data-label="Role" data-role="{u["role"]}">{_badge(u["role"])}</td>'
-            f'<td class="u-dev" data-label="Dev" data-dev="{1 if u.get("is_developer") else 0}">{"&#9989;" if u.get("is_developer") else "\u2014"}</td>'  # noqa: E501
+            f'<td class="u-dev" data-label="Dev"><input type="checkbox" onchange="toggleDev({u["id"]},this.checked)" {"checked" if u.get("is_developer") else ""} style="width:18px;height:18px;cursor:pointer"/></td>'  # noqa: E501
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
-            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:#22c55e;color:#4ade80">Edit</button>'  # noqa: E501
-            f' <button onclick="toggleDev({u["id"]},{1 if not u.get("is_developer") else 0})" class="ubtn" style="border-color:#d97706;color:#fbbf24">{"Remove dev" if u.get("is_developer") else "Make dev"}</button></td>'  # noqa: E501
+            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:#22c55e;color:#4ade80">Edit</button></td>'  # noqa: E501
             f"</tr>"
             for u in users
         )
