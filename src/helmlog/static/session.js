@@ -1666,7 +1666,7 @@ function _addDiscussionMarkers() {
       + resolvedTag
       + '<div id="discussion-marker-preview-' + t.id + '">'
       + '<div style="font-size:.7rem;color:#8892a4;margin-top:4px">Loading\u2026</div></div>'
-      + '<div style="margin-top:6px"><a href="javascript:void(0)" onclick="openThread(' + t.id + ')" '
+      + '<div style="margin-top:6px"><a href="#" data-open-thread="' + t.id + '" '
       + 'style="color:#7eb8f7;font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
       + '</div>';
 
@@ -1678,10 +1678,26 @@ function _addDiscussionMarkers() {
       iconSize: [14, 14],
       iconAnchor: [7, 7],
     });
+    const threadId = t.id;
     const marker = L.marker(latLng, {icon: icon})
       .addTo(_map)
       .bindPopup(popup, {maxWidth: 280, minWidth: 200});
-    marker.on('popupopen', function() { _loadMarkerPreview(t.id); });
+    marker.on('popupopen', function() {
+      _loadMarkerPreview(threadId);
+      // Wire up the "Open thread" link after Leaflet renders the popup DOM
+      const popupEl = marker.getPopup().getElement();
+      if (popupEl) {
+        const link = popupEl.querySelector('[data-open-thread]');
+        if (link) {
+          link.addEventListener('click', function(ev) {
+            ev.preventDefault();
+            marker.closePopup();
+            openThread(threadId);
+            document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+          });
+        }
+      }
+    });
     _discussionMarkers.push(marker);
   });
 }
