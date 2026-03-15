@@ -45,7 +45,8 @@ async function init() {
     loadTranscript();
     loadAudio();
   }
-  loadDiscussion();
+  await loadDiscussion();
+  _checkThreadHash();
   loadSharing();
   renderExports();
 }
@@ -1928,6 +1929,15 @@ async function loadDiscussion() {
       + resolutionHtml
       + '</div>';
   }).join('');
+}
+
+function _checkThreadHash() {
+  const hash = window.location.hash;
+  const m = hash.match(/^#thread-(\d+)$/);
+  if (m) {
+    const threadId = parseInt(m[1], 10);
+    openThread(threadId);
+  }
 }
 
 function _addDiscussionMarkers() {
