@@ -4027,7 +4027,9 @@ def create_app(
         )
 
         session_id = thread["session_id"]
-        mentioned_names = parse_mentions(text)
+        all_users = await storage.list_users()
+        known_names = [u["name"] for u in all_users if u.get("name")]
+        mentioned_names = parse_mentions(text, known_names=known_names)
         if mentioned_names:
             name_map = await storage.resolve_user_names(mentioned_names)
             if name_map:

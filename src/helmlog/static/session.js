@@ -2175,7 +2175,21 @@ async function unresolveThread(threadId) {
 let _mentionUsers = null; // [{id, name}, ...]
 
 function _renderMentions(escapedText) {
-  return escapedText.replace(/@([\w.\-]+)/g, '<span style="color:#60a5fa;font-weight:600">@$1</span>');
+  if (!_mentionUsers || !_mentionUsers.length) {
+    // Fallback: highlight single-word @mentions
+    return escapedText.replace(/@([\w.\-]+)/g, '<span style="color:#60a5fa;font-weight:600">@$1</span>');
+  }
+  // Sort names longest-first so "dan weatbrook" matches before "dan"
+  const names = _mentionUsers.map(u => u.name).filter(Boolean).sort((a, b) => b.length - a.length);
+  let result = escapedText;
+  for (const name of names) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(
+      new RegExp('@' + escaped, 'g'),
+      '<span style="color:#60a5fa;font-weight:600">@' + name + '</span>'
+    );
+  }
+  return result;
 }
 
 async function _loadMentionUsers() {
@@ -2191,13 +2205,15 @@ async function _loadMentionUsers() {
 function _getMentionContext(el) {
   const val = el.value;
   const pos = el.selectionStart;
-  // Walk backward from cursor to find @
+  // Walk backward from cursor to find @ — allow spaces for multi-word names
   let i = pos - 1;
-  while (i >= 0 && /[\w.\-]/.test(val[i])) i--;
+  while (i >= 0 && /[\w.\- ]/.test(val[i])) i--;
   if (i < 0 || val[i] !== '@') return null;
   // Don't trigger if @ is preceded by a word char (e.g. email)
   if (i > 0 && /\w/.test(val[i - 1])) return null;
   const query = val.substring(i + 1, pos);
+  // Don't match if query is only whitespace after @
+  if (!query.replace(/\s/g, '')) return { start: i, end: pos, query: '' };
   return { start: i, end: pos, query };
 }
 

@@ -94,6 +94,30 @@ class TestMentionParsing:
         assert '<a class="mention"' in html
         assert "@Unknown" in html
 
+    def test_parse_multiword_name(self) -> None:
+        result = parse_mentions(
+            "Hey @dan weatbrook check this", known_names=["dan weatbrook", "Alice"]
+        )
+        assert result == ["dan weatbrook"]
+
+    def test_parse_multiword_and_single(self) -> None:
+        result = parse_mentions(
+            "@dan weatbrook and @Alice",
+            known_names=["dan weatbrook", "Alice"],
+        )
+        assert "dan weatbrook" in result
+        assert "Alice" in result
+
+    def test_render_multiword_mention(self) -> None:
+        html = render_mentions_html("Hey @dan weatbrook", {"dan weatbrook": 1})
+        assert "@dan weatbrook</a>" in html
+        assert 'data-user-id="1"' in html
+
+    def test_parse_multiword_no_known_names_fallback(self) -> None:
+        # Without known_names, only single-word token matched
+        result = parse_mentions("Hey @dan weatbrook")
+        assert result == ["dan"]
+
 
 # ---------------------------------------------------------------------------
 # Notification creation tests

@@ -22,29 +22,56 @@ if TYPE_CHECKING:
 _MENTION_RE = re.compile(r"@(\w[\w.-]*)")
 
 
-def parse_mentions(body: str) -> list[str]:
+def parse_mentions(body: str, known_names: list[str] | None = None) -> list[str]:
     """Extract @username tokens from a comment body.
+
+    If *known_names* is provided, multi-word names are matched greedily
+    (longest first). Otherwise falls back to single-word @token matching.
 
     Returns a list of unique usernames (without the @ prefix).
     """
+    if known_names:
+        # Sort longest-first so "dan weatbrook" matches before "dan"
+        sorted_names = sorted(known_names, key=len, reverse=True)
+        found: list[str] = []
+        for name in sorted_names:
+            escaped = re.escape(name)
+            if (
+                re.search(r"@" + escaped + r"(?=\s|$|[.,!?;:])", body, re.IGNORECASE)
+                and name not in found
+            ):
+                found.append(name)
+        return found
     return list(dict.fromkeys(_MENTION_RE.findall(body)))
 
 
 def render_mentions_html(body: str, user_map: dict[str, int]) -> str:
     """Replace @username with styled HTML links.
 
-    Only usernames found in *user_map* are linked; unknown @mentions are
-    left as plain text.
+    Matches multi-word names from *user_map* (longest first), then falls
+    back to single-word @token matching for any remaining.
     """
+    result = body
+    # Match known multi-word names first (longest first)
+    for name in sorted(user_map.keys(), key=len, reverse=True):
+        uid = user_map[name]
+        escaped = re.escape(name)
+        result = re.sub(
+            r"@" + escaped + r"(?=\s|$|[.,!?;:])",
+            f'<a class="mention" data-user-id="{uid}">@{name}</a>',
+            result,
+        )
 
-    def _replace(m: re.Match[str]) -> str:
+    # Fallback: single-word @tokens not already linked
+    def _replace_single(m: re.Match[str]) -> str:
         name = m.group(1)
         if name in user_map:
             uid = user_map[name]
             return f'<a class="mention" data-user-id="{uid}">@{name}</a>'
         return m.group(0)
 
-    return _MENTION_RE.sub(_replace, body)
+    result = _MENTION_RE.sub(_replace_single, result)
+    return result
 
 
 # ---------------------------------------------------------------------------
