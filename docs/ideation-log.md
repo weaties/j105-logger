@@ -1019,3 +1019,135 @@ queue to build. GitHub Issues *is* the triage system.
   app that creates a GitHub issue with contextual metadata. Avoids building any
   custom feedback infrastructure. Can always add richer features (screenshots,
   thread discussion, linking to IDX entries) later.
+
+---
+
+## IDX-020: Supply-chain hardening — defending the data-license from maintainer takeover
+
+- **Date captured:** 2026-03-15
+- **Origin:** Conversation about hardening the platform against a contributor who gains merge authority and introduces code that violates the data-licensing policy
+- **Status:** `raw`
+- **Related:** `docs/data-licensing.md`, IDX-016 (risk tiers), `auth.py`, `peer_auth.py`, `federation.py`, `export.py`, `peer_api.py`
+
+**Description:**
+HelmLog's data-licensing policy (`docs/data-licensing.md`) is the social contract
+with boat owners: you own your data, PII is protected, co-op data is view-only,
+no gambling, no protest exports, biometrics require consent. The policy is
+enforced by code — but what if someone contributes code that *silently erodes*
+those guarantees?
+
+The threat model: an attacker (or well-meaning but misaligned contributor)
+gradually builds trust through legitimate contributions, earns merge rights,
+and then introduces changes that:
+
+1. **Exfiltrate data** — add a telemetry endpoint, analytics SDK, or "debug"
+   logging that phones home with instrument data, PII, or co-op session data
+2. **Weaken access controls** — relax embargo checks, widen the field allowlist
+   in co-op API responses, remove audit logging, soften rate limits
+3. **Enable bulk export of co-op data** — violating the "view-only" constraint
+   by adding batch endpoints, pagination that allows full scraping, or export
+   formats for other boats' data
+4. **Bypass consent mechanisms** — auto-enable biometric collection, remove
+   per-person consent gates, share diarized transcripts without opt-in
+5. **Add gambling/protest affordances** — features that facilitate wagering on
+   race data or produce co-op data exports formatted for protest committees
+6. **Dependency poisoning** — add or update a dependency that itself exfiltrates
+   data, introduces a backdoor, or changes behavior post-install
+
+**Possible defenses (layered, not all-or-nothing):**
+
+### Layer 1: Static policy gates in CI
+
+- **Data-license linter**: A CI check that scans PRs for patterns that likely
+  violate the policy. Examples:
+  - New outbound HTTP calls (anything that sends data externally)
+  - New `socket`, `urllib`, `httpx.post` calls outside known modules
+  - Changes to field allowlists in co-op API responses
+  - Removal of audit log calls, rate-limit decorators, or consent checks
+  - New dependencies with network access capabilities
+  - Changes to embargo timestamp comparisons
+- This is a heuristic, not a proof — but it raises the bar significantly. The
+  `/data-license` skill already does a manual version of this; automating key
+  checks in CI makes it non-bypassable.
+
+### Layer 2: Dependency integrity
+
+- **Lock and pin everything**: `uv.lock` already pins hashes. Ensure CI
+  verifies the lockfile is unchanged unless the PR explicitly adds/updates deps.
+- **Dependency audit on update**: When a dependency is updated, CI diffs the
+  new version's code and flags new network calls, native extensions, or
+  post-install hooks. Tools like `pip-audit` for known CVEs, but also
+  behavioral diff for new capabilities.
+- **Minimal dependency surface**: Periodically audit whether all deps are still
+  needed. Fewer deps = smaller attack surface.
+
+### Layer 3: Architectural invariants as tests
+
+- **Integration tests that assert policy**: The existing federation integration
+  tests already verify embargo enforcement and field allowlists. Extend this to
+  explicitly test *negative* cases that map to policy violations:
+  - "Co-op API must not return audio file paths" (PII)
+  - "Co-op API must not support bulk pagination beyond N records per request"
+  - "No endpoint serves another boat's data without audit log entry"
+  - "Embargo'd sessions return 403, not empty data"
+- These tests are hard to remove without being noticed — they're not just testing
+  functionality, they're asserting policy compliance.
+
+### Layer 4: Contributor trust model
+
+- **Graduated merge rights**: New contributors can merge Low/Standard tier
+  changes. High and Critical tier changes require review from a trusted
+  maintainer (currently: the boat owner).
+- **Two-person rule for Critical modules**: Changes to `auth.py`,
+  `peer_auth.py`, `federation.py`, `storage.py` migrations require approval
+  from both the contributor and a separate trusted reviewer.
+- **CODEOWNERS enforcement**: GitHub CODEOWNERS file requiring specific
+  reviewers for Critical/High tier modules. This is the simplest mechanical
+  defense — it's already built into GitHub.
+
+### Layer 5: Behavioral monitoring (runtime)
+
+- **Outbound connection audit**: On the Pi, monitor outbound network
+  connections. HelmLog should only talk to: Signal K (localhost), known peers
+  (Tailscale), Open-Meteo, NOAA CO-OPS, GitHub API, InfluxDB (if configured).
+  Any other destination is suspicious.
+- **Audit log integrity**: If audit logs are the evidence trail for data access,
+  they need to be tamper-resistant. Currently they're in SQLite alongside
+  everything else. Consider: append-only log file, or signed audit entries.
+
+### Layer 6: Policy-as-code specification
+
+- **Machine-readable policy**: Convert key data-licensing constraints into a
+  structured format (JSON/YAML) that both humans and CI tools can consume.
+  Example: a list of "PII fields" that must never appear in co-op API responses,
+  or a list of "allowed outbound hosts." The policy doc is authoritative for
+  humans; the machine-readable version drives automated checks.
+
+**What makes this different from standard security hardening:**
+The threat isn't an external attacker exploiting a vulnerability — it's an
+*insider with legitimate access* making changes that are individually plausible
+but collectively violate the data-licensing social contract. The defenses need
+to make policy violations *structurally difficult*, not just detectable after
+the fact.
+
+**Open questions:**
+- How much CI overhead is acceptable? Each new gate adds build time.
+- Should the data-license linter be a ruff plugin, a standalone script, or a
+  Claude Code skill that runs in CI?
+- Is CODEOWNERS sufficient for the contributor trust model, or do we need
+  something more nuanced (like tier-based approval requirements)?
+- How do we handle the "boiling frog" problem — individually innocent changes
+  that collectively erode a guarantee? This might require periodic full-codebase
+  policy audits rather than per-PR checks.
+- What's the right balance between openness to contributors and defensive rigor?
+  Too many gates and nobody will contribute; too few and the policy is paper.
+
+**Notes:**
+- *2026-03-15:* Initial capture. The lowest-effort, highest-value starting points
+  are: (1) CODEOWNERS for Critical/High tier modules — this is a single file and
+  GitHub enforces it automatically, (2) extending the existing integration tests
+  with explicit policy-violation negative cases — these are already in the test
+  suite's idiom, and (3) a CI check that flags new outbound network calls in PRs.
+  The more ambitious layers (dependency behavioral diffing, runtime connection
+  monitoring, machine-readable policy) are valuable but higher effort. IDX-016's
+  risk tiers provide the natural mapping for graduated contributor trust.
