@@ -2225,18 +2225,20 @@ function _showMentionDropdown(el, matches, ctx) {
   dd.style.cssText = 'position:absolute;z-index:9999;background:#131f35;border:1px solid #2563eb;'
     + 'border-radius:6px;max-height:150px;overflow-y:auto;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.5)';
 
-  for (const u of matches.slice(0, 8)) {
+  const capped = matches.slice(0, 8);
+  capped.forEach((u, idx) => {
     const item = document.createElement('div');
     item.textContent = u.name;
+    item.setAttribute('data-mention-item', '');
     item.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:.82rem;color:#e8eaf0';
-    item.addEventListener('mouseenter', () => { item.style.background = '#1e3a5f'; });
-    item.addEventListener('mouseleave', () => { item.style.background = 'none'; });
+    if (idx === 0) item.style.background = '#1e3a5f';
+    item.addEventListener('mouseenter', () => { _highlightMentionItem(idx); });
     item.addEventListener('mousedown', (e) => {
       e.preventDefault();
       _insertMention(el, ctx, u.name);
     });
     dd.appendChild(item);
-  }
+  });
 
   // Position below the textarea
   const rect = el.getBoundingClientRect();
@@ -2247,6 +2249,18 @@ function _showMentionDropdown(el, matches, ctx) {
 }
 
 let _mentionActiveEl = null;
+let _mentionIdx = 0;
+
+function _highlightMentionItem(idx) {
+  const dd = document.getElementById('mention-dropdown');
+  if (!dd) return;
+  const items = dd.querySelectorAll('[data-mention-item]');
+  items.forEach((el, i) => {
+    el.style.background = i === idx ? '#1e3a5f' : 'none';
+  });
+  _mentionIdx = idx;
+  if (items[idx]) items[idx].scrollIntoView({block: 'nearest'});
+}
 
 function _handleMentionInput(e) {
   const el = e.target;
@@ -2254,6 +2268,7 @@ function _handleMentionInput(e) {
   _mentionActiveEl = el;
   const ctx = _getMentionContext(el);
   if (!ctx) { _removeMentionDropdown(); return; }
+  _mentionIdx = 0;
   _loadMentionUsers().then(users => {
     const q = ctx.query.toLowerCase();
     const matches = users.filter(u => u.name && u.name.toLowerCase().includes(q));
@@ -2264,16 +2279,29 @@ function _handleMentionInput(e) {
 function _handleMentionKeydown(e) {
   const dd = document.getElementById('mention-dropdown');
   if (!dd) return;
-  if (e.key === 'Escape') { _removeMentionDropdown(); return; }
+  const items = dd.querySelectorAll('[data-mention-item]');
+  if (!items.length) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    _removeMentionDropdown();
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    _highlightMentionItem(Math.min(_mentionIdx + 1, items.length - 1));
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    _highlightMentionItem(Math.max(_mentionIdx - 1, 0));
+    return;
+  }
   if (e.key === 'Tab' || e.key === 'Enter') {
-    const first = dd.querySelector('div');
-    if (first && _mentionActiveEl) {
+    const active = items[_mentionIdx];
+    if (active && _mentionActiveEl) {
       e.preventDefault();
       const ctx = _getMentionContext(_mentionActiveEl);
-      if (ctx) {
-        const name = first.textContent;
-        _insertMention(_mentionActiveEl, ctx, name);
-      }
+      if (ctx) _insertMention(_mentionActiveEl, ctx, active.textContent);
     }
   }
 }
