@@ -56,8 +56,10 @@ uv run ruff check . && uv run ruff format . && uv run mypy src/
 - `storage.py`: 2 pre-existing E501 line-length violations
 
 ## 5. Commit
-
-Commit the test and implementation together. Use conventional commit format. include #issue in commit message
+ 
+Commit the test and implementation together. Use conventional commit format.
+If working on a GitHub issue, include the issue number in the commit message:
+`feat: description (#332)`
 
 ## Testing Patterns
 
