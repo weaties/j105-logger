@@ -181,15 +181,10 @@ git push -u origin <branch>
 
 ## 15. Create PR
 
+PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
 ```bash
 gh pr create --title "..." --body "..."
 ```
-
-## 16. Verify Issue Linking 
-
-CHeck for `Closes #N` in PR Body
-
-PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
 
 ## Quick Reference — Tier Checklist Summary
 
