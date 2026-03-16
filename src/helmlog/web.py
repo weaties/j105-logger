@@ -6184,16 +6184,28 @@ def create_app(
             if a_plugin is not None:
                 cache = AnalysisCache(storage)
                 data_hash = _compute_data_hash(
-                    {"speeds": len(session_data.speeds), "winds": len(session_data.winds), "session_id": session_id}
+                    {
+                        "speeds": len(session_data.speeds),
+                        "winds": len(session_data.winds),
+                        "session_id": session_id,
+                    }
                 )
-                cached = await cache.get(session_id, analysis_plugin_name or "", data_hash=data_hash)
+                cached = await cache.get(
+                    session_id, analysis_plugin_name or "", data_hash=data_hash
+                )
                 if cached is not None:
                     analysis_result = cached
                 else:
                     ctx = AnalysisContext(user_id=user["id"], is_co_op_data=is_co_op)
                     result = await a_plugin.analyze(session_data, ctx)
                     analysis_result = result.to_dict(include_raw=not is_co_op)
-                    await cache.put(session_id, analysis_plugin_name or "", result.plugin_version, data_hash, result.to_dict(include_raw=True))
+                    await cache.put(
+                        session_id,
+                        analysis_plugin_name or "",
+                        result.plugin_version,
+                        data_hash,
+                        result.to_dict(include_raw=True),
+                    )
 
         # Build session data dict for the viz plugin
         sd_dict: dict[str, Any] = {
@@ -6211,9 +6223,19 @@ def create_app(
 
         # Audit co-op data access
         if is_co_op:
-            await _audit(request, "visualization.render_coop", detail=f"session={session_id} viz={viz}", user=user)
+            await _audit(
+                request,
+                "visualization.render_coop",
+                detail=f"session={session_id} viz={viz}",
+                user=user,
+            )
         else:
-            await _audit(request, "visualization.render", detail=f"session={session_id} viz={viz}", user=user)
+            await _audit(
+                request,
+                "visualization.render",
+                detail=f"session={session_id} viz={viz}",
+                user=user,
+            )
 
         return JSONResponse(plotly_spec)
 
@@ -6250,7 +6272,12 @@ def create_app(
             scope_id = str(user["id"])
 
         await set_viz_preference(storage, scope, scope_id, plugin_names)
-        await _audit(request, "visualization.preference", detail=f"scope={scope} plugins={plugin_names}", user=user)
+        await _audit(
+            request,
+            "visualization.preference",
+            detail=f"scope={scope} plugins={plugin_names}",
+            user=user,
+        )
         return JSONResponse({"ok": True})
 
     @app.get("/api/visualizations/shared")
@@ -6267,15 +6294,40 @@ def create_app(
         from helmlog.visualization.discovery import discover_viz_plugins  # noqa: PLC0415
 
         if not viz:
-            return JSONResponse({"error": "viz parameter required", "fallback": True}, status_code=422)
+            return JSONResponse(
+                {"error": "viz parameter required", "fallback": True}, status_code=422
+            )
 
         plugins = discover_viz_plugins()
         plugin = plugins.get(viz)
         if plugin is None:
-            available = [{"name": m.name, "display_name": m.display_name} for m in (p.meta() for p in plugins.values())]
-            return JSONResponse({"error": f"Visualization {viz!r} not available", "fallback": True, "available": available, "requested_viz": viz, "requested_model": model})
+            available = [
+                {"name": m.name, "display_name": m.display_name}
+                for m in (p.meta() for p in plugins.values())
+            ]
+            return JSONResponse(
+                {
+                    "error": f"Visualization {viz!r} not available",
+                    "fallback": True,
+                    "available": available,
+                    "requested_viz": viz,
+                    "requested_model": model,
+                }
+            )
 
         meta = plugin.meta()
-        return JSONResponse({"fallback": False, "viz": {"name": meta.name, "display_name": meta.display_name, "description": meta.description, "version": meta.version, "required_analysis": meta.required_analysis}, "model": model})
+        return JSONResponse(
+            {
+                "fallback": False,
+                "viz": {
+                    "name": meta.name,
+                    "display_name": meta.display_name,
+                    "description": meta.description,
+                    "version": meta.version,
+                    "required_analysis": meta.required_analysis,
+                },
+                "model": model,
+            }
+        )
 
     return app
