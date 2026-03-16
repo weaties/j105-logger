@@ -32,6 +32,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -159,11 +160,12 @@ def preflight(pi_a: PiHost, pi_b: PiHost) -> bool:
 
 def _enable_auth_bypass(pi: PiHost) -> None:
     """Temporarily set AUTH_DISABLED=true and restart the service."""
-    current = pi.ssh(
-        "grep -c AUTH_DISABLED=true ~/helmlog/.env 2>/dev/null || echo 0",
+    # Check for an uncommented AUTH_DISABLED=true (ignore commented lines)
+    result = pi.ssh(
+        "grep -q '^AUTH_DISABLED=true' ~/helmlog/.env 2>/dev/null && echo YES || echo NO",
         check=False,
     )
-    if current.strip() == "0":
+    if result.strip() != "YES":
         pi.ssh("echo 'AUTH_DISABLED=true' >> ~/helmlog/.env")
         _log("setup", f"  {pi.name}: AUTH_DISABLED=true added to .env")
     else:
@@ -395,13 +397,35 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
     _header("Seed")
     results = {}
 
+    # Ensure harness_seed.py exists on each Pi (may be on a different branch)
+    seed_script = (Path(__file__).parent / "harness_seed.py").read_text()
+    for pi in [pi_a, pi_b]:
+        pi.ssh(
+            f"cat > ~/helmlog/scripts/harness_seed.py << 'HARNESS_EOF'\n{seed_script}HARNESS_EOF",
+            check=False,
+        )
+
     for pi in [pi_a, pi_b]:
         _log("seed", f"Seeding sessions on {pi.name}...")
+        # Kill any leftover seed processes and stop service to release DB lock
+        pi.ssh("pkill -f harness_seed || true", check=False)
+        pi.ssh("sudo systemctl stop helmlog", check=False)
+        time.sleep(1)
         output = pi.ssh(
-            "cd ~/helmlog && uv run --no-sync python scripts/harness_seed.py"
-            f" --co-op-id {co_op_id} --sessions 2",
-            timeout=60,
+            "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"
+            f" --co-op-id {co_op_id} --sessions 2 2>/dev/null",
+            timeout=120,
         )
+        pi.ssh("sudo systemctl start helmlog", check=False)
+        # Wait for service to be ready
+        for _wait in range(15):
+            try:
+                resp = httpx.get(f"{pi.base_url}/co-op/identity", timeout=3)
+                if resp.status_code in (200, 404):
+                    break
+            except httpx.ConnectError:
+                pass
+            time.sleep(1)
         try:
             data = json.loads(output)
             sessions = data.get("sessions", [])
@@ -420,10 +444,25 @@ def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
 
     _log("test", f"Running smoke tests: {pi_a.name} → {pi_b.name}")
 
+    # Copy the service identity to weaties' home so load_identity() works.
+    # The service stores keys at /var/cache/helmlog/.helmlog/identity/
+    # but the smoke script runs as weaties and looks in ~/.helmlog/identity/.
+    # sudo rsync is NOPASSWD in the helmlog sudoers config.
+    pi_a.ssh(
+        "mkdir -p ~/.helmlog/identity"
+        " && sudo rsync -a --chown=weaties:weaties"
+        " /var/cache/helmlog/.helmlog/identity/ ~/.helmlog/identity/"
+        " && chmod 600 ~/.helmlog/identity/boat.key",
+        check=False,
+    )
+
     output = pi_a.ssh(
-        "cd ~/helmlog && uv run --no-sync python scripts/integration_smoke.py"
-        f" --peer {pi_b.ip} --port {pi_b.port} --json",
+        "cd /home/weaties/helmlog"
+        " && /home/weaties/.local/bin/uv run --no-sync"
+        " python scripts/integration_smoke.py"
+        f" --peer {pi_b.ip} --port {pi_b.port} --json 2>/dev/null",
         timeout=60,
+        check=False,
     )
 
     # Parse results — the JSON is after the human-readable output
@@ -463,7 +502,7 @@ def teardown(pi_a: PiHost, pi_b: PiHost) -> None:
     _header("Teardown")
 
     for pi in [pi_a, pi_b]:
-        pi.ssh("sed -i '/AUTH_DISABLED=true/d' ~/helmlog/.env", check=False)
+        pi.ssh("sed -i '/^AUTH_DISABLED=true/d' ~/helmlog/.env", check=False)
         pi.ssh("sudo systemctl restart helmlog", check=False)
         _log("teardown", f"{pi.name}: AUTH_DISABLED removed, restarted")
 
