@@ -2673,6 +2673,7 @@ def create_app(
             "SELECT r.id, r.name, r.event, r.race_num, r.date,"
             " r.start_utc, r.end_utc, r.session_type,"
             " r.peer_fingerprint, r.peer_co_op_id,"
+            " r.shared_name, r.match_group_id, r.match_confirmed,"
             " (SELECT COUNT(*) > 0 FROM positions p"
             "   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
             " ) AS has_track,"
@@ -2720,6 +2721,11 @@ def create_app(
                 "audio_session_id": arow["id"] if arow else None,
                 "peer_fingerprint": row["peer_fingerprint"],
                 "has_wind_field": has_wind_field,
+                "shared_name": row["shared_name"],
+                "match_group_id": row["match_group_id"],
+                "match_status": "confirmed"
+                if row["match_confirmed"]
+                else ("candidate" if row["match_group_id"] else "unmatched"),
             }
         )
 
@@ -5554,6 +5560,223 @@ def create_app(
             user=_user,
         )
         return JSONResponse({"status": "unshared", "co_op_id": co_op_id})
+
+    # ── Session matching (local UI endpoints) (#281) ─────────────────
+
+    @app.get("/api/sessions/{session_id}/match")
+    async def api_session_match_status(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Get match status for a session."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed, shared_name FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            return JSONResponse(
+                {"status": "unmatched", "match_group_id": None, "shared_name": None}
+            )
+
+        # Look up proposal status
+        cur2 = await db.execute(
+            "SELECT status FROM session_match_proposals WHERE match_group_id = ?",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "unmatched"
+
+        return JSONResponse(
+            {
+                "status": status,
+                "match_group_id": match_group_id,
+                "shared_name": row["shared_name"],
+                "match_confirmed": bool(row["match_confirmed"]),
+            }
+        )
+
+    @app.post("/api/sessions/{session_id}/match/confirm")
+    async def api_session_match_confirm(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Confirm a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import confirm_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await confirm_match(storage, match_group_id, fp)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be confirmed")
+
+        # Get updated status
+        cur2 = await db.execute(
+            "SELECT status FROM session_match_proposals WHERE match_group_id = ?",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "candidate"
+
+        await _audit(request, "session.match.confirm", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": status})
+
+    @app.post("/api/sessions/{session_id}/match/reject")
+    async def api_session_match_reject(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Reject a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import reject_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await reject_match(storage, match_group_id, fp)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be rejected")
+
+        await _audit(request, "session.match.reject", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": "rejected"})
+
+    @app.put("/api/sessions/{session_id}/match/name")
+    async def api_session_match_name(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set or update the shared name for a confirmed match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(400, "No match proposal for this session")
+        if not row["match_confirmed"]:
+            raise HTTPException(400, "Match must be confirmed before setting a shared name")
+
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(422, "name is required")
+
+        from helmlog.session_matching import set_shared_name
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await set_shared_name(storage, match_group_id, name, fp)
+        if not ok:
+            raise HTTPException(400, "Failed to set shared name")
+
+        await _audit(
+            request, "session.match.name", detail=f"match={match_group_id} name={name}", user=_user
+        )
+        return JSONResponse({"match_group_id": match_group_id, "shared_name": name})
+
+    @app.post("/api/sessions/{session_id}/match/scan")
+    @limiter.limit("5/minute")
+    async def api_session_match_scan(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Trigger a proximity scan for this session against co-op peers."""
+        db = storage._conn()
+
+        # Find co-ops this session is shared with
+        cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        co_op_ids = [r["co_op_id"] for r in rows]
+        if not co_op_ids:
+            raise HTTPException(400, "Session is not shared with any co-op")
+
+        # Get session centroid and time range
+        from helmlog.session_matching import compute_session_centroid
+
+        centroid_lat, centroid_lon = await compute_session_centroid(storage, session_id)
+        cur2 = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?",
+            (session_id,),
+        )
+        race = await cur2.fetchone()
+        if not race or not race["start_utc"] or not race["end_utc"]:
+            raise HTTPException(400, "Session has no time range")
+
+        from helmlog.federation import load_identity
+        from helmlog.peer_client import propose_session_match
+
+        try:
+            private_key, card = load_identity()
+        except FileNotFoundError:
+            raise HTTPException(409, "Initialize identity first")  # noqa: B904
+
+        # For each co-op, propose matches to all peers
+        proposals: list[dict[str, Any]] = []
+        for co_op_id in co_op_ids:
+            peers = await storage.list_co_op_peers(co_op_id)
+            for peer in peers:
+                ip = peer.get("tailscale_ip")
+                if not ip or peer.get("fingerprint") == card.fingerprint:
+                    continue
+                result = await propose_session_match(
+                    ip,
+                    co_op_id,
+                    private_key,
+                    card.fingerprint,
+                    local_session_id=session_id,
+                    centroid_lat=centroid_lat,
+                    centroid_lon=centroid_lon,
+                    start_utc=race["start_utc"],
+                    end_utc=race["end_utc"],
+                )
+                if result:
+                    proposals.append(result)
+
+        await _audit(
+            request,
+            "session.match.scan",
+            detail=f"session={session_id} proposals={len(proposals)}",
+            user=_user,
+        )
+        return JSONResponse({"proposals": proposals})
 
     # ── Peer data proxies (local UI → remote peers) ────────────────────
 
