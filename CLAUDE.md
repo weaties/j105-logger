@@ -158,14 +158,37 @@ uv run mypy src/            # types clean
 
 When starting work on a GitHub issue:
 
-1. **Mark the issue in-progress**: add a comment with the branch name and who/what is working on it:
+1. **Mark the issue in-progress**: apply the `in-progress` label and add a comment:
    ```bash
+   gh issue edit <number> --add-label "in-progress"
    gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code on <hostname>)"
    ```
 2. Branch off `main`: `git checkout -b feature/my-feature main`
 3. Develop with TDD until tests + lint + types pass
-4. Push and create PR: `git push -u origin feature/my-feature && gh pr create`
-5. Merge to `main` and delete the branch
+4. Push and create PR with issue linking:
+   ```bash
+   git push -u origin feature/my-feature
+   gh pr create --title "..." --body "$(cat <<'EOF'
+   ## Summary
+   ...
+
+   Closes #<issue>
+
+   Generated with [Claude Code](https://claude.ai/code)
+   EOF
+   )"
+   ```
+   The PR body **must** include `Closes #<issue>` (or `Fixes #<issue>` for bugs) so GitHub
+   auto-closes the issue on merge.
+5. On merge: GitHub auto-closes the linked issue via `Closes #N`. Remove `in-progress` label if
+   it wasn't automatically cleared:
+   ```bash
+   gh issue edit <number> --remove-label "in-progress"
+   ```
+6. If a PR is **closed without merge**, comment on the linked issue explaining the outcome:
+   - **Superseded** — link to the replacement PR/issue
+   - **Deferred** — explain why, remove `in-progress` label
+   - **Won't fix** — close the issue with `wontfix` label and explanation
 
 **All changes to `main` must come through merged PRs.** Never push directly to `main`.
 
@@ -240,6 +263,8 @@ Use `/data-license` to review code changes against the full policy.
 
 **Do:**
 - **All changes to `main` must come through merged PRs** — never push directly to `main`
+- **Always include `Closes #N` in PR body** when the PR resolves an issue — this auto-closes the issue on merge and keeps the tracker clean. Use `Fixes #N` for bug fixes.
+- **Apply `in-progress` label when starting work** on an issue (`gh issue edit <N> --add-label "in-progress"`); remove it when the issue closes or work is deferred
 - **Follow TDD** — write a failing test before implementing new functionality (see `/tdd` skill)
 - **Commit and push every change** — after editing any file (code, config, scripts), always commit and push to the current branch immediately. This is especially critical for hotfixes on the Pi — uncommitted changes on the device will be lost on the next deploy. Never leave work uncommitted.
 - Write tests for all decoding and export logic
