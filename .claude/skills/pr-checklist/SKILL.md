@@ -9,10 +9,13 @@ Run these checks before creating or pushing to a pull request.
 
 ## 0. Mark the issue in-progress
 
-If working on a GitHub issue, comment on it with the branch name and agent identity:
+If working on a GitHub issue, apply the `in-progress` label and comment with the branch name and agent identity:
+
 
 ```bash
-gh issue edit <N> --add-label "in-progress"
+gh issue edit <number> --add-label "in-progress"
+gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code on $(hostname))"
+
 ```
 
 ## 1. Confirm feature branch
@@ -158,7 +161,17 @@ If so, consider whether it should be split before merging.
 wc -l $(git diff --name-only main...HEAD | grep '\.py$')
 ```
 
-## 13. Commit and push
+## 13. Verify issue linking
+
+If this PR resolves a GitHub issue, confirm the PR body contains `Closes #N` or `Fixes #N`.
+If it's missing, add it before creating or updating the PR.
+When work is complete and the PR is merged, remove the `in-progress` label from the issue:
+
+```bash
+gh issue edit <number> --remove-label "in-progress"
+```
+
+## 14. Commit and push
 
 ```bash
 git add <files>
@@ -166,13 +179,13 @@ git commit -m "feat: description (#issue)"
 git push -u origin <branch>
 ```
 
-## 14. Create PR
+## 15. Create PR
 
 ```bash
 gh pr create --title "..." --body "..."
 ```
 
-## 15. Verify Issue Linking 
+## 16. Verify Issue Linking 
 
 CHeck for `Closes #N` in PR Body
 
@@ -189,4 +202,5 @@ PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
 | `/data-license` | Required | If data/PII | No | No |
 | Spec review | Required | No | No | No |
 | Complexity check | Required | Required | Required | No |
-| Issue linking | Required | Required | Required | No |
+| Issue linking    | Required | Required | Required | Optional |
+
