@@ -57,7 +57,7 @@ uv run ruff check . && uv run ruff format . && uv run mypy src/
 
 ## 5. Commit
 
-Commit the test and implementation together. Use conventional commit format.
+Commit the test and implementation together. Use conventional commit format. include #issue in commit message
 
 ## Testing Patterns
 
