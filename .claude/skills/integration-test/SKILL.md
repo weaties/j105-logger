@@ -35,33 +35,55 @@ licensing code. Runs automatically in CI via `.github/workflows/integration.yml`
 - Each has: `.identity`, `.storage`, `.client` (httpx), `.resources` (session IDs)
 - `fleet.boat_b.sign("GET", path)` → signed headers for requests to boat_a
 
-## Layer 2 — Pi Smoke Tests (over Tailscale)
 
-Runs on one Pi and exercises the real running helmlog service on a peer Pi.
-Validates real Tailscale WireGuard, systemd, nginx, NTP sync.
+## Layer 2 — Pi Test Harness (Mac → two Pis over Tailscale)
+
+`scripts/pi_harness.py` runs from your Mac and orchestrates the full lifecycle
+on two real Pis: identity init, co-op setup, data seeding via `harness_seed.py`,
+smoke tests via `integration_smoke.py`, and teardown. Validates real Tailscale
+WireGuard, systemd, nginx, NTP sync, and the live federation API end-to-end.
 
 ```bash
-# From your Mac:
-ssh weaties@corvopi-tst1 "cd ~/helmlog && uv run python scripts/integration_smoke.py --peer corvopi-live"
+# One-time SSH key setup (per Pi, first time only)
+ssh-keygen -t ed25519 -f ~/.ssh/helmlog-harness
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-a>
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-b>
 
-# Directly on the Pi:
-uv run python scripts/integration_smoke.py --peer corvopi-live
+# Full lifecycle (setup → seed → test → teardown)
+uv run python scripts/pi_harness.py \
+    --pi-a <pi-a-ip> --pi-b <pi-b-ip> \
+    --ssh-key ~/.ssh/helmlog-harness
 
-# JSON output for CI:
-uv run python scripts/integration_smoke.py --peer corvopi-live --json
+# Partial modes for iterative testing
+uv run python scripts/pi_harness.py --setup-only ...    # identity + co-op + seed, leave in place
+uv run python scripts/pi_harness.py --test-only ...     # re-run smoke tests against existing setup
+uv run python scripts/pi_harness.py --teardown-only ... # remove AUTH_DISABLED, restart services
+
+# Post structured results to a GitHub issue
+uv run python scripts/pi_harness.py ... --issue 281
 ```
 
 **When to use:** Before merging major federation PRs. After deploying a
-federation change to both Pis.
+federation change to both Pis. Use `--setup-only` to leave a live federation
+in place for manual exploration.
 
 **Prerequisites:**
-- Both Pis have initialized identities (`helmlog identity init`)
-- Both Pis are members of at least one shared co-op
+- SSH key copied to both Pis (one-time, see above)
+- Both Pis have helmlog installed and service running
 - Both Pis are on the same Tailscale network
+- The harness handles identity init and co-op setup automatically
 
-**9 scenarios:** peer identity, local identity, signed request, bad signature
+**What the harness does automatically:**
+1. Preflight: SSH connectivity, service health, branch check
+2. Setup: enables `AUTH_DISABLED=true`, inits identities via web API, creates co-op, invites + joins
+3. Seed: runs `harness_seed.py` on each Pi to create sessions with instrument data and share them
+4. Test: runs `integration_smoke.py` from Pi-A targeting Pi-B, collects JSON results
+5. Teardown: removes `AUTH_DISABLED`, restarts services
+
+**9 smoke scenarios:** peer identity, local identity, signed request, bad signature
 rejection, no-auth rejection, non-member rejection, track fetch, embargo
 enforcement, audit trail.
+
 
 ## Layer 3 — Docker Compose (two containers on Mac)
 
