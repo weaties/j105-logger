@@ -26,12 +26,13 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
     db = storage._conn()
 
     now = datetime.now(UTC)
+    tag = now.strftime("%H%M%S")
     results: list[dict[str, object]] = []
 
     for i in range(num_sessions):
         session_start = now - timedelta(hours=num_sessions - i, minutes=30)
         session_end = session_start + timedelta(minutes=45)
-        name = f"Harness Race {i + 1}"
+        name = f"Harness-{tag}-R{i + 1}"
 
         race = await storage.start_race(
             event="Harness Test Regatta",
