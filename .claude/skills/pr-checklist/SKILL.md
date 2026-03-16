@@ -12,7 +12,7 @@ Run these checks before creating or pushing to a pull request.
 If working on a GitHub issue, comment on it with the branch name and agent identity:
 
 ```bash
-gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code on $(hostname))"
+gh issue edit <N> --add-label "in-progress"
 ```
 
 ## 1. Confirm feature branch
@@ -172,6 +172,10 @@ git push -u origin <branch>
 gh pr create --title "..." --body "..."
 ```
 
+## 15. Verify Issue Linking 
+
+CHeck for `Closes #N` in PR Body
+
 PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
 
 ## Quick Reference — Tier Checklist Summary
@@ -185,3 +189,4 @@ PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
 | `/data-license` | Required | If data/PII | No | No |
 | Spec review | Required | No | No | No |
 | Complexity check | Required | Required | Required | No |
+| Issue linking | Required | Required | Required | No |
