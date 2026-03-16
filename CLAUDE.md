@@ -103,7 +103,9 @@ helmlog/
 │       └── serve.py         # Entry point for Docker container web server
 ├── data/                   # SQLite DB, WAV files, exports (gitignored)
 ├── scripts/                # deploy.sh, setup.sh, transcribe_worker.py
-│   └── integration_smoke.py  # Pi-to-Pi smoke tests over Tailscale
+│   ├── integration_smoke.py  # Pi-to-Pi smoke tests over Tailscale (run by harness)
+│   ├── pi_harness.py         # Mac-side orchestrator: setup → seed → test → teardown on two Pis
+│   └── harness_seed.py       # On-Pi data seeder invoked by pi_harness.py via SSH
 └── docs/                   # Guides, policies, and technical specs
 ```
 
@@ -315,12 +317,30 @@ verification, real nonce replay protection. 32 tests covering:
 uv run pytest tests/integration/ -v
 ```
 
-**Layer 2 — Pi smoke tests** (corvopi-tst1 → corvopi-live over Tailscale):
-Lightweight script that runs on one Pi and tests the real running helmlog
-service on a peer Pi. Validates Tailscale networking, systemd, NTP sync.
+**Layer 2 — Pi test harness** (Mac orchestrator → two Pis over Tailscale):
+`scripts/pi_harness.py` runs from your Mac and drives the full lifecycle on
+two real Pis: identity init, co-op setup, data seeding, smoke tests, and
+teardown. Validates Tailscale networking, systemd, nginx, NTP sync, and the
+real federation API end-to-end.
 
 ```bash
-ssh weaties@corvopi-tst1 "cd ~/helmlog && uv run python scripts/integration_smoke.py --peer corvopi-live"
+# One-time SSH key setup (per Pi)
+ssh-keygen -t ed25519 -f ~/.ssh/helmlog-harness
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-a>
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-b>
+
+# Full lifecycle (setup → seed → test → teardown)
+uv run python scripts/pi_harness.py \
+    --pi-a <pi-a-ip> --pi-b <pi-b-ip> \
+    --ssh-key ~/.ssh/helmlog-harness
+
+# Modes for iterative testing
+uv run python scripts/pi_harness.py --setup-only ...   # leave federation in place
+uv run python scripts/pi_harness.py --test-only ...    # re-run tests against existing setup
+uv run python scripts/pi_harness.py --teardown-only ... # remove AUTH_DISABLED, restart
+
+# Post results to a GitHub issue
+uv run python scripts/pi_harness.py ... --issue 281
 ```
 
 **Layer 3 — Docker compose** (two containers on Mac, arm64 capable):
