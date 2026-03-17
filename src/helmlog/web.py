@@ -5176,15 +5176,46 @@ def create_app(
     ) -> JSONResponse:
         identity = await storage.get_boat_identity()
         boat_card_json: str | None = None
-        if identity:
-            try:
-                from helmlog.federation import load_identity
 
-                _, card = load_identity()
-                boat_card_json = card.to_json()
+        # The filesystem identity is authoritative. If the DB row is missing
+        # (e.g. DB was recreated), rebuild it from the filesystem.
+        try:
+            from helmlog.federation import load_identity
+
+            _, card = load_identity()
+            boat_card_json = card.to_json()
+            if identity:
                 identity["owner_email"] = card.owner_email
-            except FileNotFoundError:
-                pass
+            else:
+                # Re-sync DB from filesystem identity
+                db = storage._conn()
+                from datetime import UTC, datetime
+
+                now_iso = datetime.now(UTC).isoformat()
+                await db.execute(
+                    "INSERT OR REPLACE INTO boat_identity"
+                    " (id, pub_key, fingerprint, sail_number, boat_name, created_at)"
+                    " VALUES (1, ?, ?, ?, ?, ?)",
+                    (
+                        card.pub_key,
+                        card.fingerprint,
+                        card.sail_number,
+                        card.boat_name,
+                        now_iso,
+                    ),
+                )
+                await db.commit()
+                identity = {
+                    "pub_key": card.pub_key,
+                    "fingerprint": card.fingerprint,
+                    "sail_number": card.sail_number,
+                    "boat_name": card.boat_name,
+                    "owner_email": card.owner_email,
+                    "created_at": now_iso,
+                }
+        except FileNotFoundError:
+            pass
+
         return JSONResponse(
             {
                 "identity": identity,
