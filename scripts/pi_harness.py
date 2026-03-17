@@ -27,6 +27,7 @@ Prerequisites:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import sys
@@ -404,8 +405,34 @@ def setup_federation(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
     _invite_and_join(pi_a, pi_b, co_op_id)
     pi_b.co_op_id = co_op_id
 
+    # Re-share seeded sessions with the real co-op.  The seed phase runs
+    # before federation setup (because the seeder may recreate the DB), so
+    # sessions are initially shared with an empty co_op_id.  Fix that now,
+    # and mark one session per Pi as embargoed so the embargo test runs.
+    _reshare_sessions(pi_a, co_op_id)
+    _reshare_sessions(pi_b, co_op_id)
+
     _log("setup", f"Federation ready: co-op {co_op_id[:8]}...")
     return co_op_id
+
+
+def _reshare_sessions(pi: PiHost, co_op_id: str) -> None:
+    """Share all seeded sessions with *co_op_id* and embargo the first one."""
+    from datetime import UTC, datetime, timedelta
+
+    embargo_until = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+
+    # Insert sharing rows for all sessions, then embargo the first one.
+    sql = (
+        f"INSERT OR IGNORE INTO session_sharing"
+        f" (session_id, co_op_id, shared_at, embargo_until)"
+        f" SELECT id, '{co_op_id}', datetime('now'), NULL FROM races;"
+        f" UPDATE session_sharing SET embargo_until = '{embargo_until}'"
+        f" WHERE co_op_id = '{co_op_id}'"
+        f" AND session_id = (SELECT MIN(id) FROM races);"
+    )
+    pi.ssh(f'sqlite3 ~/helmlog/data/logger.db "{sql}"', check=False)
+    _log("setup", f"  {pi.name}: sessions shared with co-op, first session embargoed")
 
 
 def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
@@ -484,18 +511,17 @@ def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
         check=False,
     )
 
-    # Parse results — the JSON is after the human-readable output
+    # Parse results — the JSON array is after the human-readable output.
+    # integration_smoke.py prints it with indent=2 (multi-line), so we
+    # find the last top-level '[' and parse from there to the end.
     results: list[dict[str, Any]] = []
-    for line in output.split("\n"):
-        line = line.strip()
-        if line.startswith("["):
-            try:
-                results = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                pass
+    json_start = output.rfind("\n[")
+    if json_start >= 0:
+        with contextlib.suppress(json.JSONDecodeError):
+            results = json.loads(output[json_start:])
 
     if not results:
+        # Fallback: maybe the output is *only* JSON (no preamble)
         try:
             results = json.loads(output)
         except json.JSONDecodeError:
@@ -553,9 +579,7 @@ def test_ui(pi_a: PiHost, seed_results: dict[str, Any]) -> list[dict[str, Any]]:
             detail = fn() or ""
             elapsed = (time.monotonic() - start) * 1000
             _log("ui", f"  [PASS] {name} ({elapsed:.0f}ms) {detail}")
-            results.append(
-                {"name": name, "passed": True, "duration_ms": elapsed, "detail": detail}
-            )
+            results.append({"name": name, "passed": True, "duration_ms": elapsed, "detail": detail})
         except Exception as exc:
             elapsed = (time.monotonic() - start) * 1000
             _log("ui", f"  [FAIL] {name} ({elapsed:.0f}ms) {exc}")
@@ -688,9 +712,7 @@ def test_ui(pi_a: PiHost, seed_results: dict[str, Any]) -> list[dict[str, Any]]:
                     json={"name": "Harness Test Shared Name"},
                     timeout=10,
                 )
-                assert r2.status_code in (200, 204), (
-                    f"Expected 200/204, got {r2.status_code}"
-                )
+                assert r2.status_code in (200, 204), f"Expected 200/204, got {r2.status_code}"
                 return "shared name set on confirmed match"
             r2 = httpx.put(
                 f"{base}/api/sessions/{session_id}/match/name",
@@ -792,9 +814,7 @@ def report_to_issue(
     ui_test_results: list[dict[str, Any]] | None = None,
 ) -> None:
     """Post results as a comment on the GitHub issue."""
-    body = _build_report_body(
-        pi_a, pi_b, co_op_id, seed_results, test_results, ui_test_results
-    )
+    body = _build_report_body(pi_a, pi_b, co_op_id, seed_results, test_results, ui_test_results)
     subprocess.run(
         ["gh", "issue", "comment", str(issue_number), "--body", body],
         check=True,
@@ -901,9 +921,7 @@ def main() -> None:
         passed = sum(1 for r in ui_test_results if r.get("passed"))
         failed = sum(1 for r in ui_test_results if not r.get("passed"))
         print(f"  UI tests: {passed} passed, {failed} failed")
-    all_failed = sum(
-        1 for r in (test_results + (ui_test_results or [])) if not r.get("passed")
-    )
+    all_failed = sum(1 for r in (test_results + (ui_test_results or [])) if not r.get("passed"))
     if all_failed > 0:
         sys.exit(1)
 

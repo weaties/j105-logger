@@ -43,7 +43,8 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
             session_type="race",
         )
         await storage.end_race(race.id, session_end)
-        await storage.share_session(race.id, co_op_id)
+        if co_op_id:
+            await storage.share_session(race.id, co_op_id)
 
         # Seed instrument data — 50 points per session
         for j in range(50):
@@ -70,14 +71,24 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
 
         await db.commit()
 
+        # Pre-cache centroid on the races table so the proximity scan
+        # doesn't have to recompute it from positions.
+        centroid_lat = start_lat + 25 * 0.00005
+        centroid_lon = start_lon + 25 * 0.00005
+        await db.execute(
+            "UPDATE races SET centroid_lat = ?, centroid_lon = ? WHERE id = ?",
+            (centroid_lat, centroid_lon, race.id),
+        )
+        await db.commit()
+
         results.append(
             {
                 "session_id": race.id,
                 "name": name,
                 "start_utc": session_start.isoformat(),
                 "end_utc": session_end.isoformat(),
-                "centroid_lat": start_lat + 25 * 0.00005,
-                "centroid_lon": start_lon + 25 * 0.00005,
+                "centroid_lat": centroid_lat,
+                "centroid_lon": centroid_lon,
                 "points": 50,
             }
         )
