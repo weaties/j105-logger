@@ -120,9 +120,15 @@ function render(data) {
         + '</audio></div>'
       : '';
 
-    const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + s.name + '</a>';
-    return '<div class="card"><div class="session-name">' + nameLink + badge + videoLink + '</div>'
+    const displayName = s.shared_name || s.name;
+    const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + displayName + '</a>';
+    const matchBadge = s.match_confirmed ? '<span class="badge badge-practice" title="Co-op matched">MATCHED</span>'
+      : s.match_group_id ? '<span class="badge badge-debrief" title="Pending match">PENDING</span>'
+      : '';
+    const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:#8892a4;margin-top:1px">Local: ' + s.name + '</div>' : '';
+    return '<div class="card"><div class="session-name">' + nameLink + badge + matchBadge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
+      + localNameHint
       + parent
       + togglesHtml + trackPanel + playerPanel + resultsPanel + crewPanel + sailsPanel + notesPanel + videosPanel + transcriptPanel
       + downloadsHtml + audioHtml + '</div>';

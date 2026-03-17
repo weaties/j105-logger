@@ -48,6 +48,7 @@ async function init() {
   await loadDiscussion();
   _checkThreadHash();
   loadSharing();
+  loadMatch();
   renderExports();
 }
 
@@ -65,12 +66,20 @@ function renderHeader() {
   const peerBadge = s.peer_fingerprint
     ? '<span class="badge badge-peer" title="Peer boat">PEER</span>'
     : '';
-  document.getElementById('session-name').innerHTML = esc(s.name) + badge + peerBadge;
+  const matchBadge = s.match_status === 'confirmed'
+    ? '<span class="badge badge-practice" title="Co-op matched">MATCHED</span>'
+    : s.match_status === 'candidate'
+    ? '<span class="badge badge-debrief" title="Pending match">PENDING</span>'
+    : '';
+  const displayName = s.shared_name || s.name;
+  document.getElementById('session-name').innerHTML = esc(displayName) + badge + peerBadge + matchBadge;
 
   const start = fmtTime(s.start_utc);
   const end = s.end_utc ? fmtTime(s.end_utc) : 'in progress';
   const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDuration(Math.round(s.duration_s)) + ')' : '';
-  document.getElementById('session-meta').innerHTML = s.date + ' &middot; ' + start + ' &rarr; ' + end + dur;
+  let meta = s.date + ' &middot; ' + start + ' &rarr; ' + end + dur;
+  if (s.shared_name) meta += '<br><span style="font-size:.72rem;color:#8892a4">Local: ' + esc(s.name) + '</span>';
+  document.getElementById('session-meta').innerHTML = meta;
 }
 
 // ---------------------------------------------------------------------------
@@ -1012,6 +1021,129 @@ async function unshareSession(coopId) {
   if (r.ok) { loadSharing(); } else {
     const d = await r.json().catch(() => ({}));
     alert(d.detail || 'Failed to unshare');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session Match (#281)
+// ---------------------------------------------------------------------------
+
+async function loadMatch() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match');
+  if (!r.ok) return;
+  const data = await r.json();
+
+  const card = document.getElementById('match-card');
+  const body = document.getElementById('match-body');
+  const role = document.getElementById('app-config').dataset.userRole;
+  const isAdmin = role === 'admin';
+
+  if (data.status === 'unmatched') {
+    if (!isAdmin) return; // viewers don't see scan button
+    card.style.display = '';
+    body.innerHTML = '<div style="font-size:.82rem;color:#8892a4">No match found.</div>'
+      + '<button class="btn-export" style="margin-top:6px" onclick="scanForMatches()">Scan for matches</button>';
+    return;
+  }
+
+  card.style.display = '';
+  let html = '<div style="font-size:.82rem">';
+
+  // Peer info line (shared between candidate and confirmed states)
+  const peerLine = data.peer_boat_name
+    ? '<div style="color:#8892a4;margin-bottom:6px">Matched boat: <strong style="color:#e8eaf0">'
+      + esc(data.peer_boat_name) + '</strong>'
+      + (data.peer_session_name ? ' — ' + esc(data.peer_session_name) : '')
+      + '</div>'
+    : '';
+
+  if (data.status === 'candidate') {
+    html += '<div style="color:#f59e0b;margin-bottom:6px">Pending match — awaiting confirmation</div>';
+    html += peerLine;
+    if (isAdmin) {
+      html += '<div style="display:flex;gap:6px">'
+        + '<button class="btn-export" style="background:#0d2818;border:1px solid #16a34a;color:#4ade80" onclick="confirmMatch()">Confirm</button>'
+        + '<button class="btn-export" style="background:#1c1917;border:1px solid #dc2626;color:#ef4444" onclick="rejectMatch()">Reject</button>'
+        + '</div>';
+    }
+  } else if (data.status === 'confirmed') {
+    html += '<div style="color:#4ade80;margin-bottom:6px">Matched with co-op boats</div>';
+    html += peerLine;
+    if (data.shared_name) {
+      html += '<div style="margin-bottom:4px">Shared name: <strong style="color:#e8eaf0">' + esc(data.shared_name) + '</strong></div>';
+    }
+    if (isAdmin) {
+      html += '<div style="margin-top:6px">'
+        + '<input type="text" id="match-name-input" value="' + esc(data.shared_name || '') + '"'
+        + ' placeholder="Set shared name" style="background:#0d1929;border:1px solid #1e3050;border-radius:4px;color:#e8eaf0;padding:4px 8px;font-size:.8rem;width:60%">'
+        + ' <button class="btn-export" onclick="setMatchName()">Save</button>'
+        + '</div>';
+    }
+  }
+
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+async function scanForMatches() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/scan', {method: 'POST'});
+  if (r.ok) {
+    const d = await r.json();
+    const n = d.proposals ? d.proposals.length : 0;
+    alert(n + ' match proposal(s) sent to peers.');
+    loadMatch();
+    renderHeader();
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Scan failed');
+  }
+}
+
+async function confirmMatch() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/confirm', {method: 'POST'});
+  if (r.ok) {
+    loadMatch();
+    // Reload detail to update header badges
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Confirm failed');
+  }
+}
+
+async function rejectMatch() {
+  if (!confirm('Reject this session match?')) return;
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/reject', {method: 'POST'});
+  if (r.ok) {
+    loadMatch();
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Reject failed');
+  }
+}
+
+async function setMatchName() {
+  const input = document.getElementById('match-name-input');
+  const btn = document.querySelector('#match-body button[onclick="setMatchName()"]');
+  const name = input ? input.value.trim() : '';
+  if (!name) { alert('Enter a name'); return; }
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/name', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name})
+  });
+  if (r.ok) {
+    if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500); }
+    loadMatch();
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Failed to set name');
   }
 }
 

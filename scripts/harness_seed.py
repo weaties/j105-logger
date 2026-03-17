@@ -43,7 +43,8 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
             session_type="race",
         )
         await storage.end_race(race.id, session_end)
-        await storage.share_session(race.id, co_op_id)
+        if co_op_id:
+            await storage.share_session(race.id, co_op_id)
 
         # Seed instrument data — 50 points per session
         for j in range(50):
@@ -70,25 +71,36 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
 
         await db.commit()
 
+        # Pre-cache centroid on the races table so the proximity scan
+        # doesn't have to recompute it from positions.
+        centroid_lat = start_lat + 25 * 0.00005
+        centroid_lon = start_lon + 25 * 0.00005
+        await db.execute(
+            "UPDATE races SET centroid_lat = ?, centroid_lon = ? WHERE id = ?",
+            (centroid_lat, centroid_lon, race.id),
+        )
+        await db.commit()
+
         results.append(
             {
                 "session_id": race.id,
                 "name": name,
                 "start_utc": session_start.isoformat(),
                 "end_utc": session_end.isoformat(),
-                "centroid_lat": start_lat + 25 * 0.00005,
-                "centroid_lon": start_lon + 25 * 0.00005,
+                "centroid_lat": centroid_lat,
+                "centroid_lon": centroid_lon,
                 "points": 50,
             }
         )
 
     await storage.close()
+    # storage.py connect() handles chmod g+w on new DBs automatically
     print(json.dumps({"sessions": results}, indent=2))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed test sessions on a Pi")
-    parser.add_argument("--co-op-id", required=True, help="Co-op ID to share sessions with")
+    parser.add_argument("--co-op-id", default="", help="Co-op ID to share sessions with (optional)")
     parser.add_argument("--sessions", type=int, default=2, help="Number of sessions to create")
     parser.add_argument("--lat", type=float, default=47.6, help="Starting latitude")
     parser.add_argument("--lon", type=float, default=-122.4, help="Starting longitude")
