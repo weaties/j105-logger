@@ -1228,8 +1228,8 @@ int8/int4 inference pipeline.
 
 - **Date captured:** 2026-03-17
 - **Origin:** Conversation about improving instrument calibration workflow
-- **Status:** `raw`
-- **Related:** IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `boat_settings` infrastructure, `sk_reader.py`, `polar.py`
+- **Status:** `promoted`
+- **Related:** IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `boat_settings` infrastructure, `sk_reader.py`, `polar.py`, #337
 
 **Description:**
 Capture all B&G instrument calibration values (wind offset, boatspeed factor,
@@ -1279,10 +1279,14 @@ values change infrequently (a few times per season at most).
   to work with. IDX-005 (tuning auto-population) is complementary — that's about
   physical setup (shroud tensions), this is about electronic instrument
   calibration.
+- *2026-03-17:* Promoted to #337. Scope: add `instrument_calibration` category
+  to `boat_settings.py` with 16 B&G calibration parameters (speed, compass,
+  wind, depth, temp, heel/trim, leeway, rudder, mast height). H5000 advanced
+  correction tables (TWA/TWS matrices, speed/heel table) deferred to follow-up.
 
 ---
 
-## IDX-022: Plugin marketplace monetization — charge models, licensing, and ethos fit
+## IDX-023: Plugin marketplace monetization — charge models, licensing, and ethos fit
 
 - **Date captured:** 2026-03-17
 - **Origin:** Conversation about plugin infrastructure for analysis and visualization
