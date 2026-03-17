@@ -868,6 +868,9 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/hel
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale set *
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
 
+# Data directory permissions — harness seeding, manual maintenance
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/chmod g+w ${PROJECT_DIR}/data/*
+
 # .git/ ownership repair (deploy.sh may need to fix files owned by helmlog)
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /bin/chown -R ${CURRENT_USER}\:${CURRENT_USER} ${PROJECT_DIR}/.git/
 
