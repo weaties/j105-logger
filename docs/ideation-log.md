@@ -1151,3 +1151,73 @@ the fact.
   The more ambitious layers (dependency behavioral diffing, runtime connection
   monitoring, machine-readable policy) are valuable but higher effort. IDX-016's
   risk tiers provide the natural mapping for graduated contributor trust.
+
+---
+
+## IDX-021: Live audio keyword detection on Hailo NPU (AI HAT+ 2)
+
+- **Date captured:** 2026-03-17
+- **Origin:** Discussion about integrating a newly purchased Raspberry Pi AI HAT+ 2
+- **Status:** `raw`
+- **Related:** `src/helmlog/transcribe.py` (existing post-hoc keyword scanning), `src/helmlog/triggers.py`, `src/helmlog/audio.py`, IDX-011 (another hardware integration idea)
+
+**Description:**
+Run a lightweight keyword-spotting model on the Raspberry Pi AI HAT+ 2's
+Hailo-8L NPU (13 TOPS) during active recording sessions. Instead of waiting
+for full Whisper transcription after a session ends, the NPU listens to the
+live audio stream and detects trigger words in real-time with near-zero CPU
+overhead. Detected keywords fire `boat_settings` actions immediately — auto-mark
+a race leg, create a timestamped note, trigger the Insta360 camera, etc.
+
+The AI HAT+ 2 connects via the Pi 5's PCIe FPC ribbon connector, so it
+coexists cleanly with the existing MCP2515 CAN HAT on SPI — no hardware
+conflicts, no GPIO contention.
+
+This builds on the existing trigger keyword scanning in `transcribe.py`
+(`_run_trigger_scan()`), which currently runs post-hoc after Whisper
+transcription completes. The live path would use a much smaller, purpose-built
+keyword-spotting model (not full Whisper) optimized for the Hailo NPU's
+int8/int4 inference pipeline.
+
+**Possible keyword-spotting approaches:**
+- **Google's speech_commands / keyword spotting models** — tiny CNNs designed
+  for wake-word detection, easily compiled to HEF via Hailo Model Zoo
+- **Whisper tiny/base on Hailo** — if the Hailo can run Whisper at real-time
+  speed, skip the separate keyword model and do continuous transcription
+- **Custom fine-tuned model** — train on sailing-specific vocabulary (mark,
+  tack, gybe, protest, starboard) for higher accuracy in wind/engine noise
+
+**Architecture sketch:**
+1. `audio.py` feeds raw PCM chunks to both the WAV writer (existing) and a
+   new `hailo_kws.py` module (hardware-isolated, only imported by `main.py`)
+2. `hailo_kws.py` runs inference on each audio chunk via `hailort` Python
+   bindings, emits keyword events
+3. Keyword events feed into the existing `triggers.py` framework, which
+   already handles event → action mapping
+4. Post-session Whisper transcription still runs for full transcript — the
+   live path is complementary, not a replacement
+
+**Open questions:**
+- Which keyword-spotting model gives the best accuracy-vs-latency tradeoff
+  on the Hailo-8L? Need to benchmark with real sailing audio (wind noise,
+  engine noise, crew shouting)
+- How to handle the audio pipeline split — does `sounddevice` support
+  multiple callbacks, or do we need a ring buffer shared between the WAV
+  writer and the NPU feeder?
+- Should the live keywords be stored separately from post-hoc transcript
+  keywords, or reconciled after transcription completes?
+- What's the false positive tolerance? A spurious "mark" call creating a
+  waypoint is annoying but recoverable; a spurious "protest" trigger could
+  be more disruptive
+- Hailo SDK maturity on Pi OS — is `hailort` stable enough for always-on
+  inference during multi-hour sailing sessions?
+- Power draw implications — the AI HAT+ adds ~5W; is the Pi's USB-C PD
+  supply sufficient with CAN HAT + AI HAT + USB audio + USB camera?
+
+**Notes:**
+- *2026-03-17:* Initial capture. The AI HAT+ 2 uses PCIe (FPC ribbon), the
+  CAN HAT uses SPI — confirmed no hardware conflict. First step is to install
+  the HAT, get `hailortcli fw-control identify` working, and benchmark a
+  simple keyword-spotting model. The existing `TRANSCRIBE_URL` remote-offload
+  pattern in `transcribe.py` is a good architectural precedent for
+  "prefer accelerator, fall back gracefully."
