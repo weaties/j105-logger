@@ -411,6 +411,9 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
         pi.ssh("pkill -f harness_seed || true", check=False)
         pi.ssh("sudo systemctl stop helmlog", check=False)
         time.sleep(1)
+        # Ensure DB is writable by weaties (service may have created it as helmlog:644)
+        pi.ssh("chmod g+w ~/helmlog/data/logger.db 2>/dev/null || "
+               "sudo chmod g+w ~/helmlog/data/logger.db 2>/dev/null || true", check=False)
         output = pi.ssh(
             "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"
             f" --co-op-id {co_op_id} --sessions 2 2>/dev/null",

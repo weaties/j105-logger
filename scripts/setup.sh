@@ -643,7 +643,7 @@ Wants=signalk.service
 
 [Service]
 User=helmlog
-Group=helmlog
+Group=${CURRENT_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=UV_CACHE_DIR=/var/cache/helmlog
