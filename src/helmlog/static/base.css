@@ -1128,6 +1128,54 @@ nav.site-nav {
 }
 
 /* --------------------------------------------------------------------------
+   Tuning Extraction
+   -------------------------------------------------------------------------- */
+
+.te-status-pending {
+  color: #facc15;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.te-status-accepted {
+  color: #4ade80;
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.te-status-dismissed {
+  color: #6b7280;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-decoration: line-through;
+}
+
+.te-segment-text {
+  color: #8892a4;
+  font-size: 0.75rem;
+  font-style: italic;
+  display: block;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+
+.te-play-btn {
+  background: none;
+  border: none;
+  color: #7eb8f7;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 0 4px;
+}
+
+.te-play-btn:hover {
+  color: #60a5fa;
+}
+
+/* --------------------------------------------------------------------------
    Footer
    -------------------------------------------------------------------------- */
 
