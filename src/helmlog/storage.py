@@ -1150,9 +1150,20 @@ class Storage:
 
     async def connect(self) -> None:
         """Open the database connection."""
-        self._db = await aiosqlite.connect(self._config.db_path)
+        import os
+        import stat
+
+        db_path = self._config.db_path
+        is_new = not os.path.exists(db_path)
+        self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
+        if is_new and os.path.exists(db_path):
+            # Python sqlite3 creates files with 0644 regardless of umask.
+            # Add group-write so both the helmlog service (helmlog:weaties)
+            # and the deploy user (weaties) can read/write the DB.
+            st = os.stat(db_path)
+            os.chmod(db_path, st.st_mode | stat.S_IWGRP)
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()

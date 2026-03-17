@@ -33,8 +33,10 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import httpx
 
@@ -421,14 +423,12 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
 
     for pi in [pi_a, pi_b]:
         _log("seed", f"Seeding sessions on {pi.name}...")
-        # Kill any leftover seed processes and stop service to release DB lock
+        # Stop service to release DB lock so the seeder can write.
+        # storage.py connect() ensures the DB is group-writable (664) on
+        # creation, so the seeder (weaties) can write to a helmlog-owned DB.
         pi.ssh("pkill -f harness_seed || true", check=False)
         pi.ssh("sudo systemctl stop helmlog", check=False)
         time.sleep(1)
-        # The helmlog service creates logger.db as helmlog:weaties 644.
-        # The seeder runs as weaties and can't write to it. Delete the DB,
-        # and the seeder will recreate it (running all migrations from scratch).
-        pi.ssh("rm -f ~/helmlog/data/logger.db", check=False)
         co_op_arg = f" --co-op-id {co_op_id}" if co_op_id else ""
         output = pi.ssh(
             "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"

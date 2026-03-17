@@ -83,17 +83,7 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
         )
 
     await storage.close()
-
-    # Make DB group-writable so the helmlog service (which runs as helmlog user
-    # in the weaties group) can write to it after the seeder creates it.
-    import os
-    import stat
-
-    db_path = storage._config.db_path
-    if os.path.exists(db_path):
-        st = os.stat(db_path)
-        os.chmod(db_path, st.st_mode | stat.S_IWGRP)
-
+    # storage.py connect() handles chmod g+w on new DBs automatically
     print(json.dumps({"sessions": results}, indent=2))
 
 
