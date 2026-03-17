@@ -1221,3 +1221,136 @@ int8/int4 inference pipeline.
   simple keyword-spotting model. The existing `TRANSCRIBE_URL` remote-offload
   pattern in `transcribe.py` is a good architectural precedent for
   "prefer accelerator, fall back gracefully."
+
+---
+
+## IDX-022: Capture B&G calibration values as boat settings + calibration analysis
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about improving instrument calibration workflow
+- **Status:** `promoted`
+- **Related:** IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `boat_settings` infrastructure, `sk_reader.py`, `polar.py`, #337
+
+**Description:**
+Capture all B&G instrument calibration values (wind offset, boatspeed factor,
+compass deviation, mast height, keel offset, etc.) as boat settings in HelmLog.
+These values are currently set on the B&G MFD and live only on the instrument
+network — if they change, there's no record of what they were or when they
+changed.
+
+The bigger vision: once calibration values are captured over time alongside
+sailing data, build an analysis package that evaluates calibration quality and
+helps narrow in on better values. For example:
+
+- **Wind:** Compare AWA from instruments against AWA derived from GPS COG/SOG +
+  drift model. Flag systematic offsets that suggest the wind calibration is off.
+- **Boatspeed:** Compare BSP against GPS SOG in known-current conditions (or
+  cross-reference with tidal data from `external.py`). Detect paddle-wheel
+  fouling or miscalibrated speed factor.
+- **Compass:** Compare heading against GPS COG during straight-line sailing.
+  Build a deviation table and compare against the B&G compass calibration.
+- **Cross-validation:** Use polar data to detect when multiple calibrations are
+  off in ways that partially cancel out (e.g., wind angle offset + boatspeed
+  factor error producing "correct-looking" polar performance).
+
+**Data entry approach:**
+Manual transcription from B&G instrument setup pages into the Boat Setup panel
+in HelmLog. No need to read calibration values from the network — the user
+copies them from the MFD setup screens. This is practical because calibration
+values change infrequently (a few times per season at most).
+
+**Open questions:**
+- What's the full list of B&G calibration fields to capture? At minimum: wind
+  angle offset, wind speed factor, boatspeed factor, compass deviation/offset,
+  mast height, keel offset, waterline offset. Need to inventory the actual B&G
+  setup pages.
+- What does the analysis UI look like? Per-session calibration report? Trend
+  charts showing calibration drift over time?
+- How much sailing data is needed to make statistically meaningful calibration
+  recommendations? A single race? A season?
+- Should recommendations be advisory only, or could HelmLog eventually write
+  corrected calibration values back to the network (ties into IDX-011)?
+
+**Notes:**
+- *2026-03-17:* Initial capture. Manual transcription from B&G setup pages into
+  the existing boat settings UI — no Signal K / PGN reverse-engineering needed.
+  Calibration values change infrequently so manual entry is practical. The
+  analysis package is a larger effort that depends on having enough captured data
+  to work with. IDX-005 (tuning auto-population) is complementary — that's about
+  physical setup (shroud tensions), this is about electronic instrument
+  calibration.
+- *2026-03-17:* Promoted to #337. Scope: add `instrument_calibration` category
+  to `boat_settings.py` with 16 B&G calibration parameters (speed, compass,
+  wind, depth, temp, heel/trim, leeway, rudder, mast height). H5000 advanced
+  correction tables (TWA/TWS matrices, speed/heel table) deferred to follow-up.
+
+---
+
+## IDX-023: Plugin marketplace monetization — charge models, licensing, and ethos fit
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about plugin infrastructure for analysis and visualization
+- **Status:** `raw`
+- **Related:** IDX-002 (scalable plugin distribution), IDX-004 (custom JS visualization plugins), IDX-020 (supply-chain hardening), `docs/data-licensing.md`
+
+**Description:**
+As the plugin infrastructure for analysis and visualization takes shape, there's
+a potential opportunity for third-party monetization — letting plugin authors
+charge for their work. This could range from individual sailors selling niche
+analysis tools to professional coaching outfits packaging visualization suites.
+
+The idea is explicitly tentative. There's a real tension with HelmLog's ethos:
+the project is built on boat-owns-its-data, open co-op federation, and
+community trust. Introducing money into the plugin ecosystem could erode that —
+or it could sustain it by rewarding contributors who build genuinely valuable
+tools.
+
+**Dimensions to explore:**
+
+- **Charge models:** Free/open-source only? Freemium (basic free, advanced paid)?
+  One-time purchase? Subscription? Pay-what-you-want / tip jar? Per-boat vs
+  per-co-op licensing?
+- **Distribution:** Central marketplace (HelmLog hosts it)? Decentralized
+  (plugin authors host their own, HelmLog indexes)? Git-based with optional
+  payment gates?
+- **Licensing:** Must paid plugins be open-source with a commercial license
+  (dual-license model)? Can they be closed-source? What license governs the
+  plugin API itself?
+- **Revenue sharing:** Does HelmLog take a cut? If so, what funds does that
+  support (infrastructure, development, community)?
+- **Data-licensing interaction:** Paid plugins that process co-op data — does
+  this create a "selling access to other boats' data" problem? The
+  data-licensing policy's view-only and no-bulk-export rules would need to
+  extend into the plugin sandbox.
+- **Trust and review:** IDX-020's supply-chain concerns are amplified when money
+  is involved. A paid plugin has stronger incentives to phone home, fingerprint
+  users, or exfiltrate data. Review/audit requirements would need to scale.
+- **Community dynamics:** Does a paid tier create a two-class ecosystem (free
+  hobbyist plugins vs polished paid ones)? Does it discourage open contribution?
+
+**Ethos questions (the hard ones):**
+
+- Is "boat owns its data" compatible with "plugin author charges for analysis
+  of that data"? The boat still owns the data, but the *insight* is behind a
+  paywall.
+- Does monetization attract the wrong kind of contributor — someone optimizing
+  for revenue rather than sailing value?
+- Could a tip-jar / patronage model capture the upside (rewarding good work)
+  without the downsides (paywalls, perverse incentives)?
+- Is the sailing community small enough that a marketplace would never reach
+  critical mass anyway, making the complexity not worth it?
+
+**Open questions:**
+- What do other open-source projects with plugin ecosystems do? (Grafana,
+  Home Assistant, WordPress — each has a different model.)
+- Would co-op moderators need a say in which paid plugins are allowed in their
+  co-op's data context?
+- How does this interact with the protest firewall and gambling prohibition —
+  could a paid plugin be used to circumvent those policies?
+
+**Notes:**
+- *2026-03-17:* Initial capture. Explicitly flagged as uncertain — the idea may
+  not survive contact with HelmLog's values. Recording it now so we can revisit
+  when the plugin infrastructure is further along and we have a better sense of
+  what the community actually wants. The ethos questions matter more than the
+  technical ones here.
