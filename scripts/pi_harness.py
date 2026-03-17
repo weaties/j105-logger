@@ -411,18 +411,14 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
         pi.ssh("pkill -f harness_seed || true", check=False)
         pi.ssh("sudo systemctl stop helmlog", check=False)
         time.sleep(1)
-        # Ensure DB is writable by weaties. The helmlog service creates it as
-        # helmlog:weaties 644 — if we can't write, delete it and let the seeder
-        # recreate it (the seeder runs all migrations from scratch).
-        pi.ssh(
-            "test -w ~/helmlog/data/logger.db 2>/dev/null"
-            " || rm -f ~/helmlog/data/logger.db",
-            check=False,
-        )
+        # The helmlog service creates logger.db as helmlog:weaties 644.
+        # The seeder runs as weaties and can't write to it. Delete the DB,
+        # and the seeder will recreate it (running all migrations from scratch).
+        pi.ssh("rm -f ~/helmlog/data/logger.db", check=False)
         output = pi.ssh(
             "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"
             f" --co-op-id {co_op_id} --sessions 2 2>/dev/null",
-            timeout=120,
+            timeout=180,
         )
         pi.ssh("sudo systemctl start helmlog", check=False)
         # Wait for service to be ready
