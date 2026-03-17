@@ -1221,3 +1221,57 @@ int8/int4 inference pipeline.
   simple keyword-spotting model. The existing `TRANSCRIBE_URL` remote-offload
   pattern in `transcribe.py` is a good architectural precedent for
   "prefer accelerator, fall back gracefully."
+
+---
+
+## IDX-022: Capture B&G calibration values as boat settings + calibration analysis
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about improving instrument calibration workflow
+- **Status:** `raw`
+- **Related:** IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `boat_settings` infrastructure, `sk_reader.py`, `polar.py`
+
+**Description:**
+Capture all B&G instrument calibration values (wind offset, boatspeed factor,
+compass deviation, mast height, keel offset, etc.) as boat settings in HelmLog.
+These values are currently set on the B&G MFD and live only on the instrument
+network — if they change, there's no record of what they were or when they
+changed.
+
+The bigger vision: once calibration values are captured over time alongside
+sailing data, build an analysis package that evaluates calibration quality and
+helps narrow in on better values. For example:
+
+- **Wind:** Compare AWA from instruments against AWA derived from GPS COG/SOG +
+  drift model. Flag systematic offsets that suggest the wind calibration is off.
+- **Boatspeed:** Compare BSP against GPS SOG in known-current conditions (or
+  cross-reference with tidal data from `external.py`). Detect paddle-wheel
+  fouling or miscalibrated speed factor.
+- **Compass:** Compare heading against GPS COG during straight-line sailing.
+  Build a deviation table and compare against the B&G compass calibration.
+- **Cross-validation:** Use polar data to detect when multiple calibrations are
+  off in ways that partially cancel out (e.g., wind angle offset + boatspeed
+  factor error producing "correct-looking" polar performance).
+
+**Open questions:**
+- Which calibration values does Signal K expose? Are they readable via the
+  Signal K REST API or WebSocket, or do they require direct NMEA 2000 PGN reads?
+  (PGN 127489 for engine params, but calibration offsets may be proprietary B&G
+  PGNs.)
+- Should calibration capture be periodic (snapshot on session start) or
+  event-driven (detect when a value changes)?
+- What does the analysis UI look like? Per-session calibration report? Trend
+  charts showing calibration drift over time?
+- How much sailing data is needed to make statistically meaningful calibration
+  recommendations? A single race? A season?
+- Should recommendations be advisory only, or could HelmLog eventually write
+  corrected calibration values back to the network (ties into IDX-011)?
+
+**Notes:**
+- *2026-03-17:* Initial capture. The boat settings infrastructure already exists
+  and can store arbitrary key-value pairs per boat. Step one would be identifying
+  which Signal K paths (or NMEA 2000 PGNs) carry calibration data and adding a
+  periodic snapshot. The analysis package is a larger effort that depends on
+  having enough captured data to work with. IDX-005 (tuning auto-population) is
+  complementary — that's about physical setup (shroud tensions), this is about
+  electronic instrument calibration.
