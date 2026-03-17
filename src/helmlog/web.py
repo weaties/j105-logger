@@ -5792,6 +5792,16 @@ def create_app(
                 if result:
                     proposals.append(result)
 
+        # Set match_group_id on the local session from the first successful proposal
+        if proposals:
+            mgid = proposals[0].get("match_group_id")
+            if mgid:
+                await db.execute(
+                    "UPDATE races SET match_group_id = ? WHERE id = ? AND match_group_id IS NULL",
+                    (mgid, session_id),
+                )
+                await db.commit()
+
         await _audit(
             request,
             "session.match.scan",

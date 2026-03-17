@@ -293,22 +293,26 @@ def _invite_and_join(
     resp.raise_for_status()
     _log("setup", f"  {member_pi.name}: joined co-op")
 
-    # Update Tailscale IPs so peers can reach each other
+    # Update Tailscale IPs so peers can reach each other.
+    # Use the actual Tailscale IP from identity cards — not the hostname
+    # passed via --pi-a/--pi-b, which MagicDNS may not resolve on the Pis.
     admin_card = httpx.get(
         f"{admin_pi.base_url}/co-op/identity",
         timeout=10,
     ).json()
+    admin_ts_ip = admin_card.get("tailscale_ip") or admin_pi.ip
+    member_ts_ip = boat_card.get("tailscale_ip") or member_pi.ip
     _update_peer_ip(
         member_pi,
         co_op_id,
         admin_card.get("fingerprint", ""),
-        admin_pi.ip,
+        admin_ts_ip,
     )
     _update_peer_ip(
         admin_pi,
         co_op_id,
         boat_card.get("fingerprint", ""),
-        member_pi.ip,
+        member_ts_ip,
     )
 
 
