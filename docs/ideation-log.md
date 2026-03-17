@@ -1253,13 +1253,17 @@ helps narrow in on better values. For example:
   off in ways that partially cancel out (e.g., wind angle offset + boatspeed
   factor error producing "correct-looking" polar performance).
 
+**Data entry approach:**
+Manual transcription from B&G instrument setup pages into the Boat Setup panel
+in HelmLog. No need to read calibration values from the network — the user
+copies them from the MFD setup screens. This is practical because calibration
+values change infrequently (a few times per season at most).
+
 **Open questions:**
-- Which calibration values does Signal K expose? Are they readable via the
-  Signal K REST API or WebSocket, or do they require direct NMEA 2000 PGN reads?
-  (PGN 127489 for engine params, but calibration offsets may be proprietary B&G
-  PGNs.)
-- Should calibration capture be periodic (snapshot on session start) or
-  event-driven (detect when a value changes)?
+- What's the full list of B&G calibration fields to capture? At minimum: wind
+  angle offset, wind speed factor, boatspeed factor, compass deviation/offset,
+  mast height, keel offset, waterline offset. Need to inventory the actual B&G
+  setup pages.
 - What does the analysis UI look like? Per-session calibration report? Trend
   charts showing calibration drift over time?
 - How much sailing data is needed to make statistically meaningful calibration
@@ -1268,10 +1272,10 @@ helps narrow in on better values. For example:
   corrected calibration values back to the network (ties into IDX-011)?
 
 **Notes:**
-- *2026-03-17:* Initial capture. The boat settings infrastructure already exists
-  and can store arbitrary key-value pairs per boat. Step one would be identifying
-  which Signal K paths (or NMEA 2000 PGNs) carry calibration data and adding a
-  periodic snapshot. The analysis package is a larger effort that depends on
-  having enough captured data to work with. IDX-005 (tuning auto-population) is
-  complementary — that's about physical setup (shroud tensions), this is about
-  electronic instrument calibration.
+- *2026-03-17:* Initial capture. Manual transcription from B&G setup pages into
+  the existing boat settings UI — no Signal K / PGN reverse-engineering needed.
+  Calibration values change infrequently so manual entry is practical. The
+  analysis package is a larger effort that depends on having enough captured data
+  to work with. IDX-005 (tuning auto-population) is complementary — that's about
+  physical setup (shroud tensions), this is about electronic instrument
+  calibration.
