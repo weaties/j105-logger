@@ -88,18 +88,30 @@ async def compute_session_centroid(
 ) -> tuple[float, float]:
     """Compute the average lat/lon from GPS positions for a session.
 
+    Returns cached values from ``races.centroid_lat``/``centroid_lon`` when
+    available.  Otherwise computes from positions and caches the result.
+
     Returns (0.0, 0.0) if no positions exist.
     """
     db = storage._conn()
 
-    # Get session time range
+    # Check for cached centroid first
     cur = await db.execute(
-        "SELECT start_utc, end_utc FROM races WHERE id = ?",
+        "SELECT start_utc, end_utc, centroid_lat, centroid_lon FROM races WHERE id = ?",
         (session_id,),
     )
     race = await cur.fetchone()
     if not race or not race["start_utc"] or not race["end_utc"]:
         return 0.0, 0.0
+
+    cached_lat = race["centroid_lat"]
+    cached_lon = race["centroid_lon"]
+    if (
+        cached_lat is not None
+        and cached_lon is not None
+        and (cached_lat != 0.0 or cached_lon != 0.0)
+    ):
+        return float(cached_lat), float(cached_lon)
 
     start = race["start_utc"]
     end = race["end_utc"]
@@ -114,7 +126,16 @@ async def compute_session_centroid(
     if not row or row["cnt"] == 0:
         return 0.0, 0.0
 
-    return float(row["avg_lat"]), float(row["avg_lon"])
+    lat, lon = float(row["avg_lat"]), float(row["avg_lon"])
+
+    # Cache the computed centroid on the races row
+    await db.execute(
+        "UPDATE races SET centroid_lat = ?, centroid_lon = ? WHERE id = ?",
+        (lat, lon, session_id),
+    )
+    await db.commit()
+
+    return lat, lon
 
 
 async def _count_session_positions(
@@ -313,12 +334,43 @@ async def propose_match(
     end_utc: str,
     expiry_hours: int = DEFAULT_CANDIDATE_EXPIRY_HOURS,
 ) -> str:
-    """Create a match proposal and store it. Returns the match_group_id (UUID)."""
-    match_id = str(uuid.uuid4())
+    """Create a match proposal and store it. Returns the match_group_id (UUID).
+
+    Deduplicates: if this peer already proposed a match for this local session,
+    returns the existing match_group_id. If the local session already has a
+    match_group_id (e.g. from a prior scan), reuses it instead of generating a
+    new UUID.
+    """
+    db = storage._conn()
+
+    # Dedup: check if this peer already proposed a match for this local session
+    cur = await db.execute(
+        "SELECT match_group_id FROM session_match_proposals"
+        " WHERE local_session_id = ? AND proposer_fingerprint = ?"
+        " ORDER BY created_at DESC LIMIT 1",
+        (local_session_id, peer_fingerprint),
+    )
+    existing = await cur.fetchone()
+    if existing:
+        logger.info(
+            "Reusing existing proposal {} for session {} from peer {}",
+            existing["match_group_id"],
+            local_session_id,
+            peer_fingerprint,
+        )
+        return str(existing["match_group_id"])
+
+    # Dedup: if the local session already has a match_group_id (from a prior scan),
+    # reuse it rather than generating a new one
+    cur = await db.execute(
+        "SELECT match_group_id FROM races WHERE id = ? AND match_group_id IS NOT NULL",
+        (local_session_id,),
+    )
+    race_row = await cur.fetchone()
+    match_id = str(race_row["match_group_id"]) if race_row else str(uuid.uuid4())
+
     now = datetime.now(UTC)
     expires = now + timedelta(hours=expiry_hours)
-
-    db = storage._conn()
 
     # Insert proposal
     await db.execute(
@@ -616,7 +668,7 @@ async def find_best_local_match(
     db = storage._conn()
 
     cur = await db.execute(
-        "SELECT r.id, r.start_utc, r.end_utc"
+        "SELECT r.id, r.start_utc, r.end_utc, r.centroid_lat, r.centroid_lon"
         " FROM races r"
         " JOIN session_sharing ss ON r.id = ss.session_id AND ss.co_op_id = ?"
         " WHERE r.end_utc IS NOT NULL"
@@ -656,7 +708,17 @@ async def find_best_local_match(
         if overlap <= 0:
             continue
 
-        local_lat, local_lon = await compute_session_centroid(storage, sid)
+        # Use cached centroid from races row if available; fall back to compute
+        cached_lat = s["centroid_lat"]
+        cached_lon = s["centroid_lon"]
+        if (
+            cached_lat is not None
+            and cached_lon is not None
+            and (cached_lat != 0.0 or cached_lon != 0.0)
+        ):
+            local_lat, local_lon = float(cached_lat), float(cached_lon)
+        else:
+            local_lat, local_lon = await compute_session_centroid(storage, sid)
         if local_lat == 0.0 and local_lon == 0.0:
             continue
 

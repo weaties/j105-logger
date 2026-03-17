@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 44
+_CURRENT_VERSION: int = 45
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1040,6 +1040,11 @@ _MIGRATIONS: dict[int, str] = {
             proposed_by TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
+    """,
+    45: """
+        -- Cache session centroids on races table to avoid N+1 queries (#session-matching)
+        ALTER TABLE races ADD COLUMN centroid_lat REAL;
+        ALTER TABLE races ADD COLUMN centroid_lon REAL;
     """,
 }
 

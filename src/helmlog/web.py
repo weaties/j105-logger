@@ -5739,6 +5739,7 @@ def create_app(
 
             try:
                 private_key, card = load_identity()
+                coros: list[Any] = []
                 for co_op_row in co_op_rows:
                     co_op_id = co_op_row["co_op_id"]
                     peers = await storage.list_co_op_peers(co_op_id)
@@ -5746,14 +5747,20 @@ def create_app(
                         pip = peer.get("tailscale_ip")
                         if not pip or peer.get("fingerprint") == card.fingerprint:
                             continue
-                        await peer_set_match_name(
-                            pip,
-                            co_op_id,
-                            match_group_id,
-                            name,
-                            private_key,
-                            card.fingerprint,
+                        coros.append(
+                            peer_set_match_name(
+                                pip,
+                                co_op_id,
+                                match_group_id,
+                                name,
+                                private_key,
+                                card.fingerprint,
+                            )
                         )
+                results = await asyncio.gather(*coros, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.warning(f"Peer name push failed: {r}")
             except Exception:
                 logger.warning("Failed to push shared name to peers (local save succeeded)")
 
@@ -5802,27 +5809,29 @@ def create_app(
         except FileNotFoundError:
             raise HTTPException(409, "Initialize identity first")  # noqa: B904
 
-        # For each co-op, propose matches to all peers
-        proposals: list[dict[str, Any]] = []
+        # For each co-op, propose matches to all peers in parallel
+        coros: list[Any] = []
         for co_op_id in co_op_ids:
             peers = await storage.list_co_op_peers(co_op_id)
             for peer in peers:
                 ip = peer.get("tailscale_ip")
                 if not ip or peer.get("fingerprint") == card.fingerprint:
                     continue
-                result = await propose_session_match(
-                    ip,
-                    co_op_id,
-                    private_key,
-                    card.fingerprint,
-                    local_session_id=session_id,
-                    centroid_lat=centroid_lat,
-                    centroid_lon=centroid_lon,
-                    start_utc=race["start_utc"],
-                    end_utc=race["end_utc"],
+                coros.append(
+                    propose_session_match(
+                        ip,
+                        co_op_id,
+                        private_key,
+                        card.fingerprint,
+                        local_session_id=session_id,
+                        centroid_lat=centroid_lat,
+                        centroid_lon=centroid_lon,
+                        start_utc=race["start_utc"],
+                        end_utc=race["end_utc"],
+                    )
                 )
-                if result:
-                    proposals.append(result)
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        proposals: list[dict[str, Any]] = [r for r in results if isinstance(r, dict)]
 
         # Mirror the match on the initiating boat: set match_group_id on the
         # local session and create a local proposal so the status query works.
