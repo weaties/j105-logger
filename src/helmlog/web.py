@@ -5646,7 +5646,9 @@ def create_app(
 
         identity = await storage.get_boat_identity()
         fp = identity["fingerprint"] if identity else "local"
-        ok = await confirm_match(storage, match_group_id, fp)
+        # Each boat confirms independently on its own DB, so quorum=1.
+        # Federation-wide quorum is tracked via peer API confirmations.
+        ok = await confirm_match(storage, match_group_id, fp, quorum=1)
         if not ok:
             raise HTTPException(404, "Match not found or cannot be confirmed")
 

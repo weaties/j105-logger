@@ -409,12 +409,32 @@ async def confirm_match(
             "UPDATE session_match_proposals SET status = 'confirmed' WHERE match_group_id = ?",
             (match_group_id,),
         )
-        # Update session
+        # Update session and synthesize a shared name from local + peer session names
         local_id = dict(row)["local_session_id"]
         if local_id:
+            # Gather names: local session name + peer session name (from proposals)
+            cur3 = await db.execute("SELECT name FROM races WHERE id = ?", (local_id,))
+            local_race = await cur3.fetchone()
+            local_name = local_race["name"] if local_race else ""
+
+            cur4 = await db.execute(
+                "SELECT peer_session_id FROM session_match_proposals WHERE match_group_id = ?",
+                (match_group_id,),
+            )
+            prop = await cur4.fetchone()
+            peer_sid = prop["peer_session_id"] if prop else None
+            peer_name = ""
+            if peer_sid:
+                cur5 = await db.execute("SELECT name FROM races WHERE id = ?", (peer_sid,))
+                peer_race = await cur5.fetchone()
+                peer_name = peer_race["name"] if peer_race else ""
+
+            names = [n for n in [local_name, peer_name] if n]
+            shared = synthesize_name(names)
+
             await db.execute(
-                "UPDATE races SET match_confirmed = 1 WHERE id = ?",
-                (local_id,),
+                "UPDATE races SET match_confirmed = 1, shared_name = ? WHERE id = ?",
+                (shared or None, local_id),
             )
         logger.info("Match {} confirmed (quorum reached)", match_group_id)
 
