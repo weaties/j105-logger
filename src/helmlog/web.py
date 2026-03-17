@@ -5727,6 +5727,36 @@ def create_app(
         if not ok:
             raise HTTPException(400, "Failed to set shared name")
 
+        # Push name to co-op peers
+        co_op_cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        co_op_rows = await co_op_cur.fetchall()
+        if co_op_rows:
+            from helmlog.federation import load_identity
+            from helmlog.peer_client import set_match_name as peer_set_match_name
+
+            try:
+                private_key, card = load_identity()
+                for co_op_row in co_op_rows:
+                    co_op_id = co_op_row["co_op_id"]
+                    peers = await storage.list_co_op_peers(co_op_id)
+                    for peer in peers:
+                        pip = peer.get("tailscale_ip")
+                        if not pip or peer.get("fingerprint") == card.fingerprint:
+                            continue
+                        await peer_set_match_name(
+                            pip,
+                            co_op_id,
+                            match_group_id,
+                            name,
+                            private_key,
+                            card.fingerprint,
+                        )
+            except Exception:
+                logger.warning("Failed to push shared name to peers (local save succeeded)")
+
         await _audit(
             request, "session.match.name", detail=f"match={match_group_id} name={name}", user=_user
         )

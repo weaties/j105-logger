@@ -1127,17 +1127,21 @@ async function rejectMatch() {
 
 async function setMatchName() {
   const input = document.getElementById('match-name-input');
+  const btn = document.querySelector('#match-body button[onclick="setMatchName()"]');
   const name = input ? input.value.trim() : '';
   if (!name) { alert('Enter a name'); return; }
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
   const r = await fetch('/api/sessions/' + SESSION_ID + '/match/name', {
     method: 'PUT', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({name: name})
   });
   if (r.ok) {
+    if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500); }
     loadMatch();
     const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
     if (dr.ok) { _session = await dr.json(); renderHeader(); }
   } else {
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
     const d = await r.json().catch(() => ({}));
     alert(d.detail || 'Failed to set name');
   }
