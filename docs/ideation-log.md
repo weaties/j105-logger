@@ -1279,3 +1279,74 @@ values change infrequently (a few times per season at most).
   to work with. IDX-005 (tuning auto-population) is complementary — that's about
   physical setup (shroud tensions), this is about electronic instrument
   calibration.
+
+---
+
+## IDX-022: Plugin marketplace monetization — charge models, licensing, and ethos fit
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about plugin infrastructure for analysis and visualization
+- **Status:** `raw`
+- **Related:** IDX-002 (scalable plugin distribution), IDX-004 (custom JS visualization plugins), IDX-020 (supply-chain hardening), `docs/data-licensing.md`
+
+**Description:**
+As the plugin infrastructure for analysis and visualization takes shape, there's
+a potential opportunity for third-party monetization — letting plugin authors
+charge for their work. This could range from individual sailors selling niche
+analysis tools to professional coaching outfits packaging visualization suites.
+
+The idea is explicitly tentative. There's a real tension with HelmLog's ethos:
+the project is built on boat-owns-its-data, open co-op federation, and
+community trust. Introducing money into the plugin ecosystem could erode that —
+or it could sustain it by rewarding contributors who build genuinely valuable
+tools.
+
+**Dimensions to explore:**
+
+- **Charge models:** Free/open-source only? Freemium (basic free, advanced paid)?
+  One-time purchase? Subscription? Pay-what-you-want / tip jar? Per-boat vs
+  per-co-op licensing?
+- **Distribution:** Central marketplace (HelmLog hosts it)? Decentralized
+  (plugin authors host their own, HelmLog indexes)? Git-based with optional
+  payment gates?
+- **Licensing:** Must paid plugins be open-source with a commercial license
+  (dual-license model)? Can they be closed-source? What license governs the
+  plugin API itself?
+- **Revenue sharing:** Does HelmLog take a cut? If so, what funds does that
+  support (infrastructure, development, community)?
+- **Data-licensing interaction:** Paid plugins that process co-op data — does
+  this create a "selling access to other boats' data" problem? The
+  data-licensing policy's view-only and no-bulk-export rules would need to
+  extend into the plugin sandbox.
+- **Trust and review:** IDX-020's supply-chain concerns are amplified when money
+  is involved. A paid plugin has stronger incentives to phone home, fingerprint
+  users, or exfiltrate data. Review/audit requirements would need to scale.
+- **Community dynamics:** Does a paid tier create a two-class ecosystem (free
+  hobbyist plugins vs polished paid ones)? Does it discourage open contribution?
+
+**Ethos questions (the hard ones):**
+
+- Is "boat owns its data" compatible with "plugin author charges for analysis
+  of that data"? The boat still owns the data, but the *insight* is behind a
+  paywall.
+- Does monetization attract the wrong kind of contributor — someone optimizing
+  for revenue rather than sailing value?
+- Could a tip-jar / patronage model capture the upside (rewarding good work)
+  without the downsides (paywalls, perverse incentives)?
+- Is the sailing community small enough that a marketplace would never reach
+  critical mass anyway, making the complexity not worth it?
+
+**Open questions:**
+- What do other open-source projects with plugin ecosystems do? (Grafana,
+  Home Assistant, WordPress — each has a different model.)
+- Would co-op moderators need a say in which paid plugins are allowed in their
+  co-op's data context?
+- How does this interact with the protest firewall and gambling prohibition —
+  could a paid plugin be used to circumvent those policies?
+
+**Notes:**
+- *2026-03-17:* Initial capture. Explicitly flagged as uncertain — the idea may
+  not survive contact with HelmLog's values. Recording it now so we can revisit
+  when the plugin infrastructure is further along and we have a better sense of
+  what the community actually wants. The ethos questions matter more than the
+  technical ones here.
