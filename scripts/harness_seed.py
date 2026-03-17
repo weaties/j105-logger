@@ -99,7 +99,7 @@ async def seed(co_op_id: str, num_sessions: int, start_lat: float, start_lon: fl
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed test sessions on a Pi")
-    parser.add_argument("--co-op-id", required=True, help="Co-op ID to share sessions with")
+    parser.add_argument("--co-op-id", default="", help="Co-op ID to share sessions with (optional)")
     parser.add_argument("--sessions", type=int, default=2, help="Number of sessions to create")
     parser.add_argument("--lat", type=float, default=47.6, help="Starting latitude")
     parser.add_argument("--lon", type=float, default=-122.4, help="Starting longitude")

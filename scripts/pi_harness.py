@@ -381,10 +381,19 @@ def setup(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
         email="harness@test.helmlog",
     )
 
-    # Create co-op on Pi-A (admin)
-    co_op_id = _create_co_op(pi_a, co_op_name)
+    _log("setup", "Identities ready (co-op created after seeding)")
+    return ""
 
-    # Invite Pi-B and have it join
+
+def setup_federation(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
+    """Create co-op and invite/join after seeding.
+
+    Must run after seed() — the seeder deletes and recreates the DB, so any
+    co-op data created before seeding would be lost.
+    """
+    _header("Federation Setup")
+
+    co_op_id = _create_co_op(pi_a, co_op_name)
     _invite_and_join(pi_a, pi_b, co_op_id)
     pi_b.co_op_id = co_op_id
 
@@ -392,7 +401,7 @@ def setup(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
     return co_op_id
 
 
-def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
+def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
     """Seed test sessions with instrument data on both Pis."""
     _header("Seed")
     results = {}
@@ -415,9 +424,10 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
         # The seeder runs as weaties and can't write to it. Delete the DB,
         # and the seeder will recreate it (running all migrations from scratch).
         pi.ssh("rm -f ~/helmlog/data/logger.db", check=False)
+        co_op_arg = f" --co-op-id {co_op_id}" if co_op_id else ""
         output = pi.ssh(
             "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"
-            f" --co-op-id {co_op_id} --sessions 2 2>/dev/null",
+            f"{co_op_arg} --sessions 2 2>/dev/null",
             timeout=180,
         )
         pi.ssh("sudo systemctl start helmlog", check=False)
@@ -634,12 +644,14 @@ def main() -> None:
     if args.test_only:
         test_results = test(pi_a, pi_b)
     elif args.setup_only:
-        co_op_id = setup(pi_a, pi_b, args.co_op_name)
-        seed_results = seed(pi_a, pi_b, co_op_id)
+        setup(pi_a, pi_b, args.co_op_name)
+        seed_results = seed(pi_a, pi_b)
+        co_op_id = setup_federation(pi_a, pi_b, args.co_op_name)
     else:
-        # Full lifecycle
-        co_op_id = setup(pi_a, pi_b, args.co_op_name)
-        seed_results = seed(pi_a, pi_b, co_op_id)
+        # Full lifecycle: identities → seed → federation → test → teardown
+        setup(pi_a, pi_b, args.co_op_name)
+        seed_results = seed(pi_a, pi_b)
+        co_op_id = setup_federation(pi_a, pi_b, args.co_op_name)
         test_results = test(pi_a, pi_b)
         teardown(pi_a, pi_b)
 
