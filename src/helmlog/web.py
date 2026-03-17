@@ -5792,13 +5792,37 @@ def create_app(
                 if result:
                     proposals.append(result)
 
-        # Set match_group_id on the local session from the first successful proposal
+        # Mirror the match on the initiating boat: set match_group_id on the
+        # local session and create a local proposal so the status query works.
         if proposals:
+            from datetime import UTC, datetime, timedelta
+
             mgid = proposals[0].get("match_group_id")
+            matched_peer_sid = proposals[0].get("matched_session_id")
             if mgid:
                 await db.execute(
                     "UPDATE races SET match_group_id = ? WHERE id = ? AND match_group_id IS NULL",
                     (mgid, session_id),
+                )
+                now = datetime.now(UTC)
+                await db.execute(
+                    "INSERT OR IGNORE INTO session_match_proposals"
+                    " (match_group_id, proposer_fingerprint, local_session_id,"
+                    "  peer_session_id, centroid_lat, centroid_lon,"
+                    "  start_utc, end_utc, status, created_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)",
+                    (
+                        mgid,
+                        card.fingerprint,
+                        session_id,
+                        matched_peer_sid,
+                        centroid_lat,
+                        centroid_lon,
+                        race["start_utc"],
+                        race["end_utc"],
+                        now.isoformat(),
+                        (now + timedelta(hours=48)).isoformat(),
+                    ),
                 )
                 await db.commit()
 
