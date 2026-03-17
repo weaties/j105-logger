@@ -1049,8 +1049,17 @@ async function loadMatch() {
   card.style.display = '';
   let html = '<div style="font-size:.82rem">';
 
+  // Peer info line (shared between candidate and confirmed states)
+  const peerLine = data.peer_boat_name
+    ? '<div style="color:#8892a4;margin-bottom:6px">Matched boat: <strong style="color:#e8eaf0">'
+      + esc(data.peer_boat_name) + '</strong>'
+      + (data.peer_session_name ? ' — ' + esc(data.peer_session_name) : '')
+      + '</div>'
+    : '';
+
   if (data.status === 'candidate') {
     html += '<div style="color:#f59e0b;margin-bottom:6px">Pending match — awaiting confirmation</div>';
+    html += peerLine;
     if (isAdmin) {
       html += '<div style="display:flex;gap:6px">'
         + '<button class="btn-export" style="background:#0d2818;border:1px solid #16a34a;color:#4ade80" onclick="confirmMatch()">Confirm</button>'
@@ -1059,6 +1068,7 @@ async function loadMatch() {
     }
   } else if (data.status === 'confirmed') {
     html += '<div style="color:#4ade80;margin-bottom:6px">Matched with co-op boats</div>';
+    html += peerLine;
     if (data.shared_name) {
       html += '<div style="margin-bottom:4px">Shared name: <strong style="color:#e8eaf0">' + esc(data.shared_name) + '</strong></div>';
     }

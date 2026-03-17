@@ -5584,13 +5584,33 @@ def create_app(
                 {"status": "unmatched", "match_group_id": None, "shared_name": None}
             )
 
-        # Look up proposal status
+        # Look up proposal status + peer info
         cur2 = await db.execute(
-            "SELECT status FROM session_match_proposals WHERE match_group_id = ?",
+            "SELECT p.status, p.proposer_fingerprint, p.peer_session_id,"
+            "       cp.boat_name AS peer_boat_name"
+            " FROM session_match_proposals p"
+            " LEFT JOIN co_op_peers cp ON p.proposer_fingerprint = cp.fingerprint"
+            " WHERE p.match_group_id = ?"
+            " LIMIT 1",
             (match_group_id,),
         )
         proposal = await cur2.fetchone()
         status = dict(proposal)["status"] if proposal else "unmatched"
+
+        peer_boat_name: str | None = None
+        peer_session_name: str | None = None
+        if proposal:
+            peer_boat_name = proposal["peer_boat_name"]
+            peer_sid = proposal["peer_session_id"]
+            # Look up the peer's session name on this boat (if it was the proposer,
+            # peer_session_id is the remote session — we won't have the name locally).
+            # If this boat received the proposal, local_session_id == session_id and
+            # peer_session_id is the remote one. Check if we have a local race with that ID.
+            if peer_sid:
+                cur3 = await db.execute("SELECT name FROM races WHERE id = ?", (peer_sid,))
+                peer_race = await cur3.fetchone()
+                if peer_race:
+                    peer_session_name = peer_race["name"]
 
         return JSONResponse(
             {
@@ -5598,6 +5618,8 @@ def create_app(
                 "match_group_id": match_group_id,
                 "shared_name": row["shared_name"],
                 "match_confirmed": bool(row["match_confirmed"]),
+                "peer_boat_name": peer_boat_name,
+                "peer_session_name": peer_session_name,
             }
         )
 
