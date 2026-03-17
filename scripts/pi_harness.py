@@ -484,11 +484,18 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
     return results
 
 
-def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
+def test(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> list[dict[str, Any]]:
     """Run smoke tests from Pi-A against Pi-B."""
     _header("Test")
 
     _log("test", f"Running smoke tests: {pi_a.name} → {pi_b.name}")
+
+    # Ensure integration_smoke.py on Pi-A is up to date with local copy.
+    smoke_script = (Path(__file__).parent / "integration_smoke.py").read_text()
+    pi_a.ssh(
+        f"cat > ~/helmlog/scripts/integration_smoke.py << 'SMOKE_EOF'\n{smoke_script}SMOKE_EOF",
+        check=False,
+    )
 
     # Copy the service identity to weaties' home so load_identity() works.
     # The service stores keys at /var/cache/helmlog/.helmlog/identity/
@@ -506,7 +513,9 @@ def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
         "cd /home/weaties/helmlog"
         " && /home/weaties/.local/bin/uv run --no-sync"
         " python scripts/integration_smoke.py"
-        f" --peer {pi_b.ip} --port {pi_b.port} --json 2>/dev/null",
+        f" --peer {pi_b.ip} --port {pi_b.port}"
+        f"{f' --co-op-id {co_op_id}' if co_op_id else ''}"
+        " --json 2>/dev/null",
         timeout=60,
         check=False,
     )
@@ -881,7 +890,7 @@ def main() -> None:
         sys.exit(0)
 
     if args.test_only:
-        test_results = test(pi_a, pi_b)
+        test_results = test(pi_a, pi_b, co_op_id)
     elif args.test_ui_only:
         ui_test_results = test_ui(pi_a, seed_results)
     elif args.setup_only:
@@ -893,7 +902,7 @@ def main() -> None:
         setup(pi_a, pi_b, args.co_op_name)
         seed_results = seed(pi_a, pi_b)
         co_op_id = setup_federation(pi_a, pi_b, args.co_op_name)
-        test_results = test(pi_a, pi_b)
+        test_results = test(pi_a, pi_b, co_op_id)
         ui_test_results = test_ui(pi_a, seed_results)
         teardown(pi_a, pi_b)
 

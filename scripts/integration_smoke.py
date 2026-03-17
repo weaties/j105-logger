@@ -251,6 +251,7 @@ def main() -> None:
     parser.add_argument("--peer", required=True, help="Peer hostname or Tailscale IP")
     parser.add_argument("--port", type=int, default=3002, help="Peer helmlog port (default: 3002)")
     parser.add_argument("--local-port", type=int, default=3002, help="Local helmlog port")
+    parser.add_argument("--co-op-id", default="", help="Co-op ID (skip auto-discovery)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     args = parser.parse_args()
 
@@ -269,6 +270,8 @@ def main() -> None:
     print()
 
     runner = SmokeRunner(peer_url=peer_url, local_url=local_url)
+    if args.co_op_id:
+        runner._co_op_id = args.co_op_id
     results = runner.run()
 
     passed = sum(1 for r in results if r.passed)
