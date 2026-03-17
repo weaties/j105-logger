@@ -714,8 +714,10 @@ def test_ui(pi_a: PiHost, seed_results: dict[str, Any]) -> list[dict[str, Any]]:
             r = httpx.get(f"{base}/api/sessions/{session_id}/match", timeout=10)
             if r.status_code != 200:
                 return "SKIP: match API not available"
-            state = r.json().get("status", "unmatched")
-            if state in ("confirmed", "named"):
+            data = r.json()
+            state = data.get("status", "unmatched")
+            confirmed = data.get("match_confirmed", False)
+            if state in ("confirmed", "named") and confirmed:
                 r2 = httpx.put(
                     f"{base}/api/sessions/{session_id}/match/name",
                     json={"name": "Harness Test Shared Name"},

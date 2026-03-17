@@ -222,8 +222,9 @@ class SmokeRunner:
             )
             return self.results
 
-        # Discover co-op
-        self._discover_co_op()
+        # Discover co-op (skip if already set via --co-op-id)
+        if not self._co_op_id:
+            self._discover_co_op()
 
         tests = [
             "peer_identity",
