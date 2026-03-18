@@ -576,14 +576,15 @@ info "$PROJECT_DIR/data (SQLite DB)"
 info "$PROJECT_DIR/data/audio (WAV recordings)"
 info "$PROJECT_DIR/data/notes (photo notes)"
 
-# Shared ownership: deploy user owns, deploy user's group is shared with helmlog.
+# Shared ownership: helmlog service account owns (so the service can always write
+# its own DB), deploy user's group enables write access for admin CLI commands.
 # setgid ensures new files/dirs inherit the group so both users can always read/write.
-sudo chown -R "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR/data"
+sudo chown -R "helmlog:$CURRENT_USER" "$PROJECT_DIR/data"
 sudo chmod -R g+ws "$PROJECT_DIR/data"
 # Default POSIX ACL: new files created in data/ (e.g. by `helmlog add-user`)
 # automatically get group rw regardless of the creating user's umask.
 sudo setfacl -R -d -m g::rw "$PROJECT_DIR/data"
-info "data/ owned by $CURRENT_USER, group-writable + default ACL (helmlog is a member)."
+info "data/ owned by helmlog:$CURRENT_USER, group-writable + default ACL."
 
 # ---------------------------------------------------------------------------
 # i) netdev group (allows non-root SocketCAN access)
