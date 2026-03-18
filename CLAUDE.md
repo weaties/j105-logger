@@ -423,3 +423,4 @@ The spec is posted as a GitHub issue comment for review before code is written.
 | `/domain` | Sailing instrument domain reference — Signal K paths, NMEA 2000 PGNs, instrument relationships, racing concepts |
 | `/architecture` | Codebase comprehension — module map, data flow, complexity hotspots, risk tier overlay. Full snapshot or delta briefing |
 | `/diagnose` | Systematic Pi troubleshooting runbook — checks all subsystems and reports health |
+| `/skill-compare` | Blind A/B comparison of two skill versions — measures relative improvement across multiple dimensions |
