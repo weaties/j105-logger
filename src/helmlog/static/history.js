@@ -456,7 +456,7 @@ function _histVideoAddForm(sessionId, startUtc) {
     + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
     + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<button class="btn-export" style="background:var(--accent-strong);color:#fff;border-color:var(--accent-strong)" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
+    + '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
     + ' <button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
     + '<button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
@@ -700,7 +700,7 @@ async function _loadSailsForHistory(sessionId, el) {
       + '<option value="">— none —</option>' + opts
       + '</select></div>';
   });
-  html += '<button class="btn-export" style="background:var(--accent-strong);color:#fff;border-color:var(--accent-strong);font-size:.78rem" onclick="saveHistSails(' + sessionId + ')">Save Sails</button>';
+  html += '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong);font-size:.78rem" onclick="saveHistSails(' + sessionId + ')">Save Sails</button>';
   html += '</div>';
   el.innerHTML = html;
 }

@@ -9,7 +9,7 @@
 {% endblock %}
 
 {% block pre_nav %}
-<div id="health-banner" style="display:none;background:#7f1d1d;color:var(--danger);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
+<div id="health-banner" style="display:none;background:var(--bg-secondary);color:var(--danger);border:1px solid var(--danger);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
 {% endblock %}
 
 {% block content %}
@@ -69,11 +69,11 @@
 
 <div id="debrief-card" class="card hidden">
   <div class="label">
-    <span class="status-dot" style="background:#c084fc"></span>Debrief in progress
+    <span class="status-dot" style="background:var(--warning)"></span>Debrief in progress
   </div>
   <div class="race-name" id="debrief-name">&mdash;</div>
   <div class="label" style="margin-top:12px">Duration</div>
-  <div class="duration" id="debrief-duration" style="color:#c084fc">&mdash;</div>
+  <div class="duration" id="debrief-duration" style="color:var(--warning)">&mdash;</div>
   <button class="btn btn-danger" style="margin-top:12px" onclick="stopDebrief()">STOP DEBRIEF</button>
 </div>
 
@@ -156,7 +156,7 @@
 <div id="controls">
   <button class="btn btn-primary"  id="btn-start-race"     onclick="startSession('race')">&#9654; START RACE 1</button>
   <button class="btn btn-practice" id="btn-start-practice" onclick="startSession('practice')">&#9654; START PRACTICE</button>
-  <button class="btn btn-schedule hidden" id="btn-schedule-toggle" onclick="toggleSchedulePanel()" style="background:var(--accent-strong);color:var(--text-primary)">&#9200; SET START TIME</button>
+  <button class="btn btn-schedule hidden" id="btn-schedule-toggle" onclick="toggleSchedulePanel()">&#9200; SET START TIME</button>
   <button class="btn btn-synthesize hidden" id="btn-synthesize" onclick="toggleSynthPanel()">&#9881; SYNTHESIZE RACE</button>
   <button class="btn btn-debrief hidden" id="btn-debrief-last" onclick="startDebriefLast()">DEBRIEF LAST RACE</button>
   <button class="btn btn-danger hidden" id="btn-end" onclick="confirmEndRace()">&#9632; END RACE</button>
@@ -166,11 +166,11 @@
   <div class="label">Schedule Start Time</div>
   <div class="field">
     <label for="schedule-time">Start time (local)</label>
-    <input id="schedule-time" type="datetime-local" style="width:100%;padding:6px;border-radius:6px;border:1px solid #333;background:#1a1a2e;color:#e0e0e0"/>
+    <input id="schedule-time" type="datetime-local" style="width:100%;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary)"/>
   </div>
   <div style="display:flex;gap:8px;margin-top:8px">
     <button class="btn btn-primary" onclick="submitSchedule()" style="flex:1">Schedule</button>
-    <button class="btn" onclick="toggleSchedulePanel()" style="flex:1;background:#333">Cancel</button>
+    <button class="btn" onclick="toggleSchedulePanel()" style="flex:1;background:var(--bg-secondary)">Cancel</button>
   </div>
 </div>
 
@@ -178,7 +178,7 @@
   <div style="font-size:.78rem;color:var(--text-secondary)">Scheduled start</div>
   <div id="schedule-countdown-time" style="font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums"></div>
   <div id="schedule-countdown-event" style="font-size:.82rem;color:var(--text-secondary);margin-top:2px"></div>
-  <button class="btn" onclick="cancelSchedule()" style="margin-top:8px;background:#333;font-size:.78rem">Cancel scheduled start</button>
+  <button class="btn" onclick="cancelSchedule()" style="margin-top:8px;background:var(--bg-secondary);font-size:.78rem">Cancel scheduled start</button>
 </div>
 
 <div id="synth-panel" class="card hidden">

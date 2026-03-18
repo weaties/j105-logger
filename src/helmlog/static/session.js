@@ -374,7 +374,7 @@ function _videoAddForm() {
     + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional):</div>'
     + '<input id="video-sync-utc" class="field" type="datetime-local" step="1" value="' + defaultSync + '" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos" class="field" placeholder="Video position (mm:ss)" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<button class="btn-export" style="background:var(--accent-strong);color:#fff;border-color:var(--accent-strong)" onclick="submitAddVideo()">Add Video</button>'
+    + '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)" onclick="submitAddVideo()">Add Video</button>'
     + ' <button onclick="document.getElementById(\'video-add-form\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
     + '<button onclick="document.getElementById(\'video-add-form\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 0;margin-top:4px">+ Add Video</button>';
@@ -771,7 +771,7 @@ async function loadSails() {
       + '<option value="">\u2014 none \u2014</option>' + opts
       + '</select></div>';
   });
-  html += '<button class="btn-export" style="background:var(--accent-strong);color:#fff;border-color:var(--accent-strong);font-size:.78rem;margin-top:4px" onclick="saveSails()">Save Sails</button>';
+  html += '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong);font-size:.78rem;margin-top:4px" onclick="saveSails()">Save Sails</button>';
   html += '<div id="sail-changes-timeline"></div>';
   body.innerHTML = html;
 
@@ -978,11 +978,11 @@ function renderSharing(data) {
   let html = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">';
   for (const c of data.co_ops) {
     if (c.shared) {
-      html += '<button class="btn-export" style="background:#0d2818;border:1px solid var(--success);color:var(--success)"'
+      html += '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--success);color:var(--success)"'
         + ' onclick="unshareSession(\'' + esc(c.co_op_id) + '\')">'
         + esc(c.co_op_name) + ' &#10003;</button>';
     } else {
-      html += '<button class="btn-export" style="background:#1e293b;border:1px solid var(--border);color:var(--text-primary)"'
+      html += '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary)"'
         + ' onclick="shareSession(\'' + esc(c.co_op_id) + '\')">'
         + 'Share with ' + esc(c.co_op_name) + '</button>';
     }
@@ -1062,8 +1062,8 @@ async function loadMatch() {
     html += peerLine;
     if (isAdmin) {
       html += '<div style="display:flex;gap:6px">'
-        + '<button class="btn-export" style="background:#0d2818;border:1px solid var(--success);color:var(--success)" onclick="confirmMatch()">Confirm</button>'
-        + '<button class="btn-export" style="background:#1c1917;border:1px solid #dc2626;color:var(--danger)" onclick="rejectMatch()">Reject</button>'
+        + '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--success);color:var(--success)" onclick="confirmMatch()">Confirm</button>'
+        + '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--danger);color:var(--danger)" onclick="rejectMatch()">Reject</button>'
         + '</div>';
     }
   } else if (data.status === 'confirmed') {
@@ -2052,7 +2052,7 @@ async function loadDiscussion() {
     const author = t.author_name || t.author_email || 'Crew Member';
     const count = t.comment_count === 1 ? '1 comment' : t.comment_count + ' comments';
     const resolutionHtml = t.resolved && t.resolution_summary
-      ? '<div style="background:#0d2a1a;border:1px solid #22543d;border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:#86efac">'
+      ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:var(--success)">'
         + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
       : '';
     return '<div class="thread-item' + resolved + '" onclick="openThread(' + t.id + ')">'
@@ -2089,7 +2089,7 @@ function _addDiscussionMarkers() {
     const resolvedHtml = t.resolved
       ? '<div style="color:var(--success);font-size:.7rem;margin-top:2px">&#10003; Resolved</div>'
         + (t.resolution_summary
-          ? '<div style="background:#0d2a1a;border:1px solid #22543d;border-radius:4px;padding:4px 6px;margin-top:3px;font-size:.7rem;color:#86efac">'
+          ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 6px;margin-top:3px;font-size:.7rem;color:var(--success)">'
             + esc(t.resolution_summary.length > 120 ? t.resolution_summary.slice(0, 120) + '\u2026' : t.resolution_summary) + '</div>'
           : '')
       : '';
@@ -2234,7 +2234,7 @@ async function openThread(threadId) {
     resolveBtn = '<button class="btn-resolve" onclick="resolveThread(' + t.id + ')">Resolve</button>';
   }
   const resolutionHtml = t.resolved && t.resolution_summary
-    ? '<div style="background:#0d2a1a;border:1px solid #4ade80;border-radius:4px;padding:6px 8px;margin-top:6px;font-size:.78rem;color:#86efac">'
+    ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:6px 8px;margin-top:6px;font-size:.78rem;color:var(--success)">'
       + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
     : '';
   const commentsHtml = (t.comments || []).map(c => {
