@@ -42,11 +42,20 @@ For each data-touching change, verify compliance with the relevant sections:
 - [ ] Private data (audio, notes, sails, currents, photos, YouTube, crew roster)
       is not exposed to co-op endpoints
 - [ ] No bulk export of other boats' co-op data
-- [ ] Temporal sharing embargo timestamps are respected before serving track data
+- [ ] Temporal sharing embargo timestamps are respected before serving track data.
+      When an embargo check exists, verify it is **semantically correct** — the
+      comparison operator must match the meaning of `embargo_until` (is it the
+      first shareable moment or the last blocked moment?). Presence of a check
+      is not sufficient; the boundary condition must be right.
 - [ ] Temporal sharing policy is enforced at the co-op level, not per-boat
 - [ ] Fleet benchmarks contain no boat identities or per-boat data points
 - [ ] Benchmarks enforce minimum 4-boat threshold per condition bin
 - [ ] Benchmarks exclude embargoed session data until embargo lifts
+- [ ] Coach access grants are time-limited with an expiry date (seasonal renewal
+      required — no permanent grants). Coach access requires authorization from
+      the boat owner per session, not blanket access.
+- [ ] Coaches may not bulk-export or aggregate multiple boats' data into a
+      derived dataset retained independently of the platform
 
 ### Section 5 — Retention and Deletion
 - [ ] Data portability: own-boat data exportable in CSV, GPX, JSON, WAV

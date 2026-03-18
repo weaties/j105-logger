@@ -202,13 +202,13 @@
   description: Correctly defaults a new module to Standard tier
   type: preference
   scenario: |
-    A PR introduces a brand-new module (maneuver_detector.py) that doesn't
+    A PR introduces a brand-new module (weather_overlay.py) that doesn't
     appear in the risk tier table. Per CLAUDE.md rules, new modules default
     to Standard until explicitly classified.
   mock_input: |
     git diff --name-only main...HEAD:
-    src/helmlog/maneuver_detector.py
-    tests/test_maneuver_detector.py
+    src/helmlog/weather_overlay.py
+    tests/test_weather_overlay.py
   expected:
     - criterion: "Must resolve risk tier as Standard (new module defaults to Standard)"
       weight: critical
