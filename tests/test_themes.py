@@ -11,7 +11,6 @@ import pytest_asyncio
 from helmlog.themes import (
     PRESETS,
     SYSTEM_DEFAULT_ID,
-    ThemeColors,
     resolve_theme,
     theme_to_css,
     wcag_contrast,
@@ -58,9 +57,7 @@ def test_all_presets_pass_wcag_aa() -> None:
     """All built-in presets must meet WCAG AA (4.5:1) for text on background."""
     for preset_id, theme in PRESETS.items():
         ratio = wcag_contrast(theme.text_primary, theme.bg_primary)
-        assert ratio >= 4.5, (
-            f"Preset {preset_id!r}: contrast ratio {ratio:.1f} is below AA (4.5:1)"
-        )
+        assert ratio >= 4.5, f"Preset {preset_id!r}: contrast ratio {ratio:.1f} is below AA (4.5:1)"
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +229,12 @@ async def test_api_create_custom_scheme(client: httpx.AsyncClient) -> None:
     """POST /api/color-schemes creates a custom scheme."""
     resp = await client.post(
         "/api/color-schemes",
-        json={"name": "Corvo Colors", "bg": "#000000", "text_color": "#FFD600", "accent": "#FFD600"},
+        json={
+            "name": "Corvo Colors",
+            "bg": "#000000",
+            "text_color": "#FFD600",
+            "accent": "#FFD600",
+        },
     )
     assert resp.status_code == 201
     data = resp.json()
@@ -250,9 +252,7 @@ async def test_api_create_scheme_missing_fields_422(client: httpx.AsyncClient) -
 @pytest.mark.asyncio
 async def test_api_set_boat_default_preset(client: httpx.AsyncClient) -> None:
     """PUT /api/color-schemes/default sets a preset as boat default."""
-    resp = await client.put(
-        "/api/color-schemes/default", json={"scheme_id": "racing_yellow"}
-    )
+    resp = await client.put("/api/color-schemes/default", json={"scheme_id": "racing_yellow"})
     assert resp.status_code == 200
     # Verify it shows up in the list
     list_resp = await client.get("/api/color-schemes")
@@ -262,9 +262,7 @@ async def test_api_set_boat_default_preset(client: httpx.AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_api_set_boat_default_unknown_scheme_422(client: httpx.AsyncClient) -> None:
     """PUT /api/color-schemes/default with unknown scheme returns 422."""
-    resp = await client.put(
-        "/api/color-schemes/default", json={"scheme_id": "bogus_scheme"}
-    )
+    resp = await client.put("/api/color-schemes/default", json={"scheme_id": "bogus_scheme"})
     assert resp.status_code == 422
 
 

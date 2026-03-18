@@ -4561,8 +4561,7 @@ class Storage:
         """Update an existing custom color scheme. Returns True if found."""
         db = self._conn()
         cur = await db.execute(
-            "UPDATE color_schemes SET name = ?, bg = ?, text_color = ?, accent = ?"
-            " WHERE id = ?",
+            "UPDATE color_schemes SET name = ?, bg = ?, text_color = ?, accent = ? WHERE id = ?",
             (name, bg, text_color, accent, scheme_id),
         )
         await db.commit()

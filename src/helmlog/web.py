@@ -563,7 +563,9 @@ def create_app(
         next: str = Form(default="/"),
     ) -> Response:
         def _login_err(msg: str) -> HTMLResponse:
-            ctx = _login_ctx(next, f'<p style="color:#f87171;margin-top:12px">{msg}</p>')
+            ctx = _login_ctx(
+                next, f'<p style="color:var(--danger, #f87171);margin-top:12px">{msg}</p>'
+            )
             return _templates.TemplateResponse(request, "login.html", ctx, status_code=400)
 
         email = email.strip().lower()
@@ -677,7 +679,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -692,7 +694,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -752,7 +754,7 @@ def create_app(
         request: Request,
         email: str = Form(...),
     ) -> HTMLResponse:
-        _generic_msg = '<p style="color:#34d399;margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
+        _generic_msg = '<p style="color:var(--success, #34d399);margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
         email = email.strip().lower()
 
         from helmlog.email import smtp_configured
@@ -820,7 +822,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                 },
                 status_code=400,
             )
@@ -831,7 +833,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                 },
                 status_code=400,
             )
@@ -1103,7 +1105,7 @@ def create_app(
             f'<td class="u-dev" data-label="Dev"><input type="checkbox" {"checked" if u.get("is_developer") else ""} disabled style="width:18px;height:18px"/></td>'  # noqa: E501
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
-            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:#22c55e;color:#4ade80">Edit</button></td>'  # noqa: E501
+            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:var(--success);color:var(--success)">Edit</button></td>'  # noqa: E501
             f"</tr>"
             for u in users
         )
@@ -1113,7 +1115,7 @@ def create_app(
             f'<td data-label="IP">{_esc(s.get("ip") or "\u2014")}</td>'
             f'<td data-label="Created">{_local_ts(s["created_at"])}</td>'
             f'<td data-label="Expires">{_local_ts(s["expires_at"])}</td>'
-            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for s in sessions
         )
@@ -1123,7 +1125,7 @@ def create_app(
             f'<td data-label="Role">{_badge(inv["role"])}</td>'
             f'<td data-label="Dev">{"&#9989;" if inv.get("is_developer") else "\u2014"}</td>'
             f'<td data-label="Expires">{_local_ts(inv["expires_at"])}</td>'
-            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for inv in pending_invitations
         )
@@ -1356,7 +1358,9 @@ def create_app(
     ) -> Response:
         from helmlog.themes import PRESET_ORDER, PRESETS
 
-        preset_list = [{"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS]
+        preset_list = [
+            {"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS
+        ]
         custom_list = await storage.list_color_schemes()
         boat_default = await storage.get_setting("color_scheme_default") or ""
         return _templates.TemplateResponse(
@@ -4916,9 +4920,7 @@ def create_app(
             for cs in await storage.list_color_schemes()
         ]
         boat_default = await storage.get_setting("color_scheme_default") or ""
-        return JSONResponse(
-            {"presets": presets, "custom": custom, "boat_default": boat_default}
-        )
+        return JSONResponse({"presets": presets, "custom": custom, "boat_default": boat_default})
 
     @app.post("/api/color-schemes", status_code=201)
     async def api_create_color_scheme(
@@ -4933,12 +4935,8 @@ def create_app(
         accent = str(body.get("accent", "")).strip()
         if not all([name, bg, text_color, accent]):
             raise HTTPException(422, detail="name, bg, text_color, accent are required")
-        scheme_id = await storage.create_color_scheme(
-            name, bg, text_color, accent, _user.get("id")
-        )
-        await _audit(
-            request, "color_scheme.create", detail=f"name={name!r}", user=_user
-        )
+        scheme_id = await storage.create_color_scheme(name, bg, text_color, accent, _user.get("id"))
+        await _audit(request, "color_scheme.create", detail=f"name={name!r}", user=_user)
         return JSONResponse({"id": scheme_id, "name": name}, status_code=201)
 
     # NOTE: /default must be registered before /{scheme_id} to avoid route shadowing.
@@ -4968,9 +4966,7 @@ def create_app(
             if cs is None:
                 raise HTTPException(404, detail="Custom color scheme not found")
         await storage.set_setting("color_scheme_default", scheme)
-        await _audit(
-            request, "color_scheme.default.set", detail=f"scheme={scheme!r}", user=_user
-        )
+        await _audit(request, "color_scheme.default.set", detail=f"scheme={scheme!r}", user=_user)
         return JSONResponse({"ok": True})
 
     @app.put("/api/color-schemes/{scheme_id}")
@@ -5009,9 +5005,7 @@ def create_app(
         boat_default = await storage.get_setting("color_scheme_default")
         if boat_default == f"custom:{scheme_id}":
             await storage.delete_setting("color_scheme_default")
-        await _audit(
-            request, "color_scheme.delete", detail=f"id={scheme_id}", user=_user
-        )
+        await _audit(request, "color_scheme.delete", detail=f"id={scheme_id}", user=_user)
 
     @app.patch("/api/me/color-scheme")
     async def api_set_my_color_scheme(
@@ -5067,7 +5061,9 @@ def create_app(
         role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
         consents = await storage.get_crew_consents(user_id) if user_id else []
         bio_consent = any(c["consent_type"] == "biometric" and c["granted"] for c in consents)
-        preset_list = [{"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS]
+        preset_list = [
+            {"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS
+        ]
         custom_list = await storage.list_color_schemes()
         boat_default = await storage.get_setting("color_scheme_default") or ""
         current_scheme = _user.get("color_scheme") or ""

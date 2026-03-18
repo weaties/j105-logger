@@ -9,7 +9,7 @@
 {% endblock %}
 
 {% block pre_nav %}
-<div id="health-banner" style="display:none;background:#7f1d1d;color:#fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
+<div id="health-banner" style="display:none;background:#7f1d1d;color:var(--danger);border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:.85rem"></div>
 {% endblock %}
 
 {% block content %}
@@ -47,14 +47,14 @@
     </div>
     <div id="note-pane-text">
       <textarea id="note-body" rows="3"
-        style="width:100%;background:#0a1628;border:1px solid #2563eb;border-radius:6px;
-               padding:8px;color:#e8eaf0;font-size:.9rem;resize:vertical"
+        style="width:100%;background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;
+               padding:8px;color:var(--text-primary);font-size:.9rem;resize:vertical"
         placeholder="Race observation..."></textarea>
     </div>
     <div id="note-pane-settings" style="display:none">
       <datalist id="settings-key-suggestions"></datalist>
       <div id="settings-rows"></div>
-      <button onclick="addSettingsRow()" style="font-size:.8rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:4px 0">+ Add field</button>
+      <button onclick="addSettingsRow()" style="font-size:.8rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 0">+ Add field</button>
     </div>
     <div id="note-pane-photo" style="display:none;text-align:center">
       <input type="file" id="photo-file" accept="image/*,video/*" capture="environment"
@@ -81,13 +81,13 @@
   <div class="crew-header" onclick="toggleSetup()">
     <span class="label" style="margin-bottom:0">Boat Setup</span>
     <span style="display:flex;align-items:center;gap:8px">
-      <span id="setup-summary" style="font-size:.78rem;color:#8892a4"></span>
-      <span id="setup-chevron" style="color:#8892a4;font-size:.85rem">&#9654;</span>
+      <span id="setup-summary" style="font-size:.78rem;color:var(--text-secondary)"></span>
+      <span id="setup-chevron" style="color:var(--text-secondary);font-size:.85rem">&#9654;</span>
     </span>
   </div>
   <div id="setup-body" style="display:none;margin-top:10px">
     <div id="setup-categories"></div>
-    <div id="setup-status" style="font-size:.78rem;color:#8892a4;margin-top:6px;display:none"></div>
+    <div id="setup-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:6px;display:none"></div>
   </div>
 </div>
 
@@ -96,7 +96,7 @@
     <span class="label" style="margin-bottom:0">Instruments</span>
     <span style="display:flex;align-items:center;gap:8px">
       <span class="inst-time" id="inst-time" style="margin-bottom:0">--:--:-- UTC</span>
-      <span id="inst-chevron" style="color:#8892a4;font-size:.85rem">&#9654;</span>
+      <span id="inst-chevron" style="color:var(--text-secondary);font-size:.85rem">&#9654;</span>
     </span>
   </div>
   <div id="inst-body" style="display:none">
@@ -127,14 +127,14 @@
   <div class="crew-header" onclick="toggleCrew()">
     <span class="label" style="margin-bottom:0">Crew</span>
     <span style="display:flex;align-items:center;gap:8px">
-      <span id="crew-count" style="font-size:.78rem;color:#8892a4"></span>
-      <span id="crew-chevron" style="color:#8892a4;font-size:.85rem">&#9654;</span>
+      <span id="crew-count" style="font-size:.78rem;color:var(--text-secondary)"></span>
+      <span id="crew-chevron" style="color:var(--text-secondary);font-size:.85rem">&#9654;</span>
     </span>
   </div>
   <div id="crew-summary" style="font-size:.82rem;margin-top:6px"></div>
   <div id="crew-body" style="display:none;margin-top:10px">
     <div id="crew-rows"></div>
-    <div id="crew-status" style="font-size:.78rem;color:#8892a4;margin-top:6px;display:none"></div>
+    <div id="crew-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:6px;display:none"></div>
   </div>
 </div>
 
@@ -142,21 +142,21 @@
   <div class="crew-header" onclick="toggleSailsCard()">
     <span class="label" style="margin-bottom:0">Sails</span>
     <span style="display:flex;align-items:center;gap:8px">
-      <span id="sails-count" style="font-size:.78rem;color:#8892a4"></span>
-      <span id="sails-chevron" style="color:#8892a4;font-size:.85rem">&#9654;</span>
+      <span id="sails-count" style="font-size:.78rem;color:var(--text-secondary)"></span>
+      <span id="sails-chevron" style="color:var(--text-secondary);font-size:.85rem">&#9654;</span>
     </span>
   </div>
   <div id="sails-summary" style="font-size:.82rem;margin-top:6px"></div>
   <div id="sails-body" style="display:none;margin-top:10px">
     <div id="sails-rows"></div>
-    <div id="sails-status" style="font-size:.78rem;color:#8892a4;margin-top:6px;display:none"></div>
+    <div id="sails-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:6px;display:none"></div>
   </div>
 </div>
 
 <div id="controls">
   <button class="btn btn-primary"  id="btn-start-race"     onclick="startSession('race')">&#9654; START RACE 1</button>
   <button class="btn btn-practice" id="btn-start-practice" onclick="startSession('practice')">&#9654; START PRACTICE</button>
-  <button class="btn btn-schedule hidden" id="btn-schedule-toggle" onclick="toggleSchedulePanel()" style="background:#2563eb;color:#fff">&#9200; SET START TIME</button>
+  <button class="btn btn-schedule hidden" id="btn-schedule-toggle" onclick="toggleSchedulePanel()" style="background:var(--accent-strong);color:var(--text-primary)">&#9200; SET START TIME</button>
   <button class="btn btn-synthesize hidden" id="btn-synthesize" onclick="toggleSynthPanel()">&#9881; SYNTHESIZE RACE</button>
   <button class="btn btn-debrief hidden" id="btn-debrief-last" onclick="startDebriefLast()">DEBRIEF LAST RACE</button>
   <button class="btn btn-danger hidden" id="btn-end" onclick="confirmEndRace()">&#9632; END RACE</button>
@@ -175,16 +175,16 @@
 </div>
 
 <div id="schedule-countdown" class="card hidden" style="text-align:center">
-  <div style="font-size:.78rem;color:#8892a4">Scheduled start</div>
+  <div style="font-size:.78rem;color:var(--text-secondary)">Scheduled start</div>
   <div id="schedule-countdown-time" style="font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums"></div>
-  <div id="schedule-countdown-event" style="font-size:.82rem;color:#8892a4;margin-top:2px"></div>
+  <div id="schedule-countdown-event" style="font-size:.82rem;color:var(--text-secondary);margin-top:2px"></div>
   <button class="btn" onclick="cancelSchedule()" style="margin-top:8px;background:#333;font-size:.78rem">Cancel scheduled start</button>
 </div>
 
 <div id="synth-panel" class="card hidden">
   <div class="label">Synthesize Race</div>
   <div id="synth-map" class="synth-map"></div>
-  <div style="font-size:.75rem;color:#8892a4;margin-bottom:8px">Click map to place start/finish (RC). Marks auto-update with wind.</div>
+  <div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:8px">Click map to place start/finish (RC). Marks auto-update with wind.</div>
   <div class="field">
     <label for="synth-course">Course type</label>
     <select id="synth-course" onchange="onSynthCourseChange()">
@@ -217,7 +217,7 @@
   </div>
   <div class="field hidden" id="synth-lat-field">
     <label>RC position</label>
-    <span id="synth-rc-display" style="font-size:.82rem;color:#fbbf24">Click map to set</span>
+    <span id="synth-rc-display" style="font-size:.82rem;color:var(--warning)">Click map to set</span>
   </div>
   <input type="hidden" id="synth-lat" value="47.6815"/>
   <input type="hidden" id="synth-lon" value="-122.4085"/>
@@ -227,33 +227,33 @@
       <option value="">This boat (local)</option>
     </select>
   </div>
-  <div style="border-top:1px solid #1e3a5f;margin:12px 0 8px;padding-top:10px">
+  <div style="border-top:1px solid var(--border);margin:12px 0 8px;padding-top:10px">
     <div class="label">Import wind model from co-op</div>
     <div style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:end">
-      <select id="synth-peer-session" style="font-size:.82rem;padding:6px 8px;background:#0a1628;border:1px solid #2563eb;border-radius:4px;color:#e8eaf0">
+      <select id="synth-peer-session" style="font-size:.82rem;padding:6px 8px;background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;color:var(--text-primary)">
         <option value="">Select a peer session...</option>
       </select>
-      <button class="btn" style="padding:6px 12px;font-size:.8rem;background:#16a34a;color:#fff;border:none;border-radius:4px;cursor:pointer;white-space:nowrap" id="synth-import-wind" onclick="importPeerWindModel()" disabled>Import Wind</button>
+      <button class="btn" style="padding:6px 12px;font-size:.8rem;background:var(--success);color:var(--text-primary);border:none;border-radius:4px;cursor:pointer;white-space:nowrap" id="synth-import-wind" onclick="importPeerWindModel()" disabled>Import Wind</button>
     </div>
-    <div id="synth-import-status" style="font-size:.78rem;color:#8892a4;margin-top:4px;display:none"></div>
+    <div id="synth-import-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:4px;display:none"></div>
   </div>
   <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-    <label style="font-size:.82rem;color:#8892a4;display:flex;align-items:center;gap:4px;cursor:pointer">
-      <input type="checkbox" id="synth-collision" checked style="accent-color:#2563eb"/>
+    <label style="font-size:.82rem;color:var(--text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="checkbox" id="synth-collision" checked style="accent-color:var(--accent-strong)"/>
       Collision avoidance
     </label>
-    <label style="font-size:.78rem;color:#8892a4">
+    <label style="font-size:.78rem;color:var(--text-secondary)">
       Min sep:
-      <input id="synth-min-sep" type="number" value="30" min="10" max="200" step="5" style="width:55px;font-size:.82rem;padding:2px 4px;background:#0a1628;border:1px solid #374151;border-radius:3px;color:#e8eaf0"/>m
+      <input id="synth-min-sep" type="number" value="30" min="10" max="200" step="5" style="width:55px;font-size:.82rem;padding:2px 4px;background:var(--bg-input);border:1px solid var(--border);border-radius:3px;color:var(--text-primary)"/>m
     </label>
   </div>
   <button class="btn btn-synthesize" id="synth-go" style="width:100%;margin-top:8px" onclick="runSynthesize()">Generate</button>
-  <div id="synth-result" style="margin-top:8px;font-size:.85rem;color:#fbbf24;display:none"></div>
+  <div id="synth-result" style="margin-top:8px;font-size:.85rem;color:var(--warning);display:none"></div>
 </div>
 
 <div id="today-summary" class="card hidden" style="text-align:center">
-  <div style="font-size:.85rem;color:#8892a4" id="today-summary-text"></div>
-  <a href="/history" style="font-size:.8rem;color:#7eb8f7;text-decoration:none;margin-top:4px;display:inline-block">View history &rarr;</a>
+  <div style="font-size:.85rem;color:var(--text-secondary)" id="today-summary-text"></div>
+  <a href="/history" style="font-size:.8rem;color:var(--accent);text-decoration:none;margin-top:4px;display:inline-block">View history &rarr;</a>
 </div>
 {% endblock %}
 

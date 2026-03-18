@@ -14,9 +14,13 @@
   --accent: #7eb8f7;
   --bg-secondary: #131f35;
   --text-secondary: #8892a4;
+  --text-muted: #6b7280;
   --border: #1e3a5f;
   --bg-input: #0a1628;
   --accent-strong: #2563eb;
+  --success: #4ade80;
+  --danger: #f87171;
+  --warning: #fbbf24;
 }
 
 /* --------------------------------------------------------------------------
@@ -146,14 +150,14 @@ h1 {
 
 .btn-danger {
   background: #7f1d1d;
-  color: #fca5a5;
-  border: 1px solid #dc2626;
+  color: var(--danger);
+  border: 1px solid var(--danger);
 }
 
 .btn-end-confirm {
-  background: #dc2626 !important;
+  background: var(--danger) !important;
   color: #fff !important;
-  border-color: #ef4444 !important;
+  border-color: var(--danger) !important;
   animation: pulse-confirm 0.6s ease-in-out infinite alternate;
 }
 
@@ -164,8 +168,8 @@ h1 {
 
 .btn-practice {
   background: #1a3a2a;
-  color: #4ade80;
-  border: 1px solid #16a34a;
+  color: var(--success);
+  border: 1px solid var(--success);
 }
 .btn-practice:active {
   background: #14532d;
@@ -208,11 +212,11 @@ h1 {
 
 .btn-grafana {
   border-color: #b45309;
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .btn-export.btn-has-data {
-  border-color: #22c55e;
+  border-color: var(--success);
   color: #86efac;
 }
 
@@ -242,7 +246,7 @@ h1 {
 }
 
 .btn-del {
-  color: #ef4444;
+  color: var(--danger);
   border-color: #7f1d1d;
 }
 
@@ -280,7 +284,7 @@ h1 {
 
 .badge-practice {
   background: #14532d;
-  color: #4ade80;
+  color: var(--success);
 }
 
 .badge-debrief {
@@ -290,12 +294,12 @@ h1 {
 
 .badge-synthesized {
   background: #422006;
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .badge-peer {
   background: #1a3048;
-  color: #67c3f3;
+  color: var(--accent);
 }
 
 /* --------------------------------------------------------------------------
@@ -304,8 +308,8 @@ h1 {
 
 .btn-synthesize {
   background: #422006;
-  color: #fbbf24;
-  border: 1px solid #d97706;
+  color: var(--warning);
+  border: 1px solid var(--warning);
 }
 .btn-synthesize:active {
   background: #78350f;
@@ -322,7 +326,7 @@ h1 {
 }
 
 .synth-warning {
-  color: #fbbf24;
+  color: var(--warning);
   border-left: 3px solid #f59e0b;
   padding-left: 8px;
 }
@@ -528,7 +532,7 @@ nav.site-nav {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #22c55e;
+  background: var(--success);
   margin-right: 6px;
   animation: pulse 1.4s infinite;
 }
@@ -541,7 +545,7 @@ nav.site-nav {
 .duration {
   font-size: 1.6rem;
   font-weight: 700;
-  color: #22c55e;
+  color: var(--success);
   font-variant-numeric: tabular-nums;
 }
 
@@ -614,7 +618,7 @@ nav.site-nav {
 }
 
 .setup-input.has-value {
-  border-color: #22c55e;
+  border-color: var(--success);
 }
 
 .setup-unit {
@@ -648,7 +652,7 @@ nav.site-nav {
 }
 
 .setup-select.has-value {
-  border-color: #22c55e;
+  border-color: var(--success);
 }
 
 /* --------------------------------------------------------------------------
@@ -682,7 +686,7 @@ nav.site-nav {
 
 .bs-superseded {
   font-size: 0.72rem;
-  color: #6b7280;
+  color: var(--text-muted);
   text-decoration: line-through;
   margin-left: 6px;
 }
@@ -697,17 +701,17 @@ nav.site-nav {
 }
 
 .bs-source-badge.race {
-  color: #4ade80;
+  color: var(--success);
   background: rgba(74, 222, 128, 0.12);
 }
 
 .bs-source-badge.transcript {
-  color: #fb923c;
+  color: var(--warning);
   background: rgba(251, 146, 60, 0.12);
 }
 
 .bs-empty {
-  color: #6b7280;
+  color: var(--text-muted);
   font-size: 0.78rem;
   font-style: italic;
 }
@@ -724,7 +728,7 @@ nav.site-nav {
 }
 
 .inst-stale .inst-value {
-  color: #4a5568;
+  color: var(--text-muted);
 }
 
 .inst-item {
@@ -761,11 +765,11 @@ nav.site-nav {
 }
 
 .polar-delta-pos {
-  color: #22c55e;
+  color: var(--success);
 }
 
 .polar-delta-neg {
-  color: #f87171;
+  color: var(--danger);
 }
 
 /* --------------------------------------------------------------------------
@@ -830,7 +834,7 @@ nav.site-nav {
 }
 
 .crew-select.has-value {
-  border-color: #22c55e;
+  border-color: var(--success);
 }
 
 .crew-weight {
@@ -951,8 +955,8 @@ nav.site-nav {
 
 .flag-btn.active-dnf {
   background: #7f1d1d;
-  color: #fca5a5;
-  border-color: #dc2626;
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 .flag-btn.active-dns {
@@ -966,7 +970,7 @@ nav.site-nav {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--bg-primary);
-  color: #ef4444;
+  color: var(--danger);
   font-size: 0.72rem;
   cursor: pointer;
 }
@@ -1015,7 +1019,7 @@ nav.site-nav {
 }
 
 .boat-option-new {
-  color: #4ade80;
+  color: var(--success);
 }
 
 /* --------------------------------------------------------------------------

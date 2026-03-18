@@ -388,16 +388,16 @@ function updateCrewSummary(crew) {
       const g = c.gear_weight || 0;
       totalBody += b;
       totalGear += g;
-      wt = ' <span style="color:#6b7a90;font-size:.72rem">(' + (b ? b.toFixed(0) : '0');
+      wt = ' <span style="color:var(--text-muted);font-size:.72rem">(' + (b ? b.toFixed(0) : '0');
       if (g) wt += '+' + g.toFixed(0) + 'g';
       wt += ')</span>';
     }
-    return '<span style="color:#8892a4">' + escHtml(pos) + ':</span> ' + name + wt;
+    return '<span style="color:var(--text-secondary)">' + escHtml(pos) + ':</span> ' + name + wt;
   });
   let html = parts.join(' &nbsp;\u00b7&nbsp; ');
   if (hasWeight) {
     const total = totalBody + totalGear;
-    html += '<div style="color:#8892a4;font-size:.75rem;margin-top:3px">'
+    html += '<div style="color:var(--text-secondary);font-size:.75rem;margin-top:3px">'
       + 'Total crew weight: ' + total.toFixed(0) + ' lbs'
       + ' (body ' + totalBody.toFixed(0) + ' + gear ' + totalGear.toFixed(0) + ')</div>';
   }
@@ -428,7 +428,7 @@ function updateCrewTotalWeight() {
   if (el) {
     if (count > 0) {
       el.innerHTML = '<strong>Total weight: ' + total.toFixed(1) + ' lbs</strong>'
-        + ' <span style="color:#8892a4">=&nbsp;crew ' + totalBody.toFixed(1)
+        + ' <span style="color:var(--text-secondary)">=&nbsp;crew ' + totalBody.toFixed(1)
         + '&nbsp;+&nbsp;gear ' + totalGear.toFixed(1) + '</span>';
       el.style.display = 'block';
     } else {
@@ -440,12 +440,12 @@ function updateCrewTotalWeight() {
   if (setupEl) {
     if (count > 0) {
       setupEl.innerHTML = '<span class="setup-label">Crew weight</span>'
-        + '<span style="color:#e0e6ed">' + total.toFixed(1) + ' lbs</span>'
-        + '<span style="color:#6b7a90;font-size:.75rem;margin-left:6px">'
+        + '<span style="color:var(--text-primary)">' + total.toFixed(1) + ' lbs</span>'
+        + '<span style="color:var(--text-muted);font-size:.75rem;margin-left:6px">'
         + '(body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')</span>';
     } else {
       setupEl.innerHTML = '<span class="setup-label">Crew weight</span>'
-        + '<span style="color:#6b7a90">\u2014</span>';
+        + '<span style="color:var(--text-muted)">\u2014</span>';
     }
   }
 }
@@ -675,7 +675,7 @@ function updateSailsSummary(data) {
   if (countEl) countEl.textContent = names.length > 0 ? names.length + ' set' : '';
   if (!summaryEl) return;
   if (!names.length) { summaryEl.innerHTML = ''; return; }
-  summaryEl.innerHTML = '<span style="color:#8892a4">' + names.map(n => escHtml(n)).join(' \u00b7 ') + '</span>';
+  summaryEl.innerHTML = '<span style="color:var(--text-secondary)">' + names.map(n => escHtml(n)).join(' \u00b7 ') + '</span>';
   summaryEl.style.display = _sailsExpanded ? 'none' : '';
 }
 
@@ -766,7 +766,7 @@ function renderSetupPanel(data) {
     html += '<div class="setup-cat-body" id="setup-cat-' + cat.category + '" style="display:'
       + (isOpen ? '' : 'none') + '">';
     if (cat.category === 'crew') {
-      html += '<div id="setup-crew-weight-summary" class="setup-row" style="color:#8892a4;font-size:.82rem"></div>';
+      html += '<div id="setup-crew-weight-summary" class="setup-row" style="color:var(--text-secondary);font-size:.82rem"></div>';
     }
     for (const p of cat.parameters) {
       const curVal = setupCurrentValues[p.name] || '';
@@ -873,7 +873,7 @@ function showSetupStatus(msg, isError) {
   const el = document.getElementById('setup-status');
   if (!el) return;
   el.textContent = msg;
-  el.style.color = isError ? '#fca5a5' : '#4ade80';
+  el.style.color = isError ? 'var(--danger)' : 'var(--success)';
   el.style.display = '';
   setTimeout(() => { el.style.display = 'none'; }, 2000);
 }
@@ -1049,7 +1049,7 @@ const _pickerBoats = {};
 
 function renderResultRow(res, raceId) {
   const name = res.boat_name
-    ? res.sail_number + ' <span style="color:#8892a4;font-size:.78rem">' + res.boat_name + '</span>'
+    ? res.sail_number + ' <span style="color:var(--text-secondary);font-size:.78rem">' + res.boat_name + '</span>'
     : res.sail_number;
   const dnfCls = res.dnf ? ' active-dnf' : '';
   const dnsCls = res.dns ? ' active-dns' : '';
@@ -1141,7 +1141,7 @@ function showBoatDropdown(raceId, searchText) {
     const js = searchText.trim().replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="selectNewBoat(' + raceId + ',\'' + js + '\')">+ Add &ldquo;' + esc + '&rdquo;</div>';
   }
-  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  if (!html) html = '<div class="boat-option" style="color:var(--text-secondary);cursor:default">No boats found</div>';
   const dd = document.getElementById('picker-dropdown-' + raceId);
   if (dd) dd.innerHTML = html;
 }
@@ -1258,7 +1258,7 @@ function addSettingsRow() {
   // giving browser-native typeahead for previously used keys.
   row.innerHTML = '<input class="field" placeholder="Key" list="settings-key-suggestions" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
     + '<input class="field" placeholder="Value" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
-    + '<button onclick="this.parentElement.remove()" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
+    + '<button onclick="this.parentElement.remove()" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
   container.appendChild(row);
 }
 
@@ -1336,7 +1336,7 @@ function renderNote(n, sessionId) {
     try {
       const obj = JSON.parse(n.body);
       content = Object.entries(obj).map(([k, v]) =>
-        '<span style="color:#8892a4">' + k.replace(/&/g, '&amp;') + ':</span> ' + String(v).replace(/&/g, '&amp;')
+        '<span style="color:var(--text-secondary)">' + k.replace(/&/g, '&amp;') + ':</span> ' + String(v).replace(/&/g, '&amp;')
       ).join(' &nbsp;·&nbsp; ');
     } catch { content = n.body; }
   } else {
@@ -1344,12 +1344,12 @@ function renderNote(n, sessionId) {
   }
   const delBtn = sessionId != null
     ? '<button onclick="deleteNote(' + n.id + ',' + sessionId + ')" '
-      + 'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;'
+      + 'style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;'
       + 'padding:0 4px;float:right" title="Delete">✕</button>'
     : '';
   return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
     + delBtn
-    + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
+    + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>'
     + content + '</div>';
 }
 
@@ -1365,7 +1365,7 @@ async function refreshNotes(sessionId) {
   const notes = await r.json();
   el.innerHTML = notes.length
     ? notes.map(n => renderNote(n, sessionId)).join('')
-    : '<div style="color:#8892a4;font-size:.8rem">No notes yet</div>';
+    : '<div style="color:var(--text-secondary);font-size:.8rem">No notes yet</div>';
 }
 
 async function toggleNotes(sessionId) {
@@ -1431,8 +1431,8 @@ async function _loadSails(sessionId, el) {
       + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</option>'
     ).join('');
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
-      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
-      + '<select id="sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<span style="color:var(--text-secondary);width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--accent-strong);border-radius:4px;padding:3px 6px;font-size:.78rem">'
       + '<option value="">— none —</option>' + opts
       + '</select></div>';
   });
@@ -1466,13 +1466,13 @@ async function _loadVideos(sessionId, el) {
     html += videos.map(v => {
       const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
       const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:#7eb8f7">' + ttl.substring(0,50) + '</a>';
-      const del = '<button onclick="deleteVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
-      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + yt + del + '</div>';
+      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:var(--accent)">' + ttl.substring(0,50) + '</a>';
+      const del = '<button onclick="deleteVideo(' + v.id + ',' + sessionId + ')" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
+      return '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:2px">' + lbl + yt + del + '</div>';
     }).join('');
     html += '</div>';
   } else {
-    html += '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>';
+    html += '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">No videos linked yet</div>';
   }
   html += _videoAddForm(sessionId);
   el.innerHTML = html;
@@ -1484,16 +1484,16 @@ function _videoAddForm(sessionId) {
   // Format as datetime-local value (YYYY-MM-DDTHH:mm:ss, no timezone suffix)
   const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
   return '<div id="video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
-    + '<div style="font-size:.75rem;color:#8892a4;margin-bottom:4px">Link a YouTube video</div>'
+    + '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:4px">Link a YouTube video</div>'
     + '<input id="video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
     + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + ' <button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
 }
 
 async function submitAddVideo(sessionId) {
@@ -1545,17 +1545,17 @@ async function _loadSailInventory() {
   const r = await fetch('/api/sails?include_inactive=1');
   const data = await r.json();
   const allSails = ['main','jib','spinnaker'].flatMap(t => (data[t] || []).map(s => ({...s, type:t})));
-  if (!allSails.length) { el.innerHTML = '<div style="font-size:.78rem;color:#8892a4">No sails yet</div>'; return; }
+  if (!allSails.length) { el.innerHTML = '<div style="font-size:.78rem;color:var(--text-secondary)">No sails yet</div>'; return; }
   el.innerHTML = '<table style="width:100%;font-size:.78rem;border-collapse:collapse">'
-    + '<tr><th style="text-align:left;color:#8892a4;padding-bottom:4px">Type</th>'
-    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Name</th>'
-    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Status</th>'
+    + '<tr><th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Type</th>'
+    + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Name</th>'
+    + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Status</th>'
     + '<th></th></tr>'
     + allSails.map(s => '<tr style="border-top:1px solid #1e3a5f">'
-      + '<td style="padding:3px 6px 3px 0;color:#8892a4">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
-      + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:#8892a4') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
-      + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? '#4ade80' : '#8892a4') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
-      + '<td><button onclick="toggleRetireSail(' + s.id + ',' + (s.active ? 'false' : 'true') + ')" style="font-size:.72rem;color:#8892a4;background:none;border:none;cursor:pointer">'
+      + '<td style="padding:3px 6px 3px 0;color:var(--text-secondary)">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
+      + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:var(--text-secondary)') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
+      + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? 'var(--success)' : 'var(--text-secondary)') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
+      + '<td><button onclick="toggleRetireSail(' + s.id + ',' + (s.active ? 'false' : 'true') + ')" style="font-size:.72rem;color:var(--text-secondary);background:none;border:none;cursor:pointer">'
       + (s.active ? 'Retire' : 'Restore') + '</button></td>'
       + '</tr>'
     ).join('')
@@ -2049,19 +2049,19 @@ async function importPeerWindModel() {
       const pts = (trackData.track || []).length;
       status.textContent = 'Imported wind model from ' + (info.boat || 'peer') +
         ' + ' + pts + ' track points for collision avoidance';
-      status.style.color = '#16a34a';
+      status.style.color = 'var(--success)';
     } else {
       _importedPeerTracks = null;
       _importedPeerInfo = null;
       status.textContent = 'Wind model imported (track not available for collision avoidance)';
-      status.style.color = '#fbbf24';
+      status.style.color = 'var(--warning)';
     }
 
     // Enable collision avoidance checkbox
     document.getElementById('synth-collision').checked = !!_importedPeerTracks;
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
-    status.style.color = '#ef4444';
+    status.style.color = 'var(--danger)';
     _importedPeerTracks = null;
     _importedPeerInfo = null;
     _importedStartUtc = null;

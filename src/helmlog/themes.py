@@ -10,7 +10,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-
 # ---------------------------------------------------------------------------
 # Preset registry
 # ---------------------------------------------------------------------------
@@ -27,9 +26,13 @@ class ThemeColors:
     accent: str  # --accent      (links, highlights)
     bg_secondary: str  # --bg-secondary (cards/panels)
     text_secondary: str  # --text-secondary (muted text)
+    text_muted: str  # --text-muted   (disabled, zero-state)
     border: str  # --border      (dividers)
     bg_input: str  # --bg-input    (form fields)
     accent_strong: str  # --accent-strong (buttons, focus rings)
+    success: str  # --success     (green — positive, active)
+    danger: str  # --danger      (red — errors, destructive)
+    warning: str  # --warning     (amber — caution, synthesize)
 
 
 PRESETS: dict[str, ThemeColors] = {
@@ -43,9 +46,13 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#7eb8f7",
             bg_secondary="#131f35",
             text_secondary="#8892a4",
+            text_muted="#6b7280",
             border="#1e3a5f",
             bg_input="#0a1628",
             accent_strong="#2563eb",
+            success="#4ade80",
+            danger="#f87171",
+            warning="#fbbf24",
         ),
         ThemeColors(
             id="sunlight",
@@ -55,9 +62,13 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#0055AA",
             bg_secondary="#F5F5F5",
             text_secondary="#555555",
+            text_muted="#888888",
             border="#CCCCCC",
             bg_input="#FFFFFF",
             accent_strong="#0055AA",
+            success="#007a2f",
+            danger="#cc0000",
+            warning="#b36b00",
         ),
         ThemeColors(
             id="racing_yellow",
@@ -67,9 +78,13 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#FFD600",
             bg_secondary="#111111",
             text_secondary="#BBAA00",
+            text_muted="#807000",
             border="#333300",
             bg_input="#0a0a00",
             accent_strong="#FFD600",
+            success="#4ade80",
+            danger="#ff6b6b",
+            warning="#FFD600",
         ),
         ThemeColors(
             id="sunset_red",
@@ -79,9 +94,13 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#FF5722",
             bg_secondary="#2a0808",
             text_secondary="#CC8880",
+            text_muted="#886060",
             border="#440000",
             bg_input="#1a0000",
             accent_strong="#FF5722",
+            success="#66bb6a",
+            danger="#ff8a80",
+            warning="#ffcc80",
         ),
         ThemeColors(
             id="reef_green",
@@ -91,9 +110,13 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#00E676",
             bg_secondary="#0a2a10",
             text_secondary="#88CCAA",
+            text_muted="#4a8068",
             border="#003310",
             bg_input="#001A0A",
             accent_strong="#00E676",
+            success="#69f0ae",
+            danger="#ff8a80",
+            warning="#ffd54f",
         ),
         ThemeColors(
             id="daylight_amber",
@@ -103,15 +126,26 @@ PRESETS: dict[str, ThemeColors] = {
             accent="#FF8F00",
             bg_secondary="#FFF8C8",
             text_secondary="#6E4C3E",
+            text_muted="#9e9e9e",
             border="#D9C8A0",
             bg_input="#FFFDE7",
             accent_strong="#FF8F00",
+            success="#2e7d32",
+            danger="#c62828",
+            warning="#e65100",
         ),
     ]
 }
 
 SYSTEM_DEFAULT_ID = "ocean_dark"
-PRESET_ORDER = ["sunlight", "racing_yellow", "ocean_dark", "sunset_red", "reef_green", "daylight_amber"]
+PRESET_ORDER = [
+    "sunlight",
+    "racing_yellow",
+    "ocean_dark",
+    "sunset_red",
+    "reef_green",
+    "daylight_amber",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +225,13 @@ def _custom_to_theme(cs: dict[str, Any]) -> ThemeColors:
         accent=accent,
         bg_secondary=_adjust_brightness(bg, 0.05),
         text_secondary=_dim_color(text, 0.6),
+        text_muted=_dim_color(text, 0.4),
         border=_dim_color(text, 0.25),
         bg_input=bg,
         accent_strong=accent,
+        success="#4ade80",
+        danger="#f87171",
+        warning="#fbbf24",
     )
 
 
@@ -216,9 +254,7 @@ def resolve_theme(
 
     Custom scheme IDs are stored as ``"custom:<integer id>"``.
     """
-    custom_map: dict[str, dict[str, Any]] = {
-        f"custom:{cs['id']}": cs for cs in custom_schemes
-    }
+    custom_map: dict[str, dict[str, Any]] = {f"custom:{cs['id']}": cs for cs in custom_schemes}
 
     def _lookup(scheme: str | None) -> ThemeColors | None:
         if not scheme:
@@ -260,8 +296,12 @@ def theme_to_css(theme: ThemeColors) -> str:
         f"--accent:{theme.accent};"
         f"--bg-secondary:{theme.bg_secondary};"
         f"--text-secondary:{theme.text_secondary};"
+        f"--text-muted:{theme.text_muted};"
         f"--border:{theme.border};"
         f"--bg-input:{theme.bg_input};"
         f"--accent-strong:{theme.accent_strong};"
+        f"--success:{theme.success};"
+        f"--danger:{theme.danger};"
+        f"--warning:{theme.warning};"
         "}"
     )
