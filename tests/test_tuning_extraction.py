@@ -387,11 +387,7 @@ class TestRegexExtract:
 
     def test_real_whisper_transcript_session_13(self) -> None:
         """Session 13 transcript with number words and more misrecognitions."""
-        text = (
-            "main hired is one "
-            "the jib howard he's two "
-            "boom bang its five"
-        )
+        text = "main hired is one the jib howard he's two boom bang its five"
         segments = [{"start": 0.0, "end": 60.0, "text": text}]
         items = regex_extract(segments)
         extracted = {i.parameter_name: i.extracted_value for i in items}
