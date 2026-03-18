@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Systematic Pi troubleshooting runbook — checks all subsystems and reports health
+description: Systematic Pi troubleshooting runbook — checks all subsystems (systemd, nginx, Signal K, SQLite, audio, InfluxDB, Tailscale) and reports health. TRIGGER when the user reports a Pi problem ("helmlog is down", "not recording", "web interface broken", "service won't start") or asks for a health check. DO NOT trigger for development issues on Mac, test failures, code questions, or deployment instructions (use /deploy-pi for those).
 ---
 
 # /diagnose — Pi Troubleshooting Runbook

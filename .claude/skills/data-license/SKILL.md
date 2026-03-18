@@ -1,6 +1,6 @@
 ---
 name: data-license
-description: Review code changes against the data licensing policy for compliance
+description: Review code changes against the data licensing policy (docs/data-licensing.md) for compliance. TRIGGER when modifying code that handles user data, PII (audio, photos, emails, biometrics, diarized transcripts), co-op/federation data sharing, export endpoints, deletion/anonymization, or audit logging. Key files — storage.py, export.py, peer_api.py, peer_client.py, federation.py, transcribe.py, audio.py, web.py (data endpoints). DO NOT trigger for UI-only changes, instrument decoding, polar analysis, config, docs, or CSS/JS/templates.
 ---
 
 # Data License Compliance Review

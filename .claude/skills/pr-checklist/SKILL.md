@@ -1,6 +1,6 @@
 ---
 name: pr-checklist
-description: Run pre-PR verification checks before creating a pull request
+description: Run pre-PR verification checks before creating a pull request. TRIGGER when implementation is complete and the user is ready to create or push a PR — e.g., "create a PR", "ready for review", "push this up", or running /pr-checklist. DO NOT trigger mid-implementation, during TDD cycles, when exploring code, or when the user is still writing features.
 ---
 
 # Pre-PR Checklist

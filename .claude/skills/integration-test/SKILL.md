@@ -1,6 +1,6 @@
 ---
 name: integration-test
-description: Run federation integration tests — choose the appropriate layer based on the change
+description: Run federation integration tests — choose the appropriate layer (in-process pytest, Pi harness, or Docker compose) based on the change. TRIGGER when modifying federation.py, peer_api.py, peer_client.py, peer_auth.py, or federation-related storage/auth code. Also trigger when tests/integration/ files change. DO NOT trigger for unrelated test runs, UI changes, instrument decoding, or non-federation features.
 ---
 
 # Federation Integration Tests

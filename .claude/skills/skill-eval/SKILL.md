@@ -1,6 +1,6 @@
 ---
 name: skill-eval
-description: Run evaluation test cases against a skill to measure quality, detect regressions, and benchmark performance
+description: Run evaluation test cases against a skill to measure quality, detect regressions, and benchmark performance. TRIGGER when the user asks to test or evaluate a skill, after refining a skill description, or when checking skill quality. DO NOT trigger for running pytest (use /tdd or /integration-test), general code review, or non-skill-related testing.
 ---
 
 # Skill Evaluation Runner
