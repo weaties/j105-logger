@@ -1979,11 +1979,15 @@ function _renderBoatSettingsPanel() {
         html += '<span class="bs-source-badge ' + src + '">' + srcLabel + '</span>';
       }
 
-      // Timestamp — show when the setting was recorded
+      // Timestamp — show when the setting was recorded (skip if all values share the same ts)
       if (entry.ts) {
-        const ts = new Date(entry.ts);
-        const timePart = ts.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-        html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + timePart + '</span>';
+        const allTs = _bsResolved.filter(e => e.ts).map(e => e.ts);
+        const uniqueTs = new Set(allTs);
+        if (uniqueTs.size > 1) {
+          const ts = new Date(entry.ts);
+          const timePart = ts.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+          html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + timePart + '</span>';
+        }
       }
 
       // Show superseded boat-level value

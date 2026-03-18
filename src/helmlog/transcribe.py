@@ -166,15 +166,20 @@ async def transcribe_session(
             assert segments_json_str is not None  # _run_with_diarization always returns str
             segments = json.loads(segments_json_str)
         else:
-            text = await asyncio.to_thread(_run_whisper, file_path=file_path, model_size=model_size)
-            await storage.update_transcript(transcript_id, status="done", text=text)
+            raw_segs = await asyncio.to_thread(
+                _run_whisper_segments, file_path=file_path, model_size=model_size
+            )
+            text = " ".join(t for _, _, t in raw_segs).strip()
+            segments = [{"start": s, "end": e, "text": t} for s, e, t in raw_segs]
+            segments_json_str = json.dumps(segments) if segments else None
+            await storage.update_transcript(
+                transcript_id, status="done", text=text, segments_json=segments_json_str
+            )
             logger.info(
                 "Transcription done: audio_session_id={} chars={}",
                 audio_session_id,
                 len(text),
             )
-            # Synthesize a single segment so trigger scan can still run
-            segments = [{"start": 0.0, "end": 0.0, "text": text}]
 
         # Auto-scan for trigger keywords and create tagged notes
         await _run_trigger_scan(storage, audio_session_id, row, segments)
