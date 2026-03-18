@@ -419,3 +419,4 @@ The spec is posted as a GitHub issue comment for review before code is written.
 | `/spec` | Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue |
 | `/ideate` | Capture half-baked ideas into the ideation log |
 | `/release-notes` | Draft a RELEASES.md entry from commits since last stage tag |
+| `/skill-eval` | Run evaluation test cases against a skill to measure quality and detect regressions |

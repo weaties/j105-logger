@@ -49,6 +49,19 @@ git diff --name-only main...HEAD
 The PR's tier is the **highest** tier touched. Report the resolved tier
 before proceeding — e.g., "This PR touches `auth.py` → **Critical** tier."
 
+**Special cases:**
+
+- **`storage.py` migration check:** If `storage.py` is in the changed files,
+  examine the diff content (`git diff main...HEAD -- src/helmlog/storage.py`)
+  to confirm whether migration code is actually touched (look for
+  `schema_version`, `CREATE TABLE`, `ALTER TABLE`, migration functions). If
+  only query methods or non-migration code changed, classify as **Standard**,
+  not Critical.
+- **New / unclassified modules:** If a changed `.py` file is not explicitly
+  listed in any tier, it defaults to **Standard**. Flag it: "Module `X` is
+  not explicitly classified — defaults to Standard. Consider adding it to
+  the Risk Tiers table in CLAUDE.md."
+
 ## 3. Run tests
 
 ```bash
