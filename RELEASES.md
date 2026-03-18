@@ -1,9 +1,10 @@
 # Release Notes
 
-## Sprint 4 — Analysis, Session Matching, Color Schemes & Skill Tooling (2026-03-18)
+## Sprint 4 — Analysis, Session Matching, Tuning Extraction & Skill Tooling (2026-03-18)
 
 Sprint 4 adds a pluggable analysis framework, co-op session matching,
-customizable color schemes, and expanded developer skill tooling.
+transcript-based tuning extraction, customizable color schemes, and
+expanded developer skill tooling.
 
 ### Pluggable analysis framework (#283, #309, #321)
 
@@ -30,6 +31,21 @@ Proximity-based pairing of co-op sessions across boats:
   reject, and name push — all Ed25519-signed
 - **Scalability** — parallel fan-out for 20-boat co-ops, proposal dedup,
   centroid caching (schema v45)
+
+### Boat tuning extraction from transcripts (#276, #325)
+
+Regex-based extraction of tuning parameters from audio transcripts:
+
+- **RegexExtractor** — parses natural language ("backstay 12", "vang 8.5") from
+  transcript segments into structured tuning values
+- **Extraction run lifecycle** — Created → Running → ReviewPending/Empty →
+  FullyReviewed, with accept/dismiss review workflow
+- **Auto-create settings** — accepted items automatically create `boat_settings`
+  timeline entries linked to the extraction run
+- **Review UI** — collapsible settings history with transcript play buttons,
+  newest-first timeline, and superseded-default indicators
+- **Privacy** — all extraction data is boat-private, never shared with co-op
+- Schema v44 adds `extraction_runs` and `extraction_items` tables; 7 API endpoints
 
 ### Customizable color schemes (#347, #358)
 
