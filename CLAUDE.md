@@ -420,3 +420,4 @@ The spec is posted as a GitHub issue comment for review before code is written.
 | `/ideate` | Capture half-baked ideas into the ideation log |
 | `/release-notes` | Draft a RELEASES.md entry from commits since last stage tag |
 | `/skill-eval` | Run evaluation test cases against a skill to measure quality and detect regressions |
+| `/domain` | Sailing instrument domain reference — Signal K paths, NMEA 2000 PGNs, instrument relationships, racing concepts |
