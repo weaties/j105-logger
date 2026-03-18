@@ -320,6 +320,35 @@ async def test_api_set_and_reset_user_color_scheme(
 
 
 @pytest.mark.asyncio
+async def test_api_set_color_scheme_null_clears_override(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PATCH /api/me/color-scheme with scheme_id=null clears the override (regression #358).
+
+    Previously str(None) produced "None" which failed PRESETS validation with 422.
+    """
+    import helmlog.auth as auth_module
+    from helmlog.web import create_app
+
+    user_id = await storage.create_user("null_scheme@test.com", name="Null Test", role="viewer")
+    await storage.set_user_color_scheme(user_id, "sunlight")
+
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    monkeypatch.setitem(auth_module._MOCK_ADMIN, "id", user_id)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        # Sending null scheme_id must return 200 and clear the override, not 422.
+        resp = await c.patch("/api/me/color-scheme", json={"scheme_id": None})
+        assert resp.status_code == 200, resp.text
+
+    user = await storage.get_user_by_id(user_id)
+    assert user is not None
+    assert user["color_scheme"] is None
+
+
+@pytest.mark.asyncio
 async def test_api_profile_page_200(client: httpx.AsyncClient) -> None:
     """GET /profile returns 200 and includes color scheme selector."""
     resp = await client.get("/profile", headers={"accept": "text/html"})

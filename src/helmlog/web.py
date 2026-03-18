@@ -5014,7 +5014,7 @@ def create_app(
     ) -> JSONResponse:
         """Set the calling user's personal color scheme override. Body: {scheme_id: str}."""
         body = await request.json()
-        scheme = str(body.get("scheme_id", "")).strip() or None
+        scheme = str(body.get("scheme_id") or "").strip() or None
         user_id = _user.get("id")
         if user_id is None:
             raise HTTPException(400, detail="Cannot set scheme for unauthenticated user")
