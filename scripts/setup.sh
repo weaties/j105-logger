@@ -368,6 +368,9 @@ datasources:
       token: ${INFLUX_TOKEN}
     isDefault: true
 EOF
+# Grafana runs as user grafana — provisioning files must be group-readable
+sudo chown root:grafana /etc/grafana/provisioning/datasources/influxdb.yaml
+sudo chmod 640 /etc/grafana/provisioning/datasources/influxdb.yaml
 sudo systemctl restart grafana-server
 info "Grafana installed on port 3001 (loopback-only, login required)."
 info "Default Grafana admin credentials: admin / changeme123 — change after first login."
@@ -788,58 +791,43 @@ sudo tee "$SUDOERS_FILE" > /dev/null << EOF
 # Only the commands listed here run without a password prompt.
 # For full sudo access (package installs, system config), type your password.
 
-# Service management — used by deploy.sh and daily operations
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog.service
+# Service management — used by deploy.sh, /diagnose, and daily operations
+# Trailing * allows extra flags (--no-pager, -l, --since, etc.) which sudoers
+# would otherwise reject due to exact-argument matching.
+# Note: \\\\ in the heredoc produces \\ in the file (sudoers line continuation).
+Cmnd_Alias HELMLOG_SVCS = \\
+    /usr/bin/systemctl daemon-reload, \\
+    /usr/bin/systemctl start helmlog*, \\
+    /usr/bin/systemctl stop helmlog*, \\
+    /usr/bin/systemctl restart helmlog*, \\
+    /usr/bin/systemctl status helmlog*, \\
+    /usr/bin/systemctl is-active helmlog*, \\
+    /usr/bin/systemctl start signalk*, \\
+    /usr/bin/systemctl stop signalk*, \\
+    /usr/bin/systemctl restart signalk*, \\
+    /usr/bin/systemctl status signalk*, \\
+    /usr/bin/systemctl is-active signalk*, \\
+    /usr/bin/systemctl start grafana-server*, \\
+    /usr/bin/systemctl stop grafana-server*, \\
+    /usr/bin/systemctl restart grafana-server*, \\
+    /usr/bin/systemctl status grafana-server*, \\
+    /usr/bin/systemctl is-active grafana-server*, \\
+    /usr/bin/systemctl start influxdb*, \\
+    /usr/bin/systemctl stop influxdb*, \\
+    /usr/bin/systemctl restart influxdb*, \\
+    /usr/bin/systemctl status influxdb*, \\
+    /usr/bin/systemctl is-active influxdb*, \\
+    /usr/bin/systemctl start loki*, \\
+    /usr/bin/systemctl stop loki*, \\
+    /usr/bin/systemctl restart loki*, \\
+    /usr/bin/systemctl status loki*, \\
+    /usr/bin/systemctl is-active loki*, \\
+    /usr/bin/systemctl start promtail*, \\
+    /usr/bin/systemctl stop promtail*, \\
+    /usr/bin/systemctl restart promtail*, \\
+    /usr/bin/systemctl status promtail*, \\
+    /usr/bin/systemctl is-active promtail*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_SVCS
 
 # Self-deploy — the helmlog service user needs to restart itself
 helmlog ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
@@ -855,13 +843,13 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/rsync
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/grafana-server.service.d/port.conf
 
 # nginx reverse proxy
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
+Cmnd_Alias HELMLOG_NGINX = \\
+    /usr/sbin/nginx -t, \\
+    /usr/bin/systemctl reload nginx*, \\
+    /usr/bin/systemctl restart nginx*, \\
+    /usr/bin/systemctl status nginx*, \\
+    /usr/bin/systemctl is-active nginx*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_NGINX
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/helmlog.conf /etc/nginx/sites-available/helmlog
 
 # Tailscale management — federation peer discovery, DNS

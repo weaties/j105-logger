@@ -68,16 +68,17 @@ everything).
 
 ```bash
 # HelmLog service
-sudo systemctl is-active helmlog
+# Note: is-active doesn't need sudo; status needs sudo for full output.
+systemctl is-active helmlog
 sudo systemctl status helmlog --no-pager -l
 # If failed: sudo journalctl -u helmlog -n 30 --no-pager
 
-# Signal K server
-sudo systemctl is-active signalk-server
-# If failed: sudo journalctl -u signalk-server -n 30 --no-pager
+# Signal K server (setup.sh names the service "signalk", not "signalk-server")
+systemctl is-active signalk
+# If failed: sudo journalctl -u signalk -n 30 --no-pager
 
 # nginx (reverse proxy)
-sudo systemctl is-active nginx
+systemctl is-active nginx
 # If failed: sudo nginx -t
 ```
 
@@ -140,8 +141,8 @@ curl -s http://127.0.0.1:3000/signalk/v1/api/self
 
 | Log signature | Meaning | Fix |
 |---|---|---|
-| `WebSocket connection closed` repeating | SK server dropping connections | Restart signalk-server: `sudo systemctl restart signalk-server` |
-| `connection refused` on :3000 | SK not listening | Check `systemctl status signalk-server` |
+| `WebSocket connection closed` repeating | SK server dropping connections | Restart signalk: `sudo systemctl restart signalk` |
+| `connection refused` on :3000 | SK not listening | Check `systemctl status signalk` |
 | No deltas but SK is up | No CAN data reaching SK | Check CAN bus (subsystem 3) |
 | `401 Unauthorized` | Auth token expired | Check SK admin password in `~/.signalk-admin-pass.txt` |
 
@@ -184,7 +185,7 @@ sqlite3 data/logger.db "PRAGMA integrity_check;" 2>&1
 ls -lh data/logger.db-wal 2>/dev/null
 
 # Recent write timestamp — check last insert
-sqlite3 data/logger.db "SELECT MAX(timestamp) FROM headings;" 2>&1
+sqlite3 data/logger.db "SELECT MAX(ts) FROM headings;" 2>&1
 # If significantly old, data pipeline is stalled
 
 # Database file size
@@ -255,7 +256,7 @@ device is not present — report `[OK] AI HAT — not installed (expected)`.
 System Health
   └── Services (skip if filesystem read-only)
         ├── CAN Bus (skip if helmlog service down)
-        ├── Signal K (skip if signalk-server down)
+        ├── Signal K (skip if signalk down)
         └── Audio (skip if helmlog service down)
 Database (independent)
 Network (independent)
@@ -277,7 +278,7 @@ based on the failure pattern:
 | System FAIL + all services down | SD card failure or power issue |
 | Services FAIL + everything else OK | Bad deploy or stale venv — run `uv sync` and restart |
 | CAN FAIL + Signal K no deltas | CAN bus wiring or interface not up |
-| Signal K FAIL + CAN OK | Signal K server issue — restart signalk-server |
+| Signal K FAIL + CAN OK | Signal K server issue — restart signalk |
 | Audio FAIL only | USB device disconnected or conflict |
 | Database FAIL only | SD card degradation or WAL bloat |
 | Network FAIL only | Tailscale or connectivity issue |
