@@ -1,0 +1,88 @@
+# Eval cases for /diagnose skill
+# Tests whether the skill follows the structured diagnostic sequence,
+# respects dependency ordering, and produces actionable output.
+
+- name: no-data-full-diagnosis
+  description: Runs full diagnostic when user reports "no data showing up"
+  type: capability
+  scenario: |
+    The user is SSH'd into the Pi and reports that the web UI shows no new
+    instrument data. They don't know where the problem is. No subsystem
+    argument is provided, so all checks should run.
+  mock_input: |
+    The web UI isn't showing any new data. Can you figure out what's wrong?
+  expected:
+    - criterion: "Must run system health checks first (disk, memory, temperature)"
+      weight: critical
+    - criterion: "Must check systemd service status for helmlog and signalk-server"
+      weight: critical
+    - criterion: "Must check CAN bus interface state and message rate"
+      weight: critical
+    - criterion: "Must check Signal K WebSocket connectivity and delta flow"
+      weight: critical
+    - criterion: "Must report each check with a status (OK/WARN/FAIL) and detail"
+      weight: critical
+    - criterion: "Must print a summary with total checks and pass/warn/fail counts"
+      weight: important
+    - criterion: "Must suggest a root cause based on the failure pattern observed"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT skip subsystems without a dependency-based reason"
+      weight: critical
+    - criterion: "Must NOT suggest fixes without first identifying the failure"
+      weight: important
+  tags: [full-diagnosis, no-data, dependency-order]
+
+- name: targeted-can-bus-check
+  description: Runs only CAN bus checks when subsystem argument is provided
+  type: capability
+  scenario: |
+    The user suspects a CAN bus issue and runs /diagnose can to check just
+    that subsystem. The skill should run only CAN-related checks but still
+    verify dependencies (helmlog service must be active).
+  mock_input: |
+    /diagnose can
+  expected:
+    - criterion: "Must check CAN bus interface presence (ip link show can0)"
+      weight: critical
+    - criterion: "Must check CAN message rate or frame count"
+      weight: critical
+    - criterion: "Must check for error frames, bus-off state, and error counters"
+      weight: critical
+    - criterion: "Must verify helmlog service is running as a dependency before CAN checks"
+      weight: important
+    - criterion: "Must report known failure patterns if errors are found (e.g., bus-off fix)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT run unrelated subsystem checks (audio, database, network)"
+      weight: critical
+    - criterion: "Must NOT skip the dependency check on helmlog service status"
+      weight: important
+  tags: [targeted, can-bus, dependency-check]
+
+- name: dependency-skip-cascading
+  description: Skips dependent checks when a parent subsystem fails
+  type: capability
+  scenario: |
+    The helmlog systemd service is not running (systemctl is-active returns
+    "inactive"). CAN bus, Signal K, and Audio checks depend on this service.
+    The skill must skip those dependent checks and explain why.
+  mock_input: |
+    Everything seems broken on the Pi, run a full diagnosis.
+  expected:
+    - criterion: "Must detect that helmlog service is not active"
+      weight: critical
+    - criterion: "Must skip CAN bus checks with a message like '[SKIP] ... because helmlog service is not running'"
+      weight: critical
+    - criterion: "Must skip Audio checks for the same dependency reason"
+      weight: critical
+    - criterion: "Must still run independent checks (Database, Network) even though services failed"
+      weight: critical
+    - criterion: "Must suggest restarting the helmlog service or checking journalctl for the failure cause"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT attempt CAN/Audio/Signal K checks when their dependency (helmlog service) is down"
+      weight: critical
+    - criterion: "Must NOT skip Database or Network checks — they are independent"
+      weight: important
+  tags: [dependency-skip, cascading-failure, service-down]
