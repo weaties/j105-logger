@@ -2,27 +2,43 @@
 {% block title %}Settings — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
 .setting{margin-bottom:18px}
 .setting label{display:block;font-weight:600;margin-bottom:4px;font-size:.9rem}
-.setting .help{font-size:.75rem;color:#8892a4;margin-top:2px}
-.setting input,.setting select{width:100%;max-width:480px;padding:7px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
+.setting .help{font-size:.75rem;color:var(--text-secondary);margin-top:2px}
+.setting input,.setting select{width:100%;max-width:480px;padding:7px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
 .setting input[type=number]{max-width:120px}
 .source-badge{display:inline-block;font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border-radius:3px;margin-left:8px;vertical-align:middle}
-.source-db{background:#1e3a5f;color:#60a5fa}
+.source-db{background:var(--border);color:var(--accent)}
 .source-env{background:#1a3329;color:#4ade80}
 .source-default{background:#2a2033;color:#c084fc}
 .btn-row{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
-.btn{padding:8px 18px;border:1px solid #374151;border-radius:6px;background:#1e293b;color:#e8eaf0;font-size:.85rem;cursor:pointer}
-.btn:hover{background:#253449}
-.btn-primary{background:#2563eb;border-color:#2563eb;color:#fff}
-.btn-primary:hover{background:#1d4ed8}
+.btn{padding:8px 18px;border:1px solid var(--border);border-radius:6px;background:var(--border);color:var(--text-primary);font-size:.85rem;cursor:pointer}
+.btn:hover{background:var(--bg-secondary)}
+.btn-primary{background:var(--accent-strong);border-color:var(--accent-strong);color:#fff}
+.btn-primary:hover{opacity:.9}
 .btn-reset{color:#f87171;border-color:#7f1d1d;font-size:.75rem;padding:4px 10px}
 .btn-reset:hover{background:#1f1215}
 .status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
 .status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
 .status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
+/* Color scheme section */
+.cs-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px}
+@media(min-width:500px){.cs-grid{grid-template-columns:repeat(3,1fr)}}
+.cs-preset{border:2px solid var(--border);border-radius:8px;padding:10px 8px;cursor:pointer;text-align:center;font-size:.8rem;transition:border-color .15s}
+.cs-preset.selected{border-color:var(--accent-strong)}
+.cs-swatch{height:28px;border-radius:4px;margin-bottom:4px;border:1px solid var(--border)}
+.cs-custom-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.cs-input{padding:7px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.cs-name-input{flex:2;min-width:100px}
+.cs-color-input{width:50px;height:34px;padding:2px;cursor:pointer}
+.contrast-badge{font-size:.72rem;padding:2px 6px;border-radius:4px;display:inline-block}
+.contrast-aa{background:#0d2818;color:#4ade80;border:1px solid #16a34a}
+.contrast-aaa{background:#0d2818;color:#4ade80;border:1px solid #22c55e}
+.contrast-fail{background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
+.cs-list-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)}
+.cs-list-item:last-child{border-bottom:none}
 </style>
 {% endblock %}
 {% block content %}
@@ -36,9 +52,196 @@
     </div>
   </form>
 </div>
+
+<div class="card">
+  <div class="label">Color Scheme — Boat Default</div>
+  <div id="cs-status" class="status"></div>
+  <p style="font-size:.82rem;color:var(--text-secondary);margin-bottom:12px">Applies to all crew who haven't set a personal override. Select a preset or create a custom scheme below.</p>
+
+  <div class="cs-grid" id="preset-grid">
+    {% for p in preset_schemes %}
+    <div class="cs-preset{% if boat_default == p.id %} selected{% endif %}" id="preset-{{ p.id }}" onclick="selectScheme('{{ p.id }}')">
+      <div class="cs-swatch" id="swatch-{{ p.id }}"></div>
+      <div>{{ p.name }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if custom_schemes %}
+  <div style="font-size:.8rem;font-weight:600;color:var(--text-secondary);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em">Custom Schemes</div>
+  <div id="custom-list">
+    {% for cs in custom_schemes %}
+    <div class="cs-list-item">
+      <div style="display:flex;gap:4px">
+        <div style="width:18px;height:18px;border-radius:3px;border:1px solid var(--border);background:{{ cs.bg }}"></div>
+        <div style="width:18px;height:18px;border-radius:3px;border:1px solid var(--border);background:{{ cs.text_color }}"></div>
+        <div style="width:18px;height:18px;border-radius:3px;border:1px solid var(--border);background:{{ cs.accent }}"></div>
+      </div>
+      <span style="flex:1;font-size:.85rem">{{ cs.name }}</span>
+      <button class="btn{% if boat_default == 'custom:' ~ cs.id|string %} btn-primary{% endif %}"
+              onclick="selectScheme('custom:{{ cs.id }}')" style="padding:4px 10px;font-size:.78rem">
+        {% if boat_default == 'custom:' ~ cs.id|string %}Default ✓{% else %}Set default{% endif %}
+      </button>
+      <button class="btn btn-reset" onclick="deleteCustom({{ cs.id }})">Delete</button>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <div style="margin-top:12px">
+    <span id="selected-scheme-label" style="font-size:.85rem;color:var(--text-secondary)">
+      Current default: <strong>{% if boat_default %}{{ boat_default }}{% else %}Ocean Dark (system){% endif %}</strong>
+    </span>
+  </div>
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="saveDefault()">Save Default</button>
+    <button class="btn btn-reset" onclick="clearDefault()">Clear (use system default)</button>
+  </div>
+</div>
+
+<div class="card">
+  <div class="label">Create Custom Scheme</div>
+  <p style="font-size:.82rem;color:var(--text-secondary);margin-bottom:12px">Define custom colors for your boat. The live contrast ratio is shown below.</p>
+  <div class="cs-custom-row">
+    <input type="text" class="cs-input cs-name-input" id="cs-name" placeholder="Scheme name (e.g. Corvo Colors)" oninput="updateCustomPreview()"/>
+  </div>
+  <div class="cs-custom-row">
+    <label style="font-size:.82rem;color:var(--text-secondary);min-width:60px">Background</label>
+    <input type="color" class="cs-color-input" id="cs-bg" value="#000000" oninput="updateCustomPreview()"/>
+    <input type="text" class="cs-input" id="cs-bg-text" value="#000000" style="width:90px" oninput="syncColor('cs-bg','cs-bg-text');updateCustomPreview()"/>
+  </div>
+  <div class="cs-custom-row">
+    <label style="font-size:.82rem;color:var(--text-secondary);min-width:60px">Text</label>
+    <input type="color" class="cs-color-input" id="cs-text" value="#FFD600" oninput="updateCustomPreview()"/>
+    <input type="text" class="cs-input" id="cs-text-text" value="#FFD600" style="width:90px" oninput="syncColor('cs-text','cs-text-text');updateCustomPreview()"/>
+  </div>
+  <div class="cs-custom-row">
+    <label style="font-size:.82rem;color:var(--text-secondary);min-width:60px">Accent</label>
+    <input type="color" class="cs-color-input" id="cs-accent" value="#FFD600" oninput="updateCustomPreview()"/>
+    <input type="text" class="cs-input" id="cs-accent-text" value="#FFD600" style="width:90px" oninput="syncColor('cs-accent','cs-accent-text');updateCustomPreview()"/>
+  </div>
+  <div id="custom-preview" style="margin:10px 0;padding:10px;border-radius:6px;font-size:.9rem"></div>
+  <div id="custom-contrast"></div>
+  <div class="btn-row">
+    <button class="btn btn-primary" onclick="createCustom()">Create Scheme</button>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>
+const PRESET_COLORS = {
+  'ocean_dark':     {bg:'#0a1628', text:'#e8eaf0', accent:'#7eb8f7'},
+  'sunlight':       {bg:'#FFFFFF', text:'#000000', accent:'#0055AA'},
+  'racing_yellow':  {bg:'#000000', text:'#FFD600', accent:'#FFD600'},
+  'sunset_red':     {bg:'#1a0000', text:'#FFB4A8', accent:'#FF5722'},
+  'reef_green':     {bg:'#001A0A', text:'#A8FFD0', accent:'#00E676'},
+  'daylight_amber': {bg:'#FFFDE7', text:'#3E2723', accent:'#FF8F00'},
+};
+
+let selectedScheme = '{{ boat_default }}';
+
+// Populate swatch backgrounds
+Object.entries(PRESET_COLORS).forEach(([id, c]) => {
+  const sw = document.getElementById('swatch-'+id);
+  if (sw) sw.style.background = `linear-gradient(135deg, ${c.bg} 50%, ${c.text} 50%)`;
+});
+
+function selectScheme(id) {
+  selectedScheme = id;
+  document.querySelectorAll('.cs-preset').forEach(el => el.classList.remove('selected'));
+  const el = document.getElementById('preset-'+id);
+  if (el) el.classList.add('selected');
+}
+
+async function saveDefault() {
+  const r = await fetch('/api/color-schemes/default', {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({scheme_id: selectedScheme})
+  });
+  if (r.ok) { showCsStatus('Default saved — reload to see the change','ok'); setTimeout(()=>location.reload(),1200); }
+  else { const d = await r.json().catch(()=>({})); showCsStatus(d.detail||'Save failed','err'); }
+}
+
+async function clearDefault() {
+  const r = await fetch('/api/color-schemes/default', {
+    method:'PUT', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({scheme_id: ''})
+  });
+  if (r.ok) { showCsStatus('Default cleared','ok'); setTimeout(()=>location.reload(),1200); }
+  else showCsStatus('Clear failed','err');
+}
+
+async function deleteCustom(id) {
+  if (!confirm('Delete this custom scheme?')) return;
+  const r = await fetch('/api/color-schemes/'+id, {method:'DELETE'});
+  if (r.ok || r.status===204) location.reload();
+  else { const d = await r.json().catch(()=>({})); showCsStatus(d.detail||'Delete failed','err'); }
+}
+
+function relLum(hex) {
+  const h = hex.replace('#','');
+  const r = parseInt(h.slice(0,2),16)/255, g = parseInt(h.slice(2,4),16)/255, b = parseInt(h.slice(4,6),16)/255;
+  const lin = c => c <= 0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4);
+  return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b);
+}
+function contrast(fg, bg) {
+  const l1 = relLum(fg), l2 = relLum(bg);
+  const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function syncColor(colorInputId, textInputId) {
+  const textEl = document.getElementById(textInputId);
+  const colorEl = document.getElementById(colorInputId);
+  // Determine which triggered
+  if (document.activeElement === textEl) {
+    const v = textEl.value;
+    if (/^#[0-9a-fA-F]{6}$/.test(v)) colorEl.value = v;
+  } else {
+    textEl.value = colorEl.value;
+  }
+}
+
+function updateCustomPreview() {
+  // Sync text inputs → color pickers
+  ['bg','text','accent'].forEach(k => {
+    const textEl = document.getElementById('cs-'+k+'-text');
+    const colorEl = document.getElementById('cs-'+k);
+    if (document.activeElement === colorEl) textEl.value = colorEl.value;
+    else if (/^#[0-9a-fA-F]{6}$/.test(textEl.value)) colorEl.value = textEl.value;
+  });
+  const bg = document.getElementById('cs-bg').value;
+  const text = document.getElementById('cs-text').value;
+  const accent = document.getElementById('cs-accent').value;
+  const name = document.getElementById('cs-name').value || 'Preview';
+  const prev = document.getElementById('custom-preview');
+  prev.style.background = bg;
+  prev.style.color = text;
+  prev.style.border = `2px solid ${accent}`;
+  prev.innerHTML = `<strong style="color:${accent}">${name}</strong> — Sample text in this color scheme. <em>Accent color.</em>`;
+  const ratio = contrast(text, bg).toFixed(1);
+  let cls = ratio >= 7 ? 'contrast-aaa' : ratio >= 4.5 ? 'contrast-aa' : 'contrast-fail';
+  let lbl = ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA ✓' : 'Below AA ⚠';
+  document.getElementById('custom-contrast').innerHTML = `<span class="contrast-badge ${cls}">Contrast ${ratio}:1 ${lbl}</span>`;
+}
+
+async function createCustom() {
+  const name = document.getElementById('cs-name').value.trim();
+  const bg = document.getElementById('cs-bg').value;
+  const text_color = document.getElementById('cs-text').value;
+  const accent = document.getElementById('cs-accent').value;
+  if (!name) { showCsStatus('Scheme name is required','err'); return; }
+  const r = await fetch('/api/color-schemes', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name, bg, text_color, accent})
+  });
+  if (r.ok || r.status===201) { showCsStatus('Custom scheme created','ok'); setTimeout(()=>location.reload(),800); }
+  else { const d = await r.json().catch(()=>({})); showCsStatus(d.detail||'Create failed','err'); }
+}
+
+function showCsStatus(msg,cls){const el=document.getElementById('cs-status');el.textContent=msg;el.className='status '+cls;setTimeout(()=>{el.className='status'},4000)}
+
+// --- Existing settings logic ---
 let DEFS=[], loaded={};
 async function init(){
   const r=await fetch('/api/settings');
@@ -88,5 +291,6 @@ async function resetKey(key){
 }
 function showStatus(msg,cls){const el=document.getElementById('status');el.textContent=msg;el.className='status '+cls;setTimeout(()=>{el.className='status'},4000)}
 init();
+updateCustomPreview();
 </script>
 {% endblock %}

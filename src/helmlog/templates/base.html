@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>{% block title %}HelmLog{% endblock %}</title>
 <link rel="stylesheet" href="/static/base.css"/>
+{% if theme_css %}<style>{{ theme_css }}</style>{% endif %}
 {% block extra_css %}{% endblock %}
 </head>
 <body>
