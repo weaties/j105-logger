@@ -1,0 +1,143 @@
+# Eval cases for /architecture skill
+# Tests whether the skill produces accurate, useful codebase comprehension
+# output — module maps, data flow, complexity hotspots, and risk tier overlays.
+
+- name: full-snapshot-module-map
+  description: Full snapshot correctly maps all modules with responsibilities, dependencies, and risk tiers
+  type: capability
+  scenario: |
+    A developer runs /architecture with no arguments (full snapshot mode) to
+    re-orient after a week away. The module map must list all source modules
+    grouped by risk tier, with accurate line counts and responsibilities.
+  mock_input: |
+    /architecture
+  expected:
+    - criterion: "Must list all .py modules under src/helmlog/ with line counts from wc -l"
+      weight: critical
+    - criterion: "Must group modules by risk tier (Critical, High, Standard, Low/Unclassified)"
+      weight: critical
+    - criterion: "Must correctly classify auth.py, peer_auth.py, federation.py as Critical"
+      weight: critical
+    - criterion: "Must correctly classify sk_reader.py, peer_api.py, export.py as High"
+      weight: important
+    - criterion: "Must include a one-line responsibility for each module"
+      weight: important
+    - criterion: "Must show key helmlog-internal imports (dependencies) for each module"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT omit modules — every .py file in src/helmlog/ should appear"
+      weight: critical
+    - criterion: "Must NOT misclassify risk tiers (e.g., putting auth.py in Standard)"
+      weight: critical
+    - criterion: "Must NOT include test files in the module map (tests/ is separate)"
+      weight: important
+  tags: [full-snapshot, module-map, risk-tiers]
+
+- name: complexity-hotspot-detection
+  description: Correctly identifies and severity-rates modules exceeding the 200-line convention
+  type: capability
+  scenario: |
+    The codebase has several modules well over 200 lines (web.py ~6800 lines,
+    storage.py ~5900 lines, main.py ~1500 lines). The skill must flag these
+    with appropriate severity levels and cross-reference with risk tiers.
+  mock_input: |
+    /architecture
+  expected:
+    - criterion: "Must flag web.py as Alert severity (500+ lines, far exceeds 200-line convention)"
+      weight: critical
+    - criterion: "Must flag storage.py as Alert severity and note it is Critical-tier when migrations are touched"
+      weight: critical
+    - criterion: "Must flag main.py as Alert severity (500+ lines)"
+      weight: important
+    - criterion: "Must use the correct severity thresholds: Watch (200-300), Warning (300-500), Alert (500+)"
+      weight: important
+    - criterion: "Must cross-reference hotspots with risk tiers — Critical/High tier hotspots called out as more urgent"
+      weight: important
+    - criterion: "Must include actionable recommendations (e.g., split opportunities)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT silently pass modules that exceed 200 lines without flagging them"
+      weight: critical
+    - criterion: "Must NOT treat all hotspots equally — Critical-tier hotspots need stronger callouts"
+      weight: important
+  tags: [complexity, hotspots, severity, risk-overlay]
+
+- name: delta-briefing-structural-changes
+  description: Delta briefing accurately shows what changed since a reference point
+  type: capability
+  scenario: |
+    A developer runs /architecture 2026-03-10 to see what changed in the past
+    week. Several modules were modified, one new module was added, and one
+    existing module grew past the 200-line threshold. The delta briefing must
+    summarize structural changes, affected data flow, and complexity shifts.
+  mock_input: |
+    /architecture 2026-03-10
+  expected:
+    - criterion: "Must resolve the date to a git reference and show commits since that date"
+      weight: critical
+    - criterion: "Must identify structurally changed modules (new classes, new public functions, significant line changes)"
+      weight: critical
+    - criterion: "Must flag any module that crossed the 200-line threshold in either direction"
+      weight: important
+    - criterion: "Must show change clustering — files appearing in many commits"
+      weight: important
+    - criterion: "Must show affected data flow paths (which connections changed)"
+      weight: important
+    - criterion: "Must be concise (30-80 lines target) — not a full git log dump"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT produce a full snapshot when a date argument is provided"
+      weight: critical
+    - criterion: "Must NOT dump raw git log without summarizing structural impact"
+      weight: important
+    - criterion: "Must NOT omit complexity shifts when modules grew significantly"
+      weight: important
+  tags: [delta-briefing, structural-changes, churn]
+
+- name: data-flow-diagram-accuracy
+  description: Data flow diagram reflects actual import relationships, not assumptions
+  type: capability
+  scenario: |
+    The skill must derive data flow from actual imports in the codebase, not
+    from memorized architecture. The diagram should show instrument ingest,
+    storage read paths, federation, and audio pipeline.
+  mock_input: |
+    /architecture
+  expected:
+    - criterion: "Must produce an ASCII data flow diagram showing major paths"
+      weight: critical
+    - criterion: "Must show instrument ingest path: sk_reader/can_reader → storage"
+      weight: critical
+    - criterion: "Must show read paths: storage → web, export, polar"
+      weight: important
+    - criterion: "Must show federation path: peer_client ↔ peer_api with peer_auth and federation"
+      weight: important
+    - criterion: "Must derive flow from actual grep of imports, not from assumptions"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT show connections that don't exist in the current import graph"
+      weight: critical
+    - criterion: "Must NOT omit the federation data flow (it's a major subsystem)"
+      weight: important
+  tags: [data-flow, imports, diagram]
+
+- name: risk-tier-escalation-in-hotspots
+  description: Correctly escalates urgency when complexity hotspots overlap with Critical/High tier
+  type: capability
+  scenario: |
+    storage.py is both a complexity Alert (5900+ lines) and a Critical-tier
+    module (when migrations are touched). The skill must call this out as a
+    higher-priority concern than a Standard-tier module of similar size.
+  mock_input: |
+    /architecture
+  expected:
+    - criterion: "Must explicitly call out storage.py as both Alert-severity AND Critical-tier — higher urgency than Standard hotspots"
+      weight: critical
+    - criterion: "Must distinguish between Critical/High hotspots and Standard hotspots in recommendations"
+      weight: important
+    - criterion: "Must suggest concrete risk-reduction actions for Critical-tier hotspots (e.g., extract migrations)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT treat a Critical-tier 5000-line module the same as a Standard-tier 250-line module"
+      weight: critical
+  tags: [risk-overlay, escalation, critical-hotspot]

@@ -1,0 +1,187 @@
+# Eval cases for /spec skill
+# Tests whether the skill produces correct structured specs from issue descriptions.
+
+- name: decision-table-for-thread-visibility
+  description: Generates a decision table for combinatorial visibility policy logic
+  type: capability
+  scenario: |
+    A GitHub issue describes a co-op discussion thread feature where visibility
+    depends on user role (crew, coach, admin), thread visibility tier
+    (boat-private, intra-boat, co-op-wide), and whether the user has opted into
+    taggability. This is textbook decision table territory — multiple input
+    variables combining to determine an allow/deny outcome.
+  mock_input: |
+    Issue #999: Co-op discussion thread visibility
+
+    Add visibility controls to co-op discussion threads. Threads can be
+    boat-private (visible only to the boat's crew), intra-boat (visible to
+    a subset of co-op boats, e.g. a coach and their coached boats), or
+    co-op-wide (visible to all co-op members).
+
+    Users who opt out of taggability cannot participate in co-op-visible
+    threads. Coaches can see threads for their coached boats but not other
+    boats' intra-boat threads. Admins can see all threads.
+
+    Files likely touched: peer_api.py, web.py, storage.py (migration)
+  expected:
+    - criterion: "Must choose decision table format (not state diagram or EARS)"
+      weight: critical
+    - criterion: "Must identify the input variables: user role, thread visibility tier, taggability opt-in"
+      weight: critical
+    - criterion: "Must produce a table with exhaustive combinations, not just happy-path rows"
+      weight: critical
+    - criterion: "Must determine risk tier as Critical (touches storage.py migrations and peer_api.py)"
+      weight: important
+    - criterion: "Must note that each row maps to a test case"
+      weight: important
+    - criterion: "Must mark impossible/nonsensical combinations as n/a rather than omitting them"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT use state diagram as the primary format (this is policy logic, not lifecycle)"
+      weight: critical
+    - criterion: "Must NOT skip the risk tier assessment"
+      weight: important
+  tags: [decision-table, visibility, combinatorial]
+
+- name: state-diagram-for-plugin-lifecycle
+  description: Generates a state diagram for an entity with named states and transitions
+  type: capability
+  scenario: |
+    A GitHub issue describes a plugin lifecycle where plugins move through
+    states: registered, selected, active, deprecated, removed. This has clear
+    state transitions and guard conditions — state diagram territory.
+  mock_input: |
+    Issue #888: Plugin lifecycle management
+
+    Add lifecycle states for analysis plugins. A plugin starts as "registered"
+    when its package is installed. Users can "select" it for their boat, which
+    makes it available in the session page. When a session is loaded, selected
+    plugins become "active" and run their analysis. Users can deselect a plugin
+    (back to registered). Plugin authors can deprecate a plugin (no new
+    selections, existing selections continue). Deprecated plugins can be
+    removed entirely (existing selections are dropped with a notification).
+
+    A plugin cannot become active if the session lacks the required data fields
+    (e.g., a polar analysis plugin needs TWS/TWA/BSP columns).
+
+    Files likely touched: web.py, storage.py (migration), new plugin_manager.py
+  expected:
+    - criterion: "Must choose state diagram format (Mermaid syntax)"
+      weight: critical
+    - criterion: "Must identify all 5 states: registered, selected, active, deprecated, removed"
+      weight: critical
+    - criterion: "Must include transitions with named triggers (select, deselect, load session, deprecate, remove)"
+      weight: critical
+    - criterion: "Must include guard conditions (e.g., session must have required data fields for active)"
+      weight: important
+    - criterion: "Must determine risk tier (Standard or High — new module + storage migration)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT use decision table as the primary format (this is lifecycle, not policy logic)"
+      weight: critical
+  tags: [state-diagram, lifecycle, plugin]
+
+- name: ears-for-safety-critical-write-back
+  description: Generates EARS requirements for hardware/safety-critical behavior
+  type: capability
+  scenario: |
+    A GitHub issue describes writing derived performance data back to the
+    NMEA 2000 bus during racing. This is safety-critical — bad data on a
+    display could cause poor decisions. Requires EARS-style fail-safe
+    requirements with measurable conditions.
+  mock_input: |
+    Issue #777: Live polar performance gauge via Signal K write-back
+
+    Write the polar performance ratio (BSP / polar target for current TWS/TWA)
+    back to Signal K so it appears on B&G instrument displays. Must have
+    fail-safe behavior — stop publishing if the computation is unreliable
+    (stale wind data, insufficient polar baseline, unreasonable values).
+
+    Update rate: 1 Hz. Value range: 0.0 to 2.0 (ratio). If the value would
+    be outside this range, it's a computation error — don't publish.
+
+    The polar baseline needs at least 50 data points in the relevant TWS/TWA
+    bin to be considered reliable.
+
+    Files likely touched: polar.py, sk_reader.py, new sk_writer.py
+  expected:
+    - criterion: "Must choose EARS format (WHEN/WHILE/IF patterns)"
+      weight: critical
+    - criterion: "Must include fail-safe requirements (stop publishing when inputs are unreliable)"
+      weight: critical
+    - criterion: "Must use measurable conditions, not vague qualifiers (e.g., '50 data points', '1 Hz', '0.0 to 2.0')"
+      weight: critical
+    - criterion: "Must determine risk tier as Critical (sk_reader.py + safety implications)"
+      weight: important
+    - criterion: "Must include requirements for stale data detection (e.g., WHEN wind data age > N seconds)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT use vague terms like 'quickly', 'reliably', or 'enough data' without numbers"
+      weight: important
+  tags: [ears, safety-critical, hardware, write-back]
+
+- name: simple-feature-skips-spec
+  description: Correctly identifies a simple feature that doesn't need a spec
+  type: capability
+  scenario: |
+    A GitHub issue describes adding a dark mode toggle to the web UI settings
+    page. This is a straightforward UI feature with no combinatorial logic,
+    no lifecycle states, and no safety-critical behavior.
+  mock_input: |
+    Issue #666: Add dark mode toggle to settings page
+
+    Add a toggle switch on the admin settings page to enable dark mode.
+    Store the preference in the user's profile. Apply a CSS class to the
+    body element when dark mode is enabled. Default to light mode.
+
+    Files likely touched: templates/admin/settings.html, base.css, web.py
+  expected:
+    - criterion: "Must recognize this is too simple for a structured spec"
+      weight: critical
+    - criterion: "Must recommend skipping the spec or explicitly state it's not needed"
+      weight: critical
+    - criterion: "Must determine risk tier as Low or Standard"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT generate a full decision table, state diagram, or EARS spec for a simple toggle"
+      weight: critical
+  tags: [skip-spec, simple, low-tier]
+
+- name: mixed-format-embargo-lifecycle-with-policy
+  description: Generates combined formats for a feature with both lifecycle and policy aspects
+  type: capability
+  scenario: |
+    A GitHub issue describes the embargo lifecycle for co-op session sharing,
+    which has both state transitions (embargo states) and policy logic (who
+    can lift an embargo under what conditions).
+  mock_input: |
+    Issue #555: Embargo lifecycle for co-op session sharing
+
+    Sessions shared with the co-op can be placed under temporal embargo. The
+    embargo lifecycle: when a session ends, it enters "embargoed" state with a
+    configurable duration (set by co-op policy). While embargoed, track data is
+    not visible to other co-op members. After the embargo period, it
+    automatically transitions to "shared". The boat owner can manually lift the
+    embargo early. The co-op admin can override the embargo duration for
+    specific sessions.
+
+    Who can modify embargo state depends on role: boat owner can lift early,
+    co-op admin can override duration, regular crew cannot modify embargo.
+    During embargo, the session appears in listings but track data returns 403.
+
+    Files likely touched: peer_api.py, storage.py (migration), federation.py
+  expected:
+    - criterion: "Must use combined formats — state diagram for embargo lifecycle AND decision table for permission logic"
+      weight: critical
+    - criterion: "Must include embargo states: embargoed, shared, and any intermediate states"
+      weight: critical
+    - criterion: "Must include role-based permission matrix for embargo modification"
+      weight: critical
+    - criterion: "Must determine risk tier as Critical (federation.py + storage.py migrations)"
+      weight: important
+    - criterion: "Must note guard conditions on transitions (e.g., auto-lift after duration expires)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT use only one format when both lifecycle and policy logic are present"
+      weight: important
+  tags: [mixed-format, embargo, lifecycle, policy]

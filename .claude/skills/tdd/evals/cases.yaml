@@ -1,0 +1,136 @@
+# Eval cases for /tdd skill
+# Tests whether the skill correctly follows the red-green-refactor cycle
+# and uses the right testing patterns.
+
+- name: storage-feature-test-first
+  description: Writes a failing storage test before implementation
+  type: preference
+  scenario: |
+    The user asks to implement a new storage method get_session_stats() that
+    returns aggregate stats (row count, min/max timestamps, distinct instrument
+    count) for a given session ID. This is a typical storage module addition.
+  mock_input: |
+    Implement a get_session_stats() method in storage.py that returns the
+    row count, earliest timestamp, latest timestamp, and number of distinct
+    instruments for a session.
+  expected:
+    - criterion: "Must write the test file/function BEFORE writing the implementation"
+      weight: critical
+    - criterion: "Must use the storage fixture from conftest.py for in-memory SQLite"
+      weight: critical
+    - criterion: "Must use @pytest.mark.asyncio decorator on the test"
+      weight: critical
+    - criterion: "Must run pytest to confirm the test FAILS before implementing"
+      weight: important
+    - criterion: "Must implement minimal code to make the test pass (not over-engineer)"
+      weight: important
+    - criterion: "Must run full test suite after implementation to catch regressions"
+      weight: important
+    - criterion: "Must run ruff check, ruff format, and mypy after passing tests"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT write the implementation before or without a test"
+      weight: critical
+    - criterion: "Must NOT skip the 'confirm test fails' step (red phase)"
+      weight: important
+  tags: [storage, test-first, red-green-refactor]
+
+- name: web-route-test-uses-async-client
+  description: Uses httpx AsyncClient with ASGITransport for web route tests
+  type: preference
+  scenario: |
+    The user asks to add a new API endpoint GET /api/session/{id}/stats that
+    returns session statistics. This is a web route that needs testing via
+    the async test client pattern.
+  mock_input: |
+    Add a GET /api/session/{id}/stats endpoint that returns session statistics
+    (row count, duration, instruments) as JSON.
+  expected:
+    - criterion: "Must write the test using httpx.AsyncClient with ASGITransport"
+      weight: critical
+    - criterion: "Must use create_app(storage) to get the test app instance"
+      weight: critical
+    - criterion: "Must test the HTTP response (status code, JSON body structure)"
+      weight: important
+    - criterion: "Must follow red-green-refactor order: test → fail → implement → pass"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT use requests or urllib for testing (must use async httpx)"
+      weight: critical
+    - criterion: "Must NOT mock the web framework — use the real ASGI app"
+      weight: important
+  tags: [web-route, async-client, test-pattern]
+
+- name: hardware-module-properly-mocked
+  description: Mocks hardware dependencies instead of requiring real devices
+  type: preference
+  scenario: |
+    The user asks to fix a bug in camera snapshot logic where the snapshot
+    URL is incorrectly constructed when the camera returns a non-standard
+    response format. This requires testing camera interaction without a
+    real Insta360 camera.
+  mock_input: |
+    Fix the snapshot URL construction in cameras.py — when the camera returns
+    a response with the file path in a nested "content" key instead of the
+    top-level "name" key, the snapshot URL is wrong.
+  expected:
+    - criterion: "Must mock the camera HTTP client (patch httpx.AsyncClient or equivalent)"
+      weight: critical
+    - criterion: "Must write a test that reproduces the bug with the non-standard response format"
+      weight: critical
+    - criterion: "Must confirm the test fails before fixing (red phase)"
+      weight: important
+    - criterion: "Must patch at the module level, not at the test function level"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT require a real camera or network connection for the test"
+      weight: critical
+    - criterion: "Must NOT skip the test and just fix the code"
+      weight: critical
+  tags: [hardware-mock, camera, bug-fix]
+
+- name: commit-format-with-issue-number
+  description: Uses conventional commit format with issue number
+  type: preference
+  scenario: |
+    The user is working on GitHub issue #345 and has just completed the TDD
+    cycle (test written, implementation passing, lint clean). Now needs to
+    commit.
+  mock_input: |
+    Working on issue #345 — "Add heel angle to CSV export." The test and
+    implementation are done, all checks pass. Time to commit.
+  expected:
+    - criterion: "Must use conventional commit format (feat:, fix:, etc.)"
+      weight: critical
+    - criterion: "Must include the issue number in the commit message, e.g., (#345)"
+      weight: critical
+    - criterion: "Must commit test and implementation together (not separately)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT commit the implementation without the test file"
+      weight: critical
+  tags: [commit, conventional, issue-linking]
+
+- name: refactor-phase-runs-full-suite
+  description: Runs full test suite during refactor phase, not just the new test
+  type: preference
+  scenario: |
+    The user has completed the green phase — the new test passes. Now asks to
+    refactor the implementation to clean up duplicated code. The refactor
+    phase requires running the FULL test suite to catch regressions, not just
+    the new test.
+  mock_input: |
+    The new test passes. Now I want to refactor — there's some duplicated
+    timestamp parsing logic between the new function and an existing one.
+    Extract it into a shared helper.
+  expected:
+    - criterion: "Must run the full test suite (uv run pytest) after refactoring, not just the new test"
+      weight: critical
+    - criterion: "Must refactor without changing behavior (tests still pass)"
+      weight: important
+    - criterion: "Must run lint and type checks after refactoring"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT only run the single new test file during refactor validation"
+      weight: important
+  tags: [refactor, full-suite, regression]

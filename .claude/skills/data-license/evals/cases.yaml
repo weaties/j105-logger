@@ -1,0 +1,588 @@
+# Eval cases for /data-license skill
+# Tests whether the skill correctly identifies data licensing policy violations
+# and correctly clears compliant changes.
+
+- name: pii-leak-crew-emails-in-coop-api
+  description: Detects crew email addresses exposed via co-op API endpoint
+  type: capability
+  scenario: |
+    A developer adds a new endpoint to peer_api.py that returns co-op member
+    details including email addresses. The data-licensing policy (Section 2)
+    specifies that crew roster is private data not shared with co-op endpoints.
+    Email addresses are PII (Section 1) with deletion rights.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -120,6 +120,18 @@ async def get_coop_sessions(
+         return sessions
+
+    +@router.get("/api/co-op/members")
+    +async def get_coop_members(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> list[dict]:
+    +    """Return all co-op members with contact details."""
+    +    members = await db.fetch_all(
+    +        "SELECT name, email, boat_name, role FROM crew WHERE coop_id = ?",
+    +        (auth.coop_id,),
+    +    )
+    +    return [dict(m) for m in members]
+  expected:
+    - criterion: "Must flag email as PII that should not be in co-op API responses"
+      weight: critical
+    - criterion: "Must reference Section 1 (Data Ownership) or Section 2 (Data Sharing) of the policy"
+      weight: critical
+    - criterion: "Must flag crew roster as private data not shared via co-op endpoints"
+      weight: important
+    - criterion: "Must suggest removing email from the response or limiting to boat-level info only"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [pii, section-1, section-2, co-op-api]
+
+- name: bulk-export-coop-tracks
+  description: Detects bulk export endpoint for other boats' co-op data
+  type: capability
+  scenario: |
+    A developer adds a batch export endpoint that allows downloading all session
+    tracks from the co-op in one request. The data-licensing policy (Section 2)
+    prohibits bulk export of other boats' co-op data — co-op data is view-only.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -80,6 +80,22 @@ async def get_coop_session_track(
+
+    +@router.get("/api/co-op/export/all-tracks")
+    +async def export_all_coop_tracks(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +    format: str = "gpx",
+    +) -> Response:
+    +    """Export all co-op session tracks as a single archive."""
+    +    sessions = await db.fetch_all(
+    +        "SELECT * FROM sessions WHERE coop_id = ? AND boat_id != ?",
+    +        (auth.coop_id, auth.boat_id),
+    +    )
+    +    tracks = []
+    +    for s in sessions:
+    +        track = await db.get_track_data(s["id"])
+    +        tracks.append(track)
+    +    return create_archive(tracks, format=format)
+  expected:
+    - criterion: "Must flag as bulk export of other boats' co-op data"
+      weight: critical
+    - criterion: "Must reference Section 2 (Data Sharing) — co-op data is view-only, no bulk export"
+      weight: critical
+    - criterion: "Must note the endpoint fetches other boats' data (boat_id != auth.boat_id filter)"
+      weight: important
+    - criterion: "Must suggest removing the endpoint or limiting to single-session view-only access"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [bulk-export, section-2, co-op-api]
+
+- name: embargo-bypass-missing-check
+  description: Detects endpoint serving track data without checking embargo timestamps
+  type: capability
+  scenario: |
+    A developer adds a new endpoint for serving session summary data to co-op
+    peers but forgets to check the temporal sharing embargo timestamp.
+    The data-licensing policy (Section 2) requires embargo timestamps to be
+    respected before serving track data.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -55,6 +55,16 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/session/{session_id}/summary")
+    +async def get_session_summary(
+    +    session_id: int,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> dict:
+    +    """Return summary stats for a co-op session."""
+    +    session = await db.get_session(session_id)
+    +    stats = await db.get_session_stats(session_id)
+    +    return {"session": session, "stats": stats}
+  expected:
+    - criterion: "Must flag the missing embargo timestamp check"
+      weight: critical
+    - criterion: "Must reference Section 2 — temporal sharing embargo enforcement"
+      weight: important
+    - criterion: "Must suggest adding an embargo check before returning data"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [embargo, section-2, co-op-api]
+
+- name: own-boat-csv-export-compliant
+  description: Correctly clears a compliant own-boat data export enhancement
+  type: capability
+  scenario: |
+    A developer improves the CSV export to include a new column for heel angle
+    in own-boat session exports. The data-licensing policy (Section 1 and
+    Section 5) guarantees boat owners can export their own data in CSV, GPX,
+    JSON, and WAV. This change only affects own-boat exports.
+  mock_input: |
+    diff --git a/src/helmlog/export.py b/src/helmlog/export.py
+    --- a/src/helmlog/export.py
+    +++ b/src/helmlog/export.py
+    @@ -45,7 +45,7 @@ EXPORT_COLUMNS = [
+
+    -INSTRUMENT_COLS = ["bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog"]
+    +INSTRUMENT_COLS = ["bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog", "heel"]
+
+     async def export_session_csv(db: Storage, session_id: int) -> str:
+         """Export a single session's instrument data as CSV."""
+  expected:
+    - criterion: "Must report the change as compliant or no data licensing impact"
+      weight: critical
+    - criterion: "Must recognize this is own-boat data export, which the policy supports"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT flag this as a violation"
+      weight: critical
+    - criterion: "Must NOT raise concerns about co-op data or PII"
+      weight: important
+  tags: [compliant, own-boat, export, section-1]
+
+- name: missing-audit-log-on-coop-access
+  description: Detects co-op data access endpoint without audit logging
+  type: capability
+  scenario: |
+    A developer adds a new endpoint serving co-op session data but omits audit
+    logging. Section 12 (Technical Requirements) requires audit logging for all
+    co-op data access.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -100,6 +100,18 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/session/{session_id}/instruments")
+    +async def get_session_instruments(
+    +    session_id: int,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> list[dict]:
+    +    """Return instrument data for a co-op session."""
+    +    session = await db.get_session(session_id)
+    +    if session["coop_id"] != auth.coop_id:
+    +        raise HTTPException(403)
+    +    data = await db.get_instrument_data(session_id)
+    +    return data
+  expected:
+    - criterion: "Must flag the missing audit log call for co-op data access"
+      weight: critical
+    - criterion: "Must reference Section 12 (Technical Requirements)"
+      weight: important
+    - criterion: "Must suggest adding an audit log entry before returning data"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as fully compliant without noting the audit gap"
+      weight: critical
+  tags: [audit, section-12, co-op-api]
+
+- name: no-data-touching-changes
+  description: Correctly identifies non-data-touching changes as having no impact
+  type: capability
+  scenario: |
+    A developer updates the CSS for the history page to fix a layout issue.
+    No data storage, API, PII, or co-op code is involved.
+  mock_input: |
+    diff --git a/src/helmlog/static/base.css b/src/helmlog/static/base.css
+    --- a/src/helmlog/static/base.css
+    +++ b/src/helmlog/static/base.css
+    @@ -120,6 +120,10 @@ .history-table {
+       border-collapse: collapse;
+     }
+
+    +.history-table td {
+    +  padding: 8px 12px;
+    +  vertical-align: top;
+    +}
+  expected:
+    - criterion: "Must report no data licensing impact or no data-touching changes found"
+      weight: critical
+  anti_expected:
+    - criterion: "Must NOT flag any violations"
+      weight: critical
+    - criterion: "Must NOT run through the full policy checklist for a CSS change"
+      weight: nice-to-have
+  tags: [compliant, no-impact, css]
+
+- name: gambling-adjacent-feature
+  description: Detects a feature that could facilitate betting on race data
+  type: capability
+  scenario: |
+    A developer adds a "race prediction" endpoint that takes co-op session data
+    and returns win probability estimates for each boat. While framed as
+    performance analytics, this could facilitate wagering — Section 9 prohibits
+    using co-op data for gambling, betting, or wagering purposes.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -130,6 +130,22 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/predictions")
+    +async def get_race_predictions(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> dict:
+    +    """Predict race outcomes based on historical co-op performance data."""
+    +    boats = await db.get_coop_boats(auth.coop_id)
+    +    predictions = {}
+    +    for boat in boats:
+    +        sessions = await db.get_boat_sessions(boat["id"])
+    +        polar = await db.get_polar(boat["id"])
+    +        win_prob = calculate_win_probability(sessions, polar)
+    +        predictions[boat["name"]] = {
+    +            "win_probability": win_prob,
+    +            "confidence": len(sessions) / 20,
+    +        }
+    +    return predictions
+  expected:
+    - criterion: "Must flag the gambling/wagering risk under Section 9"
+      weight: critical
+    - criterion: "Must note that win probability predictions from co-op data could facilitate betting"
+      weight: important
+    - criterion: "Must suggest removing or restricting the endpoint"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [gambling, section-9, co-op-api]
+
+# --- Wave 2: Hardened cases (ambiguous, multi-violation, subtle, misdirection) ---
+
+- name: benchmark-below-4-boat-threshold
+  description: Detects benchmark computation that doesn't enforce the 4-boat minimum per condition bin
+  type: capability
+  scenario: |
+    A developer implements fleet benchmark computation. The code computes
+    median VMG per wind-speed bin across co-op boats, but doesn't enforce the
+    minimum 4-boat threshold per condition bin. Section 2 requires at least 4
+    contributing boats per bin — below that, individual boats are too easily
+    identified from aggregate stats.
+  mock_input: |
+    diff --git a/src/helmlog/polar.py b/src/helmlog/polar.py
+    --- a/src/helmlog/polar.py
+    +++ b/src/helmlog/polar.py
+    @@ -200,6 +200,28 @@ class PolarBuilder:
+
+    +    async def compute_fleet_benchmark(
+    +        self, db: Storage, coop_id: int, metric: str, tws_bin: tuple[float, float]
+    +    ) -> dict:
+    +        """Compute fleet benchmark for a metric in a TWS bin."""
+    +        boats = await db.get_coop_boats(coop_id)
+    +        values = []
+    +        for boat in boats:
+    +            sessions = await db.get_shared_sessions(boat["id"], coop_id)
+    +            for s in sessions:
+    +                data = await db.get_instrument_data(s["id"], tws_range=tws_bin)
+    +                if data:
+    +                    values.append(compute_metric(data, metric))
+    +        if not values:
+    +            return {"status": "insufficient_data"}
+    +        return {
+    +            "metric": metric,
+    +            "tws_bin": tws_bin,
+    +            "median": statistics.median(values),
+    +            "p25": statistics.quantiles(values, n=4)[0],
+    +            "p75": statistics.quantiles(values, n=4)[2],
+    +            "boat_count": len(boats),
+    +        }
+  expected:
+    - criterion: "Must flag the missing 4-boat minimum threshold check per condition bin"
+      weight: critical
+    - criterion: "Must reference Section 2 — fleet benchmarks require at least 4 boats per condition bin"
+      weight: important
+    - criterion: "Must note that the code checks if values is empty but not whether enough distinct boats contributed — a single boat with many sessions could produce a 'benchmark'"
+      weight: important
+    - criterion: "Must suggest checking distinct boat count per bin, not just total value count"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report as compliant just because the code has an empty-check"
+      weight: critical
+  tags: [benchmark, 4-boat-threshold, section-2, subtle]
+
+- name: multiple-simultaneous-violations-in-one-endpoint
+  description: Catches ALL violations in a single endpoint, not just the most obvious one
+  type: capability
+  scenario: |
+    A developer adds a co-op endpoint with multiple policy violations in one
+    diff: it exposes private data (audio file paths), lacks embargo check,
+    lacks audit logging, and allows pagination that could enable bulk scraping.
+    A good review must catch all four, not stop after the first.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -100,6 +100,30 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/session/{session_id}/detail")
+    +async def get_session_detail(
+    +    session_id: int,
+    +    page: int = 1,
+    +    per_page: int = 10000,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> dict:
+    +    """Return full session detail for a co-op session."""
+    +    session = await db.get_session(session_id)
+    +    if session["coop_id"] != auth.coop_id:
+    +        raise HTTPException(403)
+    +    instruments = await db.get_instrument_data(
+    +        session_id, offset=(page - 1) * per_page, limit=per_page
+    +    )
+    +    audio_files = await db.get_session_audio(session_id)
+    +    notes = await db.get_session_notes(session_id)
+    +    return {
+    +        "session": session,
+    +        "instruments": instruments,
+    +        "audio_paths": [a["file_path"] for a in audio_files],
+    +        "notes": notes,
+    +        "page": page,
+    +        "total_pages": await db.count_instrument_rows(session_id) // per_page,
+    +    }
+  expected:
+    - criterion: "Must flag audio_paths as private data / PII exposed via co-op endpoint (Section 2 — audio is never shared)"
+      weight: critical
+    - criterion: "Must flag notes as private data exposed via co-op endpoint (Section 2 — notes are never shared)"
+      weight: critical
+    - criterion: "Must flag the missing embargo timestamp check (Section 2)"
+      weight: critical
+    - criterion: "Must flag the missing audit log call (Section 12)"
+      weight: important
+    - criterion: "Must flag the pagination with per_page=10000 as enabling bulk data extraction (Section 2 — no bulk export)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report as compliant"
+      weight: critical
+    - criterion: "Must NOT stop after flagging only one or two violations — must identify at least 3 distinct issues"
+      weight: critical
+  tags: [multi-violation, pii, embargo, audit, bulk-export, section-1, section-2, section-12]
+
+- name: subtle-embargo-off-by-one
+  description: Detects an embargo check that uses wrong comparison operator
+  type: capability
+  scenario: |
+    A developer adds an embargo check, but uses strict less-than (<) instead
+    of less-than-or-equal (<=). If the embargo lifts at exactly midnight
+    2026-03-20T00:00:00Z and the request arrives at that exact timestamp,
+    the data would be incorrectly blocked. The inverse is also problematic —
+    if the comparison is wrong in the other direction, data could be served
+    a moment before embargo actually lifts. This tests whether the skill
+    scrutinizes the correctness of an embargo check, not just its presence.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -80,6 +80,18 @@ async def get_coop_session_track(
+
+    +@router.get("/api/co-op/session/{session_id}/instruments")
+    +async def get_session_instruments(
+    +    session_id: int,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> list[dict]:
+    +    """Return instrument data, respecting embargo."""
+    +    session = await db.get_session(session_id)
+    +    if session.get("embargo_until") and datetime.utcnow() < session["embargo_until"]:
+    +        raise HTTPException(403, "Session under embargo")
+    +    await db.log_coop_access(auth.boat_id, session_id, "instruments")
+    +    return await db.get_instrument_data(session_id)
+  expected:
+    - criterion: "Must note the embargo check boundary condition — whether < vs <= is correct depends on whether embargo_until is the first moment data IS available or the last moment it ISN'T"
+      weight: important
+    - criterion: "Must recognize the code has both an embargo check AND audit logging (these are correct)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT flag the embargo check as completely missing (it exists)"
+      weight: critical
+    - criterion: "Must NOT flag the audit logging as missing (it exists)"
+      weight: critical
+  tags: [subtle, boundary-condition, embargo, section-2]
+
+- name: large-compliant-diff-with-buried-violation
+  description: Finds a small violation buried in a large, mostly-compliant diff
+  type: capability
+  scenario: |
+    A large diff refactors the export module — renaming functions, improving
+    type hints, adding docstrings. This is 90% housekeeping. But buried in
+    line 15 of the diff, a co-op session field allowlist is quietly widened
+    to include "current_observations" — which is private data that should
+    never be shared with the co-op (Section 2).
+  mock_input: |
+    diff --git a/src/helmlog/export.py b/src/helmlog/export.py
+    --- a/src/helmlog/export.py
+    +++ b/src/helmlog/export.py
+    @@ -10,8 +10,8 @@ from helmlog.storage import Storage
+
+    -def export_session_csv(db, session_id):
+    -    """Export a session."""
+    +async def export_session_csv(db: Storage, session_id: int) -> str:
+    +    """Export a single session's instrument data as CSV for the boat owner."""
+
+    @@ -30,7 +30,7 @@ EXPORT_COLUMNS = [
+    -    "bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog",
+    +    "bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog", "heel",
+
+    @@ -55,8 +55,8 @@ COOP_SHARED_FIELDS = [
+    -    "instrument_data", "session_metadata", "derived_metrics", "race_results",
+    +    "instrument_data", "session_metadata", "derived_metrics", "race_results", "current_observations",
+
+    @@ -80,6 +80,7 @@ async def export_session_gpx(
+    +    """Export session track as GPX for use in external tools."""
+
+    @@ -95,4 +96,4 @@ async def export_session_json(
+    -def _format_timestamp(ts):
+    +def _format_timestamp(ts: datetime) -> str:
+         """Format a UTC timestamp for export."""
+  expected:
+    - criterion: "Must flag current_observations added to COOP_SHARED_FIELDS — current/tide observations are private data (Section 2)"
+      weight: critical
+    - criterion: "Must correctly clear the other changes (type hints, docstrings, heel column, function signatures) as compliant"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT miss the current_observations violation because the rest of the diff is benign"
+      weight: critical
+    - criterion: "Must NOT flag the heel addition to EXPORT_COLUMNS as a violation (own-boat export is fine)"
+      weight: important
+  tags: [misdirection, buried-violation, section-2, current-observations]
+
+- name: coach-access-without-time-limit
+  description: Detects coach data access grant that's missing the required time-limit
+  type: capability
+  scenario: |
+    A developer adds a coach access feature that lets boat owners grant a
+    coach access to their session data. However, the implementation creates
+    a permanent access grant with no expiry. The data-licensing policy
+    requires coach access grants to be time-limited and renewed each season.
+  mock_input: |
+    diff --git a/src/helmlog/storage.py b/src/helmlog/storage.py
+    --- a/src/helmlog/storage.py
+    +++ b/src/helmlog/storage.py
+    @@ -500,6 +500,15 @@ class Storage:
+
+    +    async def grant_coach_access(
+    +        self, boat_id: int, coach_email: str, sessions: list[int]
+    +    ) -> int:
+    +        """Grant a coach access to specific sessions."""
+    +        return await self.db.execute_insert(
+    +            "INSERT INTO coach_access (boat_id, coach_email, session_ids) VALUES (?, ?, ?)",
+    +            (boat_id, coach_email, json.dumps(sessions)),
+    +        )
+
+    diff --git a/src/helmlog/web.py b/src/helmlog/web.py
+    --- a/src/helmlog/web.py
+    +++ b/src/helmlog/web.py
+    @@ -300,6 +300,12 @@ async def grant_coach(request: Request, db: Storage):
+
+    +@app.post("/api/coach/grant")
+    +async def api_grant_coach(request: Request, db: Storage = Depends(get_storage)):
+    +    data = await request.json()
+    +    access_id = await db.grant_coach_access(
+    +        data["boat_id"], data["coach_email"], data["sessions"]
+    +    )
+    +    return {"access_id": access_id, "status": "granted"}
+  expected:
+    - criterion: "Must flag the missing time-limit / expiry on coach access (policy requires time-limited, renewed each season)"
+      weight: critical
+    - criterion: "Must flag that the coach_access table schema has no expiry column or TTL"
+      weight: important
+    - criterion: "Must note that coach access should not be permanent — the policy explicitly requires seasonal renewal"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report as compliant just because the access is per-session"
+      weight: critical
+  tags: [coach-access, time-limit, section-2, subtle]
+
+- name: biometric-consent-conflated-with-instrument-sharing
+  description: Detects biometric data consent lumped in with instrument data sharing
+  type: capability
+  scenario: |
+    A developer adds heart rate capture from a crew wearable. The consent UI
+    conflates biometric consent with the existing instrument data sharing
+    agreement. The policy is explicit: biometric consent must be per-person,
+    per-data-type, and completely separate from co-op or instrument sharing.
+    Consenting to share instrument data does NOT consent to biometrics.
+  mock_input: |
+    diff --git a/src/helmlog/web.py b/src/helmlog/web.py
+    --- a/src/helmlog/web.py
+    +++ b/src/helmlog/web.py
+    @@ -250,6 +250,18 @@ async def update_sharing_settings(
+
+    +@app.post("/api/settings/data-sharing")
+    +async def update_data_sharing(request: Request, db: Storage = Depends(get_storage)):
+    +    """Update all data sharing preferences including biometrics."""
+    +    data = await request.json()
+    +    await db.update_sharing(
+    +        boat_id=data["boat_id"],
+    +        share_instruments=data.get("share_instruments", False),
+    +        share_derived=data.get("share_derived", False),
+    +        share_biometrics=data.get("share_biometrics", False),
+    +    )
+    +    return {"status": "updated"}
+  expected:
+    - criterion: "Must flag biometric consent being lumped into the same endpoint as instrument sharing"
+      weight: critical
+    - criterion: "Must note that biometric consent must be per-person (individual crew member), not per-boat"
+      weight: critical
+    - criterion: "Must reference that biometric consent is completely separate from instrument data sharing agreements"
+      weight: important
+    - criterion: "Must note that the boat owner cannot consent to biometrics on behalf of crew — it requires individual crew authorization"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT treat share_biometrics as equivalent to share_instruments — they have fundamentally different consent models"
+      weight: critical
+  tags: [biometric, consent, section-1, per-person, subtle]
+
+- name: processing-offload-retains-data
+  description: Detects a transcription offload implementation that doesn't clean up remote data
+  type: capability
+  scenario: |
+    A developer implements audio transcription offload to a remote Mac. The
+    code sends the WAV file, receives the transcript, but doesn't request
+    deletion of the WAV file from the offload host afterward. The policy
+    requires that offload hosts not retain data beyond the processing task.
+  mock_input: |
+    diff --git a/src/helmlog/transcribe.py b/src/helmlog/transcribe.py
+    --- a/src/helmlog/transcribe.py
+    +++ b/src/helmlog/transcribe.py
+    @@ -80,6 +80,22 @@ class Transcriber:
+
+    +    async def offload_transcription(
+    +        self, audio_path: Path, session_id: int
+    +    ) -> dict:
+    +        """Send audio to remote host for transcription."""
+    +        offload_url = os.getenv("TRANSCRIBE_URL")
+    +        if not offload_url:
+    +            raise ValueError("TRANSCRIBE_URL not configured")
+    +        async with httpx.AsyncClient(timeout=300) as client:
+    +            with open(audio_path, "rb") as f:
+    +                resp = await client.post(
+    +                    f"{offload_url}/transcribe",
+    +                    files={"audio": (audio_path.name, f, "audio/wav")},
+    +                    data={"session_id": str(session_id)},
+    +                )
+    +            resp.raise_for_status()
+    +            return resp.json()
+  expected:
+    - criterion: "Must flag the missing cleanup step — no request to delete the WAV file from the offload host after transcription completes"
+      weight: critical
+    - criterion: "Must reference the processing offload rules — offload hosts must not retain data beyond the processing task"
+      weight: important
+    - criterion: "Must note that audio files are PII (contain crew voices) which makes cleanup especially important"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report as compliant just because the transcription itself works correctly"
+      weight: critical
+  tags: [offload, cleanup, pii, audio, section-1]

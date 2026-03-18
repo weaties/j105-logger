@@ -1,0 +1,164 @@
+# Eval cases for /domain skill
+# Tests whether the skill provides accurate domain knowledge that prevents
+# common instrument-handling errors in generated code.
+
+- name: polar-uses-bsp-not-sog
+  description: Polar calculations must use speed through water, not speed over ground
+  type: capability
+  scenario: |
+    A developer asks: "Which Signal K path should polar calculations use for
+    boat speed?" The model must distinguish between speedThroughWater (BSP)
+    and speedOverGround (SOG) and recommend BSP for polars.
+  mock_input: |
+    I'm adding a new polar analysis feature. Which Signal K path should I use
+    for the boat speed axis of the polar diagram?
+  expected:
+    - criterion: "Must recommend navigation.speedThroughWater (BSP), not navigation.speedOverGround (SOG)"
+      weight: critical
+    - criterion: "Must explain that SOG includes current effects which distort polars"
+      weight: important
+    - criterion: "Must reference PGN 128259 or SpeedRecord as the correct data source"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT recommend speedOverGround for polar calculations"
+      weight: critical
+    - criterion: "Must NOT treat BSP and SOG as interchangeable"
+      weight: critical
+  tags: [instruments, polars, bsp-vs-sog]
+
+- name: true-wind-pgn-identification
+  description: Correctly identifies PGN 130306 as the carrier for true wind data
+  type: capability
+  scenario: |
+    A developer asks: "What PGN carries true wind data?" The model must
+    identify PGN 130306 and explain the wind reference field.
+  mock_input: |
+    What NMEA 2000 PGN carries true wind data? I need to decode it from the
+    CAN bus.
+  expected:
+    - criterion: "Must identify PGN 130306 (Wind Data) as the correct PGN"
+      weight: critical
+    - criterion: "Must explain the reference field: 0=true boat-referenced, 2=apparent, 4=true north-referenced"
+      weight: critical
+    - criterion: "Must note that true wind uses reference 0 or 4, not reference 2 (apparent)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT invent a different PGN number for wind data"
+      weight: critical
+    - criterion: "Must NOT confuse apparent wind (ref 2) with true wind (ref 0 or 4)"
+      weight: critical
+  tags: [nmea2000, pgn, wind]
+
+- name: twa-derivation-direction
+  description: TWA is derived from AWA, not the other way around
+  type: capability
+  scenario: |
+    A developer is confused about the relationship between TWA and AWA.
+    The model must correctly explain the derivation direction.
+  mock_input: |
+    How does the instrument system calculate apparent wind angle? Is it
+    derived from true wind angle?
+  expected:
+    - criterion: "Must state that AWA is measured directly by the masthead wand, not derived"
+      weight: critical
+    - criterion: "Must state that TWA is derived from AWA + BSP by the instrument processor"
+      weight: critical
+    - criterion: "Must identify the derivation direction: measured AWA -> derived TWA, not the reverse"
+      weight: critical
+  anti_expected:
+    - criterion: "Must NOT say AWA is derived from TWA"
+      weight: critical
+    - criterion: "Must NOT say TWA is a direct measurement"
+      weight: critical
+  tags: [instruments, wind, derivation]
+
+- name: wind-reference-4-needs-heading
+  description: North-referenced true wind (ref=4) requires heading to compute TWA
+  type: capability
+  scenario: |
+    A developer is writing polar code that consumes WindRecord data. They
+    need to handle B&G's north-referenced true wind output correctly.
+  mock_input: |
+    I have a WindRecord with reference=4. How do I get TWA from it for
+    polar binning?
+  expected:
+    - criterion: "Must explain that reference=4 means wind_angle_deg is TWD (compass direction), not TWA"
+      weight: critical
+    - criterion: "Must provide the formula: TWA = (TWD - HDG + 360) % 360 or equivalent"
+      weight: critical
+    - criterion: "Must state that heading (HDG) is required for this conversion"
+      weight: critical
+    - criterion: "Must reference _compute_twa() in polar.py or equivalent code path"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT treat reference=4 wind_angle_deg as TWA directly"
+      weight: critical
+    - criterion: "Must NOT skip the heading correction step"
+      weight: critical
+  tags: [wind, reference, polar, heading]
+
+- name: sk-path-for-depth
+  description: Correctly identifies the Signal K path for water depth
+  type: capability
+  scenario: |
+    A developer needs to display depth data from Signal K. The model must
+    know the exact path HelmLog uses.
+  mock_input: |
+    What Signal K path does HelmLog use for water depth? I want to add a
+    depth display to the session page.
+  expected:
+    - criterion: "Must identify environment.depth.belowKeel as the correct path"
+      weight: critical
+    - criterion: "Must note units are metres (no conversion needed from SK)"
+      weight: important
+    - criterion: "Must reference PGN 128267 or DepthRecord"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT invent a path like navigation.depth or environment.depth.belowSurface"
+      weight: critical
+  tags: [signalk, depth, paths]
+
+- name: vmg-upwind-vs-downwind
+  description: VMG calculation differs for upwind vs downwind legs
+  type: capability
+  scenario: |
+    A developer asks about VMG calculations. The model must explain both
+    upwind and downwind VMG correctly.
+  mock_input: |
+    How is VMG calculated in HelmLog? Is it the same formula upwind and
+    downwind?
+  expected:
+    - criterion: "Must provide upwind VMG formula: BSP * cos(TWA) for TWA < 90"
+      weight: critical
+    - criterion: "Must provide downwind VMG formula: BSP * cos(180 - TWA) for TWA >= 90"
+      weight: critical
+    - criterion: "Must explain that VMG measures progress toward/away from the wind"
+      weight: important
+    - criterion: "Must note that VMG is tracked per sail and per wind band"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT use a single formula for both upwind and downwind"
+      weight: critical
+    - criterion: "Must NOT confuse VMG with SOG or BSP"
+      weight: critical
+  tags: [vmg, racing, performance]
+
+- name: maneuver-classification-by-twa
+  description: Tack vs gybe classification depends on TWA state, not just heading change
+  type: capability
+  scenario: |
+    A developer is working on maneuver detection. The model must explain
+    that heading change alone doesn't distinguish tacks from gybes.
+  mock_input: |
+    The boat changed heading by 80 degrees. Is that a tack or a gybe?
+  expected:
+    - criterion: "Must state that heading change alone is not sufficient to classify the maneuver"
+      weight: critical
+    - criterion: "Must explain that TWA before and after determines classification: both upwind = tack, both downwind = gybe"
+      weight: critical
+    - criterion: "Must mention mark rounding as a third possibility (TWA crosses 90 degree boundary)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT classify solely based on heading change magnitude"
+      weight: critical
+  tags: [maneuvers, racing, twa]

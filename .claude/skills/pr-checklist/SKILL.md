@@ -49,6 +49,19 @@ git diff --name-only main...HEAD
 The PR's tier is the **highest** tier touched. Report the resolved tier
 before proceeding — e.g., "This PR touches `auth.py` → **Critical** tier."
 
+**Special cases:**
+
+- **`storage.py` migration check:** If `storage.py` is in the changed files,
+  examine the diff content (`git diff main...HEAD -- src/helmlog/storage.py`)
+  to confirm whether migration code is actually touched (look for
+  `schema_version`, `CREATE TABLE`, `ALTER TABLE`, migration functions). If
+  only query methods or non-migration code changed, classify as **Standard**,
+  not Critical.
+- **New / unclassified modules:** If a changed `.py` file is not explicitly
+  listed in any tier, it defaults to **Standard**. Flag it: "Module `X` is
+  not explicitly classified — defaults to Standard. Consider adding it to
+  the Risk Tiers table in CLAUDE.md."
+
 ## 3. Run tests
 
 ```bash
@@ -155,11 +168,33 @@ If the change involved any of these, update accordingly:
 ## 12. Complexity check
 
 Flag if any touched `.py` file exceeds 200 lines (the module size convention).
-If so, consider whether it should be split before merging.
 
 ```bash
 wc -l $(git diff --name-only main...HEAD | grep '\.py$')
 ```
+
+Rate each file by severity:
+
+| Severity | Threshold | Action |
+|---|---|---|
+| **Watch** | 200-300 lines | Note — may be fine if cohesive |
+| **Warning** | 300-500 lines | Recommend reviewing for split opportunities |
+| **Alert** | 500+ lines | Strongly recommend splitting before merging |
+
+Cross-reference with the Risk Tiers table — a complexity hotspot in a
+**Critical** or **High** tier module is more urgent than one in Standard.
+Call these out explicitly (e.g., "storage.py: Alert (5923 lines), Critical
+tier — consider extracting migrations").
+
+Also check whether this PR *caused* significant growth. Compare the current
+line count against the pre-PR state:
+
+```bash
+git diff --stat main...HEAD -- $(git diff --name-only main...HEAD | grep '\.py$')
+```
+
+If a file grew by more than 50 lines in this PR, flag the growth even if the
+file was already over 200 lines.
 
 ## 13. Verify issue linking
 

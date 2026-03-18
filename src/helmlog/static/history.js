@@ -125,7 +125,7 @@ function render(data) {
     const matchBadge = s.match_confirmed ? '<span class="badge badge-practice" title="Co-op matched">MATCHED</span>'
       : s.match_group_id ? '<span class="badge badge-debrief" title="Pending match">PENDING</span>'
       : '';
-    const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:#8892a4;margin-top:1px">Local: ' + s.name + '</div>' : '';
+    const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:1px">Local: ' + s.name + '</div>' : '';
     return '<div class="card"><div class="session-name">' + nameLink + badge + matchBadge + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + localNameHint
@@ -241,7 +241,7 @@ function _histShowBoatDropdown(raceId, searchText) {
     const js = searchText.trim().replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="_histSelectNewBoat(' + raceId + ',\'' + js + '\')">+ Add &ldquo;' + esc + '&rdquo;</div>';
   }
-  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  if (!html) html = '<div class="boat-option" style="color:var(--text-secondary);cursor:default">No boats found</div>';
   const dd = document.getElementById('picker-dropdown-' + raceId);
   if (dd) dd.innerHTML = html;
 }
@@ -312,18 +312,18 @@ function renderHistoryNote(n, sessionId) {
     try {
       const obj = JSON.parse(n.body);
       content = Object.entries(obj).map(([k,v]) =>
-        '<span style="color:#8892a4">' + k.replace(/&/g,'&amp;') + ':</span> ' + String(v).replace(/&/g,'&amp;')
+        '<span style="color:var(--text-secondary)">' + k.replace(/&/g,'&amp;') + ':</span> ' + String(v).replace(/&/g,'&amp;')
       ).join(' &nbsp;·&nbsp; ');
     } catch { content = n.body; }
   } else {
     content = (n.body||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
   const delBtn = '<button onclick="deleteHistoryNote(' + n.id + ',' + sessionId + ')" '
-    + 'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;'
+    + 'style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;'
     + 'padding:0 4px;float:right" title="Delete">✕</button>';
   return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
     + delBtn
-    + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
+    + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>'
     + content + '</div>';
 }
 
@@ -339,7 +339,7 @@ async function _refreshHistoryNotes(sessionId) {
   const notes = await r.json();
   el.innerHTML = notes.length
     ? notes.map(n => renderHistoryNote(n, sessionId)).join('')
-    : '<span style="color:#8892a4;font-size:.8rem">No notes</span>';
+    : '<span style="color:var(--text-secondary);font-size:.8rem">No notes</span>';
 }
 
 async function toggleHistoryCrew(sessionId) {
@@ -351,7 +351,7 @@ async function toggleHistoryCrew(sessionId) {
     if (btn) btn.textContent = 'Crew ▶';
     return;
   }
-  el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">Loading…</span>';
+  el.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem">Loading…</span>';
   const r = await fetch('/api/races/' + sessionId + '/crew');
   const data = await r.json();
   const crew = data.crew || [];
@@ -367,24 +367,24 @@ async function toggleHistoryCrew(sessionId) {
         const g = c.gear_weight || 0;
         totalBody += b;
         totalGear += g;
-        wt = ' <span style="color:#6b7a90;font-size:.72rem">(';
+        wt = ' <span style="color:var(--text-muted);font-size:.72rem">(';
         wt += b ? b.toFixed(0) + ' lbs' : '0';
         if (g) wt += ' + ' + g.toFixed(0) + ' gear';
         wt += ')</span>';
       }
-      return '<span style="color:#8892a4">' + pos + ':</span> ' + name + wt;
+      return '<span style="color:var(--text-secondary)">' + pos + ':</span> ' + name + wt;
     });
     let html = '<div style="font-size:.82rem">' + parts.join(' &nbsp;·&nbsp; ') + '</div>';
     if (hasWeight) {
       const total = totalBody + totalGear;
       html += '<div class="crew-total-weight" style="display:block">'
         + '<strong>Total weight: ' + total.toFixed(1) + ' lbs</strong>'
-        + ' <span style="color:#8892a4">= crew ' + totalBody.toFixed(1)
+        + ' <span style="color:var(--text-secondary)">= crew ' + totalBody.toFixed(1)
         + ' + gear ' + totalGear.toFixed(1) + '</span></div>';
     }
     el.innerHTML = html;
   } else {
-    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No crew recorded</span>';
+    el.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem">No crew recorded</span>';
   }
   el.style.display = '';
   if (btn) btn.textContent = 'Crew ▼';
@@ -432,13 +432,13 @@ async function _loadVideos(sessionId, el) {
     html += videos.map(v => {
       const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
       const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:#7eb8f7">' + ttl.substring(0,50) + '</a>';
-      const del = '<button onclick="deleteHistVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
-      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + yt + del + '</div>';
+      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:var(--accent)">' + ttl.substring(0,50) + '</a>';
+      const del = '<button onclick="deleteHistVideo(' + v.id + ',' + sessionId + ')" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
+      return '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:2px">' + lbl + yt + del + '</div>';
     }).join('');
     html += '</div>';
   } else {
-    html += '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>';
+    html += '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">No videos linked yet</div>';
   }
   html += _histVideoAddForm(sessionId);
   el.innerHTML = html;
@@ -453,13 +453,13 @@ function _histVideoAddForm(sessionId, startUtc) {
   return '<div id="hist-video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
     + '<input id="hist-video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
     + '<input id="hist-video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="hist-video-sync-pos-' + sessionId + '" class="field" placeholder="Video position (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)" onclick="submitHistAddVideo(' + sessionId + ')">Add Video</button>'
+    + ' <button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\'hist-video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
 }
 
 async function submitHistAddVideo(sessionId) {
@@ -550,7 +550,7 @@ async function toggleHistoryPlayer(sessionId) {
   if (!videos.length) {
     // No videos yet — show just the add form
     const startUtc = el.dataset.startUtc || '';
-    el.innerHTML = '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>'
+    el.innerHTML = '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">No videos linked yet</div>'
       + _histVideoAddForm(sessionId, startUtc);
     el.style.display = '';
     return;
@@ -559,7 +559,7 @@ async function toggleHistoryPlayer(sessionId) {
   const vid = videos.find(v => v.video_id) || videos[0];
   if (!vid || !vid.video_id) {
     const startUtc = el.dataset.startUtc || '';
-    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No embeddable video</span>'
+    el.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem">No embeddable video</span>'
       + '<div id="hist-player-videos-' + sessionId + '" style="margin-top:8px"></div>';
     _renderPlayerVideoList(sessionId, videos);
     el.style.display = '';
@@ -646,8 +646,8 @@ function _renderPlayerVideoList(sessionId, videos) {
     html += videos.map(v => {
       const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
       const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      const del = '<button onclick="deletePlayerVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">&#10005;</button>';
-      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + ttl + del + '</div>';
+      const del = '<button onclick="deletePlayerVideo(' + v.id + ',' + sessionId + ')" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">&#10005;</button>';
+      return '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:2px">' + lbl + ttl + del + '</div>';
     }).join('');
   }
   const panel = document.getElementById('hist-player-' + sessionId);
@@ -695,12 +695,12 @@ async function _loadSailsForHistory(sessionId, el) {
       + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</option>'
     ).join('');
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
-      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
-      + '<select id="hist-sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<span style="color:var(--text-secondary);width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="hist-sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--accent-strong);border-radius:4px;padding:3px 6px;font-size:.78rem">'
       + '<option value="">— none —</option>' + opts
       + '</select></div>';
   });
-  html += '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb;font-size:.78rem" onclick="saveHistSails(' + sessionId + ')">Save Sails</button>';
+  html += '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong);font-size:.78rem" onclick="saveHistSails(' + sessionId + ')">Save Sails</button>';
   html += '</div>';
   el.innerHTML = html;
 }
@@ -736,22 +736,22 @@ async function toggleHistoryTranscript(sessionId, audioSessionId) {
 async function _loadTranscript(sessionId, audioSessionId, el) {
   if (!el) el = document.getElementById('hist-transcript-' + sessionId);
   if (!el) return;
-  el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">Loading…</span>';
+  el.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem">Loading…</span>';
   const r = await fetch('/api/audio/' + audioSessionId + '/transcript');
   if (r.status === 404) {
     // No job yet — offer a button to start transcription
-    el.innerHTML = '<div style="font-size:.8rem;color:#8892a4">No transcript yet. '
+    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-secondary)">No transcript yet. '
       + '<button class="btn-export" style="font-size:.75rem" onclick="startTranscript(' + sessionId + ',' + audioSessionId + ')">▶ Transcribe</button></div>';
     return;
   }
   const t = await r.json();
   if (t.status === 'pending' || t.status === 'running') {
-    el.innerHTML = '<span style="color:#facc15;font-size:.8rem">Transcription in progress…</span>';
+    el.innerHTML = '<span style="color:var(--warning);font-size:.8rem">Transcription in progress…</span>';
     setTimeout(() => _loadTranscript(sessionId, audioSessionId, el), 3000);
     return;
   }
   if (t.status === 'error') {
-    el.innerHTML = '<span style="color:#f87171;font-size:.8rem">Error: ' + (t.error_msg || 'unknown') + '</span>';
+    el.innerHTML = '<span style="color:var(--danger);font-size:.8rem">Error: ' + (t.error_msg || 'unknown') + '</span>';
     return;
   }
   // status === 'done'
@@ -771,15 +771,15 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
     const html = blocks.map(b =>
       `<div style="margin-bottom:8px">
          <span style="color:${color(b.speaker)};font-weight:600;font-size:.75rem">${b.speaker}</span>
-         <span style="color:#8892a4;font-size:.7rem;margin-left:4px">[${fmt(b.start)}]</span>
-         <div style="color:#c4cdd8;font-size:.8rem;margin-top:2px">${b.text.trim().replace(/</g,'&lt;')}</div>
+         <span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[${fmt(b.start)}]</span>
+         <div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">${b.text.trim().replace(/</g,'&lt;')}</div>
        </div>`
     ).join('');
-    el.innerHTML = '<div style="max-height:300px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">' + html + '</div>';
+    el.innerHTML = '<div style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + html + '</div>';
   } else {
     // legacy: plain text fallback
     const text = t.text ? t.text.replace(/</g,'&lt;') : '(empty)';
-    el.innerHTML = '<div style="font-size:.8rem;color:#c4cdd8;white-space:pre-wrap;max-height:200px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">' + text + '</div>';
+    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
   }
 }
 
@@ -818,7 +818,7 @@ async function toggleHistoryTrack(sessionId) {
   const r = await fetch('/api/sessions/' + sessionId + '/track');
   const geojson = await r.json();
   if (!geojson.features || !geojson.features.length) {
-    el.innerHTML = '<span style="color:#8892a4;font-size:.8rem">No track data</span>';
+    el.innerHTML = '<span style="color:var(--text-secondary);font-size:.8rem">No track data</span>';
     return;
   }
 
