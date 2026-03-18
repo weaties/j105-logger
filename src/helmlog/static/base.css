@@ -351,10 +351,15 @@ h1 {
 
 .field {
   background: var(--bg-input);
-  border: 1px solid var(--accent-strong);
+  border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text-primary);
   padding: 8px 10px;
+}
+
+.field:focus-within {
+  border-color: var(--accent-strong);
+  outline: none;
 }
 
 /* When .field is a wrapper div, normalize child inputs/selects so they don't

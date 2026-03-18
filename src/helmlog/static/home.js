@@ -1347,7 +1347,7 @@ function renderNote(n, sessionId) {
       + 'style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;'
       + 'padding:0 4px;float:right" title="Delete">✕</button>'
     : '';
-  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
+  return '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:.82rem;overflow:hidden">'
     + delBtn
     + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>'
     + content + '</div>';
@@ -1551,7 +1551,7 @@ async function _loadSailInventory() {
     + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Name</th>'
     + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Status</th>'
     + '<th></th></tr>'
-    + allSails.map(s => '<tr style="border-top:1px solid #1e3a5f">'
+    + allSails.map(s => '<tr style="border-top:1px solid var(--border)">'
       + '<td style="padding:3px 6px 3px 0;color:var(--text-secondary)">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
       + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:var(--text-secondary)') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
       + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? 'var(--success)' : 'var(--text-secondary)') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
