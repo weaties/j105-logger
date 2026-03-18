@@ -25,6 +25,7 @@
 #   k)   helmlog systemd service (runs as helmlog)
 #   k.1) Loki + Promtail (centralized log management)
 #   k.2) nginx reverse proxy (single-port access to all services)
+#   k.3) Tailscale DNS (MagicDNS for inter-boat hostname resolution)
 #   l)   Scoped NOPASSWD sudo (replaces blanket Pi OS default)
 #   m)   Summary
 
@@ -642,7 +643,7 @@ Wants=signalk.service
 
 [Service]
 User=helmlog
-Group=helmlog
+Group=${CURRENT_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=UV_CACHE_DIR=/var/cache/helmlog
@@ -754,6 +755,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# k.3) Tailscale DNS — enable MagicDNS so Pis can resolve each other by hostname
+#      Requires Tailscale to be installed and logged in already.
+# ---------------------------------------------------------------------------
+
+if command -v tailscale &>/dev/null; then
+    step "Enabling Tailscale MagicDNS..."
+    if tailscale status &>/dev/null; then
+        sudo tailscale set --accept-dns=true
+        sudo tailscale set --operator="${CURRENT_USER}"
+        info "Tailscale DNS enabled; ${CURRENT_USER} set as operator (no sudo needed for tailscale set)."
+    else
+        warn "Tailscale is installed but not logged in — run 'sudo tailscale up' first, then re-run setup.sh."
+    fi
+else
+    warn "Tailscale not installed — skipping DNS configuration."
+    warn "Install Tailscale for inter-boat communication: https://tailscale.com/download/linux"
+fi
+
+# ---------------------------------------------------------------------------
 # l) Scoped NOPASSWD sudo
 #      Creates /etc/sudoers.d/helmlog-allowed with the specific commands
 #      needed for day-to-day operations (deploy.sh, service management).
@@ -843,6 +863,10 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/helmlog.conf /etc/nginx/sites-available/helmlog
+
+# Tailscale management — federation peer discovery, DNS
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale set *
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
 
 # .git/ ownership repair (deploy.sh may need to fix files owned by helmlog)
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /bin/chown -R ${CURRENT_USER}\:${CURRENT_USER} ${PROJECT_DIR}/.git/

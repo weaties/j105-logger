@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 44
+_CURRENT_VERSION: int = 46
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1002,6 +1002,51 @@ _MIGRATIONS: dict[int, str] = {
         );
     """,
     44: """
+        -- Co-op session matching (#281)
+        ALTER TABLE races ADD COLUMN shared_name TEXT;
+        ALTER TABLE races ADD COLUMN match_group_id TEXT;
+        ALTER TABLE races ADD COLUMN match_confirmed INTEGER DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS session_match_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_group_id TEXT NOT NULL,
+            proposer_fingerprint TEXT NOT NULL,
+            local_session_id INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            peer_session_id INTEGER,
+            centroid_lat REAL,
+            centroid_lon REAL,
+            start_utc TEXT,
+            end_utc TEXT,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_smp_match_group
+            ON session_match_proposals(match_group_id);
+        CREATE INDEX IF NOT EXISTS idx_smp_status
+            ON session_match_proposals(status);
+
+        CREATE TABLE IF NOT EXISTS session_match_confirmations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_group_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL,
+            UNIQUE(match_group_id, fingerprint)
+        );
+
+        CREATE TABLE IF NOT EXISTS session_match_names (
+            match_group_id TEXT PRIMARY KEY,
+            shared_name TEXT NOT NULL,
+            proposed_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    """,
+    45: """
+        -- Cache session centroids on races table to avoid N+1 queries (#session-matching)
+        ALTER TABLE races ADD COLUMN centroid_lat REAL;
+        ALTER TABLE races ADD COLUMN centroid_lon REAL;
+    """,
+    46: """
         -- Tuning extraction from transcripts (#276)
         CREATE TABLE IF NOT EXISTS extraction_runs (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1135,9 +1180,20 @@ class Storage:
 
     async def connect(self) -> None:
         """Open the database connection."""
-        self._db = await aiosqlite.connect(self._config.db_path)
+        import os
+        import stat
+
+        db_path = self._config.db_path
+        is_new = not os.path.exists(db_path)
+        self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
+        if is_new and os.path.exists(db_path):
+            # Python sqlite3 creates files with 0644 regardless of umask.
+            # Add group-write so both the helmlog service (helmlog:weaties)
+            # and the deploy user (weaties) can read/write the DB.
+            st = os.stat(db_path)
+            os.chmod(db_path, st.st_mode | stat.S_IWGRP)
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
@@ -2243,7 +2299,10 @@ class Storage:
                 f" (SELECT COUNT(*) > 0 FROM race_sails rs"
                 f"   WHERE rs.race_id = r.id) AS has_sails,"
                 f" (SELECT COUNT(*) > 0 FROM session_notes sn"
-                f"   WHERE sn.race_id = r.id) AS has_notes"
+                f"   WHERE sn.race_id = r.id) AS has_notes,"
+                f" r.shared_name AS shared_name,"
+                f" r.match_group_id AS match_group_id,"
+                f" r.match_confirmed AS match_confirmed"
                 f" FROM races r"
                 f" LEFT JOIN audio_sessions a"
                 f"   ON a.race_id = r.id AND a.session_type IN ('race', 'practice')"
@@ -2278,7 +2337,8 @@ class Storage:
                 f" (SELECT COUNT(*) > 0 FROM transcripts t"
                 f"   WHERE t.audio_session_id = a.id AND t.status = 'done'"
                 f" ) AS has_transcript,"
-                f" 0 AS has_results, 0 AS has_crew, 0 AS has_sails, 0 AS has_notes"
+                f" 0 AS has_results, 0 AS has_crew, 0 AS has_sails, 0 AS has_notes,"
+                f" NULL AS shared_name, NULL AS match_group_id, 0 AS match_confirmed"
                 f" FROM audio_sessions a"
                 f" LEFT JOIN races r ON r.id = a.race_id"
                 f" {where}"

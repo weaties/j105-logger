@@ -2673,6 +2673,7 @@ def create_app(
             "SELECT r.id, r.name, r.event, r.race_num, r.date,"
             " r.start_utc, r.end_utc, r.session_type,"
             " r.peer_fingerprint, r.peer_co_op_id,"
+            " r.shared_name, r.match_group_id, r.match_confirmed,"
             " (SELECT COUNT(*) > 0 FROM positions p"
             "   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
             " ) AS has_track,"
@@ -2720,6 +2721,11 @@ def create_app(
                 "audio_session_id": arow["id"] if arow else None,
                 "peer_fingerprint": row["peer_fingerprint"],
                 "has_wind_field": has_wind_field,
+                "shared_name": row["shared_name"],
+                "match_group_id": row["match_group_id"],
+                "match_status": "confirmed"
+                if row["match_confirmed"]
+                else ("candidate" if row["match_group_id"] else "unmatched"),
             }
         )
 
@@ -5306,15 +5312,46 @@ def create_app(
     ) -> JSONResponse:
         identity = await storage.get_boat_identity()
         boat_card_json: str | None = None
-        if identity:
-            try:
-                from helmlog.federation import load_identity
 
-                _, card = load_identity()
-                boat_card_json = card.to_json()
+        # The filesystem identity is authoritative. If the DB row is missing
+        # (e.g. DB was recreated), rebuild it from the filesystem.
+        try:
+            from helmlog.federation import load_identity
+
+            _, card = load_identity()
+            boat_card_json = card.to_json()
+            if identity:
                 identity["owner_email"] = card.owner_email
-            except FileNotFoundError:
-                pass
+            else:
+                # Re-sync DB from filesystem identity
+                db = storage._conn()
+                from datetime import UTC, datetime
+
+                now_iso = datetime.now(UTC).isoformat()
+                await db.execute(
+                    "INSERT OR REPLACE INTO boat_identity"
+                    " (id, pub_key, fingerprint, sail_number, boat_name, created_at)"
+                    " VALUES (1, ?, ?, ?, ?, ?)",
+                    (
+                        card.pub_key,
+                        card.fingerprint,
+                        card.sail_number,
+                        card.boat_name,
+                        now_iso,
+                    ),
+                )
+                await db.commit()
+                identity = {
+                    "pub_key": card.pub_key,
+                    "fingerprint": card.fingerprint,
+                    "sail_number": card.sail_number,
+                    "boat_name": card.boat_name,
+                    "owner_email": card.owner_email,
+                    "created_at": now_iso,
+                }
+        except FileNotFoundError:
+            pass
+
         return JSONResponse(
             {
                 "identity": identity,
@@ -5690,6 +5727,320 @@ def create_app(
             user=_user,
         )
         return JSONResponse({"status": "unshared", "co_op_id": co_op_id})
+
+    # ── Session matching (local UI endpoints) (#281) ─────────────────
+
+    @app.get("/api/sessions/{session_id}/match")
+    async def api_session_match_status(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Get match status for a session."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed, shared_name FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            return JSONResponse(
+                {"status": "unmatched", "match_group_id": None, "shared_name": None}
+            )
+
+        # Look up proposal status + peer info
+        cur2 = await db.execute(
+            "SELECT p.status, p.proposer_fingerprint, p.peer_session_id,"
+            "       cp.boat_name AS peer_boat_name"
+            " FROM session_match_proposals p"
+            " LEFT JOIN co_op_peers cp ON p.proposer_fingerprint = cp.fingerprint"
+            " WHERE p.match_group_id = ?"
+            " LIMIT 1",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "unmatched"
+
+        peer_boat_name: str | None = None
+        peer_session_name: str | None = None
+        if proposal:
+            peer_boat_name = proposal["peer_boat_name"]
+            peer_sid = proposal["peer_session_id"]
+            # Look up the peer's session name on this boat (if it was the proposer,
+            # peer_session_id is the remote session — we won't have the name locally).
+            # If this boat received the proposal, local_session_id == session_id and
+            # peer_session_id is the remote one. Check if we have a local race with that ID.
+            if peer_sid:
+                cur3 = await db.execute("SELECT name FROM races WHERE id = ?", (peer_sid,))
+                peer_race = await cur3.fetchone()
+                if peer_race:
+                    peer_session_name = peer_race["name"]
+
+        return JSONResponse(
+            {
+                "status": status,
+                "match_group_id": match_group_id,
+                "shared_name": row["shared_name"],
+                "match_confirmed": bool(row["match_confirmed"]),
+                "peer_boat_name": peer_boat_name,
+                "peer_session_name": peer_session_name,
+            }
+        )
+
+    @app.post("/api/sessions/{session_id}/match/confirm")
+    async def api_session_match_confirm(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Confirm a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import confirm_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        # Each boat confirms independently on its own DB, so quorum=1.
+        # Federation-wide quorum is tracked via peer API confirmations.
+        ok = await confirm_match(storage, match_group_id, fp, quorum=1)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be confirmed")
+
+        # Get updated status
+        cur2 = await db.execute(
+            "SELECT status FROM session_match_proposals WHERE match_group_id = ?",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "candidate"
+
+        await _audit(request, "session.match.confirm", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": status})
+
+    @app.post("/api/sessions/{session_id}/match/reject")
+    async def api_session_match_reject(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Reject a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import reject_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await reject_match(storage, match_group_id, fp)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be rejected")
+
+        await _audit(request, "session.match.reject", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": "rejected"})
+
+    @app.put("/api/sessions/{session_id}/match/name")
+    async def api_session_match_name(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set or update the shared name for a confirmed match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(400, "No match proposal for this session")
+        if not row["match_confirmed"]:
+            raise HTTPException(400, "Match must be confirmed before setting a shared name")
+
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(422, "name is required")
+
+        from helmlog.session_matching import set_shared_name
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await set_shared_name(storage, match_group_id, name, fp)
+        if not ok:
+            raise HTTPException(400, "Failed to set shared name")
+
+        # Push name to co-op peers
+        co_op_cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        co_op_rows = await co_op_cur.fetchall()
+        if co_op_rows:
+            from helmlog.federation import load_identity
+            from helmlog.peer_client import set_match_name as peer_set_match_name
+
+            try:
+                private_key, card = load_identity()
+                coros: list[Any] = []
+                for co_op_row in co_op_rows:
+                    co_op_id = co_op_row["co_op_id"]
+                    peers = await storage.list_co_op_peers(co_op_id)
+                    for peer in peers:
+                        pip = peer.get("tailscale_ip")
+                        if not pip or peer.get("fingerprint") == card.fingerprint:
+                            continue
+                        coros.append(
+                            peer_set_match_name(
+                                pip,
+                                co_op_id,
+                                match_group_id,
+                                name,
+                                private_key,
+                                card.fingerprint,
+                            )
+                        )
+                results = await asyncio.gather(*coros, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.warning(f"Peer name push failed: {r}")
+            except Exception:
+                logger.warning("Failed to push shared name to peers (local save succeeded)")
+
+        await _audit(
+            request, "session.match.name", detail=f"match={match_group_id} name={name}", user=_user
+        )
+        return JSONResponse({"match_group_id": match_group_id, "shared_name": name})
+
+    @app.post("/api/sessions/{session_id}/match/scan")
+    @limiter.limit("5/minute")
+    async def api_session_match_scan(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Trigger a proximity scan for this session against co-op peers."""
+        db = storage._conn()
+
+        # Find co-ops this session is shared with
+        cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        co_op_ids = [r["co_op_id"] for r in rows]
+        if not co_op_ids:
+            raise HTTPException(400, "Session is not shared with any co-op")
+
+        # Get session centroid and time range
+        from helmlog.session_matching import compute_session_centroid
+
+        centroid_lat, centroid_lon = await compute_session_centroid(storage, session_id)
+        cur2 = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?",
+            (session_id,),
+        )
+        race = await cur2.fetchone()
+        if not race or not race["start_utc"] or not race["end_utc"]:
+            raise HTTPException(400, "Session has no time range")
+
+        from helmlog.federation import load_identity
+        from helmlog.peer_client import propose_session_match
+
+        try:
+            private_key, card = load_identity()
+        except FileNotFoundError:
+            raise HTTPException(409, "Initialize identity first")  # noqa: B904
+
+        # For each co-op, propose matches to all peers in parallel
+        coros: list[Any] = []
+        for co_op_id in co_op_ids:
+            peers = await storage.list_co_op_peers(co_op_id)
+            for peer in peers:
+                ip = peer.get("tailscale_ip")
+                if not ip or peer.get("fingerprint") == card.fingerprint:
+                    continue
+                coros.append(
+                    propose_session_match(
+                        ip,
+                        co_op_id,
+                        private_key,
+                        card.fingerprint,
+                        local_session_id=session_id,
+                        centroid_lat=centroid_lat,
+                        centroid_lon=centroid_lon,
+                        start_utc=race["start_utc"],
+                        end_utc=race["end_utc"],
+                    )
+                )
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        proposals: list[dict[str, Any]] = [r for r in results if isinstance(r, dict)]
+
+        # Mirror the match on the initiating boat: set match_group_id on the
+        # local session and create a local proposal so the status query works.
+        if proposals:
+            from datetime import UTC, datetime, timedelta
+
+            mgid = proposals[0].get("match_group_id")
+            matched_peer_sid = proposals[0].get("matched_session_id")
+            if mgid:
+                await db.execute(
+                    "UPDATE races SET match_group_id = ? WHERE id = ? AND match_group_id IS NULL",
+                    (mgid, session_id),
+                )
+                now = datetime.now(UTC)
+                await db.execute(
+                    "INSERT OR IGNORE INTO session_match_proposals"
+                    " (match_group_id, proposer_fingerprint, local_session_id,"
+                    "  peer_session_id, centroid_lat, centroid_lon,"
+                    "  start_utc, end_utc, status, created_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)",
+                    (
+                        mgid,
+                        card.fingerprint,
+                        session_id,
+                        matched_peer_sid,
+                        centroid_lat,
+                        centroid_lon,
+                        race["start_utc"],
+                        race["end_utc"],
+                        now.isoformat(),
+                        (now + timedelta(hours=48)).isoformat(),
+                    ),
+                )
+                await db.commit()
+
+        await _audit(
+            request,
+            "session.match.scan",
+            detail=f"session={session_id} proposals={len(proposals)}",
+            user=_user,
+        )
+        return JSONResponse({"proposals": proposals})
 
     # ── Peer data proxies (local UI → remote peers) ────────────────────
 

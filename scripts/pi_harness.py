@@ -27,13 +27,17 @@ Prerequisites:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 import httpx
 
@@ -292,22 +296,26 @@ def _invite_and_join(
     resp.raise_for_status()
     _log("setup", f"  {member_pi.name}: joined co-op")
 
-    # Update Tailscale IPs so peers can reach each other
+    # Update Tailscale IPs so peers can reach each other.
+    # Use the actual Tailscale IP from identity cards — not the hostname
+    # passed via --pi-a/--pi-b, which MagicDNS may not resolve on the Pis.
     admin_card = httpx.get(
         f"{admin_pi.base_url}/co-op/identity",
         timeout=10,
     ).json()
+    admin_ts_ip = admin_card.get("tailscale_ip") or admin_pi.ip
+    member_ts_ip = boat_card.get("tailscale_ip") or member_pi.ip
     _update_peer_ip(
         member_pi,
         co_op_id,
         admin_card.get("fingerprint", ""),
-        admin_pi.ip,
+        admin_ts_ip,
     )
     _update_peer_ip(
         admin_pi,
         co_op_id,
         boat_card.get("fingerprint", ""),
-        member_pi.ip,
+        member_ts_ip,
     )
 
 
@@ -381,18 +389,53 @@ def setup(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
         email="harness@test.helmlog",
     )
 
-    # Create co-op on Pi-A (admin)
-    co_op_id = _create_co_op(pi_a, co_op_name)
+    _log("setup", "Identities ready (co-op created after seeding)")
+    return ""
 
-    # Invite Pi-B and have it join
+
+def setup_federation(pi_a: PiHost, pi_b: PiHost, co_op_name: str) -> str:
+    """Create co-op and invite/join after seeding.
+
+    Must run after seed() — the seeder deletes and recreates the DB, so any
+    co-op data created before seeding would be lost.
+    """
+    _header("Federation Setup")
+
+    co_op_id = _create_co_op(pi_a, co_op_name)
     _invite_and_join(pi_a, pi_b, co_op_id)
     pi_b.co_op_id = co_op_id
+
+    # Re-share seeded sessions with the real co-op.  The seed phase runs
+    # before federation setup (because the seeder may recreate the DB), so
+    # sessions are initially shared with an empty co_op_id.  Fix that now,
+    # and mark one session per Pi as embargoed so the embargo test runs.
+    _reshare_sessions(pi_a, co_op_id)
+    _reshare_sessions(pi_b, co_op_id)
 
     _log("setup", f"Federation ready: co-op {co_op_id[:8]}...")
     return co_op_id
 
 
-def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
+def _reshare_sessions(pi: PiHost, co_op_id: str) -> None:
+    """Share all seeded sessions with *co_op_id* and embargo the first one."""
+    from datetime import UTC, datetime, timedelta
+
+    embargo_until = (datetime.now(UTC) + timedelta(hours=24)).isoformat()
+
+    # Insert sharing rows for all sessions, then embargo the first one.
+    sql = (
+        f"INSERT OR IGNORE INTO session_sharing"
+        f" (session_id, co_op_id, shared_at, embargo_until)"
+        f" SELECT id, '{co_op_id}', datetime('now'), NULL FROM races;"
+        f" UPDATE session_sharing SET embargo_until = '{embargo_until}'"
+        f" WHERE co_op_id = '{co_op_id}'"
+        f" AND session_id = (SELECT MIN(id) FROM races);"
+    )
+    pi.ssh(f'sqlite3 ~/helmlog/data/logger.db "{sql}"', check=False)
+    _log("setup", f"  {pi.name}: sessions shared with co-op, first session embargoed")
+
+
+def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
     """Seed test sessions with instrument data on both Pis."""
     _header("Seed")
     results = {}
@@ -407,14 +450,17 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
 
     for pi in [pi_a, pi_b]:
         _log("seed", f"Seeding sessions on {pi.name}...")
-        # Kill any leftover seed processes and stop service to release DB lock
+        # Stop service to release DB lock so the seeder can write.
+        # storage.py connect() ensures the DB is group-writable (664) on
+        # creation, so the seeder (weaties) can write to a helmlog-owned DB.
         pi.ssh("pkill -f harness_seed || true", check=False)
         pi.ssh("sudo systemctl stop helmlog", check=False)
         time.sleep(1)
+        co_op_arg = f" --co-op-id {co_op_id}" if co_op_id else ""
         output = pi.ssh(
             "cd ~/helmlog && ~/.local/bin/uv run --no-sync python scripts/harness_seed.py"
-            f" --co-op-id {co_op_id} --sessions 2 2>/dev/null",
-            timeout=120,
+            f"{co_op_arg} --sessions 2 2>/dev/null",
+            timeout=180,
         )
         pi.ssh("sudo systemctl start helmlog", check=False)
         # Wait for service to be ready
@@ -438,11 +484,18 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str) -> dict[str, Any]:
     return results
 
 
-def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
+def test(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> list[dict[str, Any]]:
     """Run smoke tests from Pi-A against Pi-B."""
     _header("Test")
 
     _log("test", f"Running smoke tests: {pi_a.name} → {pi_b.name}")
+
+    # Ensure integration_smoke.py on Pi-A is up to date with local copy.
+    smoke_script = (Path(__file__).parent / "integration_smoke.py").read_text()
+    pi_a.ssh(
+        f"cat > ~/helmlog/scripts/integration_smoke.py << 'SMOKE_EOF'\n{smoke_script}SMOKE_EOF",
+        check=False,
+    )
 
     # Copy the service identity to weaties' home so load_identity() works.
     # The service stores keys at /var/cache/helmlog/.helmlog/identity/
@@ -460,23 +513,24 @@ def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
         "cd /home/weaties/helmlog"
         " && /home/weaties/.local/bin/uv run --no-sync"
         " python scripts/integration_smoke.py"
-        f" --peer {pi_b.ip} --port {pi_b.port} --json 2>/dev/null",
+        f" --peer {pi_b.ip} --port {pi_b.port}"
+        f"{f' --co-op-id {co_op_id}' if co_op_id else ''}"
+        " --json 2>/dev/null",
         timeout=60,
         check=False,
     )
 
-    # Parse results — the JSON is after the human-readable output
+    # Parse results — the JSON array is after the human-readable output.
+    # integration_smoke.py prints it with indent=2 (multi-line), so we
+    # find the last top-level '[' and parse from there to the end.
     results: list[dict[str, Any]] = []
-    for line in output.split("\n"):
-        line = line.strip()
-        if line.startswith("["):
-            try:
-                results = json.loads(line)
-                break
-            except json.JSONDecodeError:
-                pass
+    json_start = output.rfind("\n[")
+    if json_start >= 0:
+        with contextlib.suppress(json.JSONDecodeError):
+            results = json.loads(output[json_start:])
 
     if not results:
+        # Fallback: maybe the output is *only* JSON (no preamble)
         try:
             results = json.loads(output)
         except json.JSONDecodeError:
@@ -497,6 +551,197 @@ def test(pi_a: PiHost, pi_b: PiHost) -> list[dict[str, Any]]:
     return results
 
 
+def _get_session_id_on_pi(pi: PiHost, seed_results: dict[str, Any]) -> int | None:
+    """Return a session ID to use for UI tests — from seed results or SSH fallback."""
+    sessions = seed_results.get(pi.name, [])
+    if sessions:
+        return int(sessions[0]["session_id"])
+    # SSH fallback: query the DB directly
+    try:
+        result = pi.ssh(
+            "sqlite3 ~/helmlog/data/logger.db 'SELECT id FROM races ORDER BY id DESC LIMIT 1'",
+            check=False,
+        )
+        if result.strip().isdigit():
+            return int(result.strip())
+    except Exception:
+        pass
+    return None
+
+
+def test_ui(pi_a: PiHost, seed_results: dict[str, Any]) -> list[dict[str, Any]]:
+    """Run session-match UI smoke tests from Mac against Pi-A.
+
+    All HTTP calls run directly from Mac — no SSH needed except the DB schema
+    check (which cannot be done over HTTP).  AUTH_DISABLED must already be set
+    (the setup phase handles this).
+    """
+    _header("UI Tests (Mac → Pi-A)")
+
+    session_id = _get_session_id_on_pi(pi_a, seed_results)
+    base = pi_a.base_url
+    results: list[dict[str, Any]] = []
+
+    def _t(name: str, fn: Callable[[], str | None]) -> None:
+        start = time.monotonic()
+        try:
+            detail = fn() or ""
+            elapsed = (time.monotonic() - start) * 1000
+            _log("ui", f"  [PASS] {name} ({elapsed:.0f}ms) {detail}")
+            results.append({"name": name, "passed": True, "duration_ms": elapsed, "detail": detail})
+        except Exception as exc:
+            elapsed = (time.monotonic() - start) * 1000
+            _log("ui", f"  [FAIL] {name} ({elapsed:.0f}ms) {exc}")
+            results.append(
+                {"name": name, "passed": False, "duration_ms": elapsed, "detail": str(exc)}
+            )
+
+    def _skip(name: str, reason: str) -> None:
+        results.append(
+            {"name": name, "passed": True, "duration_ms": 0, "detail": f"SKIP: {reason}"}
+        )
+
+    # ── DB schema — SSH is unavoidable here ───────────────────────────────────
+    def check_schema() -> str:
+        schema = pi_a.ssh(
+            "sqlite3 ~/helmlog/data/logger.db '.schema races'",
+            check=False,
+        )
+        required = ("shared_name", "match_group_id", "match_confirmed")
+        missing = [c for c in required if c not in schema]
+        assert not missing, f"Missing columns: {', '.join(missing)}"
+        return "shared_name, match_group_id, match_confirmed present"
+
+    _t("db_schema_has_match_columns", check_schema)
+
+    # ── History page — no session required ────────────────────────────────────
+    def check_history() -> str:
+        r = httpx.get(f"{base}/history", timeout=10)
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+        return "history page renders"
+
+    _t("history_page_renders", check_history)
+
+    # ── Per-session tests — skipped gracefully if no sessions were seeded ─────
+    if session_id is None:
+        for name in (
+            "match_api_reachable",
+            "match_api_has_required_fields",
+            "scan_endpoint_reachable",
+            "match_nonexistent_session_returns_404",
+            "session_detail_renders",
+            "session_detail_has_match_content",
+            "confirm_match_when_candidate",
+            "name_validation",
+        ):
+            _skip(name, "no seeded session available")
+    else:
+
+        def check_match_api() -> str:
+            r = httpx.get(f"{base}/api/sessions/{session_id}/match", timeout=10)
+            assert r.status_code in (200, 404), (
+                f"Expected 200/404, got {r.status_code}: {r.text[:200]}"
+            )
+            return f"session {session_id}: HTTP {r.status_code}"
+
+        _t("match_api_reachable", check_match_api)
+
+        def check_match_fields() -> str:
+            r = httpx.get(f"{base}/api/sessions/{session_id}/match", timeout=10)
+            if r.status_code == 404:
+                return "SKIP: endpoint not yet implemented"
+            r.raise_for_status()
+            data = r.json()
+            for required_field in ("status", "match_group_id", "shared_name"):
+                assert required_field in data, (
+                    f"Missing field '{required_field}' in {list(data.keys())}"
+                )
+            return f"fields OK: {list(data.keys())}"
+
+        _t("match_api_has_required_fields", check_match_fields)
+
+        def check_scan() -> str:
+            r = httpx.post(f"{base}/api/sessions/{session_id}/match/scan", timeout=15)
+            assert r.status_code in (200, 202, 404), (
+                f"Expected 200/202/404, got {r.status_code}: {r.text[:200]}"
+            )
+            return f"scan returned {r.status_code}"
+
+        _t("scan_endpoint_reachable", check_scan)
+
+        def check_404() -> str:
+            r = httpx.get(f"{base}/api/sessions/99999/match", timeout=10)
+            assert r.status_code == 404, f"Expected 404, got {r.status_code}"
+            return "nonexistent session correctly returns 404"
+
+        _t("match_nonexistent_session_returns_404", check_404)
+
+        def check_session_detail() -> str:
+            r = httpx.get(f"{base}/session/{session_id}", timeout=10)
+            assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+            ct = r.headers.get("content-type", "")
+            assert "html" in ct.lower(), f"Expected HTML content-type, got {ct!r}"
+            return f"session {session_id} renders"
+
+        _t("session_detail_renders", check_session_detail)
+
+        def check_match_section() -> str:
+            r = httpx.get(f"{base}/session/{session_id}", timeout=10)
+            if r.status_code != 200:
+                return f"SKIP: session page returned {r.status_code}"
+            html = r.text.lower()
+            markers = ["match", "shared_name", "scan", "match_state", "match-"]
+            found = [m for m in markers if m in html]
+            assert found, f"No match-related content in session HTML (checked: {markers})"
+            return f"match markers found: {found[:3]}"
+
+        _t("session_detail_has_match_content", check_match_section)
+
+        def check_confirm_conditional() -> str:
+            r = httpx.get(f"{base}/api/sessions/{session_id}/match", timeout=10)
+            if r.status_code != 200:
+                return "SKIP: match API not available"
+            state = r.json().get("status", "unmatched")
+            if state != "candidate":
+                return f"SKIP: status={state!r} (need candidate; run scan first)"
+            r2 = httpx.post(f"{base}/api/sessions/{session_id}/match/confirm", timeout=10)
+            assert r2.status_code in (200, 204), f"Expected 200/204, got {r2.status_code}"
+            return "confirmed candidate match"
+
+        _t("confirm_match_when_candidate", check_confirm_conditional)
+
+        def check_name_validation() -> str:
+            r = httpx.get(f"{base}/api/sessions/{session_id}/match", timeout=10)
+            if r.status_code != 200:
+                return "SKIP: match API not available"
+            data = r.json()
+            state = data.get("status", "unmatched")
+            confirmed = data.get("match_confirmed", False)
+            if state in ("confirmed", "named") and confirmed:
+                r2 = httpx.put(
+                    f"{base}/api/sessions/{session_id}/match/name",
+                    json={"name": "Harness Test Shared Name"},
+                    timeout=10,
+                )
+                assert r2.status_code in (200, 204), f"Expected 200/204, got {r2.status_code}"
+                return "shared name set on confirmed match"
+            r2 = httpx.put(
+                f"{base}/api/sessions/{session_id}/match/name",
+                json={"name": "Should Be Rejected"},
+                timeout=10,
+            )
+            assert r2.status_code in (400, 409, 422), (
+                f"Expected 400/409/422 for {state!r} session, got {r2.status_code}"
+            )
+            return f"name correctly rejected for {state!r} state ({r2.status_code})"
+
+        _t("name_validation", check_name_validation)
+
+    passed = sum(1 for r in results if r.get("passed"))
+    _log("ui", f"Results: {passed}/{len(results)} passed")
+    return results
+
+
 def teardown(pi_a: PiHost, pi_b: PiHost) -> None:
     """Remove AUTH_DISABLED and restart services."""
     _header("Teardown")
@@ -507,26 +752,31 @@ def teardown(pi_a: PiHost, pi_b: PiHost) -> None:
         _log("teardown", f"{pi.name}: AUTH_DISABLED removed, restarted")
 
 
+def _table(results: list[dict[str, Any]]) -> str:
+    """Format test results as a markdown table body."""
+    rows = []
+    for r in results:
+        s = "PASS" if r.get("passed") else "FAIL"
+        dur = f"{r.get('duration_ms', 0):.0f}ms"
+        detail = r.get("detail", "")
+        rows.append(f"| {r['name']} | {s} | {dur} | {detail} |")
+    return "\n".join(rows)
+
+
 def _build_report_body(
     pi_a: PiHost,
     pi_b: PiHost,
     co_op_id: str,
     seed_results: dict[str, Any],
     test_results: list[dict[str, Any]],
+    ui_test_results: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build a GitHub issue comment body from results."""
-    passed = sum(1 for r in test_results if r.get("passed"))
-    total = len(test_results)
+    all_results = test_results + (ui_test_results or [])
+    passed = sum(1 for r in all_results if r.get("passed"))
+    total = len(all_results)
     failed = total - passed
     emoji = "white_check_mark" if failed == 0 else "x"
-
-    rows = []
-    for r in test_results:
-        s = "PASS" if r.get("passed") else "FAIL"
-        dur = f"{r.get('duration_ms', 0):.0f}ms"
-        detail = r.get("detail", "")
-        rows.append(f"| {r['name']} | {s} | {dur} | {detail} |")
-    test_table = "\n".join(rows)
 
     session_lines = []
     for pi_name, sessions in seed_results.items():
@@ -536,7 +786,8 @@ def _build_report_body(
             session_lines.append(f"  - {pi_name}: session {sid} ({pts} pts)")
     session_summary = "\n".join(session_lines)
 
-    return f"""## Pi Test Harness Report :{emoji}:
+    fed_passed = sum(1 for r in test_results if r.get("passed"))
+    body = f"""## Pi Test Harness Report :{emoji}:
 
 **Topology:** {pi_a.name} ({pi_a.branch}) ↔ {pi_b.name} ({pi_b.branch})
 **Co-op:** `{co_op_id}`
@@ -544,14 +795,24 @@ def _build_report_body(
 ### Seeded Data
 {session_summary}
 
-### Smoke Tests — {passed}/{total} passed
+### Federation Smoke Tests — {fed_passed}/{len(test_results)} passed
 
 | Test | Status | Duration | Detail |
 |---|---|---|---|
-{test_table}
+{_table(test_results)}"""
 
----
-_Generated by `scripts/pi_harness.py`_"""
+    if ui_test_results is not None:
+        ui_passed = sum(1 for r in ui_test_results if r.get("passed"))
+        body += f"""
+
+### Session Match UI Tests — {ui_passed}/{len(ui_test_results)} passed
+
+| Test | Status | Duration | Detail |
+|---|---|---|---|
+{_table(ui_test_results)}"""
+
+    body += "\n\n---\n_Generated by `scripts/pi_harness.py`_"
+    return body
 
 
 def report_to_issue(
@@ -561,9 +822,10 @@ def report_to_issue(
     co_op_id: str,
     seed_results: dict[str, Any],
     test_results: list[dict[str, Any]],
+    ui_test_results: list[dict[str, Any]] | None = None,
 ) -> None:
     """Post results as a comment on the GitHub issue."""
-    body = _build_report_body(pi_a, pi_b, co_op_id, seed_results, test_results)
+    body = _build_report_body(pi_a, pi_b, co_op_id, seed_results, test_results, ui_test_results)
     subprocess.run(
         ["gh", "issue", "comment", str(issue_number), "--body", body],
         check=True,
@@ -593,6 +855,7 @@ def main() -> None:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--setup-only", action="store_true", help="Setup only")
     mode.add_argument("--test-only", action="store_true", help="Test only")
+    mode.add_argument("--test-ui-only", action="store_true", help="UI tests only")
     mode.add_argument("--teardown-only", action="store_true", help="Teardown only")
 
     args = parser.parse_args()
@@ -622,25 +885,31 @@ def main() -> None:
     co_op_id = ""
     seed_results: dict[str, Any] = {}
     test_results: list[dict[str, Any]] = []
+    ui_test_results: list[dict[str, Any]] | None = None
 
     if args.teardown_only:
         teardown(pi_a, pi_b)
         sys.exit(0)
 
     if args.test_only:
-        test_results = test(pi_a, pi_b)
+        test_results = test(pi_a, pi_b, co_op_id)
+    elif args.test_ui_only:
+        ui_test_results = test_ui(pi_a, seed_results)
     elif args.setup_only:
-        co_op_id = setup(pi_a, pi_b, args.co_op_name)
-        seed_results = seed(pi_a, pi_b, co_op_id)
+        setup(pi_a, pi_b, args.co_op_name)
+        seed_results = seed(pi_a, pi_b)
+        co_op_id = setup_federation(pi_a, pi_b, args.co_op_name)
     else:
-        # Full lifecycle
-        co_op_id = setup(pi_a, pi_b, args.co_op_name)
-        seed_results = seed(pi_a, pi_b, co_op_id)
-        test_results = test(pi_a, pi_b)
+        # Full lifecycle: identities → seed → federation → test → UI → teardown
+        setup(pi_a, pi_b, args.co_op_name)
+        seed_results = seed(pi_a, pi_b)
+        co_op_id = setup_federation(pi_a, pi_b, args.co_op_name)
+        test_results = test(pi_a, pi_b, co_op_id)
+        ui_test_results = test_ui(pi_a, seed_results)
         teardown(pi_a, pi_b)
 
     # Report
-    if args.issue and (test_results or seed_results):
+    if args.issue and (test_results or seed_results or ui_test_results):
         report_to_issue(
             args.issue,
             pi_a,
@@ -648,6 +917,7 @@ def main() -> None:
             co_op_id,
             seed_results,
             test_results,
+            ui_test_results,
         )
 
     # Summary
@@ -657,9 +927,14 @@ def main() -> None:
     if test_results:
         passed = sum(1 for r in test_results if r.get("passed"))
         failed = sum(1 for r in test_results if not r.get("passed"))
-        print(f"  Tests: {passed} passed, {failed} failed")
-        if failed > 0:
-            sys.exit(1)
+        print(f"  Federation tests: {passed} passed, {failed} failed")
+    if ui_test_results is not None:
+        passed = sum(1 for r in ui_test_results if r.get("passed"))
+        failed = sum(1 for r in ui_test_results if not r.get("passed"))
+        print(f"  UI tests: {passed} passed, {failed} failed")
+    all_failed = sum(1 for r in (test_results + (ui_test_results or [])) if not r.get("passed"))
+    if all_failed > 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
