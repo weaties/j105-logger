@@ -166,7 +166,7 @@
   <div class="label">Schedule Start Time</div>
   <div class="field">
     <label for="schedule-time">Start time (local)</label>
-    <input id="schedule-time" type="datetime-local" style="width:100%;padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary)"/>
+    <input id="schedule-time" type="datetime-local" style="width:100%;padding:4px 0;background:transparent;color:var(--text-primary)"/>
   </div>
   <div style="display:flex;gap:8px;margin-top:8px">
     <button class="btn btn-primary" onclick="submitSchedule()" style="flex:1">Schedule</button>
@@ -233,7 +233,7 @@
       <select id="synth-peer-session" style="font-size:.82rem;padding:6px 8px;background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;color:var(--text-primary)">
         <option value="">Select a peer session...</option>
       </select>
-      <button class="btn" style="padding:6px 12px;font-size:.8rem;background:var(--success);color:var(--text-primary);border:none;border-radius:4px;cursor:pointer;white-space:nowrap" id="synth-import-wind" onclick="importPeerWindModel()" disabled>Import Wind</button>
+      <button class="btn" style="padding:6px 12px;font-size:.8rem;background:var(--success);color:var(--bg-primary);border:none;border-radius:4px;cursor:pointer;white-space:nowrap" id="synth-import-wind" onclick="importPeerWindModel()" disabled>Import Wind</button>
     </div>
     <div id="synth-import-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:4px;display:none"></div>
   </div>

@@ -354,6 +354,33 @@ h1 {
   border: 1px solid var(--accent-strong);
   border-radius: 6px;
   color: var(--text-primary);
+  padding: 8px 10px;
+}
+
+/* When .field is a wrapper div, normalize child inputs/selects so they don't
+   create double borders against the parent container border. */
+.field > label {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.field > input,
+.field > select {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  padding: 2px 0;
+  outline: none;
+}
+
+.field > input:focus,
+.field > select:focus {
+  outline: none;
 }
 
 .event-row {
@@ -1145,7 +1172,7 @@ nav.site-nav {
 .filter-btn.active {
   border-color: var(--accent-strong);
   color: var(--accent);
-  background: var(--border);
+  background: var(--bg-secondary);
 }
 
 .pager {
