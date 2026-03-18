@@ -1,5 +1,105 @@
 # Release Notes
 
+## Sprint 4 — Analysis, Session Matching, Color Schemes & Tuning Extraction (2026-03-18)
+
+Sprint 4 adds a pluggable analysis framework, co-op session matching,
+customizable color schemes, and transcript-based tuning extraction.
+
+### Pluggable analysis framework (#283, #309, #321)
+
+Extensible plugin system for post-session analysis:
+
+- **Plugin protocol** — ABC-based plugin API with importlib discovery, SQLite
+  cache with data-hash invalidation (schema v42), and preference inheritance
+  (platform → co-op → boat → user)
+- **Polar baseline plugin** — wraps existing polar analysis as the first
+  built-in plugin
+- **Sail VMG comparison** (#309) — pure upwind/downwind VMG functions across 5
+  wind bands, cross-session `/api/sails/performance` endpoint, and performance
+  table on the sails page
+
+### Co-op session matching (#281, #324)
+
+Proximity-based pairing of co-op sessions across boats:
+
+- **Automatic scan** — configurable time window (15 min) and geographic radius
+  (2 NM) to detect overlapping sessions from co-op peers
+- **Match lifecycle** — Unmatched → Candidate → Matched → Named, with quorum
+  confirmation and shared name synthesis
+- **Federation support** — 5 new peer API endpoints for scan, proposal, confirm,
+  reject, and name push — all Ed25519-signed
+- **Scalability** — parallel fan-out for 20-boat co-ops, proposal dedup,
+  centroid caching (schema v45)
+
+### Boat tuning extraction from transcripts (#276, #325)
+
+Regex-based extraction of tuning parameters from audio transcripts:
+
+- **RegexExtractor** — parses natural language ("backstay 12", "vang 8.5") from
+  transcript segments into structured tuning values
+- **Extraction run lifecycle** — Created → Running → ReviewPending/Empty →
+  FullyReviewed, with accept/dismiss review workflow
+- **Auto-create settings** — accepted items automatically create `boat_settings`
+  timeline entries linked to the extraction run
+- **Privacy** — all extraction data is boat-private, never shared with co-op
+- Schema v44 adds `extraction_runs` and `extraction_items` tables; 7 API endpoints
+
+### Customizable color schemes (#347, #358)
+
+Sunlight-optimized theming system:
+
+- **6 presets** with WCAG contrast validation
+- **Admin default + user override** — boat-wide default on admin settings,
+  personal override on profile page
+- **Full compliance** — ~150+ hardcoded hex colors replaced with CSS custom
+  properties across all templates, JS, CSS, and Python
+
+### Threaded comments Phase 2 — notifications (#284, #321)
+
+- **@mention autocomplete** — dropdown in comment textareas with arrow key
+  navigation, multi-word name support
+- **4 notification types** — mention, new thread, reply, resolved — with
+  pluggable channels (platform + email)
+- **Attention dashboard** — `/attention` page with nav badge for unread
+  notifications
+- Schema v43 for notification storage
+
+### Sail management overhaul (#306, #307, #308, #318)
+
+- **Point-of-sail field** — upwind/downwind/both classification per sail
+  (schema v39)
+- **Default sail selection** — `sail_defaults` table (schema v40) with
+  pre-selection on session pages
+- **Sail management page** — `/sails` with inventory, accumulated tack/gybe
+  counts, per-session history with wind summaries
+
+### Auto-start recording (#345, #346)
+
+- Schedule a future race start time via the home page UI
+- Background task fires `start_race()` at the scheduled time with 1 s polling
+- Manual start atomically cancels any pending schedule; missed starts are
+  detected and cleared
+
+### Developer experience & infrastructure
+
+- **Risk tiers** (#320) — 4-tier classification (Critical/High/Standard/Low)
+  with tier-aware `/pr-checklist` and `/spec` skill for structured specs
+- **Skill evaluation framework** (#349, #357) — test cases for measuring skill
+  quality and detecting regressions
+- **/architecture skill** (#352, #363) — codebase comprehension with module map,
+  data flow, and complexity hotspots
+- **/diagnose skill** (#351, #360) — systematic Pi troubleshooting runbook
+- **/domain skill** (#350, #359) — Signal K paths, NMEA 2000 PGNs, and sailing
+  instrument reference
+- **Pi test harness** (#334, #335, #336) — Mac-orchestrated cross-Pi federation
+  testing over Tailscale with UI smoke tests
+- **Claude Code Review** (#330) — GitHub Actions workflow for automated PR review
+- **CI updates** — actions/checkout v6, astral-sh/setup-uv v7
+- **Pi fixes** — sudoers exact-match fix (#361), data dir ownership (#362),
+  Grafana provisioning permissions (#361)
+
+---
+
 ## Sprint 3 — Auth, Boat Settings, Comments & Developer Tooling (2026-03-14)
 
 Sprint 3 adds multi-method authentication, boat tuning capture, and
