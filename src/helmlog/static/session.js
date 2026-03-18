@@ -12,6 +12,9 @@ let _ytReady = false;
 let _syncTimer = null;
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
+let _transcriptId = null; // transcript ID for tuning extraction
+let _tuningSegmentAudio = null; // shared <audio> for segment playback
+let _tuningSegmentTimer = null; // timeupdate stop timer
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -909,6 +912,11 @@ async function loadTranscript() {
   if (t.status === 'error') {
     body.innerHTML = '<span style="color:var(--danger)">Error: ' + esc(t.error_msg || 'unknown') + '</span>';
     return;
+  }
+  // Store transcript ID for tuning extraction
+  if (t.id) {
+    _transcriptId = t.id;
+    loadTuningExtractions();
   }
   if (t.segments && t.segments.length > 0) {
     const blocks = [];
@@ -1883,6 +1891,7 @@ function _renderWfChart(currentS) {
 let _bsParams = null;       // parameter definitions from /api/boat-settings/parameters
 let _bsResolved = null;     // resolved settings at current playback time
 let _bsLastAsOf = null;     // debounce: last as_of value we fetched
+let _bsHistory = null;      // all race-specific setting entries (full timeline)
 
 async function loadBoatSettings() {
   const card = document.getElementById('boat-settings-card');
@@ -1903,9 +1912,13 @@ async function _fetchAndRenderBoatSettings(asOf) {
   if (!asOf || !_bsParams) return;
   _bsLastAsOf = asOf;
   try {
-    const r = await fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
-      + '&as_of=' + encodeURIComponent(asOf));
-    _bsResolved = await r.json();
+    const [resolveRes, historyRes] = await Promise.all([
+      fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
+        + '&as_of=' + encodeURIComponent(asOf)),
+      fetch('/api/boat-settings?race_id=' + SESSION_ID),
+    ]);
+    if (resolveRes.ok) _bsResolved = await resolveRes.json();
+    if (historyRes.ok) _bsHistory = await historyRes.json();
   } catch (e) { console.error('boat settings resolve error', e); return; }
   _renderBoatSettingsPanel();
 }
@@ -1914,15 +1927,37 @@ function _renderBoatSettingsPanel() {
   const body = document.getElementById('boat-settings-body');
   if (!_bsParams || !_bsResolved) return;
 
-  // Build lookup: parameter name → resolved entry
+  // Build lookup: parameter name → resolved entry (current value)
   const byParam = {};
   for (const entry of _bsResolved) byParam[entry.parameter] = entry;
 
+  // Build lookup: parameter name → all race-specific history entries
+  const histByParam = {};
+  if (_bsHistory) {
+    for (const entry of _bsHistory) {
+      if (!histByParam[entry.parameter]) histByParam[entry.parameter] = [];
+      histByParam[entry.parameter].push(entry);
+    }
+  }
+
+  const fmtTs = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  };
+
+  const srcBadge = (entry) => {
+    if (entry.race_id !== null) {
+      const src = entry.source.startsWith('transcript') ? 'transcript' : entry.source;
+      return '<span class="bs-source-badge ' + (entry.source.startsWith('transcript') ? 'transcript' : 'race') + '">' + esc(src) + '</span>';
+    }
+    return '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+  };
+
   let html = '';
-  let anyValue = false;
 
   for (const cat of _bsParams.categories) {
-    // For the crew category, check if we have crew weight data OR parameter values
+    // Crew weight row
     let crewWeightHtml = '';
     if (cat.category === 'crew' && _sessionCrew && _sessionCrew.length) {
       let totalBody = 0, totalGear = 0, hasW = false;
@@ -1942,11 +1977,6 @@ function _renderBoatSettingsPanel() {
       }
     }
 
-    // Check if any param in this category has a value
-    const catHasValues = cat.parameters.some(p => byParam[p.name]);
-    if (!catHasValues && !crewWeightHtml) continue;
-    if (crewWeightHtml) anyValue = true;
-
     html += '<div class="setup-cat-header" onclick="toggleSetupCatSession(\'' + cat.category + '\')">';
     html += '<span class="setup-cat-label">' + esc(cat.label) + '</span>';
     html += '<span class="setup-cat-chevron" id="bs-cat-chev-' + cat.category + '">\u25BC</span>';
@@ -1956,38 +1986,79 @@ function _renderBoatSettingsPanel() {
 
     for (const p of cat.parameters) {
       const entry = byParam[p.name];
-      if (!entry) continue;
-      anyValue = true;
+      const hist = histByParam[p.name] || [];
+      const hasHistory = hist.length > 1 || (entry && entry.supersedes_value);
+      const paramId = 'bs-hist-' + p.name;
 
-      html += '<div class="bs-row">';
+      // Play button for transcript-sourced entries: compute audio offset from ts
+      const playBtn = (e) => {
+        if (!e.source || !e.source.startsWith('transcript') || !_session.audio_session_id || !e.ts || !_session.start_utc) return '';
+        const offsetS = (Date.parse(e.ts) - Date.parse(_session.start_utc)) / 1000;
+        if (offsetS < 0) return '';
+        return '<button onclick="playSegmentAudio(' + offsetS.toFixed(1) + ',' + (offsetS + 8).toFixed(1) + ')" class="te-play-btn" title="Play transcript segment" style="margin-left:4px">&#9654;</button>';
+      };
+
+      // Current value row
+      html += '<div class="bs-row" style="cursor:' + (hasHistory ? 'pointer' : 'default') + '"'
+        + (hasHistory ? ' onclick="toggleBsHist(\'' + p.name + '\')"' : '') + '>';
+      if (hasHistory) {
+        html += '<span style="color:#6b7a90;font-size:.7rem;margin-right:4px" id="bs-hist-chev-' + p.name + '">\u25B6</span>';
+      }
       html += '<span class="bs-label">' + esc(p.label) + '</span>';
-      html += '<span class="bs-value">' + esc(entry.value) + '</span>';
-      if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-
-      // Source badge for race-specific or transcript settings
-      if (entry.race_id !== null) {
-        const src = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        const srcLabel = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        html += '<span class="bs-source-badge ' + src + '">' + srcLabel + '</span>';
+      if (entry) {
+        html += '<span class="bs-value">' + esc(entry.value) + '</span>';
+        if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+        html += srcBadge(entry);
+        if (entry.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
+        html += playBtn(entry);
+        if (hasHistory) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px">(' + (hist.length + (entry.supersedes_value ? 1 : 0)) + ' entries)</span>';
+      } else {
+        html += '<span style="color:#4b5563;font-style:italic">not set</span>';
       }
-
-      // Show superseded boat-level value
-      if (entry.supersedes_value) {
-        html += '<span class="bs-superseded">' + esc(entry.supersedes_value);
-        if (p.unit) html += ' ' + esc(p.unit);
-        html += '</span>';
-      }
-
       html += '</div>';
+
+      // Collapsible history (hidden by default)
+      if (hasHistory) {
+        html += '<div id="' + paramId + '" style="display:none">';
+        // Previous race-specific values, newest to oldest
+        if (hist.length > 1) {
+          for (let i = hist.length - 2; i >= 0; i--) {
+            const h = hist[i];
+            html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
+            html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
+            html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
+            if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+            html += srcBadge(h);
+            if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+            html += playBtn(h);
+            html += '</div>';
+          }
+        }
+        // Superseded default at the bottom
+        if (entry && entry.supersedes_value) {
+          html += '<div class="bs-row" style="padding-left:24px;opacity:0.5">';
+          html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
+          html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
+          if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+          html += '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
     }
     html += '</div>';
   }
 
-  if (!anyValue) {
-    html = '<span class="bs-empty">No boat settings recorded</span>';
-  }
-
   body.innerHTML = html;
+}
+
+function toggleBsHist(paramName) {
+  const body = document.getElementById('bs-hist-' + paramName);
+  const chev = document.getElementById('bs-hist-chev-' + paramName);
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  if (chev) chev.textContent = hidden ? '\u25BC' : '\u25B6';
 }
 
 function toggleSetupCatSession(cat) {
@@ -2470,6 +2541,159 @@ document.addEventListener('keydown', _handleMentionKeydown);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#mention-dropdown')) _removeMentionDropdown();
 });
+
+// ---------------------------------------------------------------------------
+// Tuning Extraction
+// ---------------------------------------------------------------------------
+
+async function loadTuningExtractions() {
+  if (!_transcriptId) return;
+  const r = await fetch('/api/tuning/runs?transcript_id=' + _transcriptId);
+  if (!r.ok) return;
+  const runs = await r.json();
+  renderTuningExtractions(runs);
+}
+
+async function renderTuningExtractions(runs) {
+  const card = document.getElementById('tuning-extraction-card');
+  const body = document.getElementById('tuning-extraction-body');
+  const badge = document.getElementById('tuning-extraction-badge');
+  card.style.display = '';
+
+  if (!runs.length) {
+    badge.textContent = '';
+    body.innerHTML = '<span style="color:#8892a4">No tuning changes extracted yet. Click &#8635; Extract to analyse the transcript.</span>';
+    return;
+  }
+
+  // Fetch full details for each run (includes items)
+  const detailed = [];
+  for (const run of runs) {
+    const dr = await fetch('/api/tuning/runs/' + run.id);
+    if (dr.ok) detailed.push(await dr.json());
+  }
+
+  const totalItems = detailed.reduce((n, r) => n + (r.items ? r.items.length : 0), 0);
+  const totalAccepted = detailed.reduce((n, r) => n + (r.accepted_count || 0), 0);
+  badge.textContent = totalItems ? '(' + totalItems + ' items, ' + totalAccepted + ' accepted)' : '';
+
+  const fmtSec = s => {
+    const m = Math.floor(s / 60);
+    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  };
+
+  let html = '';
+  for (const run of detailed) {
+    const items = run.items || [];
+    const created = run.created_at ? new Date(run.created_at).toLocaleString() : '';
+    html += '<div style="border:1px solid #1e3050;border-radius:6px;padding:8px;margin-bottom:8px">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+    html += '<div style="font-size:.78rem;color:#7eb8f7;font-weight:600">'
+      + esc(run.method) + ' &middot; ' + items.length + ' items'
+      + '<span style="color:#8892a4;font-weight:400;margin-left:6px">' + esc(created) + '</span>'
+      + '</div>';
+    html += '<button onclick="deleteTuningRun(' + run.id + ')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.72rem" title="Delete run">&#10005;</button>';
+    html += '</div>';
+
+    if (!items.length) {
+      html += '<span style="color:#8892a4;font-size:.78rem">No items extracted</span>';
+    } else {
+      html += '<table class="maneuver-table"><thead><tr>';
+      html += '<th>Parameter</th><th>Value</th><th>Segment</th><th>Conf</th><th>Status</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (const item of items) {
+        const statusCls = 'te-status-' + item.status;
+        const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+        html += '<tr>';
+        html += '<td style="font-weight:600;color:#e8eaf0">' + esc(item.parameter_name) + '</td>';
+        html += '<td style="color:#7eb8f7;font-variant-numeric:tabular-nums">' + item.extracted_value + '</td>';
+        html += '<td><span class="te-segment-text" title="' + esc(item.segment_text) + '">'
+          + esc(item.segment_text.length > 60 ? item.segment_text.slice(0, 60) + '\u2026' : item.segment_text)
+          + '</span>'
+          + '<span style="color:#8892a4;font-size:.68rem">[' + fmtSec(item.segment_start) + ' \u2013 ' + fmtSec(item.segment_end) + ']</span>'
+          + '</td>';
+        html += '<td style="color:#8892a4">' + (item.confidence * 100).toFixed(0) + '%</td>';
+        html += '<td><span class="' + statusCls + '">' + statusLabel + '</span></td>';
+        html += '<td style="white-space:nowrap">';
+        if (item.status === 'pending') {
+          html += '<button onclick="acceptTuningItem(' + item.id + ')" class="te-play-btn" title="Accept" style="color:#4ade80">&#10003;</button>';
+          html += '<button onclick="dismissTuningItem(' + item.id + ')" class="te-play-btn" title="Dismiss" style="color:#6b7280">&#10007;</button>';
+        }
+        if (_session.audio_session_id && !(item.segment_start === 0 && item.segment_end === 0)) {
+          html += '<button onclick="playSegmentAudio(' + item.segment_start + ',' + item.segment_end + ')" class="te-play-btn" title="Play segment">&#9654;</button>';
+        }
+        html += '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
+}
+
+async function extractTuning() {
+  if (!_transcriptId) { alert('No transcript available for extraction'); return; }
+  const btn = document.getElementById('extract-tuning-btn');
+  if (btn) { btn.textContent = '\u23F3'; btn.disabled = true; }
+  try {
+    const r = await fetch('/api/tuning/extract/' + _transcriptId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({method: 'regex'}),
+    });
+    if (!r.ok) { alert('Extraction failed: ' + r.status); return; }
+    await loadTuningExtractions();
+  } finally {
+    if (btn) { btn.innerHTML = '&#8635; Extract'; btn.disabled = false; }
+  }
+}
+
+async function acceptTuningItem(itemId) {
+  const r = await fetch('/api/tuning/items/' + itemId + '/accept', {method: 'POST'});
+  if (!r.ok) { alert('Failed to accept item'); return; }
+  await loadTuningExtractions();
+  await loadBoatSettings();
+}
+
+async function dismissTuningItem(itemId) {
+  const r = await fetch('/api/tuning/items/' + itemId + '/dismiss', {method: 'POST'});
+  if (!r.ok) { alert('Failed to dismiss item'); return; }
+  await loadTuningExtractions();
+  await loadBoatSettings();
+}
+
+async function deleteTuningRun(runId) {
+  if (!confirm('Delete this extraction run and all its items?')) return;
+  const r = await fetch('/api/tuning/runs/' + runId, {method: 'DELETE'});
+  if (!r.ok) { alert('Failed to delete run'); return; }
+  await loadTuningExtractions();
+}
+
+function playSegmentAudio(start, end) {
+  if (!_session.audio_session_id) return;
+  if (!_tuningSegmentAudio) {
+    _tuningSegmentAudio = document.createElement('audio');
+    _tuningSegmentAudio.src = '/api/audio/' + _session.audio_session_id + '/stream';
+    _tuningSegmentAudio.preload = 'auto';
+  }
+  const audio = _tuningSegmentAudio;
+  // Clear any previous stop timer
+  if (_tuningSegmentTimer) {
+    audio.removeEventListener('timeupdate', _tuningSegmentTimer);
+    _tuningSegmentTimer = null;
+  }
+  audio.currentTime = start;
+  audio.play();
+  _tuningSegmentTimer = function() {
+    if (audio.currentTime >= end) {
+      audio.pause();
+      audio.removeEventListener('timeupdate', _tuningSegmentTimer);
+      _tuningSegmentTimer = null;
+    }
+  };
+  audio.addEventListener('timeupdate', _tuningSegmentTimer);
+}
 
 // ---------------------------------------------------------------------------
 // Go

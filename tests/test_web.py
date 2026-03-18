@@ -2622,7 +2622,8 @@ async def test_transcript_done(storage: Storage, tmp_path: Path) -> None:
     session_id = await _create_audio_session(storage, tmp_path)
 
     # Directly exercise the storage + transcribe_session with mocked WhisperModel
-    with patch("helmlog.transcribe._run_whisper", return_value="Hello world"):
+    _segs = [(0.0, 2.0, "Hello"), (2.1, 4.0, "world")]
+    with patch("helmlog.transcribe._run_whisper_segments", return_value=_segs):
         from helmlog.transcribe import transcribe_session
 
         transcript_id = await storage.create_transcript_job(session_id, "base")

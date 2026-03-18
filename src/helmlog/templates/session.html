@@ -152,6 +152,20 @@
   <div class="section-body" id="transcript-body"></div>
 </div>
 
+<div class="card" id="tuning-extraction-card" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('tuning-extraction')">
+      Tuning Extraction <span id="tuning-extraction-badge" style="font-size:.7rem;color:#60a5fa"></span>
+      <span id="tuning-extraction-toggle">&#9660;</span>
+    </div>
+    <button id="extract-tuning-btn" onclick="extractTuning()"
+      style="font-size:.72rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">
+      &#8635; Extract
+    </button>
+  </div>
+  <div class="section-body" id="tuning-extraction-body" style="margin-top:6px"></div>
+</div>
+
 <div class="card" id="maneuvers-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <div class="section-title" style="margin-bottom:0" onclick="toggleSection('maneuvers')">Maneuvers <span id="maneuvers-toggle">&#9660;</span></div>
