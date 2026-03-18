@@ -1891,6 +1891,7 @@ function _renderWfChart(currentS) {
 let _bsParams = null;       // parameter definitions from /api/boat-settings/parameters
 let _bsResolved = null;     // resolved settings at current playback time
 let _bsLastAsOf = null;     // debounce: last as_of value we fetched
+let _bsHistory = null;      // all race-specific setting entries (full timeline)
 
 async function loadBoatSettings() {
   const card = document.getElementById('boat-settings-card');
@@ -1911,9 +1912,13 @@ async function _fetchAndRenderBoatSettings(asOf) {
   if (!asOf || !_bsParams) return;
   _bsLastAsOf = asOf;
   try {
-    const r = await fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
-      + '&as_of=' + encodeURIComponent(asOf));
-    _bsResolved = await r.json();
+    const [resolveRes, historyRes] = await Promise.all([
+      fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
+        + '&as_of=' + encodeURIComponent(asOf)),
+      fetch('/api/boat-settings?race_id=' + SESSION_ID),
+    ]);
+    if (resolveRes.ok) _bsResolved = await resolveRes.json();
+    if (historyRes.ok) _bsHistory = await historyRes.json();
   } catch (e) { console.error('boat settings resolve error', e); return; }
   _renderBoatSettingsPanel();
 }
@@ -1922,15 +1927,37 @@ function _renderBoatSettingsPanel() {
   const body = document.getElementById('boat-settings-body');
   if (!_bsParams || !_bsResolved) return;
 
-  // Build lookup: parameter name → resolved entry
+  // Build lookup: parameter name → resolved entry (current value)
   const byParam = {};
   for (const entry of _bsResolved) byParam[entry.parameter] = entry;
 
+  // Build lookup: parameter name → all race-specific history entries
+  const histByParam = {};
+  if (_bsHistory) {
+    for (const entry of _bsHistory) {
+      if (!histByParam[entry.parameter]) histByParam[entry.parameter] = [];
+      histByParam[entry.parameter].push(entry);
+    }
+  }
+
+  const fmtTs = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  };
+
+  const srcBadge = (entry) => {
+    if (entry.race_id !== null) {
+      const src = entry.source.startsWith('transcript') ? 'transcript' : entry.source;
+      return '<span class="bs-source-badge ' + (entry.source.startsWith('transcript') ? 'transcript' : 'race') + '">' + esc(src) + '</span>';
+    }
+    return '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+  };
+
   let html = '';
-  let anyValue = false;
 
   for (const cat of _bsParams.categories) {
-    // For the crew category, check if we have crew weight data OR parameter values
+    // Crew weight row
     let crewWeightHtml = '';
     if (cat.category === 'crew' && _sessionCrew && _sessionCrew.length) {
       let totalBody = 0, totalGear = 0, hasW = false;
@@ -1950,11 +1977,6 @@ function _renderBoatSettingsPanel() {
       }
     }
 
-    // Check if any param in this category has a value
-    const catHasValues = cat.parameters.some(p => byParam[p.name]);
-    if (!catHasValues && !crewWeightHtml) continue;
-    if (crewWeightHtml) anyValue = true;
-
     html += '<div class="setup-cat-header" onclick="toggleSetupCatSession(\'' + cat.category + '\')">';
     html += '<span class="setup-cat-label">' + esc(cat.label) + '</span>';
     html += '<span class="setup-cat-chevron" id="bs-cat-chev-' + cat.category + '">\u25BC</span>';
@@ -1964,46 +1986,36 @@ function _renderBoatSettingsPanel() {
 
     for (const p of cat.parameters) {
       const entry = byParam[p.name];
-      if (!entry) continue;
-      anyValue = true;
+      const hist = histByParam[p.name] || [];
 
+      // Current value row (resolved = latest race-specific or boat default)
       html += '<div class="bs-row">';
       html += '<span class="bs-label">' + esc(p.label) + '</span>';
-      html += '<span class="bs-value">' + esc(entry.value) + '</span>';
-      if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-
-      // Source badge for race-specific or transcript settings
-      if (entry.race_id !== null) {
-        const src = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        const srcLabel = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        html += '<span class="bs-source-badge ' + src + '">' + srcLabel + '</span>';
+      if (entry) {
+        html += '<span class="bs-value">' + esc(entry.value) + '</span>';
+        if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+        html += srcBadge(entry);
+        if (entry.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
+      } else {
+        html += '<span style="color:#4b5563;font-style:italic">not set</span>';
       }
+      html += '</div>';
 
-      // Timestamp — show when the setting was recorded (skip if all values share the same ts)
-      if (entry.ts) {
-        const allTs = _bsResolved.filter(e => e.ts).map(e => e.ts);
-        const uniqueTs = new Set(allTs);
-        if (uniqueTs.size > 1) {
-          const ts = new Date(entry.ts);
-          const timePart = ts.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-          html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + timePart + '</span>';
+      // History rows — show earlier values if parameter changed during session
+      if (hist.length > 1) {
+        for (let i = 0; i < hist.length - 1; i++) {
+          const h = hist[i];
+          html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
+          html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
+          html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
+          if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+          html += srcBadge(h);
+          if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+          html += '</div>';
         }
       }
-
-      // Show superseded boat-level value
-      if (entry.supersedes_value) {
-        html += '<span class="bs-superseded">' + esc(entry.supersedes_value);
-        if (p.unit) html += ' ' + esc(p.unit);
-        html += '</span>';
-      }
-
-      html += '</div>';
     }
     html += '</div>';
-  }
-
-  if (!anyValue) {
-    html = '<span class="bs-empty">No boat settings recorded</span>';
   }
 
   body.innerHTML = html;
