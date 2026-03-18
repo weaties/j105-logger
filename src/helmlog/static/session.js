@@ -1987,41 +1987,62 @@ function _renderBoatSettingsPanel() {
     for (const p of cat.parameters) {
       const entry = byParam[p.name];
       const hist = histByParam[p.name] || [];
+      const hasHistory = hist.length > 1 || (entry && entry.supersedes_value);
+      const paramId = 'bs-hist-' + p.name;
 
-      // Current value row (resolved = latest race-specific or boat default)
-      html += '<div class="bs-row">';
+      // Play button for transcript-sourced entries: compute audio offset from ts
+      const playBtn = (e) => {
+        if (!e.source || !e.source.startsWith('transcript') || !_session.audio_session_id || !e.ts || !_session.start_utc) return '';
+        const offsetS = (Date.parse(e.ts) - Date.parse(_session.start_utc)) / 1000;
+        if (offsetS < 0) return '';
+        return '<button onclick="playSegmentAudio(' + offsetS.toFixed(1) + ',' + (offsetS + 8).toFixed(1) + ')" class="te-play-btn" title="Play transcript segment" style="margin-left:4px">&#9654;</button>';
+      };
+
+      // Current value row
+      html += '<div class="bs-row" style="cursor:' + (hasHistory ? 'pointer' : 'default') + '"'
+        + (hasHistory ? ' onclick="toggleBsHist(\'' + p.name + '\')"' : '') + '>';
+      if (hasHistory) {
+        html += '<span style="color:#6b7a90;font-size:.7rem;margin-right:4px" id="bs-hist-chev-' + p.name + '">\u25B6</span>';
+      }
       html += '<span class="bs-label">' + esc(p.label) + '</span>';
       if (entry) {
         html += '<span class="bs-value">' + esc(entry.value) + '</span>';
         if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
         html += srcBadge(entry);
         if (entry.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
+        html += playBtn(entry);
+        if (hasHistory) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px">(' + (hist.length + (entry.supersedes_value ? 1 : 0)) + ' entries)</span>';
       } else {
         html += '<span style="color:#4b5563;font-style:italic">not set</span>';
       }
       html += '</div>';
 
-      // History rows — show earlier values newest-to-oldest
-      // hist is sorted ts ASC from the API; skip the last entry (it's the current value shown above)
-      if (hist.length > 1) {
-        for (let i = hist.length - 2; i >= 0; i--) {
-          const h = hist[i];
-          html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
-          html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
-          html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
+      // Collapsible history (hidden by default)
+      if (hasHistory) {
+        html += '<div id="' + paramId + '" style="display:none">';
+        // Previous race-specific values, newest to oldest
+        if (hist.length > 1) {
+          for (let i = hist.length - 2; i >= 0; i--) {
+            const h = hist[i];
+            html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
+            html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
+            html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
+            if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+            html += srcBadge(h);
+            if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+            html += playBtn(h);
+            html += '</div>';
+          }
+        }
+        // Superseded default at the bottom
+        if (entry && entry.supersedes_value) {
+          html += '<div class="bs-row" style="padding-left:24px;opacity:0.5">';
+          html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
+          html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
           if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-          html += srcBadge(h);
-          if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+          html += '<span style="color:#6b7a90;font-size:.7rem">default</span>';
           html += '</div>';
         }
-      }
-      // Show the superseded default at the bottom when a race value overrides it
-      if (entry && entry.supersedes_value) {
-        html += '<div class="bs-row" style="padding-left:24px;opacity:0.5">';
-        html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
-        html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
-        if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-        html += '<span style="color:#6b7a90;font-size:.7rem">default</span>';
         html += '</div>';
       }
     }
@@ -2029,6 +2050,15 @@ function _renderBoatSettingsPanel() {
   }
 
   body.innerHTML = html;
+}
+
+function toggleBsHist(paramName) {
+  const body = document.getElementById('bs-hist-' + paramName);
+  const chev = document.getElementById('bs-hist-chev-' + paramName);
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  if (chev) chev.textContent = hidden ? '\u25BC' : '\u25B6';
 }
 
 function toggleSetupCatSession(cat) {
