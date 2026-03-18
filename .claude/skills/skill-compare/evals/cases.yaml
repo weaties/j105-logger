@@ -1,0 +1,163 @@
+# Eval cases for /skill-compare skill
+# Tests whether the comparator correctly runs blind A/B comparisons
+# and produces useful, unbiased reports.
+
+- name: detects-improvement-in-correctness
+  description: Identifies that a revised skill version catches more eval criteria
+  type: capability
+  scenario: |
+    The user has modified the /data-license skill to add explicit guidance about
+    biometric data consent. The main branch version does not mention biometrics.
+    The branch version adds a section on biometric PII. The eval cases include
+    a case about biometric data exposure that the old version would miss.
+  mock_input: |
+    /skill-compare data-license
+  expected:
+    - criterion: "Must load both versions of the skill (main vs current branch)"
+      weight: critical
+    - criterion: "Must run eval cases from data-license/evals/cases.yaml against both versions"
+      weight: critical
+    - criterion: "Must score outputs on all four dimensions (correctness, completeness, conciseness, actionability)"
+      weight: critical
+    - criterion: "Must use randomized labels (not 'old'/'new') to avoid bias"
+      weight: critical
+    - criterion: "Must produce a summary table showing which version won"
+      weight: critical
+    - criterion: "Must show per-case breakdown with winner and notes"
+      weight: important
+    - criterion: "Must show criteria diff where the two versions diverge on specific eval criteria"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT reveal the version mapping before scoring is complete"
+      weight: critical
+    - criterion: "Must NOT skip the diff display between versions"
+      weight: important
+  tags: [correctness, improvement-detection, data-license]
+
+- name: reports-tie-when-versions-identical
+  description: Correctly reports identical versions as a tie with no comparison
+  type: capability
+  scenario: |
+    The user runs /skill-compare on the /tdd skill, but the SKILL.md on the
+    current branch is identical to main. No changes have been made to the skill.
+  mock_input: |
+    /skill-compare tdd
+  expected:
+    - criterion: "Must detect that the two versions are identical"
+      weight: critical
+    - criterion: "Must stop with a clear message like 'Versions are identical — nothing to compare'"
+      weight: critical
+  anti_expected:
+    - criterion: "Must NOT run eval cases when versions are identical"
+      weight: critical
+    - criterion: "Must NOT report a winner when there is no difference"
+      weight: critical
+  tags: [edge-case, identical-versions]
+
+- name: catches-regression-conciseness
+  description: Detects when a skill revision improves correctness but regresses on conciseness
+  type: capability
+  scenario: |
+    The user revised /pr-checklist to add more detailed verification steps.
+    The new version is much more thorough (better completeness) but also
+    significantly more verbose — the output doubled in length with redundant
+    explanations. The eval cases test both coverage and output length.
+  mock_input: |
+    /skill-compare pr-checklist
+  expected:
+    - criterion: "Must score completeness higher for the more thorough version"
+      weight: important
+    - criterion: "Must score conciseness lower for the more verbose version"
+      weight: important
+    - criterion: "Must surface the dimension trade-off in the report (e.g., completeness up but conciseness down)"
+      weight: critical
+    - criterion: "Must show per-dimension averages so the user can see the trade-off quantitatively"
+      weight: critical
+  anti_expected:
+    - criterion: "Must NOT declare a winner based solely on one dimension — must consider all four"
+      weight: critical
+  tags: [regression, trade-off, conciseness, pr-checklist]
+
+- name: file-based-comparison
+  description: Supports comparing SKILL.md vs SKILL.md.new when --file flag is used
+  type: capability
+  scenario: |
+    The user has created a SKILL.md.new file in the /spec skill directory
+    containing a proposed revision. They want to compare it against the
+    current SKILL.md without committing to a branch.
+  mock_input: |
+    /skill-compare spec --file
+  expected:
+    - criterion: "Must read SKILL.md as one version and SKILL.md.new as the other"
+      weight: critical
+    - criterion: "Must still randomize labels and score blind"
+      weight: critical
+    - criterion: "Must produce the same report format as git-based comparison"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT attempt git-based comparison when --file flag is present"
+      weight: critical
+  tags: [file-based, alternative-mode, spec]
+
+- name: logs-results-for-history
+  description: Appends comparison results to the skill's compare-log.md
+  type: capability
+  scenario: |
+    The user runs a successful comparison on /domain. After displaying the
+    report, the skill should append a summary to the compare log for
+    historical tracking.
+  mock_input: |
+    /skill-compare domain
+  expected:
+    - criterion: "Must append results to <skill-dir>/evals/compare-log.md"
+      weight: critical
+    - criterion: "Must create compare-log.md if it doesn't exist"
+      weight: important
+    - criterion: "Must include date, source labels, case wins, criteria pass rates, and winner in the log entry"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT overwrite existing compare-log.md entries — must append"
+      weight: critical
+  tags: [logging, history, persistence]
+
+- name: no-evals-graceful-error
+  description: Reports a clear error when the skill has no eval cases
+  type: capability
+  scenario: |
+    The user runs /skill-compare on the /deploy-pi skill, which does not
+    have an evals/cases.yaml file.
+  mock_input: |
+    /skill-compare deploy-pi
+  expected:
+    - criterion: "Must check for evals/cases.yaml existence before proceeding"
+      weight: critical
+    - criterion: "Must report a clear error message mentioning that no eval cases were found"
+      weight: critical
+    - criterion: "Must suggest running /skill-eval to add cases"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT attempt to run a comparison without eval cases"
+      weight: critical
+    - criterion: "Must NOT crash or produce an unclear error"
+      weight: critical
+  tags: [edge-case, error-handling, no-evals]
+
+- name: single-case-comparison
+  description: Supports running comparison on a single named case
+  type: capability
+  scenario: |
+    The user wants to compare only a specific eval case for /data-license,
+    not the full suite. They specify the case name on the command line.
+  mock_input: |
+    /skill-compare data-license pii-leak-crew-emails-in-coop-api
+  expected:
+    - criterion: "Must run only the named case, not the full suite"
+      weight: critical
+    - criterion: "Must still produce all four dimension scores for that case"
+      weight: important
+    - criterion: "Must still log the result (even for a single case)"
+      weight: nice-to-have
+  anti_expected:
+    - criterion: "Must NOT run all eval cases when a specific case is named"
+      weight: important
+  tags: [single-case, targeted-comparison]
