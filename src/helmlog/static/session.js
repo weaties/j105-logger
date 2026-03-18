@@ -2001,9 +2001,10 @@ function _renderBoatSettingsPanel() {
       }
       html += '</div>';
 
-      // History rows — show earlier values if parameter changed during session
+      // History rows — show earlier values newest-to-oldest
+      // hist is sorted ts ASC from the API; skip the last entry (it's the current value shown above)
       if (hist.length > 1) {
-        for (let i = 0; i < hist.length - 1; i++) {
+        for (let i = hist.length - 2; i >= 0; i--) {
           const h = hist[i];
           html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
           html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
@@ -2013,6 +2014,15 @@ function _renderBoatSettingsPanel() {
           if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
           html += '</div>';
         }
+      }
+      // Show the superseded default at the bottom when a race value overrides it
+      if (entry && entry.supersedes_value) {
+        html += '<div class="bs-row" style="padding-left:24px;opacity:0.5">';
+        html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
+        html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
+        if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+        html += '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+        html += '</div>';
       }
     }
     html += '</div>';
