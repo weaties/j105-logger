@@ -9,6 +9,7 @@ let tickInterval = null;
 let curRaceStartMs = null;
 let debriefStartMs = null;
 let lastInstrumentDataMs = 0;
+let scheduleCountdownInterval = null;
 
 async function loadState() {
   try {
@@ -110,6 +111,33 @@ function render(s) {
   }
 
   btnStartRace.textContent = `▶ START RACE ${s.next_race_num}`;
+
+  // --- Scheduled start (#345) ---
+  const btnSchedule = document.getElementById('btn-schedule-toggle');
+  const schedPanel = document.getElementById('schedule-panel');
+  const schedCountdown = document.getElementById('schedule-countdown');
+  if (s.scheduled_start && isIdle) {
+    // Active countdown
+    btnSchedule.classList.add('hidden');
+    btnStartRace.classList.add('hidden');
+    btnStartPractice.classList.add('hidden');
+    schedPanel.classList.add('hidden');
+    schedCountdown.classList.remove('hidden');
+    const fireAt = new Date(s.scheduled_start.scheduled_start_utc);
+    document.getElementById('schedule-countdown-event').textContent =
+      s.scheduled_start.event + ' (' + s.scheduled_start.session_type + ')';
+    _startScheduleCountdown(fireAt);
+  } else if (isIdle) {
+    // No schedule — show the button
+    btnSchedule.classList.remove('hidden');
+    schedCountdown.classList.add('hidden');
+    _stopScheduleCountdown();
+  } else {
+    btnSchedule.classList.add('hidden');
+    schedPanel.classList.add('hidden');
+    schedCountdown.classList.add('hidden');
+    _stopScheduleCountdown();
+  }
 
   // --- Debrief last race button: show when idle, has recorder, and finished races exist ---
   const lastFinished = (s.today_races || []).filter(r => r.end_utc).slice(-1)[0];
@@ -932,6 +960,76 @@ async function startDebriefLast() {
 async function stopDebrief() {
   await fetch('/api/debrief/stop', {method: 'POST'});
   await loadState();
+}
+
+// --- Scheduled start (#345) ---
+
+function toggleSchedulePanel() {
+  const panel = document.getElementById('schedule-panel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) {
+    // Pre-fill with a time 5 minutes from now
+    const d = new Date(Date.now() + 5 * 60000);
+    const pad = n => String(n).padStart(2, '0');
+    const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    document.getElementById('schedule-time').value = local;
+  }
+}
+
+async function submitSchedule() {
+  const input = document.getElementById('schedule-time');
+  if (!input.value) { alert('Please set a start time'); return; }
+  const localDate = new Date(input.value);
+  const utcIso = localDate.toISOString();
+  try {
+    const resp = await fetch('/api/races/schedule', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({scheduled_start_utc: utcIso})
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => null);
+      alert(err && err.detail ? err.detail : 'Failed to schedule start');
+      return;
+    }
+    document.getElementById('schedule-panel').classList.add('hidden');
+    await loadState();
+  } catch(e) {
+    console.error('submitSchedule error', e);
+    alert('Error: ' + e.message);
+  }
+}
+
+async function cancelSchedule() {
+  await fetch('/api/races/schedule', {method: 'DELETE'});
+  await loadState();
+}
+
+function _startScheduleCountdown(fireAt) {
+  _stopScheduleCountdown();
+  const el = document.getElementById('schedule-countdown-time');
+  function update() {
+    const diff = Math.max(0, Math.floor((fireAt - Date.now()) / 1000));
+    if (diff <= 0) {
+      el.textContent = 'Starting...';
+      _stopScheduleCountdown();
+      // Poll state to pick up the new race
+      setTimeout(() => loadState(), 2000);
+      return;
+    }
+    const m = Math.floor(diff / 60);
+    const s = diff % 60;
+    el.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  }
+  update();
+  scheduleCountdownInterval = setInterval(update, 1000);
+}
+
+function _stopScheduleCountdown() {
+  if (scheduleCountdownInterval) {
+    clearInterval(scheduleCountdownInterval);
+    scheduleCountdownInterval = null;
+  }
 }
 
 async function saveEvent() {
