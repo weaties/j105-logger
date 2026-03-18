@@ -13,7 +13,7 @@ a{color:var(--accent);text-decoration:none}
 <tbody>{{ audit_rows|safe }}</tbody>
 </table>
 {% if not has_entries %}
-<p style="text-align:center;color:#8892a4;padding:20px">No audit entries yet.</p>
+<p style="text-align:center;color:var(--text-secondary);padding:20px">No audit entries yet.</p>
 {% endif %}
 </div>
 {% endblock %}

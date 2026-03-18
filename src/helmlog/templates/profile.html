@@ -158,14 +158,14 @@ async function saveScheme() {
     body: JSON.stringify({scheme})
   });
   const st = document.getElementById('scheme-status');
-  if (r.ok) { st.style.color='#4ade80'; st.textContent='Saved — reload to apply'; }
-  else { st.style.color='#f87171'; st.textContent='Failed to save'; }
+  if (r.ok) { st.style.color='var(--success)'; st.textContent='Saved — reload to apply'; }
+  else { st.style.color='var(--danger)'; st.textContent='Failed to save'; }
 }
 async function resetScheme() {
   await fetch('/api/me/color-scheme', {method:'DELETE'});
   document.getElementById('scheme-select').value = '';
   const st = document.getElementById('scheme-status');
-  st.style.color='#4ade80'; st.textContent='Reset — reload to apply';
+  st.style.color='var(--success)'; st.textContent='Reset — reload to apply';
 }
 loadSchemes();
 </script>

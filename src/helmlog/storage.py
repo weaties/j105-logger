@@ -4591,9 +4591,7 @@ class Storage:
             return False
         params.append(scheme_id)
         db = self._conn()
-        cur = await db.execute(
-            f"UPDATE color_schemes SET {', '.join(fields)} WHERE id = ?", params
-        )
+        cur = await db.execute(f"UPDATE color_schemes SET {', '.join(fields)} WHERE id = ?", params)
         await db.commit()
         return cur.rowcount > 0
 
@@ -4606,18 +4604,14 @@ class Storage:
 
     async def get_user_color_scheme(self, user_id: int) -> str | None:
         """Return the user's personal color scheme preference, or None."""
-        cur = await self._conn().execute(
-            "SELECT color_scheme FROM users WHERE id = ?", (user_id,)
-        )
+        cur = await self._conn().execute("SELECT color_scheme FROM users WHERE id = ?", (user_id,))
         row = await cur.fetchone()
         return str(row["color_scheme"]) if row and row["color_scheme"] else None
 
     async def set_user_color_scheme(self, user_id: int, scheme: str | None) -> None:
         """Set or clear a user's personal color scheme preference."""
         db = self._conn()
-        await db.execute(
-            "UPDATE users SET color_scheme = ? WHERE id = ?", (scheme, user_id)
-        )
+        await db.execute("UPDATE users SET color_scheme = ? WHERE id = ?", (scheme, user_id))
         await db.commit()
 
     # ------------------------------------------------------------------

@@ -5,22 +5,22 @@
 .kv{display:flex;gap:8px;margin-bottom:6px;font-size:.85rem;align-items:center}
 .kv .k{color:var(--text-secondary);min-width:120px}
 .kv .v{color:var(--text-primary);font-family:monospace}
-.badge-ok{background:#0d2818;color:#4ade80;border:1px solid #16a34a}
-.badge-warn{background:#2a1a00;color:#fbbf24;border:1px solid #d97706}
-.badge-err{background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
-.badge-mode{background:var(--border-color);color:#60a5fa}
+.badge-ok{background:#0d2818;color:var(--success);border:1px solid var(--success)}
+.badge-warn{background:#2a1a00;color:var(--warning);border:1px solid var(--warning)}
+.badge-err{background:#1f1215;color:var(--danger);border:1px solid var(--danger)}
+.badge-mode{background:var(--border-color);color:var(--accent)}
 .btn-deploy{padding:8px 18px;border:1px solid var(--border-input);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:.85rem;cursor:pointer}
 .btn-deploy:hover{opacity:.85}
 .btn-deploy-primary{background:var(--action);border-color:var(--action);color:var(--action-text)}
 .btn-deploy:disabled{opacity:.5;cursor:not-allowed}
 .btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
 .status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
-.status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
-.status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
+.status.ok{display:block;background:#0d2818;color:var(--success);border:1px solid var(--success)}
+.status.err{display:block;background:#1f1215;color:var(--danger);border:1px solid var(--danger)}
 .changelog{margin-top:8px;max-height:400px;overflow-y:auto}
 .commit{padding:6px 0;border-bottom:1px solid var(--border-row);font-size:.82rem}
 .commit:last-child{border-bottom:none}
-.commit .sha{font-family:monospace;color:#60a5fa;margin-right:8px}
+.commit .sha{font-family:monospace;color:var(--accent);margin-right:8px}
 .commit .msg{color:var(--text-primary)}
 .commit .meta{color:var(--text-secondary);font-size:.72rem;margin-top:2px}
 table.history{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:8px}
@@ -33,17 +33,17 @@ select.cfg-input{min-width:160px}
 .tier-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px}
 .tier-card{flex:1;min-width:200px;background:var(--bg-primary);border:1px solid var(--border-input);border-radius:8px;padding:12px}
 .tier-card h4{margin:0 0 6px;font-size:.82rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
-.tier-sha{font-family:monospace;color:#60a5fa;font-size:.82rem}
+.tier-sha{font-family:monospace;color:var(--accent);font-size:.82rem}
 .tier-msg{color:var(--text-primary);font-size:.8rem;margin-top:4px;word-break:break-word}
 .tier-ts{color:var(--text-secondary);font-size:.72rem;margin-top:2px}
 .gap-pill{display:inline-block;font-size:.7rem;padding:2px 8px;border-radius:10px;font-weight:600}
-.gap-ok{background:#0d2818;color:#4ade80}
-.gap-warn{background:#2a1a00;color:#fbbf24}
-.gap-err{background:#1f1215;color:#f87171}
+.gap-ok{background:#0d2818;color:var(--success)}
+.gap-warn{background:#2a1a00;color:var(--warning)}
+.gap-err{background:#1f1215;color:var(--danger)}
 .promo-filter{display:flex;gap:6px;margin-bottom:8px}
 .promo-filter button{padding:4px 12px;font-size:.75rem;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer}
 .promo-filter button.active{background:var(--action);color:var(--action-text);border-color:var(--action)}
-.pending-toggle{cursor:pointer;color:#60a5fa;font-size:.82rem;margin-top:4px;display:inline-block}
+.pending-toggle{cursor:pointer;color:var(--accent);font-size:.82rem;margin-top:4px;display:inline-block}
 .pending-toggle:hover{text-decoration:underline}
 .pending-list{display:none;margin-top:6px;max-height:300px;overflow-y:auto}
 .pending-list.open{display:block}
@@ -209,14 +209,14 @@ async function saveConfig(){
   try{
     const r=await fetch('/api/deployment/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode,branch})});
     if(r.ok){
-      st.textContent='Saved';st.style.color='#4ade80';
+      st.textContent='Saved';st.style.color='var(--success)';
       setTimeout(()=>{st.textContent=''},3000);
       loadStatus();loadChangelog();
     } else {
       const d=await r.json();
-      st.textContent='Error: '+(d.detail||'unknown');st.style.color='#f87171';
+      st.textContent='Error: '+(d.detail||'unknown');st.style.color='var(--danger)';
     }
-  }catch(e){st.textContent='Error: '+e.message;st.style.color='#f87171'}
+  }catch(e){st.textContent='Error: '+e.message;st.style.color='var(--danger)'}
   btn.disabled=false;
 }
 async function loadChangelog(){
@@ -330,7 +330,7 @@ async function togglePending(el,from,to){
     const r=await fetch('/api/deployment/pending?from_tier='+encodeURIComponent(from)+'&to_tier='+encodeURIComponent(to));
     if(!r.ok){list.innerHTML='Failed to load';list.classList.add('open');return}
     const data=await r.json();
-    if(!data.commits.length){list.innerHTML='<div style="font-size:.8rem;color:#8892a4">No pending commits</div>';list.classList.add('open');return}
+    if(!data.commits.length){list.innerHTML='<div style="font-size:.8rem;color:var(--text-secondary)">No pending commits</div>';list.classList.add('open');return}
     let html='<div class="changelog">';
     for(const c of data.commits){
       html+='<div class="commit"><span class="sha">'+esc(c.sha)+'</span><span class="msg">'+esc(c.message)+'</span>';
@@ -360,7 +360,7 @@ function renderPromotions(promos){
     html+='<tr><td><span class="badge '+cls+'">'+esc(p.tier)+'</span></td>';
     html+='<td>'+esc(p.timestamp).slice(0,19)+'</td>';
     html+='<td class="mono">'+esc(p.short_sha)+'</td>';
-    html+='<td>'+(p.commit_count!==null?p.commit_count+(p.from_sha?' <span style="color:#8892a4;font-size:.72rem">from '+esc(p.from_sha)+'</span>':''):'\u2014')+'</td>';
+    html+='<td>'+(p.commit_count!==null?p.commit_count+(p.from_sha?' <span style="color:var(--text-secondary);font-size:.72rem">from '+esc(p.from_sha)+'</span>':''):'\u2014')+'</td>';
     html+='<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(p.message)+'</td>';
     html+='<td>'+(p.triggered_by?esc(p.triggered_by):'\u2014')+'</td></tr>';
   }

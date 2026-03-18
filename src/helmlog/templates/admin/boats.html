@@ -5,7 +5,7 @@
 .btn-add{padding:9px 16px;border:none;border-radius:6px;background:var(--action);
 color:var(--action-text);font-weight:700;cursor:pointer;font-size:.9rem}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.btn-save{color:#4ade80;border-color:#16a34a}
+.btn-save{color:var(--success);border-color:var(--success)}
 </style>
 {% endblock %}
 {% block content %}
@@ -45,8 +45,8 @@ async function loadBoats() {
       const safeCls  = (b.class||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       html += '<tr id="boat-row-' + b.id + '" data-sail="' + safeSail + '" data-name="' + safeName + '" data-cls="' + safeCls + '">'
         + '<td>' + safeSail + '</td>'
-        + '<td>' + (safeName||'<span style="color:#8892a4">\u2014</span>') + '</td>'
-        + '<td>' + (safeCls||'<span style="color:#8892a4">\u2014</span>') + '</td>'
+        + '<td>' + (safeName||'<span style="color:var(--text-secondary)">\u2014</span>') + '</td>'
+        + '<td>' + (safeCls||'<span style="color:var(--text-secondary)">\u2014</span>') + '</td>'
         + '<td>' + lu + '</td>'
         + '<td style="white-space:nowrap;display:flex;gap:4px">'
         + '<button class="btn-sm btn-edit" onclick="editBoat(' + b.id + ')">Edit</button>'
@@ -56,7 +56,7 @@ async function loadBoats() {
     html += '</tbody></table>';
     wrap.innerHTML = html;
   } catch(e) {
-    wrap.innerHTML = '<div class="empty" style="color:#ef4444">Failed to load boats: ' + e.message + '</div>';
+    wrap.innerHTML = '<div class="empty" style="color:var(--danger)">Failed to load boats: ' + e.message + '</div>';
   }
 }
 

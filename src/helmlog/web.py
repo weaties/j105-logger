@@ -578,7 +578,13 @@ def create_app(
         return JSONResponse(
             {
                 "presets": [
-                    {"id": t.id, "name": t.name, "bg": t.bg_primary, "text": t.text_primary, "accent": t.accent}
+                    {
+                        "id": t.id,
+                        "name": t.name,
+                        "bg": t.bg_primary,
+                        "text": t.text_primary,
+                        "accent": t.accent,
+                    }
                     for t in BUILTIN_PRESETS.values()
                 ],
                 "custom": custom,
@@ -662,7 +668,9 @@ def create_app(
         next: str = Form(default="/"),
     ) -> Response:
         def _login_err(msg: str) -> HTMLResponse:
-            ctx = _login_ctx(next, f'<p style="color:#f87171;margin-top:12px">{msg}</p>')
+            ctx = _login_ctx(
+                next, f'<p style="color:var(--danger, #f87171);margin-top:12px">{msg}</p>'
+            )
             return _templates.TemplateResponse(request, "login.html", ctx, status_code=400)
 
         email = email.strip().lower()
@@ -776,7 +784,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -791,7 +799,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -851,7 +859,7 @@ def create_app(
         request: Request,
         email: str = Form(...),
     ) -> HTMLResponse:
-        _generic_msg = '<p style="color:#34d399;margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
+        _generic_msg = '<p style="color:var(--success, #34d399);margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
         email = email.strip().lower()
 
         from helmlog.email import smtp_configured
@@ -919,7 +927,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                 },
                 status_code=400,
             )
@@ -930,7 +938,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                 },
                 status_code=400,
             )

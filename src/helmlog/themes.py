@@ -22,11 +22,16 @@ class Theme:
     # Text
     text_primary: str
     text_secondary: str  # muted labels, meta
+    text_muted: str  # dimmer than secondary — disabled, zero-state
     # Accent — h1, instrument values, links
     accent: str
     # Primary action button
     action: str
     action_text: str  # text on top of action
+    # Semantic status colors
+    success: str  # green — positive feedback, active states
+    danger: str  # red — errors, destructive actions
+    warning: str  # amber — caution, synthesize, RC markers
     # Borders
     border_color: str  # nav, section separators
     border_input: str  # form inputs
@@ -41,9 +46,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#131f35",
         text_primary="#e8eaf0",
         text_secondary="#8892a4",
+        text_muted="#6b7280",
         accent="#7eb8f7",
         action="#2563eb",
         action_text="#ffffff",
+        success="#4ade80",
+        danger="#f87171",
+        warning="#fbbf24",
         border_color="#1e3a5f",
         border_input="#374151",
         border_row="#0d1a2e",
@@ -55,9 +64,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#f0f4f8",
         text_primary="#000000",
         text_secondary="#555555",
+        text_muted="#888888",
         accent="#0055aa",
         action="#0055aa",
         action_text="#ffffff",
+        success="#007a2f",
+        danger="#cc0000",
+        warning="#b36b00",
         border_color="#b0c4d8",
         border_input="#0055aa",
         border_row="#d8e4f0",
@@ -69,9 +82,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#111111",
         text_primary="#ffd600",
         text_secondary="#b8a000",
+        text_muted="#807000",
         accent="#ffd600",
         action="#ffd600",
         action_text="#000000",
+        success="#4ade80",
+        danger="#ff6b6b",
+        warning="#ffd600",
         border_color="#333300",
         border_input="#ffd600",
         border_row="#1a1a00",
@@ -83,9 +100,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#2a0808",
         text_primary="#ffb4a8",
         text_secondary="#cc8880",
+        text_muted="#886060",
         accent="#ff5722",
         action="#ff5722",
         action_text="#ffffff",
+        success="#66bb6a",
+        danger="#ff8a80",
+        warning="#ffcc80",
         border_color="#3a1010",
         border_input="#ff5722",
         border_row="#1f0505",
@@ -97,9 +118,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#002a14",
         text_primary="#a8ffd0",
         text_secondary="#70c098",
+        text_muted="#4a8068",
         accent="#00e676",
         action="#00e676",
         action_text="#001a0a",
+        success="#69f0ae",
+        danger="#ff8a80",
+        warning="#ffd54f",
         border_color="#003a1a",
         border_input="#00e676",
         border_row="#001505",
@@ -111,9 +136,13 @@ BUILTIN_PRESETS: dict[str, Theme] = {
         bg_secondary="#fff9c4",
         text_primary="#3e2723",
         text_secondary="#6d4c41",
+        text_muted="#9e9e9e",
         accent="#ff8f00",
         action="#ff8f00",
         action_text="#ffffff",
+        success="#2e7d32",
+        danger="#c62828",
+        warning="#e65100",
         border_color="#ffecb3",
         border_input="#ff8f00",
         border_row="#fff3e0",
@@ -131,9 +160,13 @@ def theme_css(theme: Theme) -> str:
         f"--bg-secondary:{theme.bg_secondary};"
         f"--text-primary:{theme.text_primary};"
         f"--text-secondary:{theme.text_secondary};"
+        f"--text-muted:{theme.text_muted};"
         f"--accent:{theme.accent};"
         f"--action:{theme.action};"
         f"--action-text:{theme.action_text};"
+        f"--success:{theme.success};"
+        f"--danger:{theme.danger};"
+        f"--warning:{theme.warning};"
         f"--border-color:{theme.border_color};"
         f"--border-input:{theme.border_input};"
         f"--border-row:{theme.border_row};"
@@ -169,9 +202,13 @@ def resolve_theme(
                     bg_secondary=c["bg"],
                     text_primary=c["text_color"],
                     text_secondary=c["text_color"],
+                    text_muted=c["text_color"],
                     accent=c["accent"],
                     action=c["accent"],
                     action_text=c["bg"],
+                    success="#4ade80",
+                    danger="#f87171",
+                    warning="#fbbf24",
                     border_color=c["accent"],
                     border_input=c["accent"],
                     border_row=c["bg"],

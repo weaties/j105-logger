@@ -2,19 +2,19 @@
 {% block title %}Event Rules — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.btn-add{color:#4ade80;border-color:#16a34a}
-.btn-del{color:#ef4444;border-color:#7f1d1d}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
 .form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
 .form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:.85rem}
 .form-row input::placeholder{color:var(--text-secondary)}
-#add-err{color:#ef4444;font-size:.8rem;margin-top:4px}
+#add-err{color:var(--danger);font-size:.8rem;margin-top:4px}
 </style>
 {% endblock %}
 {% block content %}
 <h1>Event Rules</h1>
 <div class="card">
 <div class="label">Day-of-Week Rules</div>
-<p style="color:#8892a4;font-size:.85rem;margin-top:0">
+<p style="color:var(--text-secondary);font-size:.85rem;margin-top:0">
 Auto-fill the event name when starting a race. A custom event set on the home page overrides these.
 </p>
 <div id="rules-table">Loading...</div>
@@ -38,7 +38,7 @@ async function loadRules(){
   const r=await fetch('/api/event-rules');
   if(!r.ok){document.getElementById('rules-table').textContent='Failed to load';return}
   const rules=await r.json();
-  if(!rules.length){document.getElementById('rules-table').innerHTML='<p style="color:#8892a4">No rules configured. Races will require a manual event name.</p>';return}
+  if(!rules.length){document.getElementById('rules-table').innerHTML='<p style="color:var(--text-secondary)">No rules configured. Races will require a manual event name.</p>';return}
   let h='<table><thead><tr><th>Day</th><th>Event Name</th><th></th></tr></thead><tbody>';
   for(const rule of rules){
     h+=`<tr><td>${DAYS[rule.weekday]}</td><td>${rule.event_name}</td>`;
