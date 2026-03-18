@@ -103,6 +103,30 @@ async def empty_transcript_id(storage: Storage) -> int:
     return 2
 
 
+@pytest_asyncio.fixture
+async def no_segments_transcript_id(storage: Storage) -> int:
+    """Transcript with text but NULL segments_json (non-diarised path)."""
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (id, name, event, race_num, date, start_utc)"
+        " VALUES (3, 'Race 3', 'TestEvent', 3, '2025-06-15', '2025-06-15T16:00:00Z')"
+    )
+    await db.execute(
+        "INSERT INTO audio_sessions (id, file_path, device_name, start_utc, end_utc,"
+        " sample_rate, channels, race_id)"
+        " VALUES (3, '/tmp/test3.wav', 'test', '2025-06-15T16:00:00Z',"
+        " '2025-06-15T17:00:00Z', 44100, 1, 3)"
+    )
+    await db.execute(
+        "INSERT INTO transcripts (id, audio_session_id, status, text, segments_json,"
+        " model, created_utc, updated_utc)"
+        " VALUES (3, 3, 'done', 'backstay 12 vang 8 outhaul 3', NULL, 'base',"
+        " '2025-06-15T17:00:00Z', '2025-06-15T17:00:00Z')"
+    )
+    await db.commit()
+    return 3
+
+
 # ---------------------------------------------------------------------------
 # Regex extraction
 # ---------------------------------------------------------------------------
@@ -422,6 +446,18 @@ class TestRunLifecycle:
         run = await get_run_with_items(storage, run_id)
         assert run is not None
         assert run.status == RunStatus.EMPTY
+
+    @pytest.mark.asyncio
+    async def test_run_extraction_null_segments_json(
+        self, storage: Storage, no_segments_transcript_id: int
+    ) -> None:
+        """Extraction must work when segments_json is NULL (non-diarised path)."""
+        run_id = await create_extraction_run(storage, no_segments_transcript_id, "regex")
+        items = await run_extraction(storage, run_id)
+        assert len(items) == 3  # backstay, vang, outhaul from the text column
+        run = await get_run_with_items(storage, run_id)
+        assert run is not None
+        assert run.status == RunStatus.REVIEW_PENDING
 
     @pytest.mark.asyncio
     async def test_delete_run_cascades(self, storage: Storage, transcript_id: int) -> None:

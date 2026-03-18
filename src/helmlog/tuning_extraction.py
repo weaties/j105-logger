@@ -289,9 +289,10 @@ async def run_extraction(
     )
     await db.commit()
 
-    # Fetch transcript segments
+    # Fetch transcript segments (fall back to full text if segments_json is NULL,
+    # which happens when transcription ran without diarisation).
     cur = await db.execute(
-        "SELECT segments_json FROM transcripts WHERE id = ?",
+        "SELECT text, segments_json FROM transcripts WHERE id = ?",
         (transcript_id,),
     )
     tx_row = await cur.fetchone()
@@ -299,7 +300,13 @@ async def run_extraction(
         raise ValueError(f"Transcript {transcript_id} not found")
 
     segments_json: str | None = tx_row["segments_json"]
-    segments: list[dict[str, Any]] = json.loads(segments_json) if segments_json else []
+    if segments_json:
+        segments: list[dict[str, Any]] = json.loads(segments_json)
+    elif tx_row["text"]:
+        # No per-segment data — wrap the full transcript as one segment
+        segments = [{"start": 0.0, "end": 0.0, "text": tx_row["text"]}]
+    else:
+        segments = []
 
     # Run extraction based on method
     if method == "regex":
