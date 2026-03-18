@@ -1,9 +1,9 @@
 # Release Notes
 
-## Sprint 4 — Analysis, Session Matching, Color Schemes & Tuning Extraction (2026-03-18)
+## Sprint 4 — Analysis, Session Matching, Color Schemes & Skill Tooling (2026-03-18)
 
 Sprint 4 adds a pluggable analysis framework, co-op session matching,
-customizable color schemes, and transcript-based tuning extraction.
+customizable color schemes, and expanded developer skill tooling.
 
 ### Pluggable analysis framework (#283, #309, #321)
 
@@ -30,19 +30,6 @@ Proximity-based pairing of co-op sessions across boats:
   reject, and name push — all Ed25519-signed
 - **Scalability** — parallel fan-out for 20-boat co-ops, proposal dedup,
   centroid caching (schema v45)
-
-### Boat tuning extraction from transcripts (#276, #325)
-
-Regex-based extraction of tuning parameters from audio transcripts:
-
-- **RegexExtractor** — parses natural language ("backstay 12", "vang 8.5") from
-  transcript segments into structured tuning values
-- **Extraction run lifecycle** — Created → Running → ReviewPending/Empty →
-  FullyReviewed, with accept/dismiss review workflow
-- **Auto-create settings** — accepted items automatically create `boat_settings`
-  timeline entries linked to the extraction run
-- **Privacy** — all extraction data is boat-private, never shared with co-op
-- Schema v44 adds `extraction_runs` and `extraction_items` tables; 7 API endpoints
 
 ### Customizable color schemes (#347, #358)
 
@@ -86,6 +73,10 @@ Sunlight-optimized theming system:
   with tier-aware `/pr-checklist` and `/spec` skill for structured specs
 - **Skill evaluation framework** (#349, #357) — test cases for measuring skill
   quality and detecting regressions
+- **/skill-compare** (#354, #367) — blind A/B comparison of two skill versions
+  with correctness, completeness, conciseness, and actionability scoring
+- **Skill trigger optimization** (#353, #364) — audited descriptions for all 13
+  skills with explicit trigger/anti-trigger guidance and 33-case test suite
 - **/architecture skill** (#352, #363) — codebase comprehension with module map,
   data flow, and complexity hotspots
 - **/diagnose skill** (#351, #360) — systematic Pi troubleshooting runbook
