@@ -1,6 +1,6 @@
 ---
 name: architecture
-description: Codebase comprehension and complexity tracking — module map, data flow, recent changes, and complexity hotspots. Run with no arguments for a full snapshot or with a date/commit/tag for a delta briefing.
+description: Codebase comprehension and complexity tracking — module map, data flow, recent changes, and complexity hotspots. Run with no arguments for a full snapshot or with a date/commit/tag for a delta briefing. TRIGGER when the user asks for a system overview, wants to understand the architecture, asks "what changed while I was away", or needs to orient before a large task. DO NOT trigger for specific code questions, bug fixes, or implementation tasks — those are better served by reading the relevant module directly.
 ---
 
 # Architecture — Codebase Comprehension
