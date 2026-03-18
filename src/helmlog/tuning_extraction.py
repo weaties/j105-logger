@@ -77,16 +77,51 @@ _LABEL_TO_NAME: dict[str, str] = {}
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = []
 
 # Filler words/phrases Whisper inserts between a parameter name and its value.
-# Matches optional possessive 's then optional filler words like "to", "at", "is a", "was".
-_FILLER_RE = r"(?:'s)?\s+(?:(?:is|at|to|was|set|a|of|the)\s+)*"
+# Matches optional possessive 's / he's / it's, then optional filler words.
+_FILLER_RE = r"(?:'s)?\s+(?:(?:he's|it's|its|she's|is|at|to|was|set|a|of|the)\s+)*"
+
+# Number words Whisper sometimes writes instead of digits (values 0-30).
+_NUMBER_WORDS: dict[str, int] = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+}
+# Compound forms: "twenty one" through "twenty nine", "thirty" already covered.
+for _ones_word, _ones_val in list(_NUMBER_WORDS.items()):
+    if 1 <= _ones_val <= 9:
+        _NUMBER_WORDS[f"twenty {_ones_word}"] = 20 + _ones_val
+        _NUMBER_WORDS[f"twenty-{_ones_word}"] = 20 + _ones_val
+
+# Build a single regex alternation for number words, longest first to avoid
+# "twenty" matching before "twenty one".
+_NUMBER_WORD_RE = "|".join(re.escape(w) for w in sorted(_NUMBER_WORDS, key=len, reverse=True))
 
 # Common Whisper misrecognitions of sailing terminology.
 # Each key is a canonical parameter name; values are alternate spellings
 # that Whisper frequently produces for that term.
 _WHISPER_ALIASES: dict[str, list[str]] = {
-    "main_halyard": ["main higher", "main hires", "main halyards"],
-    "jib_halyard": ["jib higher", "jib hires", "jib halyards"],
-    "vang": ["bang", "van"],
+    "main_halyard": ["main higher", "main hires", "main hired", "main halyards"],
+    "jib_halyard": ["jib higher", "jib hires", "jib hired", "jib howard", "jib halyards"],
+    "vang": ["bang", "boom bang", "van"],
     "cunningham": ["cunninghams"],
     "main_sheet_tension": [
         "main cheat tension",
@@ -129,8 +164,10 @@ def _build_patterns() -> None:
             alternates.append(re.escape(alias.lower()))
 
         # Build pattern: any alternate form, optional filler words, then a number
+        # (either digits or a number word like "five", "twenty one")
         alts_joined = "|".join(alternates)
-        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}(\d+(?:\.\d+)?)"
+        number_re = rf"(\d+(?:\.\d+)?|{_NUMBER_WORD_RE})"
+        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}{number_re}"
         _LABEL_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), p.name))
 
     # Sort longest pattern text first so "jib sheet tension port" matches before "jib"
@@ -161,7 +198,8 @@ def regex_extract(segments: list[dict[str, Any]]) -> list[ExtractionItem]:
                 if any(ms <= m_start < me or ms < m_end <= me for ms, me in matched_spans):
                     continue
 
-                value = float(m.group(1))
+                raw = m.group(1)
+                value = float(_NUMBER_WORDS.get(raw.lower(), raw))
                 matched_spans.append((m_start, m_end))
                 items.append(
                     ExtractionItem(

@@ -304,6 +304,77 @@ class TestRegexExtract:
         assert extracted["traveler_position"] == 21.0
         assert len(items) == 10
 
+    # -- Number words (Whisper writes "five" instead of "5") --
+
+    def test_number_word_one(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "backstay one"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].extracted_value == 1.0
+
+    def test_number_word_five(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "vang five"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].extracted_value == 5.0
+
+    def test_number_word_twelve(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "main halyard twelve"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].extracted_value == 12.0
+
+    def test_number_word_twenty_one(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "traveler position twenty one"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].extracted_value == 21.0
+
+    def test_number_word_with_filler(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "backstay is five"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].extracted_value == 5.0
+
+    # -- More Whisper aliases from session 13 --
+
+    def test_whisper_alias_main_halyard_as_hired(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "main hired is one"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "main_halyard"
+        assert items[0].extracted_value == 1.0
+
+    def test_whisper_alias_jib_halyard_as_howard(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "jib howard two"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "jib_halyard"
+        assert items[0].extracted_value == 2.0
+
+    def test_whisper_alias_vang_as_boom_bang(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "boom bang five"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "vang"
+        assert items[0].extracted_value == 5.0
+
+    # -- Second real-world transcript (session 13) --
+
+    def test_real_whisper_transcript_session_13(self) -> None:
+        """Session 13 transcript with number words and more misrecognitions."""
+        text = (
+            "main hired is one "
+            "the jib howard he's two "
+            "boom bang its five"
+        )
+        segments = [{"start": 0.0, "end": 60.0, "text": text}]
+        items = regex_extract(segments)
+        extracted = {i.parameter_name: i.extracted_value for i in items}
+        assert extracted["main_halyard"] == 1.0
+        assert extracted["jib_halyard"] == 2.0
+        assert extracted["vang"] == 5.0
+
     def test_all_parameters_extractable(self) -> None:
         """Every canonical parameter should be extractable by regex."""
         from helmlog.boat_settings import PARAMETERS
