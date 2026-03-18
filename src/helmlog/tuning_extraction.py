@@ -76,6 +76,35 @@ class ExtractionRun:
 _LABEL_TO_NAME: dict[str, str] = {}
 _LABEL_PATTERNS: list[tuple[re.Pattern[str], str]] = []
 
+# Filler words/phrases Whisper inserts between a parameter name and its value.
+# Matches optional possessive 's then optional filler words like "to", "at", "is a", "was".
+_FILLER_RE = r"(?:'s)?\s+(?:(?:is|at|to|was|set|a|of|the)\s+)*"
+
+# Common Whisper misrecognitions of sailing terminology.
+# Each key is a canonical parameter name; values are alternate spellings
+# that Whisper frequently produces for that term.
+_WHISPER_ALIASES: dict[str, list[str]] = {
+    "main_halyard": ["main higher", "main hires", "main halyards"],
+    "jib_halyard": ["jib higher", "jib hires", "jib halyards"],
+    "vang": ["bang", "van"],
+    "cunningham": ["cunninghams"],
+    "main_sheet_tension": [
+        "main cheat tension",
+        "main cheap tension",
+        "main sheat tension",
+    ],
+    "jib_sheet_tension_port": [
+        "gybsheet tension port",
+        "gyb sheet tension port",
+        "jibsheet tension port",
+    ],
+    "jib_sheet_tension_starboard": [
+        "gybsheet tension starboard",
+        "gyb sheet tension starboard",
+        "jibsheet tension starboard",
+    ],
+}
+
 
 def _build_patterns() -> None:
     """Build regex patterns from canonical parameter definitions."""
@@ -94,15 +123,17 @@ def _build_patterns() -> None:
         # Also map underscore form
         _LABEL_TO_NAME[p.name] = p.name
 
-        # Build patterns: label with spaces, and canonical name with underscores
-        # Use word boundary to avoid partial matches
-        label_escaped = re.escape(label_lower)
-        name_escaped = re.escape(p.name)
-        # Allow either form, followed by a number
-        pattern_str = rf"(?:{label_escaped}|{name_escaped})\s+(\d+(?:\.\d+)?)"
+        # Collect all alternate forms for this parameter
+        alternates = [re.escape(label_lower), re.escape(p.name)]
+        for alias in _WHISPER_ALIASES.get(p.name, []):
+            alternates.append(re.escape(alias.lower()))
+
+        # Build pattern: any alternate form, optional filler words, then a number
+        alts_joined = "|".join(alternates)
+        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}(\d+(?:\.\d+)?)"
         _LABEL_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), p.name))
 
-    # Sort longest label first so "jib sheet tension port" matches before "jib"
+    # Sort longest pattern text first so "jib sheet tension port" matches before "jib"
     _LABEL_PATTERNS.sort(key=lambda x: len(x[1]), reverse=True)
 
 

@@ -179,6 +179,131 @@ class TestRegexExtract:
         items = regex_extract(segments)
         assert len(items) == 0
 
+    # -- Filler words between parameter name and number --
+
+    def test_filler_word_to(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "backstay to 12"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "backstay"
+        assert items[0].extracted_value == 12.0
+
+    def test_filler_word_at(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "outhaul at 16"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "outhaul"
+        assert items[0].extracted_value == 16.0
+
+    def test_filler_word_is(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "backstay is 12"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "backstay"
+
+    def test_filler_word_was(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "traveler position was 21"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "traveler_position"
+        assert items[0].extracted_value == 21.0
+
+    def test_filler_phrase_is_a(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "vang is a 14"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "vang"
+        assert items[0].extracted_value == 14.0
+
+    def test_filler_phrase_is_at(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "jib sheet tension port is at 19"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "jib_sheet_tension_port"
+        assert items[0].extracted_value == 19.0
+
+    def test_filler_phrase_set_to(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "backstay set to 12"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "backstay"
+
+    def test_possessive_s(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "cunningham's 15"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "cunningham"
+        assert items[0].extracted_value == 15.0
+
+    # -- Whisper misrecognition aliases --
+
+    def test_whisper_alias_main_halyard_as_higher(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "main higher to 12"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "main_halyard"
+        assert items[0].extracted_value == 12.0
+
+    def test_whisper_alias_jib_halyard_as_hires(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "jib hires at 13"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "jib_halyard"
+        assert items[0].extracted_value == 13.0
+
+    def test_whisper_alias_vang_as_bang(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "bang is a 14"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "vang"
+        assert items[0].extracted_value == 14.0
+
+    def test_whisper_alias_main_sheet_as_cheat(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "main cheat tension 18"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "main_sheet_tension"
+        assert items[0].extracted_value == 18.0
+
+    def test_whisper_alias_jib_as_gyb(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "gybsheet tension port is at 19"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "jib_sheet_tension_port"
+        assert items[0].extracted_value == 19.0
+
+    def test_whisper_alias_jib_as_gyb_starboard(self) -> None:
+        segments = [{"start": 0.0, "end": 1.0, "text": "gybsheet tension starboard to 20"}]
+        items = regex_extract(segments)
+        assert len(items) == 1
+        assert items[0].parameter_name == "jib_sheet_tension_starboard"
+        assert items[0].extracted_value == 20.0
+
+    # -- Full real-world transcript segment --
+
+    def test_real_whisper_transcript(self) -> None:
+        """Full segment as produced by Whisper on the Pi."""
+        text = (
+            "Set the main higher to 12  Jib hires at 13  Bang is a 14  "
+            "Cunningham's 15  Outhaul 16  Backstay 17  Main Cheat Tension 18  "
+            "Gybsheet tension port is at 19. Gybsheet tension starboard to 20,  "
+            "traveler position was 21"
+        )
+        segments = [{"start": 0.0, "end": 60.0, "text": text}]
+        items = regex_extract(segments)
+        extracted = {i.parameter_name: i.extracted_value for i in items}
+        assert extracted["main_halyard"] == 12.0
+        assert extracted["jib_halyard"] == 13.0
+        assert extracted["vang"] == 14.0
+        assert extracted["cunningham"] == 15.0
+        assert extracted["outhaul"] == 16.0
+        assert extracted["backstay"] == 17.0
+        assert extracted["main_sheet_tension"] == 18.0
+        assert extracted["jib_sheet_tension_port"] == 19.0
+        assert extracted["jib_sheet_tension_starboard"] == 20.0
+        assert extracted["traveler_position"] == 21.0
+        assert len(items) == 10
+
     def test_all_parameters_extractable(self) -> None:
         """Every canonical parameter should be extractable by regex."""
         from helmlog.boat_settings import PARAMETERS
