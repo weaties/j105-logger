@@ -362,7 +362,26 @@ def create_app(
     app.include_router(peer_router)
 
     def _tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
-        return {"request": request, "active_page": page, "git_info": _GIT_INFO, **extra}
+        # Resolve the active theme: user override → boat default → system default.
+        # boat_default and custom_schemes are fetched once in theme_middleware (async);
+        # the user-specific scheme is read here because request.state.user is only set
+        # by auth_middleware, which runs AFTER theme_middleware (outermost vs innermost).
+        from helmlog.themes import resolve_theme
+        from helmlog.themes import theme_css as _theme_css
+
+        user: dict[str, Any] | None = getattr(request.state, "user", None)
+        user_scheme: str | None = user.get("color_scheme") if user else None
+        boat_default: str | None = getattr(request.state, "boat_default", None)
+        custom_schemes: list[dict[str, Any]] = getattr(request.state, "custom_schemes", [])
+        theme = resolve_theme(user_scheme, boat_default, custom_schemes)
+        theme_css_str = _theme_css(theme)
+        return {
+            "request": request,
+            "active_page": page,
+            "git_info": _GIT_INFO,
+            "theme_css": theme_css_str,
+            **extra,
+        }
 
     from helmlog.auth import (
         _is_auth_disabled,
@@ -451,6 +470,22 @@ def create_app(
         request.state.user = user
         return await call_next(request)  # type: ignore[no-any-return]
 
+    @app.middleware("http")
+    async def theme_middleware(  # type: ignore[no-untyped-def]
+        request: Request,
+        call_next,  # noqa: ANN001
+    ) -> Response:
+        """Pre-fetch theme DB data for use by _tpl_ctx (which runs later, after auth)."""
+        try:
+            boat_default = await storage.get_setting("color_scheme_default")
+            custom_schemes = await storage.list_color_schemes()
+        except Exception:  # noqa: BLE001
+            boat_default = None
+            custom_schemes = []
+        request.state.boat_default = boat_default
+        request.state.custom_schemes = custom_schemes
+        return await call_next(request)  # type: ignore[no-any-return]
+
     # ------------------------------------------------------------------
     # Public routes: /healthz, /login, /logout
     # ------------------------------------------------------------------
@@ -512,6 +547,98 @@ def create_app(
         if not name:
             raise HTTPException(status_code=422, detail="Name must not be blank")
         await storage.update_user_profile(_user["id"], name, None)
+
+    @app.patch("/api/me/color-scheme", status_code=204)
+    async def api_set_my_color_scheme(
+        request: Request,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> None:
+        """Set the current user's personal color scheme preference."""
+        scheme = (body.get("scheme") or "").strip() or None
+        await storage.set_user_color_scheme(_user["id"], scheme)
+
+    @app.delete("/api/me/color-scheme", status_code=204)
+    async def api_clear_my_color_scheme(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> None:
+        """Clear the current user's personal color scheme (revert to boat default)."""
+        await storage.set_user_color_scheme(_user["id"], None)
+
+    @app.get("/api/color-schemes")
+    async def api_list_color_schemes(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return available color schemes (built-in presets + admin custom schemes)."""
+        from helmlog.themes import BUILTIN_PRESETS
+
+        custom = await storage.list_color_schemes()
+        boat_default = await storage.get_setting("color_scheme_default")
+        return JSONResponse(
+            {
+                "presets": [
+                    {"id": t.id, "name": t.name, "bg": t.bg_primary, "text": t.text_primary, "accent": t.accent}
+                    for t in BUILTIN_PRESETS.values()
+                ],
+                "custom": custom,
+                "boat_default": boat_default,
+            }
+        )
+
+    @app.post("/api/color-schemes", status_code=201)
+    async def api_create_color_scheme(
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Create a new admin custom color scheme."""
+        name = (body.get("name") or "").strip()
+        bg = (body.get("bg") or "").strip()
+        text_color = (body.get("text_color") or "").strip()
+        accent = (body.get("accent") or "").strip()
+        if not all([name, bg, text_color, accent]):
+            raise HTTPException(status_code=422, detail="name, bg, text_color, accent are required")
+        new_id = await storage.create_color_scheme(name, bg, text_color, accent, _user.get("id"))
+        return JSONResponse({"id": new_id})
+
+    @app.put("/api/color-schemes/default", status_code=204)
+    async def api_set_color_scheme_default(
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        """Set the boat-wide default color scheme."""
+        scheme = (body.get("scheme") or "").strip() or None
+        if scheme:
+            await storage.set_setting("color_scheme_default", scheme)
+        else:
+            await storage.delete_setting("color_scheme_default")
+
+    @app.put("/api/color-schemes/{scheme_id}", status_code=204)
+    async def api_update_color_scheme(
+        scheme_id: int,
+        body: dict[str, Any],
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        """Update a custom color scheme's name or colors."""
+        ok = await storage.update_color_scheme(
+            scheme_id,
+            name=body.get("name"),
+            bg=body.get("bg"),
+            text_color=body.get("text_color"),
+            accent=body.get("accent"),
+        )
+        if not ok:
+            raise HTTPException(status_code=404, detail="Color scheme not found")
+
+    @app.delete("/api/color-schemes/{scheme_id}", status_code=204)
+    async def api_delete_color_scheme(
+        scheme_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        """Delete a custom color scheme."""
+        ok = await storage.delete_color_scheme(scheme_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Color scheme not found")
 
     def _login_ctx(next_url: str, error_html: str = "") -> dict[str, Any]:
         from helmlog.oauth import enabled_providers
@@ -4884,6 +5011,7 @@ def create_app(
                 weight_lbs=_user.get("weight_lbs"),
                 bio_consent=bio_consent,
                 user_id=user_id,
+                user_color_scheme=_user.get("color_scheme"),
             ),
         )
 

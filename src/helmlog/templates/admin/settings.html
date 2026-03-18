@@ -2,23 +2,20 @@
 {% block title %}Settings — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
 .setting{margin-bottom:18px}
 .setting label{display:block;font-weight:600;margin-bottom:4px;font-size:.9rem}
-.setting .help{font-size:.75rem;color:#8892a4;margin-top:2px}
-.setting input,.setting select{width:100%;max-width:480px;padding:7px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
+.setting .help{font-size:.75rem;color:var(--text-secondary);margin-top:2px}
+.setting input,.setting select{width:100%;max-width:480px;padding:7px 10px;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:.85rem}
 .setting input[type=number]{max-width:120px}
 .source-badge{display:inline-block;font-size:.65rem;text-transform:uppercase;letter-spacing:.06em;padding:2px 6px;border-radius:3px;margin-left:8px;vertical-align:middle}
 .source-db{background:#1e3a5f;color:#60a5fa}
 .source-env{background:#1a3329;color:#4ade80}
 .source-default{background:#2a2033;color:#c084fc}
 .btn-row{display:flex;gap:8px;margin-top:18px;flex-wrap:wrap}
-.btn{padding:8px 18px;border:1px solid #374151;border-radius:6px;background:#1e293b;color:#e8eaf0;font-size:.85rem;cursor:pointer}
-.btn:hover{background:#253449}
-.btn-primary{background:#2563eb;border-color:#2563eb;color:#fff}
-.btn-primary:hover{background:#1d4ed8}
-.btn-reset{color:#f87171;border-color:#7f1d1d;font-size:.75rem;padding:4px 10px}
+.btn-settings{padding:8px 18px;border:1px solid var(--border-input);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:.85rem;cursor:pointer}
+.btn-settings:hover{opacity:.85}
+.btn-settings-primary{background:var(--action);border-color:var(--action);color:var(--action-text)}
+.btn-reset{color:#f87171;border-color:#7f1d1d;font-size:.75rem;padding:4px 10px;border:1px solid;border-radius:4px;background:none;cursor:pointer}
 .btn-reset:hover{background:#1f1215}
 .status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
 .status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
@@ -27,12 +24,26 @@
 {% endblock %}
 {% block content %}
 <div class="card">
+  <div class="label">Color Scheme</div>
+  <div id="scheme-status" class="status"></div>
+  <div class="setting">
+    <label>Boat Default</label>
+    <select id="scheme-default" class="setting" style="width:100%;max-width:320px;padding:7px 10px;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:.85rem">
+      <option value="">— System default (Ocean Dark) —</option>
+    </select>
+    <div class="help">Sets the default color scheme for all users who haven't chosen their own.</div>
+  </div>
+  <div class="btn-row">
+    <button type="button" class="btn-settings btn-settings-primary" onclick="saveSchemeDefault()">Save color scheme</button>
+  </div>
+</div>
+<div class="card">
   <div class="label">Settings</div>
   <div id="status" class="status"></div>
   <form id="settings-form" onsubmit="return saveAll(event)">
     <div id="fields"></div>
     <div class="btn-row">
-      <button type="submit" class="btn btn-primary">Save all</button>
+      <button type="submit" class="btn-settings btn-settings-primary">Save all</button>
     </div>
   </form>
 </div>
@@ -66,7 +77,7 @@ function render(){
       inp='<input type="'+t+'" name="'+esc(s.key)+'" value="'+val+'" placeholder="'+esc(s.default_value)+'"/>';
     }
     const badge='<span class="source-badge source-'+s.source+'">'+s.source+'</span>';
-    const reset=s.source==='db'?'<button type="button" class="btn btn-reset" onclick="resetKey(\''+esc(s.key)+'\')">Reset</button>':'';
+    const reset=s.source==='db'?'<button type="button" class="btn-reset" onclick="resetKey(\''+esc(s.key)+'\')">Reset</button>':'';
     d.innerHTML='<label>'+esc(s.label)+badge+' '+reset+'</label>'+inp+'<div class="help">'+esc(s.help_text)+' <code>'+esc(s.key)+'</code></div>';
     c.appendChild(d);
   }
@@ -87,6 +98,33 @@ async function resetKey(key){
   else showStatus('Reset failed','err');
 }
 function showStatus(msg,cls){const el=document.getElementById('status');el.textContent=msg;el.className='status '+cls;setTimeout(()=>{el.className='status'},4000)}
+function showSchemeStatus(msg,cls){const el=document.getElementById('scheme-status');el.textContent=msg;el.className='status '+cls;setTimeout(()=>{el.className='status'},4000)}
+async function loadSchemeDefault(){
+  const r=await fetch('/api/color-schemes');
+  if(!r.ok)return;
+  const data=await r.json();
+  const sel=document.getElementById('scheme-default');
+  sel.innerHTML='<option value="">— System default (Ocean Dark) —</option>';
+  for(const p of data.presets){
+    const o=document.createElement('option');
+    o.value=p.id;o.textContent=p.name;
+    if(p.id===data.boat_default)o.selected=true;
+    sel.appendChild(o);
+  }
+  for(const c of data.custom){
+    const o=document.createElement('option');
+    o.value='custom:'+c.id;o.textContent=c.name+' (custom)';
+    if('custom:'+c.id===data.boat_default)o.selected=true;
+    sel.appendChild(o);
+  }
+}
+async function saveSchemeDefault(){
+  const scheme=document.getElementById('scheme-default').value||null;
+  const r=await fetch('/api/color-schemes/default',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({scheme})});
+  if(r.ok)showSchemeStatus('Color scheme default saved — reload to apply','ok');
+  else showSchemeStatus('Failed to save','err');
+}
+loadSchemeDefault();
 init();
 </script>
 {% endblock %}

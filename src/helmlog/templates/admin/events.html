@@ -2,17 +2,11 @@
 {% block title %}Event Rules — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;padding:6px 8px}
-td{padding:7px 8px;border-bottom:1px solid #0d1a2e}
-.btn-sm{padding:6px 12px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.78rem;cursor:pointer}
 .btn-add{color:#4ade80;border-color:#16a34a}
 .btn-del{color:#ef4444;border-color:#7f1d1d}
 .form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
-.form-row input,.form-row select{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
-.form-row input::placeholder{color:#586578}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-primary);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-secondary)}
 #add-err{color:#ef4444;font-size:.8rem;margin-top:4px}
 </style>
 {% endblock %}

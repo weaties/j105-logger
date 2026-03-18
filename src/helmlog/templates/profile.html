@@ -2,35 +2,34 @@
 {% block title %}HelmLog — Profile{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}
-.p-card{background:#131f35;border-radius:12px;padding:24px;text-align:center}
+.p-card{border-radius:12px;padding:24px;text-align:center;background:var(--bg-secondary)}
 .p-avatar{width:128px;height:128px;border-radius:50%;object-fit:cover;cursor:pointer;border:3px solid {{ role_color }};margin-bottom:16px}
-.p-avatar-hint{color:#6b7a90;font-size:.75rem;margin-top:-10px;margin-bottom:12px}
-.p-email{color:#8892a4;font-size:.9rem;margin-bottom:8px}
+.p-avatar-hint{color:var(--text-secondary);font-size:.75rem;margin-top:-10px;margin-bottom:12px}
+.p-email{color:var(--text-secondary);font-size:.9rem;margin-bottom:8px}
 .p-role{background:{{ role_color }}22;color:{{ role_color }};padding:2px 10px;border-radius:4px;font-size:.8rem;display:inline-block}
 .p-field{text-align:left;margin-top:24px}
-.p-field-label{color:#8892a4;font-size:.9rem;display:block;margin-bottom:6px}
+.p-field-label{color:var(--text-secondary);font-size:.9rem;display:block;margin-bottom:6px}
 .p-input{
   display:block;width:100%;padding:14px 12px;border-radius:8px;
-  border:1px solid #2a3a5c;background:#0d1829;color:#e0e6ed;
+  border:1px solid var(--border-input);background:var(--bg-primary);color:var(--text-primary);
   font-size:1.1rem;box-sizing:border-box;min-height:48px;
 }
-.p-input:focus{border-color:#2563eb;outline:none}
+.p-input:focus{border-color:var(--action);outline:none}
 .p-row{display:flex;gap:10px;align-items:stretch;margin-top:6px}
 .p-row .p-input{flex:1 1 0;min-width:0;width:auto}
 .p-row .p-btn{
   flex-shrink:0;min-height:48px;padding:12px 20px;font-size:.95rem;
   display:flex;align-items:center;justify-content:center;
-  background:#1e3a5c;color:#e0e6ed;border:1px solid #2a3a5c;border-radius:8px;
+  background:var(--border-color);color:var(--text-primary);border:1px solid var(--border-input);border-radius:8px;
   cursor:pointer;font-weight:600;
 }
-.p-row .p-btn:active{background:#2563eb}
+.p-row .p-btn:active{background:var(--action);color:var(--action-text)}
 .p-consent{
   display:flex;align-items:center;gap:8px;margin-top:8px;
-  color:#8892a4;font-size:.9rem;cursor:pointer;padding:8px 0;
+  color:var(--text-secondary);font-size:.9rem;cursor:pointer;padding:8px 0;
 }
 .p-consent input[type="checkbox"]{width:20px;height:20px;cursor:pointer}
-.p-note{color:#6b7a90;font-size:.8rem;margin:6px 0 0;line-height:1.4}
+.p-note{color:var(--text-secondary);font-size:.8rem;margin:6px 0 0;line-height:1.4}
 </style>
 {% endblock %}
 {% block content %}
@@ -61,6 +60,17 @@ h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}
              value="{{ weight_lbs or '' }}" placeholder="—"/>
       <button type="button" class="p-btn" onclick="saveWeight()">Save</button>
     </div>
+  </div>
+
+  <div class="p-field">
+    <label class="p-field-label">Color Scheme</label>
+    <p class="p-note">Choose how the interface looks. Your preference overrides the boat default.</p>
+    <div class="p-row" style="margin-top:8px">
+      <select id="scheme-select" class="p-input" style="font-size:.9rem"></select>
+      <button type="button" class="p-btn" onclick="saveScheme()">Save</button>
+    </div>
+    <button type="button" style="font-size:.8rem;color:var(--text-secondary);background:none;border:none;cursor:pointer;padding:4px 0;margin-top:4px" onclick="resetScheme()">Reset to boat default</button>
+    <div id="scheme-status" style="font-size:.82rem;margin-top:4px"></div>
   </div>
 </div>
 {% endblock %}
@@ -118,5 +128,45 @@ async function saveWeight() {
     alert(d.detail || 'Failed to save weight');
   }
 }
+async function loadSchemes() {
+  const r = await fetch('/api/color-schemes');
+  if (!r.ok) return;
+  const data = await r.json();
+  const sel = document.getElementById('scheme-select');
+  const current = {{ user_color_scheme | tojson }};
+  sel.innerHTML = '<option value="">— Boat default —</option>';
+  for (const p of data.presets) {
+    const opt = document.createElement('option');
+    opt.value = p.id;
+    opt.textContent = p.name;
+    if (p.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  for (const c of data.custom) {
+    const opt = document.createElement('option');
+    opt.value = 'custom:' + c.id;
+    opt.textContent = c.name + ' (custom)';
+    if ('custom:' + c.id === current) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+async function saveScheme() {
+  const scheme = document.getElementById('scheme-select').value || null;
+  const r = await fetch('/api/me/color-scheme', {
+    method:'PATCH',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({scheme})
+  });
+  const st = document.getElementById('scheme-status');
+  if (r.ok) { st.style.color='#4ade80'; st.textContent='Saved — reload to apply'; }
+  else { st.style.color='#f87171'; st.textContent='Failed to save'; }
+}
+async function resetScheme() {
+  await fetch('/api/me/color-scheme', {method:'DELETE'});
+  document.getElementById('scheme-select').value = '';
+  const st = document.getElementById('scheme-status');
+  st.style.color='#4ade80'; st.textContent='Reset — reload to apply';
+}
+loadSchemes();
 </script>
 {% endblock %}

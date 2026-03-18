@@ -2,45 +2,42 @@
 {% block title %}HelmLog — Notifications{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:4px}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}
 .notif-list{list-style:none;padding:0;margin:0}
-.notif-item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid #1e3a5f;font-size:.85rem}
+.notif-item{display:flex;gap:12px;align-items:flex-start;padding:10px 0;border-bottom:1px solid var(--border-color);font-size:.85rem}
 .notif-item:last-child{border-bottom:none}
-.notif-item.unread{background:#0d1a2e;border-radius:6px;padding:10px;margin:0 -10px 4px;border-bottom:none}
+.notif-item.unread{background:var(--border-row);border-radius:6px;padding:10px;margin:0 -10px 4px;border-bottom:none}
 .notif-dot{width:8px;height:8px;border-radius:50%;background:#3b82f6;flex-shrink:0;margin-top:6px}
 .notif-dot.read{background:transparent}
 .notif-body{flex:1;min-width:0}
 .notif-link{text-decoration:none;color:inherit;display:block}
 .notif-link:hover .notif-header{text-decoration:underline}
-.notif-header{color:#e0e8f0}
-.notif-actor{color:#7eb8f7;font-weight:600}
-.notif-msg{color:#c4cdd8}
+.notif-header{color:var(--text-primary)}
+.notif-actor{color:var(--accent);font-weight:600}
+.notif-msg{color:var(--text-primary)}
 .notif-meta{display:flex;gap:8px;align-items:center;margin-top:2px;flex-wrap:wrap}
 .notif-time{color:#6b7280;font-size:.78rem}
-.notif-session{color:#8892a4;font-size:.78rem}
+.notif-session{color:var(--text-secondary);font-size:.78rem}
 .notif-thread{color:#f97316;font-size:.78rem}
 .notif-type{font-size:.72rem;padding:2px 6px;border-radius:3px;font-weight:600}
-.notif-type.mention{background:#1e3a5f;color:#60a5fa}
+.notif-type.mention{background:var(--border-color);color:#60a5fa}
 .notif-type.reply{background:#1e3a2f;color:#4ade80}
 .notif-type.new_thread{background:#2e2a1f;color:#fbbf24}
 .notif-type.resolved{background:#1e2a3f;color:#a78bfa}
-.notif-snippet{color:#8892a4;font-size:.78rem;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px}
+.notif-snippet{color:var(--text-secondary);font-size:.78rem;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px}
 .notif-actions{display:flex;gap:6px;flex-shrink:0;align-items:flex-start}
-.ubtn{cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
+.ubtn{cursor:pointer;background:none;border:1px solid var(--action);color:var(--accent);border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
 .ubtn-sm{padding:2px 8px;font-size:.75rem}
-.btn{padding:8px 16px;border:none;border-radius:8px;font-size:.85rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff;margin-bottom:12px}
-.empty{color:#6b7280;font-size:.9rem;padding:20px 0;text-align:center}
+.notif-btn{padding:8px 16px;border:none;border-radius:8px;font-size:.85rem;font-weight:700;cursor:pointer;background:var(--action);color:var(--action-text);margin-bottom:12px}
 .session-group{margin-bottom:16px}
-.session-group-header{font-size:.9rem;color:#8892a4;margin:0 0 6px}
-.session-group-header a{color:#7eb8f7;text-decoration:none}
+.session-group-header{font-size:.9rem;color:var(--text-secondary);margin:0 0 6px}
+.session-group-header a{color:var(--accent);text-decoration:none}
 .session-group-header a:hover{text-decoration:underline}
 </style>
 {% endblock %}
 {% block content %}
 <h1>Notifications</h1>
 <div class="card">
-<button class="btn" id="mark-all-btn" onclick="markAllRead()">Mark All Read</button>
+<button class="notif-btn" id="mark-all-btn" onclick="markAllRead()">Mark All Read</button>
 <div id="notif-container"><div class="empty">Loading…</div></div>
 </div>
 {% endblock %}

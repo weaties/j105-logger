@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 46
+_CURRENT_VERSION: int = 47
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1054,6 +1054,20 @@ _MIGRATIONS: dict[int, str] = {
             event               TEXT    NOT NULL,
             session_type        TEXT    NOT NULL DEFAULT 'race',
             created_at          TEXT    NOT NULL
+        );
+    """,
+    47: """
+        -- Customizable color schemes (#347)
+        ALTER TABLE users ADD COLUMN color_scheme TEXT;
+
+        CREATE TABLE IF NOT EXISTS color_schemes (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT    NOT NULL,
+            bg         TEXT    NOT NULL,
+            text_color TEXT    NOT NULL,
+            accent     TEXT    NOT NULL,
+            created_by INTEGER REFERENCES users(id),
+            created_at TEXT    NOT NULL
         );
     """,
 }
@@ -4514,6 +4528,97 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Color schemes (#347)
+    # ------------------------------------------------------------------
+
+    async def list_color_schemes(self) -> list[dict[str, Any]]:
+        """Return all admin-defined custom color schemes."""
+        cur = await self._conn().execute(
+            "SELECT id, name, bg, text_color, accent, created_by, created_at"
+            " FROM color_schemes ORDER BY created_at"
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def create_color_scheme(
+        self,
+        name: str,
+        bg: str,
+        text_color: str,
+        accent: str,
+        created_by: int | None = None,
+    ) -> int:
+        """Insert a new custom color scheme. Returns the new row id."""
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        now = _dt.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO color_schemes (name, bg, text_color, accent, created_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (name, bg, text_color, accent, created_by, now),
+        )
+        await db.commit()
+        return cur.lastrowid  # type: ignore[return-value]
+
+    async def update_color_scheme(
+        self,
+        scheme_id: int,
+        name: str | None = None,
+        bg: str | None = None,
+        text_color: str | None = None,
+        accent: str | None = None,
+    ) -> bool:
+        """Update fields on a custom color scheme. Returns True if a row was found."""
+        fields: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            fields.append("name = ?")
+            params.append(name)
+        if bg is not None:
+            fields.append("bg = ?")
+            params.append(bg)
+        if text_color is not None:
+            fields.append("text_color = ?")
+            params.append(text_color)
+        if accent is not None:
+            fields.append("accent = ?")
+            params.append(accent)
+        if not fields:
+            return False
+        params.append(scheme_id)
+        db = self._conn()
+        cur = await db.execute(
+            f"UPDATE color_schemes SET {', '.join(fields)} WHERE id = ?", params
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def delete_color_scheme(self, scheme_id: int) -> bool:
+        """Delete a custom color scheme. Returns True if a row was removed."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM color_schemes WHERE id = ?", (scheme_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def get_user_color_scheme(self, user_id: int) -> str | None:
+        """Return the user's personal color scheme preference, or None."""
+        cur = await self._conn().execute(
+            "SELECT color_scheme FROM users WHERE id = ?", (user_id,)
+        )
+        row = await cur.fetchone()
+        return str(row["color_scheme"]) if row and row["color_scheme"] else None
+
+    async def set_user_color_scheme(self, user_id: int, scheme: str | None) -> None:
+        """Set or clear a user's personal color scheme preference."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE users SET color_scheme = ? WHERE id = ?", (scheme, user_id)
+        )
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Session deletion (#194)

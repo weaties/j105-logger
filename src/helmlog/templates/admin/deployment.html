@@ -2,51 +2,47 @@
 {% block title %}Deployment — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
 .kv{display:flex;gap:8px;margin-bottom:6px;font-size:.85rem;align-items:center}
-.kv .k{color:#8892a4;min-width:120px}
-.kv .v{color:#e8eaf0;font-family:monospace}
-.badge{display:inline-block;font-size:.7rem;padding:2px 8px;border-radius:4px;font-weight:600;letter-spacing:.04em}
+.kv .k{color:var(--text-secondary);min-width:120px}
+.kv .v{color:var(--text-primary);font-family:monospace}
 .badge-ok{background:#0d2818;color:#4ade80;border:1px solid #16a34a}
 .badge-warn{background:#2a1a00;color:#fbbf24;border:1px solid #d97706}
 .badge-err{background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
-.badge-mode{background:#1e3a5f;color:#60a5fa}
-.btn{padding:8px 18px;border:1px solid #374151;border-radius:6px;background:#1e293b;color:#e8eaf0;font-size:.85rem;cursor:pointer}
-.btn:hover{background:#253449}
-.btn-primary{background:#2563eb;border-color:#2563eb;color:#fff}
-.btn-primary:hover{background:#1d4ed8}
-.btn:disabled{opacity:.5;cursor:not-allowed}
+.badge-mode{background:var(--border-color);color:#60a5fa}
+.btn-deploy{padding:8px 18px;border:1px solid var(--border-input);border-radius:6px;background:var(--bg-secondary);color:var(--text-primary);font-size:.85rem;cursor:pointer}
+.btn-deploy:hover{opacity:.85}
+.btn-deploy-primary{background:var(--action);border-color:var(--action);color:var(--action-text)}
+.btn-deploy:disabled{opacity:.5;cursor:not-allowed}
 .btn-row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
 .status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
 .status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
 .status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
 .changelog{margin-top:8px;max-height:400px;overflow-y:auto}
-.commit{padding:6px 0;border-bottom:1px solid #1e293b;font-size:.82rem}
+.commit{padding:6px 0;border-bottom:1px solid var(--border-row);font-size:.82rem}
 .commit:last-child{border-bottom:none}
 .commit .sha{font-family:monospace;color:#60a5fa;margin-right:8px}
-.commit .msg{color:#e8eaf0}
-.commit .meta{color:#8892a4;font-size:.72rem;margin-top:2px}
+.commit .msg{color:var(--text-primary)}
+.commit .meta{color:var(--text-secondary);font-size:.72rem;margin-top:2px}
 table.history{width:100%;border-collapse:collapse;font-size:.8rem;margin-top:8px}
-table.history th{text-align:left;color:#8892a4;font-weight:500;padding:4px 8px;border-bottom:1px solid #374151}
-table.history td{padding:4px 8px;color:#e8eaf0;border-bottom:1px solid #1e293b}
+table.history th{text-align:left;color:var(--text-secondary);font-weight:500;padding:4px 8px;border-bottom:1px solid var(--border-input)}
+table.history td{padding:4px 8px;color:var(--text-primary);border-bottom:1px solid var(--border-row)}
 table.history .mono{font-family:monospace;font-size:.78rem}
-select.cfg-input,input.cfg-input{background:#0b1121;border:1px solid #374151;border-radius:4px;color:#e8eaf0;padding:4px 8px;font-size:.82rem;font-family:monospace}
+select.cfg-input,input.cfg-input{background:var(--bg-primary);border:1px solid var(--border-input);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.82rem;font-family:monospace}
 select.cfg-input{min-width:160px}
-.mode-desc{font-size:.72rem;color:#8892a4;margin-top:2px}
+.mode-desc{font-size:.72rem;color:var(--text-secondary);margin-top:2px}
 .tier-row{display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap;margin-bottom:8px}
-.tier-card{flex:1;min-width:200px;background:#0b1121;border:1px solid #374151;border-radius:8px;padding:12px}
-.tier-card h4{margin:0 0 6px;font-size:.82rem;color:#8892a4;text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
+.tier-card{flex:1;min-width:200px;background:var(--bg-primary);border:1px solid var(--border-input);border-radius:8px;padding:12px}
+.tier-card h4{margin:0 0 6px;font-size:.82rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;display:flex;align-items:center;gap:6px}
 .tier-sha{font-family:monospace;color:#60a5fa;font-size:.82rem}
-.tier-msg{color:#e8eaf0;font-size:.8rem;margin-top:4px;word-break:break-word}
-.tier-ts{color:#8892a4;font-size:.72rem;margin-top:2px}
+.tier-msg{color:var(--text-primary);font-size:.8rem;margin-top:4px;word-break:break-word}
+.tier-ts{color:var(--text-secondary);font-size:.72rem;margin-top:2px}
 .gap-pill{display:inline-block;font-size:.7rem;padding:2px 8px;border-radius:10px;font-weight:600}
 .gap-ok{background:#0d2818;color:#4ade80}
 .gap-warn{background:#2a1a00;color:#fbbf24}
 .gap-err{background:#1f1215;color:#f87171}
 .promo-filter{display:flex;gap:6px;margin-bottom:8px}
-.promo-filter button{padding:4px 12px;font-size:.75rem;border:1px solid #374151;border-radius:4px;background:#1e293b;color:#8892a4;cursor:pointer}
-.promo-filter button.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.promo-filter button{padding:4px 12px;font-size:.75rem;border:1px solid var(--border-input);border-radius:4px;background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer}
+.promo-filter button.active{background:var(--action);color:var(--action-text);border-color:var(--action)}
 .pending-toggle{cursor:pointer;color:#60a5fa;font-size:.82rem;margin-top:4px;display:inline-block}
 .pending-toggle:hover{text-decoration:underline}
 .pending-list{display:none;margin-top:6px;max-height:300px;overflow-y:auto}
@@ -59,7 +55,7 @@ select.cfg-input{min-width:160px}
   <div id="version-info">Loading...</div>
   <div id="deploy-status" class="status"></div>
   <div class="btn-row" id="deploy-actions" style="display:none">
-    <button class="btn btn-primary" id="btn-deploy" onclick="deploy()">Deploy Now</button>
+    <button class="btn-deploy btn-deploy-primary" id="btn-deploy" onclick="deploy()">Deploy Now</button>
     <span id="behind-badge"></span>
   </div>
 </div>

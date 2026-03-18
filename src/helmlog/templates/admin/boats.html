@@ -2,28 +2,10 @@
 {% block title %}Boat Registry — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-.btn-export{padding:8px 12px;border:1px solid #2563eb;border-radius:6px;
-background:#131f35;color:#7eb8f7;font-size:.8rem;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center}
-.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;
-padding:9px 12px;color:#e8eaf0;font-size:.9rem;width:100%}
-.btn-add{padding:9px 16px;border:none;border-radius:6px;background:#2563eb;
-color:#fff;font-weight:700;cursor:pointer;font-size:.9rem}
-.btn-sm{padding:8px 12px;border:1px solid #374151;border-radius:4px;
-background:#0a1628;font-size:.78rem;cursor:pointer;min-height:36px}
+.btn-add{padding:9px 16px;border:none;border-radius:6px;background:var(--action);
+color:var(--action-text);font-weight:700;cursor:pointer;font-size:.9rem}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-.btn-edit{color:#7eb8f7;border-color:#2563eb}
-.btn-del{color:#ef4444;border-color:#7f1d1d}
 .btn-save{color:#4ade80;border-color:#16a34a}
-.btn-cancel{color:#8892a4}
-table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
-padding:6px 8px;border-bottom:1px solid #1e3a5f}
-td{padding:7px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
-tr:last-child td{border-bottom:none}
-.empty{color:#8892a4;text-align:center;padding:20px 0}
 </style>
 {% endblock %}
 {% block content %}

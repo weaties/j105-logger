@@ -2,34 +2,21 @@
 {% block title %}Federation — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
-h2{font-size:1rem;font-weight:600;color:#7eb8f7;margin:0 0 10px}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;
-padding:9px 12px;color:#e8eaf0;font-size:.9rem;width:100%;box-sizing:border-box}
+h2{color:var(--accent)}
+.field{background:var(--bg-primary);border:1px solid var(--action);border-radius:6px;
+padding:9px 12px;color:var(--text-primary);font-size:.9rem;width:100%;box-sizing:border-box}
 textarea.field{min-height:100px;font-family:monospace;font-size:.8rem;resize:vertical}
-.btn-add{padding:9px 16px;border:none;border-radius:6px;background:#2563eb;
-color:#fff;font-weight:700;cursor:pointer;font-size:.9rem}
+.btn-add{padding:9px 16px;border:none;border-radius:6px;background:var(--action);
+color:var(--action-text);font-weight:700;cursor:pointer;font-size:.9rem}
 .btn-add:disabled{opacity:.5;cursor:not-allowed}
-.btn-sm{padding:8px 12px;border:1px solid #374151;border-radius:4px;
-background:#0a1628;font-size:.78rem;cursor:pointer;min-height:36px}
-.btn-copy{color:#7eb8f7;border-color:#2563eb}
+.btn-copy{color:var(--accent);border-color:var(--action)}
 .btn-del{color:#ef4444;border-color:#7f1d1d}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
-padding:6px 8px;border-bottom:1px solid #1e3a5f}
-td{padding:7px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
-tr:last-child td{border-bottom:none}
-.empty{color:#8892a4;text-align:center;padding:20px 0}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:.9rem;align-items:baseline}
-.kv dt{color:#8892a4;font-size:.8rem;text-align:right;white-space:nowrap}
+.kv dt{color:var(--text-secondary);font-size:.8rem;text-align:right;white-space:nowrap}
 .kv dd{margin:0;word-break:break-all}
 .mono{font-family:monospace;font-size:.82rem}
-.badge{display:inline-block;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
-padding:2px 7px;border-radius:3px;margin-left:6px}
-.badge-admin{background:#1e3a5f;color:#60a5fa}
+.badge-admin{background:var(--border-color);color:#60a5fa}
 .badge-member{background:#1a3329;color:#4ade80}
 .badge-active{background:#0d2818;color:#4ade80}
 .badge-inactive{background:#1f1215;color:#f87171}
@@ -37,7 +24,7 @@ padding:2px 7px;border-radius:3px;margin-left:6px}
 .status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
 .status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
 .form-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px}
-.peer-section{margin-top:12px;padding-top:10px;border-top:1px solid #1e3a5f}
+.peer-section{margin-top:12px;padding-top:10px;border-top:1px solid var(--border-color)}
 select.field{appearance:auto}
 </style>
 {% endblock %}
