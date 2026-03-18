@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 45
+_CURRENT_VERSION: int = 46
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1046,6 +1046,16 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE races ADD COLUMN centroid_lat REAL;
         ALTER TABLE races ADD COLUMN centroid_lon REAL;
     """,
+    46: """
+        -- Scheduled race starts (#345)
+        CREATE TABLE IF NOT EXISTS scheduled_starts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            scheduled_start_utc TEXT    NOT NULL,
+            event               TEXT    NOT NULL,
+            session_type        TEXT    NOT NULL DEFAULT 'race',
+            created_at          TEXT    NOT NULL
+        );
+    """,
 }
 
 
@@ -1934,6 +1944,63 @@ class Storage:
         await db.commit()
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
+
+    # -- Scheduled starts (#345) ------------------------------------------
+
+    async def schedule_start(
+        self,
+        scheduled_start_utc: datetime,
+        event: str,
+        session_type: str = "race",
+    ) -> int:
+        """Set (or replace) the scheduled start. Returns the row id."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute("DELETE FROM scheduled_starts")
+        cur = await db.execute(
+            "INSERT INTO scheduled_starts (scheduled_start_utc, event, session_type, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                scheduled_start_utc.isoformat(),
+                event,
+                session_type,
+                _datetime.now(_UTC).isoformat(),
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("Scheduled start set for {} ({})", scheduled_start_utc.isoformat(), event)
+        return cur.lastrowid
+
+    async def get_scheduled_start(self) -> dict[str, str] | None:
+        """Return the pending scheduled start row, or None."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, scheduled_start_utc, event, session_type, created_at"
+            " FROM scheduled_starts LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "scheduled_start_utc": row["scheduled_start_utc"],
+            "event": row["event"],
+            "session_type": row["session_type"],
+            "created_at": row["created_at"],
+        }
+
+    async def cancel_scheduled_start(self) -> bool:
+        """Delete the pending scheduled start. Returns True if a row was deleted."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM scheduled_starts")
+        await db.commit()
+        deleted = cur.rowcount > 0
+        if deleted:
+            logger.info("Scheduled start cancelled")
+        return deleted
 
     async def has_source_id(self, source: str, source_id: str) -> bool:
         """Check if a race with this source/source_id already exists (dedup)."""

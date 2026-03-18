@@ -18,7 +18,7 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -1829,6 +1829,21 @@ def create_app(
         current_dict = await _race_dict(current) if current else None
         today_race_dicts = [await _race_dict(r) for r in today_races]
 
+        # Scheduled start info (#345)
+        sched_row = await storage.get_scheduled_start()
+        scheduled_start_dict: dict[str, Any] | None = None
+        if sched_row is not None:
+            fire_at = datetime.fromisoformat(sched_row["scheduled_start_utc"])
+            if fire_at.tzinfo is None:
+                fire_at = fire_at.replace(tzinfo=UTC)
+            secs = max(0, int((fire_at - now).total_seconds()))
+            scheduled_start_dict = {
+                "scheduled_start_utc": sched_row["scheduled_start_utc"],
+                "event": sched_row["event"],
+                "session_type": sched_row["session_type"],
+                "seconds_until_start": secs,
+            }
+
         return JSONResponse(
             {
                 "date": date_str,
@@ -1841,6 +1856,7 @@ def create_app(
                 "next_practice_num": next_practice_num,
                 "today_races": today_race_dicts,
                 "has_recorder": recorder is not None,
+                "scheduled_start": scheduled_start_dict,
                 "current_debrief": {
                     "race_id": _debrief_race_id,
                     "race_name": _debrief_race_name,
@@ -1963,6 +1979,196 @@ def create_app(
         await _audit(request, "event_rule.delete", detail=_WEEKDAY_NAMES[weekday], user=_user)
 
     # ------------------------------------------------------------------
+    # /api/races/schedule  (#345 — scheduled race starts)
+    # ------------------------------------------------------------------
+
+    _schedule_task: asyncio.Task[None] | None = None
+    _schedule_first_check_done: bool = False
+
+    async def _schedule_fire_loop() -> None:
+        """Background task: poll for a pending scheduled start and fire when due."""
+        nonlocal _schedule_first_check_done
+        while True:
+            try:
+                row = await storage.get_scheduled_start()
+                if row is not None:
+                    fire_at = datetime.fromisoformat(row["scheduled_start_utc"])
+                    if fire_at.tzinfo is None:
+                        fire_at = fire_at.replace(tzinfo=UTC)
+                    now = datetime.now(UTC)
+                    if now >= fire_at:
+                        if not _schedule_first_check_done:
+                            # First check after startup — missed start, don't fire
+                            logger.warning(
+                                "Scheduled start at {} was missed — system was not running",
+                                row["scheduled_start_utc"],
+                            )
+                            await storage.cancel_scheduled_start()
+                        else:
+                            # Normal operation — fire the scheduled start
+                            current = await storage.get_current_race()
+                            if current is not None:
+                                await storage.cancel_scheduled_start()
+                                logger.warning(
+                                    "Scheduled start cancelled — race {} already active",
+                                    current.name,
+                                )
+                            else:
+                                await storage.cancel_scheduled_start()
+                                await _do_scheduled_start(row["event"], row["session_type"])
+                _schedule_first_check_done = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Schedule fire loop error: {}", exc)
+            await asyncio.sleep(1)
+
+    async def _do_scheduled_start(event: str, session_type: str) -> None:
+        """Fire a scheduled start — equivalent to pressing Start."""
+        nonlocal _audio_session_id
+        from helmlog.races import build_race_name, local_today
+
+        now = datetime.now(UTC)
+        today = local_today()
+        date_str = today.isoformat()
+        race_num = await storage.count_sessions_for_date(date_str, session_type) + 1
+        name = build_race_name(event, today, race_num, session_type)
+        try:
+            race = await storage.start_race(event, now, date_str, race_num, name, session_type)
+            logger.info("Scheduled start fired: {} (id={})", race.name, race.id)
+
+            # Auto-apply sail defaults
+            try:
+                sail_defaults = await storage.get_sail_defaults()
+                has_any = any(sail_defaults[t] is not None for t in ("main", "jib", "spinnaker"))
+                if has_any:
+                    await storage.insert_sail_change(
+                        race.id,
+                        race.start_utc.isoformat(),
+                        main_id=sail_defaults["main"]["id"] if sail_defaults["main"] else None,
+                        jib_id=sail_defaults["jib"]["id"] if sail_defaults["jib"] else None,
+                        spinnaker_id=(
+                            sail_defaults["spinnaker"]["id"] if sail_defaults["spinnaker"] else None
+                        ),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sail defaults failed for scheduled race {}: {}", name, exc)
+
+            # Start audio if recorder is available
+            if recorder is not None and audio_config is not None:
+                from helmlog.audio import AudioDeviceNotFoundError
+
+                try:
+                    session = await recorder.start(audio_config, name=race.name)
+                    _audio_session_id = await storage.write_audio_session(
+                        session,
+                        race_id=race.id,
+                        session_type=session_type,
+                        name=race.name,
+                    )
+                except AudioDeviceNotFoundError as exc:
+                    logger.warning("Audio unavailable for scheduled race {}: {}", name, exc)
+
+            await storage.log_action("race.scheduled_start", detail=race.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Scheduled start failed: {}", exc)
+
+    @app.on_event("startup")
+    async def _start_schedule_loop() -> None:
+        nonlocal _schedule_task
+        _schedule_task = asyncio.create_task(_schedule_fire_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_schedule_loop() -> None:
+        if _schedule_task is not None:
+            _schedule_task.cancel()
+
+    @app.post("/api/races/schedule", status_code=201)
+    async def api_schedule_start(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        body = await request.json()
+        raw_ts = body.get("scheduled_start_utc")
+        event = body.get("event")
+        session_type = body.get("session_type", "race")
+        if not raw_ts:
+            raise HTTPException(422, detail="scheduled_start_utc is required")
+
+        try:
+            fire_at = datetime.fromisoformat(raw_ts)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, detail=f"Invalid timestamp: {exc}") from exc
+        if fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=UTC)
+
+        now = datetime.now(UTC)
+        if fire_at <= now + timedelta(seconds=5):
+            raise HTTPException(
+                422, detail="scheduled_start_utc must be in the future (> now + 5s)"
+            )
+
+        if session_type not in ("race", "practice"):
+            raise HTTPException(422, detail="session_type must be 'race' or 'practice'")
+
+        # If no event provided, resolve from rules / daily override
+        if not event:
+            from helmlog.races import default_event_for_date, local_today
+
+            today = local_today()
+            date_str = today.isoformat()
+            rules = {r["weekday"]: r["event_name"] for r in await storage.list_event_rules()}
+            default_ev = default_event_for_date(today, rules)
+            custom_ev = await storage.get_daily_event(date_str)
+            event = custom_ev or default_ev
+            if event is None:
+                raise HTTPException(422, detail="No event set for today. POST /api/event first.")
+
+        row_id = await storage.schedule_start(fire_at, event, session_type)
+        await _audit(request, "race.schedule", detail=fire_at.isoformat(), user=_user)
+        seconds_until = max(0, int((fire_at - now).total_seconds()))
+        return JSONResponse(
+            {
+                "id": row_id,
+                "scheduled_start_utc": fire_at.isoformat(),
+                "event": event,
+                "session_type": session_type,
+                "seconds_until_start": seconds_until,
+            },
+            status_code=201,
+        )
+
+    @app.get("/api/races/schedule")
+    async def api_get_schedule(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        row = await storage.get_scheduled_start()
+        if row is None:
+            raise HTTPException(404, detail="No scheduled start")
+        fire_at = datetime.fromisoformat(row["scheduled_start_utc"])
+        if fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
+        seconds_until = max(0, int((fire_at - now).total_seconds()))
+        return JSONResponse(
+            {
+                "id": row["id"],
+                "scheduled_start_utc": row["scheduled_start_utc"],
+                "event": row["event"],
+                "session_type": row["session_type"],
+                "seconds_until_start": seconds_until,
+            }
+        )
+
+    @app.delete("/api/races/schedule", status_code=204)
+    async def api_cancel_schedule(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
+        await storage.cancel_scheduled_start()
+        await _audit(request, "race.schedule_cancel", user=_user)
+
+    # ------------------------------------------------------------------
     # /api/races/start
     # ------------------------------------------------------------------
 
@@ -2001,6 +2207,9 @@ def create_app(
                 status_code=422,
                 detail="No event set for today. POST /api/event first.",
             )
+
+        # Cancel any pending scheduled start (#345)
+        await storage.cancel_scheduled_start()
 
         # Auto-stop any active debrief before starting a new session
         if _debrief_audio_session_id is not None:
