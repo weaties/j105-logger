@@ -1979,6 +1979,13 @@ function _renderBoatSettingsPanel() {
         html += '<span class="bs-source-badge ' + src + '">' + srcLabel + '</span>';
       }
 
+      // Timestamp — show when the setting was recorded
+      if (entry.ts) {
+        const ts = new Date(entry.ts);
+        const timePart = ts.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+        html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + timePart + '</span>';
+      }
+
       // Show superseded boat-level value
       if (entry.supersedes_value) {
         html += '<span class="bs-superseded">' + esc(entry.supersedes_value);
@@ -2556,7 +2563,7 @@ async function renderTuningExtractions(runs) {
           html += '<button onclick="acceptTuningItem(' + item.id + ')" class="te-play-btn" title="Accept" style="color:#4ade80">&#10003;</button>';
           html += '<button onclick="dismissTuningItem(' + item.id + ')" class="te-play-btn" title="Dismiss" style="color:#6b7280">&#10007;</button>';
         }
-        if (_session.audio_session_id) {
+        if (_session.audio_session_id && !(item.segment_start === 0 && item.segment_end === 0)) {
           html += '<button onclick="playSegmentAudio(' + item.segment_start + ',' + item.segment_end + ')" class="te-play-btn" title="Play segment">&#9654;</button>';
         }
         html += '</td>';
@@ -2590,12 +2597,14 @@ async function acceptTuningItem(itemId) {
   const r = await fetch('/api/tuning/items/' + itemId + '/accept', {method: 'POST'});
   if (!r.ok) { alert('Failed to accept item'); return; }
   await loadTuningExtractions();
+  await loadBoatSettings();
 }
 
 async function dismissTuningItem(itemId) {
   const r = await fetch('/api/tuning/items/' + itemId + '/dismiss', {method: 'POST'});
   if (!r.ok) { alert('Failed to dismiss item'); return; }
   await loadTuningExtractions();
+  await loadBoatSettings();
 }
 
 async function deleteTuningRun(runId) {
