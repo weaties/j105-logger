@@ -1,0 +1,163 @@
+# Eval cases for /pr-checklist skill
+# Tests whether the skill correctly resolves risk tiers and applies
+# the appropriate verification steps for each tier.
+
+- name: critical-tier-full-checklist
+  description: Applies full Critical-tier verification for auth module changes
+  type: preference
+  scenario: |
+    A PR touches auth.py (magic-link authentication middleware) and storage.py
+    (adding a new migration). These are both Critical-tier modules. The PR
+    checklist must require the full set of Critical-tier checks including
+    integration tests, data-license review, and spec review.
+  mock_input: |
+    git diff --name-only main...HEAD:
+    src/helmlog/auth.py
+    src/helmlog/storage.py
+    tests/test_auth.py
+    tests/test_storage.py
+  expected:
+    - criterion: "Must resolve risk tier as Critical (auth.py + storage.py with migrations)"
+      weight: critical
+    - criterion: "Must require integration tests"
+      weight: critical
+    - criterion: "Must require /data-license review"
+      weight: critical
+    - criterion: "Must require spec review (check if structured spec exists on the issue)"
+      weight: critical
+    - criterion: "Must require full test suite, lint, format, and mypy"
+      weight: important
+    - criterion: "Must require complexity check on touched files"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT skip any Critical-tier checks"
+      weight: critical
+    - criterion: "Must NOT resolve as Standard or High tier"
+      weight: critical
+  tags: [critical, auth, storage, full-checklist]
+
+- name: low-tier-minimal-checklist
+  description: Applies minimal Low-tier verification for CSS-only changes
+  type: preference
+  scenario: |
+    A PR only touches CSS and HTML template files. These are Low-tier changes.
+    Tests, mypy, and complexity checks are optional. Lint and format checks
+    are still required.
+  mock_input: |
+    git diff --name-only main...HEAD:
+    src/helmlog/static/base.css
+    src/helmlog/templates/history.html
+  expected:
+    - criterion: "Must resolve risk tier as Low (only CSS and templates)"
+      weight: critical
+    - criterion: "Must require lint and format checks"
+      weight: critical
+    - criterion: "Must mark tests as optional for Low tier"
+      weight: important
+    - criterion: "Must mark mypy as optional for Low tier"
+      weight: important
+    - criterion: "Must NOT require integration tests, data-license review, or spec review"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT resolve as Standard, High, or Critical tier"
+      weight: critical
+    - criterion: "Must NOT require integration tests for CSS/template changes"
+      weight: important
+  tags: [low, css, templates, minimal]
+
+- name: high-tier-federation-changes
+  description: Requires integration tests for High-tier federation module changes
+  type: preference
+  scenario: |
+    A PR touches peer_api.py and peer_client.py, both High-tier modules.
+    Since these are federation/co-op code, integration tests are required.
+    Data-license review should be triggered because peer_api.py serves co-op data.
+  mock_input: |
+    git diff --name-only main...HEAD:
+    src/helmlog/peer_api.py
+    src/helmlog/peer_client.py
+    tests/test_peer_api.py
+    tests/integration/test_federation_e2e.py
+  expected:
+    - criterion: "Must resolve risk tier as High (peer_api.py + peer_client.py)"
+      weight: critical
+    - criterion: "Must require integration tests (federation/co-op code)"
+      weight: critical
+    - criterion: "Must require data-license review (peer_api.py serves co-op data)"
+      weight: important
+    - criterion: "Must require full test suite, lint, format, and mypy"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT resolve as Standard or Low tier"
+      weight: critical
+    - criterion: "Must NOT skip integration tests for federation code"
+      weight: critical
+  tags: [high, federation, integration-tests]
+
+- name: mixed-tier-resolves-to-highest
+  description: Resolves to the highest tier when multiple tiers are touched
+  type: preference
+  scenario: |
+    A PR touches files from multiple tiers: base.css (Low), web.py (Standard),
+    and export.py (High). The PR's tier must be the highest touched — High.
+  mock_input: |
+    git diff --name-only main...HEAD:
+    src/helmlog/static/base.css
+    src/helmlog/web.py
+    src/helmlog/export.py
+    tests/test_export.py
+  expected:
+    - criterion: "Must resolve risk tier as High (highest of Low + Standard + High)"
+      weight: critical
+    - criterion: "Must explain the tier resolution — which file drove the tier"
+      weight: important
+    - criterion: "Must apply High-tier checks (tests, lint, mypy required; integration tests if federation-related)"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT resolve as Standard or Low — must use the highest tier"
+      weight: critical
+  tags: [mixed-tier, resolution, highest-wins]
+
+- name: complexity-flag-over-200-lines
+  description: Flags modules that exceed the 200-line convention
+  type: preference
+  scenario: |
+    A PR adds 40 lines to web.py, which is already 350 lines long. The
+    complexity check should flag this module as exceeding the 200-line
+    convention and recommend considering a split.
+  mock_input: |
+    git diff --name-only main...HEAD:
+    src/helmlog/web.py
+    tests/test_web.py
+
+    wc -l output:
+    390 src/helmlog/web.py
+  expected:
+    - criterion: "Must flag web.py as exceeding the 200-line module size convention"
+      weight: critical
+    - criterion: "Must recommend considering a module split before merging"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT silently pass the complexity check when a file exceeds 200 lines"
+      weight: critical
+  tags: [complexity, module-size, 200-line-convention]
+
+- name: issue-linking-verification
+  description: Verifies PR body contains issue linking when working on an issue
+  type: preference
+  scenario: |
+    A developer is creating a PR for work on issue #345. The PR body should
+    contain "Closes #345" or "Fixes #345" for GitHub to auto-close the issue
+    on merge.
+  mock_input: |
+    Working on issue #345. All checks pass. Ready to create PR.
+    Current PR body draft: "## Summary\nAdd heel angle to CSV export.\n\n## Test plan\n- Unit tests added"
+  expected:
+    - criterion: "Must flag the missing issue linking (no 'Closes #345' or 'Fixes #345' in the body)"
+      weight: critical
+    - criterion: "Must recommend adding 'Closes #345' to the PR body"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT create the PR without issue linking"
+      weight: important
+  tags: [issue-linking, pr-body, auto-close]

@@ -710,7 +710,8 @@ could have been precise from the start.
 
 - **Date captured:** 2026-03-14
 - **Origin:** "Future of Software Engineering" retreat article — knowledge graphs and semantic layers as grounding for domain-aware agents
-- **Status:** `raw`
+- **Status:** `promoted`
+- **Promoted to:** #350 (`/domain` skill — Signal K and NMEA 2000 reference as agent grounding layer)
 - **Related:** `nmea2000.py` (PGN dataclasses), `polar.py`, `sk_reader.py`, `races.py`, CLAUDE.md
 
 **Description:**
@@ -759,6 +760,9 @@ bloating CLAUDE.md, and makes it referenceable from issues, specs, and discussio
   encouraging — sailing instrumentation is a much smaller domain. Could potentially
   auto-generate the initial draft from the existing dataclasses in `nmea2000.py` and
   Signal K path mappings in `sk_reader.py`.
+- *2026-03-18:* Promoted to #350 as part of the skill improvement initiative (#355).
+  Part of a 6-issue series informed by Thariq's skill categories article and the
+  Improving Skill Creator blog post.
 
 ---
 
@@ -812,7 +816,8 @@ which modules demand extra rigor and which can move fast with standard checks.
 
 - **Date captured:** 2026-03-14
 - **Origin:** "Future of Software Engineering" retreat article — cognitive debt (gap between system complexity and human understanding), continuous comprehension, "agent subconscious"
-- **Status:** `raw`
+- **Status:** `promoted` (components 1–3)
+- **Promoted to:** #352 (`/architecture` skill — codebase comprehension and complexity tracking). Component 4 (decision archaeology in memory) remains a habit change, not a skill.
 - **Related:** CLAUDE.md, memory system (`.claude/projects/`), IDX-015 (domain ontology)
 
 **Description:**
@@ -867,6 +872,10 @@ mental model needed to be an effective middle-loop supervisor.
   immediately. The `/architecture` skill is higher effort but would be valuable before
   major features or after returning from a break. Complexity hotspot detection could
   be a simple addition to `/pr-checklist` — flag if any touched file exceeds 200 lines.
+- *2026-03-18:* Components 1–3 (architecture snapshot, delta briefing, complexity
+  hotspots) promoted to #352 as part of the skill improvement initiative (#355).
+  Component 4 (decision archaeology in memory) is a habit change, not a skill —
+  remains as guidance in this entry.
 
 ---
 

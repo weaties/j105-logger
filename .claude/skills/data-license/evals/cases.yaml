@@ -1,0 +1,261 @@
+# Eval cases for /data-license skill
+# Tests whether the skill correctly identifies data licensing policy violations
+# and correctly clears compliant changes.
+
+- name: pii-leak-crew-emails-in-coop-api
+  description: Detects crew email addresses exposed via co-op API endpoint
+  type: capability
+  scenario: |
+    A developer adds a new endpoint to peer_api.py that returns co-op member
+    details including email addresses. The data-licensing policy (Section 2)
+    specifies that crew roster is private data not shared with co-op endpoints.
+    Email addresses are PII (Section 1) with deletion rights.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -120,6 +120,18 @@ async def get_coop_sessions(
+         return sessions
+
+    +@router.get("/api/co-op/members")
+    +async def get_coop_members(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> list[dict]:
+    +    """Return all co-op members with contact details."""
+    +    members = await db.fetch_all(
+    +        "SELECT name, email, boat_name, role FROM crew WHERE coop_id = ?",
+    +        (auth.coop_id,),
+    +    )
+    +    return [dict(m) for m in members]
+  expected:
+    - criterion: "Must flag email as PII that should not be in co-op API responses"
+      weight: critical
+    - criterion: "Must reference Section 1 (Data Ownership) or Section 2 (Data Sharing) of the policy"
+      weight: critical
+    - criterion: "Must flag crew roster as private data not shared via co-op endpoints"
+      weight: important
+    - criterion: "Must suggest removing email from the response or limiting to boat-level info only"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [pii, section-1, section-2, co-op-api]
+
+- name: bulk-export-coop-tracks
+  description: Detects bulk export endpoint for other boats' co-op data
+  type: capability
+  scenario: |
+    A developer adds a batch export endpoint that allows downloading all session
+    tracks from the co-op in one request. The data-licensing policy (Section 2)
+    prohibits bulk export of other boats' co-op data — co-op data is view-only.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -80,6 +80,22 @@ async def get_coop_session_track(
+
+    +@router.get("/api/co-op/export/all-tracks")
+    +async def export_all_coop_tracks(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +    format: str = "gpx",
+    +) -> Response:
+    +    """Export all co-op session tracks as a single archive."""
+    +    sessions = await db.fetch_all(
+    +        "SELECT * FROM sessions WHERE coop_id = ? AND boat_id != ?",
+    +        (auth.coop_id, auth.boat_id),
+    +    )
+    +    tracks = []
+    +    for s in sessions:
+    +        track = await db.get_track_data(s["id"])
+    +        tracks.append(track)
+    +    return create_archive(tracks, format=format)
+  expected:
+    - criterion: "Must flag as bulk export of other boats' co-op data"
+      weight: critical
+    - criterion: "Must reference Section 2 (Data Sharing) — co-op data is view-only, no bulk export"
+      weight: critical
+    - criterion: "Must note the endpoint fetches other boats' data (boat_id != auth.boat_id filter)"
+      weight: important
+    - criterion: "Must suggest removing the endpoint or limiting to single-session view-only access"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [bulk-export, section-2, co-op-api]
+
+- name: embargo-bypass-missing-check
+  description: Detects endpoint serving track data without checking embargo timestamps
+  type: capability
+  scenario: |
+    A developer adds a new endpoint for serving session summary data to co-op
+    peers but forgets to check the temporal sharing embargo timestamp.
+    The data-licensing policy (Section 2) requires embargo timestamps to be
+    respected before serving track data.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -55,6 +55,16 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/session/{session_id}/summary")
+    +async def get_session_summary(
+    +    session_id: int,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> dict:
+    +    """Return summary stats for a co-op session."""
+    +    session = await db.get_session(session_id)
+    +    stats = await db.get_session_stats(session_id)
+    +    return {"session": session, "stats": stats}
+  expected:
+    - criterion: "Must flag the missing embargo timestamp check"
+      weight: critical
+    - criterion: "Must reference Section 2 — temporal sharing embargo enforcement"
+      weight: important
+    - criterion: "Must suggest adding an embargo check before returning data"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [embargo, section-2, co-op-api]
+
+- name: own-boat-csv-export-compliant
+  description: Correctly clears a compliant own-boat data export enhancement
+  type: capability
+  scenario: |
+    A developer improves the CSV export to include a new column for heel angle
+    in own-boat session exports. The data-licensing policy (Section 1 and
+    Section 5) guarantees boat owners can export their own data in CSV, GPX,
+    JSON, and WAV. This change only affects own-boat exports.
+  mock_input: |
+    diff --git a/src/helmlog/export.py b/src/helmlog/export.py
+    --- a/src/helmlog/export.py
+    +++ b/src/helmlog/export.py
+    @@ -45,7 +45,7 @@ EXPORT_COLUMNS = [
+
+    -INSTRUMENT_COLS = ["bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog"]
+    +INSTRUMENT_COLS = ["bsp", "tws", "twa", "awa", "aws", "heading", "cog", "sog", "heel"]
+
+     async def export_session_csv(db: Storage, session_id: int) -> str:
+         """Export a single session's instrument data as CSV."""
+  expected:
+    - criterion: "Must report the change as compliant or no data licensing impact"
+      weight: critical
+    - criterion: "Must recognize this is own-boat data export, which the policy supports"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT flag this as a violation"
+      weight: critical
+    - criterion: "Must NOT raise concerns about co-op data or PII"
+      weight: important
+  tags: [compliant, own-boat, export, section-1]
+
+- name: missing-audit-log-on-coop-access
+  description: Detects co-op data access endpoint without audit logging
+  type: capability
+  scenario: |
+    A developer adds a new endpoint serving co-op session data but omits audit
+    logging. Section 12 (Technical Requirements) requires audit logging for all
+    co-op data access.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -100,6 +100,18 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/session/{session_id}/instruments")
+    +async def get_session_instruments(
+    +    session_id: int,
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> list[dict]:
+    +    """Return instrument data for a co-op session."""
+    +    session = await db.get_session(session_id)
+    +    if session["coop_id"] != auth.coop_id:
+    +        raise HTTPException(403)
+    +    data = await db.get_instrument_data(session_id)
+    +    return data
+  expected:
+    - criterion: "Must flag the missing audit log call for co-op data access"
+      weight: critical
+    - criterion: "Must reference Section 12 (Technical Requirements)"
+      weight: important
+    - criterion: "Must suggest adding an audit log entry before returning data"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as fully compliant without noting the audit gap"
+      weight: critical
+  tags: [audit, section-12, co-op-api]
+
+- name: no-data-touching-changes
+  description: Correctly identifies non-data-touching changes as having no impact
+  type: capability
+  scenario: |
+    A developer updates the CSS for the history page to fix a layout issue.
+    No data storage, API, PII, or co-op code is involved.
+  mock_input: |
+    diff --git a/src/helmlog/static/base.css b/src/helmlog/static/base.css
+    --- a/src/helmlog/static/base.css
+    +++ b/src/helmlog/static/base.css
+    @@ -120,6 +120,10 @@ .history-table {
+       border-collapse: collapse;
+     }
+
+    +.history-table td {
+    +  padding: 8px 12px;
+    +  vertical-align: top;
+    +}
+  expected:
+    - criterion: "Must report no data licensing impact or no data-touching changes found"
+      weight: critical
+  anti_expected:
+    - criterion: "Must NOT flag any violations"
+      weight: critical
+    - criterion: "Must NOT run through the full policy checklist for a CSS change"
+      weight: nice-to-have
+  tags: [compliant, no-impact, css]
+
+- name: gambling-adjacent-feature
+  description: Detects a feature that could facilitate betting on race data
+  type: capability
+  scenario: |
+    A developer adds a "race prediction" endpoint that takes co-op session data
+    and returns win probability estimates for each boat. While framed as
+    performance analytics, this could facilitate wagering — Section 9 prohibits
+    using co-op data for gambling, betting, or wagering purposes.
+  mock_input: |
+    diff --git a/src/helmlog/peer_api.py b/src/helmlog/peer_api.py
+    --- a/src/helmlog/peer_api.py
+    +++ b/src/helmlog/peer_api.py
+    @@ -130,6 +130,22 @@ async def get_coop_sessions(
+
+    +@router.get("/api/co-op/predictions")
+    +async def get_race_predictions(
+    +    db: Storage = Depends(get_storage),
+    +    auth: AuthContext = Depends(require_peer_auth),
+    +) -> dict:
+    +    """Predict race outcomes based on historical co-op performance data."""
+    +    boats = await db.get_coop_boats(auth.coop_id)
+    +    predictions = {}
+    +    for boat in boats:
+    +        sessions = await db.get_boat_sessions(boat["id"])
+    +        polar = await db.get_polar(boat["id"])
+    +        win_prob = calculate_win_probability(sessions, polar)
+    +        predictions[boat["name"]] = {
+    +            "win_probability": win_prob,
+    +            "confidence": len(sessions) / 20,
+    +        }
+    +    return predictions
+  expected:
+    - criterion: "Must flag the gambling/wagering risk under Section 9"
+      weight: critical
+    - criterion: "Must note that win probability predictions from co-op data could facilitate betting"
+      weight: important
+    - criterion: "Must suggest removing or restricting the endpoint"
+      weight: important
+  anti_expected:
+    - criterion: "Must NOT report the change as compliant"
+      weight: critical
+  tags: [gambling, section-9, co-op-api]
