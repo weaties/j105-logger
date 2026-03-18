@@ -368,6 +368,9 @@ datasources:
       token: ${INFLUX_TOKEN}
     isDefault: true
 EOF
+# Grafana runs as user grafana — provisioning files must be group-readable
+sudo chown root:grafana /etc/grafana/provisioning/datasources/influxdb.yaml
+sudo chmod 640 /etc/grafana/provisioning/datasources/influxdb.yaml
 sudo systemctl restart grafana-server
 info "Grafana installed on port 3001 (loopback-only, login required)."
 info "Default Grafana admin credentials: admin / changeme123 — change after first login."
