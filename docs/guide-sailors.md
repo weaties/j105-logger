@@ -111,7 +111,9 @@ fills up as more boats share more sessions.
 ### On race day
 
 1. Your Pi records the race automatically (instruments, audio, video) —
-   you don't need to be online during the race, everything syncs later
+   you don't need to be online during the race, everything syncs later.
+   If your fleet has a regular start time, recording can auto-start at
+   the scheduled time so you don't even need to tap "Start."
 2. After the race, you open the Helm Log web page on your phone
 3. You see a prompt: "Share this session with [co-op name]?"
 4. If you tap **Share**, other co-op members can see your track and results
@@ -120,13 +122,17 @@ fills up as more boats share more sessions.
 ### Reviewing other boats
 
 Open the **Co-op** view in Helm Log. You'll see all the races that
-other boats shared:
+other boats shared. Sessions from the same race are automatically matched
+by time and location, so you don't need to coordinate — just share, and
+the system pairs up the sessions:
 
 - Overlay multiple boats on the same race map
 - Compare boat speeds on the same leg
 - See where you gained or lost distance
 - View anonymous fleet benchmarks ("your tacks are faster than 60% of the
   fleet") — these require at least 4 boats sharing in similar conditions
+- Comment on sessions with @mentions — discuss tactics and get notified
+  when someone replies
 
 ### Coaching
 

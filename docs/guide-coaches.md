@@ -10,11 +10,13 @@ Each boat in the co-op can individually grant you access to their shared
 session data. This gives you:
 
 - **Track overlays** — see multiple boats on the same race, color-coded by
-  speed
+  speed. Sessions from the same race are automatically matched across boats.
 - **Instrument time-series** — boat speed, wind angles, heading, and heel
   for each boat on each leg
 - **Polar performance** — how each boat performed relative to target speeds
   at each wind angle
+- **VMG analysis** — upwind/downwind VMG by sail selection across wind bands
+- **Maneuver detection** — tacks and gybes identified and listed with timestamps
 - **Race results** — finish order and time deltas
 - **Fleet benchmarks** — anonymous percentile rankings (e.g., "Boat A's
   tacking angles are in the 75th percentile of the fleet")
