@@ -162,13 +162,19 @@ async def get_wlan_status(interface: str = "wlan0") -> WlanStatus:
 
 
 async def list_interfaces() -> list[InterfaceInfo]:
-    """List all network interfaces with their status."""
+    """List all network interfaces with their status and IP addresses."""
     try:
         result = await _run_nmcli_async(
-            ["-t", "-f", "DEVICE,STATE,TYPE,IP4.ADDRESS", "device", "show"]
+            [
+                "-t",
+                "-f",
+                "GENERAL.DEVICE,GENERAL.STATE,GENERAL.TYPE,GENERAL.HWADDR,IP4.ADDRESS",
+                "device",
+                "show",
+            ]
         )
         if result.returncode != 0:
-            # Fallback: simpler query
+            # Fallback: simpler query without IP
             result = await _run_nmcli_async(["-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
             if result.returncode != 0:
                 return []
@@ -177,44 +183,48 @@ async def list_interfaces() -> list[InterfaceInfo]:
             for line in result.stdout.strip().splitlines():
                 parts = line.split(":")
                 if len(parts) >= 3 and parts[1] in ("wifi", "ethernet", "loopback"):
+                    state = "up" if "connected" in parts[2] else "down"
                     interfaces.append(
                         InterfaceInfo(
                             name=parts[0],
-                            state="up" if parts[2] == "connected" else "down",
+                            state=state,
                             ip_address=None,
                             mac_address=None,
                         )
                     )
             return interfaces
 
-        # Parse full device show output
+        # Parse "device show" output — fields are GENERAL.DEVICE:value, blank line between devices
+        _WANTED_TYPES = {"wifi", "ethernet", "loopback"}
         interfaces = []
         current: dict[str, str] = {}
+
+        def _flush(cur: dict[str, str]) -> None:
+            dev = cur.get("GENERAL.DEVICE", "")
+            dev_type = cur.get("GENERAL.TYPE", "")
+            if not dev or dev_type not in _WANTED_TYPES:
+                return
+            raw_state = cur.get("GENERAL.STATE", "")
+            state = "up" if "connected" in raw_state else "down"
+            raw_ip = cur.get("IP4.ADDRESS[1]", "")
+            ip_addr = raw_ip.split("/")[0] if raw_ip else None
+            interfaces.append(
+                InterfaceInfo(
+                    name=dev,
+                    state=state,
+                    ip_address=ip_addr or None,
+                    mac_address=cur.get("GENERAL.HWADDR"),
+                )
+            )
+
         for line in result.stdout.strip().splitlines():
             if not line.strip():
-                if current.get("DEVICE") and current.get("DEVICE") != "lo":
-                    interfaces.append(
-                        InterfaceInfo(
-                            name=current["DEVICE"],
-                            state="up" if current.get("STATE") == "connected" else "down",
-                            ip_address=current.get("IP4.ADDRESS[1]", "").split("/")[0] or None,
-                            mac_address=current.get("HWADDR"),
-                        )
-                    )
+                _flush(current)
                 current = {}
             elif ":" in line:
                 key, _, val = line.partition(":")
                 current[key.strip()] = val.strip()
-
-        if current.get("DEVICE") and current.get("DEVICE") != "lo":
-            interfaces.append(
-                InterfaceInfo(
-                    name=current["DEVICE"],
-                    state="up" if current.get("STATE") == "connected" else "down",
-                    ip_address=current.get("IP4.ADDRESS[1]", "").split("/")[0] or None,
-                    mac_address=current.get("HWADDR"),
-                )
-            )
+        _flush(current)  # last device (no trailing blank line)
 
         return interfaces
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as exc:
