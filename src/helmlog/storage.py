@@ -3367,8 +3367,11 @@ class Storage:
     async def seed_cameras_from_env(self, cameras_str: str) -> int:
         """Seed the cameras table from the CAMERAS env var if table is empty.
 
+        Also applies CAMERA_WIFI_SSID and CAMERA_WIFI_PASSWORD from env if set.
         Returns the number of cameras seeded.
         """
+        import os as _os
+
         db = self._conn()
         cur = await db.execute("SELECT COUNT(*) FROM cameras")
         row = await cur.fetchone()
@@ -3378,12 +3381,16 @@ class Storage:
 
         from helmlog.cameras import parse_cameras_config
 
+        wifi_ssid = _os.environ.get("CAMERA_WIFI_SSID")
+        wifi_password = _os.environ.get("CAMERA_WIFI_PASSWORD")
+
         cameras = parse_cameras_config(cameras_str)
         count = 0
         for cam in cameras:
             await db.execute(
-                "INSERT OR IGNORE INTO cameras (name, ip, model) VALUES (?, ?, ?)",
-                (cam.name, cam.ip, cam.model),
+                "INSERT OR IGNORE INTO cameras (name, ip, model, wifi_ssid, wifi_password)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (cam.name, cam.ip, cam.model, wifi_ssid, wifi_password),
             )
             count += 1
         await db.commit()
