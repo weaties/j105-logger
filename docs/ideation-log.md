@@ -1451,3 +1451,70 @@ post-session understanding. Both benefit from Hailo-accelerated Whisper
   offline use but the quality gap is significant for domain-specific content.
   First step: benchmark faster-whisper on Hailo vs CPU to see if the
   acceleration is worth the integration effort.
+
+---
+
+## IDX-025: Deployment annotations on the Pi Health Grafana dashboard
+
+- **Date captured:** 2026-03-19
+- **Origin:** Conversation about correlating performance regressions with deployments
+- **Status:** `raw`
+- **Related:** `src/helmlog/deploy.py`, `src/helmlog/influx.py`, `src/helmlog/monitor.py`, Grafana Pi Health dashboard
+
+**Description:**
+Add annotations to the Pi Health Grafana dashboard that mark when deployments
+happened. Each annotation should include metadata about the deployment:
+
+- **Trigger type:** explicit (manual `helmlog deploy` or web UI button) vs
+  evergreen (automatic deploy via the scheduled check in `deploy.py`)
+- **Who initiated it:** the user who triggered the deploy (from auth context
+  or SSH user), or "evergreen" for automatic deploys
+- **Branch:** the branch that was deployed (e.g., `main`, `stage`, `live`)
+- **Version/commit:** the git SHA and any tag at the deployed commit
+- **Previous version:** what was running before the deploy (for easy diff)
+- **Deploy result:** success/failure, duration, whether uv sync ran,
+  whether the service restarted
+
+The goal: when the health dashboard shows a CPU spike, memory increase, or
+latency change, you can immediately see whether it correlates with a
+deployment — and if so, exactly which version introduced the change. No more
+"wait, when did we last deploy?" followed by SSH + git log.
+
+**Implementation approach:**
+The existing `influx.py` module already writes points to InfluxDB (session
+notes, historical tracks). A new `write_deploy_annotation()` function would
+write a point to a `deployments` measurement with tags for trigger type,
+branch, user, and fields for commit SHA, previous SHA, duration, and result.
+Grafana can query this measurement as an annotation source on any dashboard
+panel.
+
+The call site would be in `deploy.py`'s `execute_deploy()` — after a
+successful (or failed) deploy, write the annotation with all available
+metadata. The deploy result dict already contains most of this information.
+
+**Grafana annotation display:**
+- Vertical line on time-series panels at the deployment timestamp
+- Hover tooltip shows: trigger type, branch, commit, who, duration, result
+- Color-coded: green for success, red for failure
+- Filterable by branch or trigger type
+
+**Key design questions:**
+- Should failed deploys also be annotated? Probably yes — a failed deploy
+  that partially ran (e.g., git pull succeeded but uv sync failed) could
+  still affect system behavior
+- How to capture the "who" for evergreen deploys? The deploy runs as the
+  helmlog service user — tag as "evergreen/automatic" rather than a person
+- Should the annotation include a link to the git diff between old and new
+  commits? Grafana annotations support URLs — a GitHub compare link
+  (`/compare/old_sha...new_sha`) would be very useful
+- Should we also annotate service restarts that aren't deploys (e.g.,
+  `systemctl restart helmlog` for config changes)?
+
+**Notes:**
+- *2026-03-19:* Initial capture. The infrastructure is already in place —
+  `influx.py` has the InfluxDB client pattern, `deploy.py` has the deploy
+  result data, and the Grafana dashboard exists. This is mostly wiring:
+  capture deploy metadata → write InfluxDB point → configure Grafana
+  annotation query. The GitHub compare link in the annotation tooltip is
+  the high-value detail — one click from "something changed" to "here's
+  what changed."
