@@ -10,7 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-SettingCategory = Literal["rig", "sail_controls", "deck_hardware", "crew", "conditions"]
+SettingCategory = Literal[
+    "rig", "sail_controls", "deck_hardware", "crew", "conditions", "instrument_calibration"
+]
 InputType = Literal["number", "preset"]
 
 
@@ -64,6 +66,38 @@ PARAMETERS: tuple[ParameterDef, ...] = (
     ParameterDef("swell_height", "Swell height", "ft", "number", "conditions"),
     ParameterDef("swell_period", "Swell period", "s", "number", "conditions"),
     ParameterDef("chop", "Chop", "ft", "number", "conditions"),
+    # Instrument calibration — B&G calibration order: speed → compass → wind → depth → other
+    ParameterDef("speed_correction", "Speed correction", "%", "number", "instrument_calibration"),
+    ParameterDef("speed_damping", "Speed damping", "0–9", "number", "instrument_calibration"),
+    ParameterDef("heading_offset", "Heading offset", "°", "number", "instrument_calibration"),
+    ParameterDef("heading_damping", "Heading damping", "0–9", "number", "instrument_calibration"),
+    ParameterDef(
+        "wind_angle_offset", "MHU wind angle offset", "°", "number", "instrument_calibration"
+    ),
+    ParameterDef(
+        "wind_speed_correction", "Wind speed correction", "%", "number", "instrument_calibration"
+    ),
+    ParameterDef("wind_damping", "Wind damping", "0–9", "number", "instrument_calibration"),
+    ParameterDef("depth_offset", "Depth offset", "m", "number", "instrument_calibration"),
+    ParameterDef("depth_damping", "Depth damping", "0–9", "number", "instrument_calibration"),
+    ParameterDef("sea_temp_offset", "Sea temp offset", "°C", "number", "instrument_calibration"),
+    ParameterDef("heel_offset", "Heel offset (H5000)", "°", "number", "instrument_calibration"),
+    ParameterDef("trim_offset", "Trim offset (H5000)", "°", "number", "instrument_calibration"),
+    ParameterDef(
+        "leeway_coefficient",
+        "Leeway coefficient (H5000)",
+        "",
+        "number",
+        "instrument_calibration",
+    ),
+    ParameterDef(
+        "rudder_angle_offset",
+        "Rudder angle offset (H5000)",
+        "°",
+        "number",
+        "instrument_calibration",
+    ),
+    ParameterDef("mast_height", "Mast height", "m", "number", "instrument_calibration"),
 )
 
 PARAMETER_NAMES: frozenset[str] = frozenset(p.name for p in PARAMETERS)
@@ -84,6 +118,7 @@ CATEGORY_ORDER: tuple[tuple[SettingCategory, str], ...] = (
     ("rig", "Rig"),
     ("crew", "Crew"),
     ("conditions", "Conditions"),
+    ("instrument_calibration", "Instrument Calibration"),
 )
 
 

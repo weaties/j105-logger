@@ -3067,6 +3067,94 @@ async def test_boat_settings_resolve(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_instrument_calibration_in_parameters(storage: Storage) -> None:
+    """GET /api/boat-settings/parameters includes the instrument_calibration category."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/boat-settings/parameters")
+    assert resp.status_code == 200
+    data = resp.json()
+    cats = [c["category"] for c in data["categories"]]
+    assert "instrument_calibration" in cats
+    # Should be the last category
+    assert cats[-1] == "instrument_calibration"
+
+    # All 15 calibration params present
+    cal_params = next(c for c in data["categories"] if c["category"] == "instrument_calibration")
+    param_names = [p["name"] for p in cal_params["parameters"]]
+    expected = [
+        "speed_correction",
+        "speed_damping",
+        "heading_offset",
+        "heading_damping",
+        "wind_angle_offset",
+        "wind_speed_correction",
+        "wind_damping",
+        "depth_offset",
+        "depth_damping",
+        "sea_temp_offset",
+        "heel_offset",
+        "trim_offset",
+        "leeway_coefficient",
+        "rudder_angle_offset",
+        "mast_height",
+    ]
+    assert param_names == expected
+
+
+@pytest.mark.asyncio
+async def test_instrument_calibration_h5000_labels(storage: Storage) -> None:
+    """H5000-only parameters include (H5000) in the label."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/boat-settings/parameters")
+    data = resp.json()
+    cal_params = next(c for c in data["categories"] if c["category"] == "instrument_calibration")
+    by_name = {p["name"]: p for p in cal_params["parameters"]}
+
+    for name in ("heel_offset", "trim_offset", "leeway_coefficient", "rudder_angle_offset"):
+        assert "H5000" in by_name[name]["label"], f"{name} should have H5000 in label"
+
+    # Non-H5000 params should NOT have H5000 in label
+    for name in ("speed_correction", "heading_offset", "wind_angle_offset", "mast_height"):
+        assert "H5000" not in by_name[name]["label"], f"{name} should not have H5000 in label"
+
+
+@pytest.mark.asyncio
+async def test_instrument_calibration_create_and_retrieve(storage: Storage) -> None:
+    """POST/GET boat-settings works for calibration parameters."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id = await _make_race_for_settings(client)
+        ts = _BS_START_UTC.isoformat()
+        resp = await client.post(
+            "/api/boat-settings",
+            json={
+                "race_id": race_id,
+                "source": "manual",
+                "entries": [
+                    {"ts": ts, "parameter": "heading_offset", "value": "2.5"},
+                    {"ts": ts, "parameter": "speed_correction", "value": "-3"},
+                ],
+            },
+        )
+        assert resp.status_code == 201
+        assert len(resp.json()["ids"]) == 2
+
+        resp = await client.get(f"/api/boat-settings/current?race_id={race_id}")
+        assert resp.status_code == 200
+        by_param = {r["parameter"]: r for r in resp.json()}
+        assert by_param["heading_offset"]["value"] == "2.5"
+        assert by_param["speed_correction"]["value"] == "-3"
+
+
+@pytest.mark.asyncio
 async def test_home_page_has_setup_panel(storage: Storage) -> None:
     """GET / includes the boat setup accordion card."""
     app = create_app(storage)
