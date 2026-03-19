@@ -25,6 +25,7 @@
 #   k)   helmlog systemd service (runs as helmlog)
 #   k.1) Loki + Promtail (centralized log management)
 #   k.2) nginx reverse proxy (single-port access to all services)
+#   k.3) Tailscale DNS (MagicDNS for inter-boat hostname resolution)
 #   l)   Scoped NOPASSWD sudo (replaces blanket Pi OS default)
 #   m)   Summary
 
@@ -367,6 +368,9 @@ datasources:
       token: ${INFLUX_TOKEN}
     isDefault: true
 EOF
+# Grafana runs as user grafana — provisioning files must be group-readable
+sudo chown root:grafana /etc/grafana/provisioning/datasources/influxdb.yaml
+sudo chmod 640 /etc/grafana/provisioning/datasources/influxdb.yaml
 sudo systemctl restart grafana-server
 info "Grafana installed on port 3001 (loopback-only, login required)."
 info "Default Grafana admin credentials: admin / changeme123 — change after first login."
@@ -572,14 +576,15 @@ info "$PROJECT_DIR/data (SQLite DB)"
 info "$PROJECT_DIR/data/audio (WAV recordings)"
 info "$PROJECT_DIR/data/notes (photo notes)"
 
-# Shared ownership: deploy user owns, deploy user's group is shared with helmlog.
+# Shared ownership: helmlog service account owns (so the service can always write
+# its own DB), deploy user's group enables write access for admin CLI commands.
 # setgid ensures new files/dirs inherit the group so both users can always read/write.
-sudo chown -R "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR/data"
+sudo chown -R "helmlog:$CURRENT_USER" "$PROJECT_DIR/data"
 sudo chmod -R g+ws "$PROJECT_DIR/data"
 # Default POSIX ACL: new files created in data/ (e.g. by `helmlog add-user`)
 # automatically get group rw regardless of the creating user's umask.
 sudo setfacl -R -d -m g::rw "$PROJECT_DIR/data"
-info "data/ owned by $CURRENT_USER, group-writable + default ACL (helmlog is a member)."
+info "data/ owned by helmlog:$CURRENT_USER, group-writable + default ACL."
 
 # ---------------------------------------------------------------------------
 # i) netdev group (allows non-root SocketCAN access)
@@ -642,7 +647,7 @@ Wants=signalk.service
 
 [Service]
 User=helmlog
-Group=helmlog
+Group=${CURRENT_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=UV_CACHE_DIR=/var/cache/helmlog
@@ -754,6 +759,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# k.3) Tailscale DNS — enable MagicDNS so Pis can resolve each other by hostname
+#      Requires Tailscale to be installed and logged in already.
+# ---------------------------------------------------------------------------
+
+if command -v tailscale &>/dev/null; then
+    step "Enabling Tailscale MagicDNS..."
+    if tailscale status &>/dev/null; then
+        sudo tailscale set --accept-dns=true
+        sudo tailscale set --operator="${CURRENT_USER}"
+        info "Tailscale DNS enabled; ${CURRENT_USER} set as operator (no sudo needed for tailscale set)."
+    else
+        warn "Tailscale is installed but not logged in — run 'sudo tailscale up' first, then re-run setup.sh."
+    fi
+else
+    warn "Tailscale not installed — skipping DNS configuration."
+    warn "Install Tailscale for inter-boat communication: https://tailscale.com/download/linux"
+fi
+
+# ---------------------------------------------------------------------------
 # l) Scoped NOPASSWD sudo
 #      Creates /etc/sudoers.d/helmlog-allowed with the specific commands
 #      needed for day-to-day operations (deploy.sh, service management).
@@ -768,58 +792,43 @@ sudo tee "$SUDOERS_FILE" > /dev/null << EOF
 # Only the commands listed here run without a password prompt.
 # For full sudo access (package installs, system config), type your password.
 
-# Service management — used by deploy.sh and daily operations
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog.service
+# Service management — used by deploy.sh, /diagnose, and daily operations
+# Trailing * allows extra flags (--no-pager, -l, --since, etc.) which sudoers
+# would otherwise reject due to exact-argument matching.
+# Note: \\\\ in the heredoc produces \\ in the file (sudoers line continuation).
+Cmnd_Alias HELMLOG_SVCS = \\
+    /usr/bin/systemctl daemon-reload, \\
+    /usr/bin/systemctl start helmlog*, \\
+    /usr/bin/systemctl stop helmlog*, \\
+    /usr/bin/systemctl restart helmlog*, \\
+    /usr/bin/systemctl status helmlog*, \\
+    /usr/bin/systemctl is-active helmlog*, \\
+    /usr/bin/systemctl start signalk*, \\
+    /usr/bin/systemctl stop signalk*, \\
+    /usr/bin/systemctl restart signalk*, \\
+    /usr/bin/systemctl status signalk*, \\
+    /usr/bin/systemctl is-active signalk*, \\
+    /usr/bin/systemctl start grafana-server*, \\
+    /usr/bin/systemctl stop grafana-server*, \\
+    /usr/bin/systemctl restart grafana-server*, \\
+    /usr/bin/systemctl status grafana-server*, \\
+    /usr/bin/systemctl is-active grafana-server*, \\
+    /usr/bin/systemctl start influxdb*, \\
+    /usr/bin/systemctl stop influxdb*, \\
+    /usr/bin/systemctl restart influxdb*, \\
+    /usr/bin/systemctl status influxdb*, \\
+    /usr/bin/systemctl is-active influxdb*, \\
+    /usr/bin/systemctl start loki*, \\
+    /usr/bin/systemctl stop loki*, \\
+    /usr/bin/systemctl restart loki*, \\
+    /usr/bin/systemctl status loki*, \\
+    /usr/bin/systemctl is-active loki*, \\
+    /usr/bin/systemctl start promtail*, \\
+    /usr/bin/systemctl stop promtail*, \\
+    /usr/bin/systemctl restart promtail*, \\
+    /usr/bin/systemctl status promtail*, \\
+    /usr/bin/systemctl is-active promtail*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_SVCS
 
 # Self-deploy — the helmlog service user needs to restart itself
 helmlog ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
@@ -835,14 +844,18 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/rsync
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/grafana-server.service.d/port.conf
 
 # nginx reverse proxy
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
+Cmnd_Alias HELMLOG_NGINX = \\
+    /usr/sbin/nginx -t, \\
+    /usr/bin/systemctl reload nginx*, \\
+    /usr/bin/systemctl restart nginx*, \\
+    /usr/bin/systemctl status nginx*, \\
+    /usr/bin/systemctl is-active nginx*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_NGINX
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/helmlog.conf /etc/nginx/sites-available/helmlog
+
+# Tailscale management — federation peer discovery, DNS
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale set *
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
 
 # .git/ ownership repair (deploy.sh may need to fix files owned by helmlog)
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /bin/chown -R ${CURRENT_USER}\:${CURRENT_USER} ${PROJECT_DIR}/.git/

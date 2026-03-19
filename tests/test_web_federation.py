@@ -46,11 +46,12 @@ class TestIdentityAPI:
     @pytest.mark.asyncio
     async def test_get_identity_empty(self, storage: Storage) -> None:
         async with _client(storage) as c:
-            resp = await c.get("/api/federation/identity")
-            assert resp.status_code == 200
-            data = resp.json()
-            assert data["identity"] is None
-            assert data["boat_card_json"] is None
+            with patch(f"{_FED}.load_identity", side_effect=FileNotFoundError):
+                resp = await c.get("/api/federation/identity")
+                assert resp.status_code == 200
+                data = resp.json()
+                assert data["identity"] is None
+                assert data["boat_card_json"] is None
 
     @pytest.mark.asyncio
     async def test_get_identity_with_data(self, storage: Storage) -> None:

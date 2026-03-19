@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 44
+_CURRENT_VERSION: int = 49
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1002,6 +1002,104 @@ _MIGRATIONS: dict[int, str] = {
         );
     """,
     44: """
+        -- Co-op session matching (#281)
+        ALTER TABLE races ADD COLUMN shared_name TEXT;
+        ALTER TABLE races ADD COLUMN match_group_id TEXT;
+        ALTER TABLE races ADD COLUMN match_confirmed INTEGER DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS session_match_proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_group_id TEXT NOT NULL,
+            proposer_fingerprint TEXT NOT NULL,
+            local_session_id INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            peer_session_id INTEGER,
+            centroid_lat REAL,
+            centroid_lon REAL,
+            start_utc TEXT,
+            end_utc TEXT,
+            status TEXT NOT NULL DEFAULT 'candidate',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_smp_match_group
+            ON session_match_proposals(match_group_id);
+        CREATE INDEX IF NOT EXISTS idx_smp_status
+            ON session_match_proposals(status);
+
+        CREATE TABLE IF NOT EXISTS session_match_confirmations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_group_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,
+            confirmed_at TEXT NOT NULL,
+            UNIQUE(match_group_id, fingerprint)
+        );
+
+        CREATE TABLE IF NOT EXISTS session_match_names (
+            match_group_id TEXT PRIMARY KEY,
+            shared_name TEXT NOT NULL,
+            proposed_by TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    """,
+    45: """
+        -- Cache session centroids on races table to avoid N+1 queries (#session-matching)
+        ALTER TABLE races ADD COLUMN centroid_lat REAL;
+        ALTER TABLE races ADD COLUMN centroid_lon REAL;
+    """,
+    46: """
+        -- Scheduled race starts (#345)
+        CREATE TABLE IF NOT EXISTS scheduled_starts (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            scheduled_start_utc TEXT    NOT NULL,
+            event               TEXT    NOT NULL,
+            session_type        TEXT    NOT NULL DEFAULT 'race',
+            created_at          TEXT    NOT NULL
+        );
+    """,
+    47: """
+        -- Customizable color schemes (#347)
+        ALTER TABLE users ADD COLUMN color_scheme TEXT;
+        CREATE TABLE IF NOT EXISTS color_schemes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT    NOT NULL,
+            bg          TEXT    NOT NULL,
+            text_color  TEXT    NOT NULL,
+            accent      TEXT    NOT NULL,
+            created_by  INTEGER REFERENCES users(id),
+            created_at  TEXT    NOT NULL
+        );
+    """,
+    48: """
+        -- Tuning extraction from transcripts (#276)
+        CREATE TABLE IF NOT EXISTS extraction_runs (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            transcript_id  INTEGER NOT NULL REFERENCES transcripts(id),
+            method         TEXT NOT NULL,
+            created_at     TEXT NOT NULL,
+            status         TEXT NOT NULL DEFAULT 'created',
+            item_count     INTEGER NOT NULL DEFAULT 0,
+            accepted_count INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_extraction_runs_transcript
+            ON extraction_runs(transcript_id);
+
+        CREATE TABLE IF NOT EXISTS extraction_items (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            extraction_run_id INTEGER NOT NULL REFERENCES extraction_runs(id) ON DELETE CASCADE,
+            parameter_name    TEXT NOT NULL,
+            extracted_value   REAL NOT NULL,
+            segment_start     REAL NOT NULL,
+            segment_end       REAL NOT NULL,
+            segment_text      TEXT NOT NULL,
+            confidence        REAL NOT NULL DEFAULT 1.0,
+            status            TEXT NOT NULL DEFAULT 'pending',
+            reviewed_at       TEXT,
+            reviewed_by       INTEGER REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_extraction_items_run
+            ON extraction_items(extraction_run_id);
+    """,
+    49: """
         -- Pluggable visualization framework (#286)
         CREATE TABLE IF NOT EXISTS visualization_preferences (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1125,9 +1223,20 @@ class Storage:
 
     async def connect(self) -> None:
         """Open the database connection."""
-        self._db = await aiosqlite.connect(self._config.db_path)
+        import os
+        import stat
+
+        db_path = self._config.db_path
+        is_new = not os.path.exists(db_path)
+        self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
+        if is_new and os.path.exists(db_path):
+            # Python sqlite3 creates files with 0644 regardless of umask.
+            # Add group-write so both the helmlog service (helmlog:weaties)
+            # and the deploy user (weaties) can read/write the DB.
+            st = os.stat(db_path)
+            os.chmod(db_path, st.st_mode | stat.S_IWGRP)
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
@@ -1899,6 +2008,63 @@ class Storage:
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
+    # -- Scheduled starts (#345) ------------------------------------------
+
+    async def schedule_start(
+        self,
+        scheduled_start_utc: datetime,
+        event: str,
+        session_type: str = "race",
+    ) -> int:
+        """Set (or replace) the scheduled start. Returns the row id."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute("DELETE FROM scheduled_starts")
+        cur = await db.execute(
+            "INSERT INTO scheduled_starts (scheduled_start_utc, event, session_type, created_at)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                scheduled_start_utc.isoformat(),
+                event,
+                session_type,
+                _datetime.now(_UTC).isoformat(),
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("Scheduled start set for {} ({})", scheduled_start_utc.isoformat(), event)
+        return cur.lastrowid
+
+    async def get_scheduled_start(self) -> dict[str, str] | None:
+        """Return the pending scheduled start row, or None."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, scheduled_start_utc, event, session_type, created_at"
+            " FROM scheduled_starts LIMIT 1"
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "scheduled_start_utc": row["scheduled_start_utc"],
+            "event": row["event"],
+            "session_type": row["session_type"],
+            "created_at": row["created_at"],
+        }
+
+    async def cancel_scheduled_start(self) -> bool:
+        """Delete the pending scheduled start. Returns True if a row was deleted."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM scheduled_starts")
+        await db.commit()
+        deleted = cur.rowcount > 0
+        if deleted:
+            logger.info("Scheduled start cancelled")
+        return deleted
+
     async def has_source_id(self, source: str, source_id: str) -> bool:
         """Check if a race with this source/source_id already exists (dedup)."""
         db = self._conn()
@@ -2233,7 +2399,10 @@ class Storage:
                 f" (SELECT COUNT(*) > 0 FROM race_sails rs"
                 f"   WHERE rs.race_id = r.id) AS has_sails,"
                 f" (SELECT COUNT(*) > 0 FROM session_notes sn"
-                f"   WHERE sn.race_id = r.id) AS has_notes"
+                f"   WHERE sn.race_id = r.id) AS has_notes,"
+                f" r.shared_name AS shared_name,"
+                f" r.match_group_id AS match_group_id,"
+                f" r.match_confirmed AS match_confirmed"
                 f" FROM races r"
                 f" LEFT JOIN audio_sessions a"
                 f"   ON a.race_id = r.id AND a.session_type IN ('race', 'practice')"
@@ -2268,7 +2437,8 @@ class Storage:
                 f" (SELECT COUNT(*) > 0 FROM transcripts t"
                 f"   WHERE t.audio_session_id = a.id AND t.status = 'done'"
                 f" ) AS has_transcript,"
-                f" 0 AS has_results, 0 AS has_crew, 0 AS has_sails, 0 AS has_notes"
+                f" 0 AS has_results, 0 AS has_crew, 0 AS has_sails, 0 AS has_notes,"
+                f" NULL AS shared_name, NULL AS match_group_id, 0 AS match_confirmed"
                 f" FROM audio_sessions a"
                 f" LEFT JOIN races r ON r.id = a.race_id"
                 f" {where}"
@@ -3868,7 +4038,7 @@ class Storage:
 
     _USER_COLS = (
         "id, email, name, role, created_at, last_seen,"
-        " avatar_path, is_developer, is_active, weight_lbs"
+        " avatar_path, is_developer, is_active, weight_lbs, color_scheme"
     )
 
     async def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
@@ -4407,6 +4577,79 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Color schemes (#347)
+    # ------------------------------------------------------------------
+
+    async def create_color_scheme(
+        self,
+        name: str,
+        bg: str,
+        text_color: str,
+        accent: str,
+        created_by: int | None,
+    ) -> int:
+        """Insert a new custom color scheme. Returns the new row id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO color_schemes (name, bg, text_color, accent, created_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (name, bg, text_color, accent, created_by, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def update_color_scheme(
+        self, scheme_id: int, name: str, bg: str, text_color: str, accent: str
+    ) -> bool:
+        """Update an existing custom color scheme. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE color_schemes SET name = ?, bg = ?, text_color = ?, accent = ? WHERE id = ?",
+            (name, bg, text_color, accent, scheme_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def delete_color_scheme(self, scheme_id: int) -> bool:
+        """Delete a custom color scheme. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM color_schemes WHERE id = ?", (scheme_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def get_color_scheme(self, scheme_id: int) -> dict[str, Any] | None:
+        """Return a custom color scheme row by id, or None."""
+        cur = await self._conn().execute(
+            "SELECT id, name, bg, text_color, accent, created_by, created_at"
+            " FROM color_schemes WHERE id = ?",
+            (scheme_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_color_schemes(self) -> list[dict[str, Any]]:
+        """Return all custom color schemes ordered by name."""
+        cur = await self._conn().execute(
+            "SELECT id, name, bg, text_color, accent, created_by, created_at"
+            " FROM color_schemes ORDER BY name"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def set_user_color_scheme(self, user_id: int, scheme: str | None) -> None:
+        """Set or clear a user's personal color scheme override."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE users SET color_scheme = ? WHERE id = ?",
+            (scheme, user_id),
+        )
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Session deletion (#194)

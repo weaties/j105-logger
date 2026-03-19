@@ -2,31 +2,31 @@
 {% block title %}Cameras — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
 table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
 td{padding:7px 8px;border-bottom:1px solid #0d1a2e}
 .badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
-.badge-rec{background:#16a34a22;color:#4ade80}
-.badge-idle{background:#374151;color:#8892a4}
-.badge-err{background:#7f1d1d22;color:#ef4444}
-.btn-sm{padding:6px 12px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.78rem;cursor:pointer}
-.btn-start{color:#4ade80;border-color:#16a34a}
-.btn-stop{color:#ef4444;border-color:#7f1d1d}
-.btn-refresh{color:#7eb8f7;border-color:#2563eb}
-.btn-add{color:#4ade80;border-color:#16a34a}
-.btn-edit{color:#f59e0b;border-color:#92400e}
-.btn-del{color:#ef4444;border-color:#7f1d1d}
+.badge-rec{background:#16a34a22;color:var(--success)}
+.badge-idle{background:var(--border);color:var(--text-secondary)}
+.badge-err{background:#7f1d1d22;color:var(--danger)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-start{color:var(--success);border-color:var(--success)}
+.btn-stop{color:var(--danger);border-color:#7f1d1d}
+.btn-refresh{color:var(--accent);border-color:var(--accent-strong)}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-edit{color:var(--warning);border-color:#92400e}
+.btn-del{color:var(--danger);border-color:#7f1d1d}
 .form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
-.form-row input{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
-.form-row input::placeholder{color:#586578}
-#add-err,#edit-err{color:#ef4444;font-size:.8rem;margin-top:4px}
-dialog{background:#131f35;color:#e8eaf0;border:1px solid #374151;border-radius:12px;padding:20px;max-width:400px;width:90%}
+.form-row input{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+#add-err,#edit-err{color:var(--danger);font-size:.8rem;margin-top:4px}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog .form-row{flex-direction:column;align-items:stretch}
 dialog .form-row input{width:100%}
-dialog .form-row label{font-size:.75rem;color:#8892a4;margin-bottom:2px}
+dialog .form-row label{font-size:.75rem;color:var(--text-secondary);margin-bottom:2px}
 dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 </style>
 {% endblock %}
@@ -125,7 +125,7 @@ async function loadCameras(){
   const r=await fetch('/api/cameras');
   if(!r.ok){document.getElementById('cam-table').textContent='Failed to load';return}
   const cams=await r.json();
-  if(!cams.length){document.getElementById('cam-table').innerHTML='<p style="color:#8892a4">No cameras configured. Click <b>+ Add Camera</b> above to get started.</p>';return}
+  if(!cams.length){document.getElementById('cam-table').innerHTML='<p style="color:var(--text-secondary)">No cameras configured. Click <b>+ Add Camera</b> above to get started.</p>';return}
   let h='<table><thead><tr><th>Name</th><th>IP</th><th>WiFi</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
   for(const c of cams){
     const badge=c.error?`<span class="badge badge-err">error</span>`:c.recording?`<span class="badge badge-rec">recording</span>`:`<span class="badge badge-idle">idle</span>`;
@@ -134,8 +134,8 @@ async function loadCameras(){
     const passEsc=(c.wifi_password||'').replace(/'/g,"\\'");
     const editBtn=`<button class="btn-sm btn-edit" onclick="showEdit('${c.name}','${c.ip}','${ssidEsc}','${passEsc}')">\u270e</button>`;
     const delBtn=`<button class="btn-sm btn-del" onclick="delCamera('${c.name}')">\u2715</button>`;
-    const wifi=c.wifi_ssid?`<span style="color:#7eb8f7">${c.wifi_ssid}</span>`:'<span style="color:#586578">\u2014</span>';
-    h+=`<tr><td>${c.name}</td><td>${c.ip}</td><td>${wifi}</td><td>${badge}${c.error?' <small style="color:#ef4444">'+c.error.slice(0,60)+'</small>':''}</td><td style="display:flex;gap:4px">${recBtn}${editBtn}${delBtn}</td></tr>`;
+    const wifi=c.wifi_ssid?`<span style="color:var(--accent)">${c.wifi_ssid}</span>`:'<span style="color:var(--text-muted)">\u2014</span>';
+    h+=`<tr><td>${c.name}</td><td>${c.ip}</td><td>${wifi}</td><td>${badge}${c.error?' <small style="color:var(--danger)">'+c.error.slice(0,60)+'</small>':''}</td><td style="display:flex;gap:4px">${recBtn}${editBtn}${delBtn}</td></tr>`;
   }
   h+='</tbody></table>';
   document.getElementById('cam-table').innerHTML=h;
@@ -151,13 +151,13 @@ async function loadSessions(){
   const r=await fetch('/api/cameras/sessions');
   if(!r.ok)return;
   const rows=await r.json();
-  if(!rows.length){document.getElementById('cam-sessions').innerHTML='<p style="color:#8892a4">No camera sessions recorded yet.</p>';return}
+  if(!rows.length){document.getElementById('cam-sessions').innerHTML='<p style="color:var(--text-secondary)">No camera sessions recorded yet.</p>';return}
   let h='<table><thead><tr><th>Camera</th><th>Race</th><th>Started</th><th>Stopped</th><th>Latency</th><th>Error</th></tr></thead><tbody>';
   for(const s of rows){
     const started=s.recording_started_utc?new Date(s.recording_started_utc).toLocaleString():'\u2014';
     const stopped=s.recording_stopped_utc?new Date(s.recording_stopped_utc).toLocaleString():'\u2014';
     const lat=s.sync_offset_ms!=null?s.sync_offset_ms+'ms':'\u2014';
-    const err=s.error?`<small style="color:#ef4444">${s.error.slice(0,40)}</small>`:'\u2014';
+    const err=s.error?`<small style="color:var(--danger)">${s.error.slice(0,40)}</small>`:'\u2014';
     h+=`<tr><td>${s.camera_name}</td><td>${s.race_name||s.session_id}</td><td>${started}</td><td>${stopped}</td><td>${lat}</td><td>${err}</td></tr>`;
   }
   h+='</tbody></table>';

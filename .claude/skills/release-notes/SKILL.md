@@ -1,6 +1,6 @@
 ---
 name: release-notes
-description: Draft a curated RELEASES.md entry from commits since the last stage/* tag
+description: Draft a curated RELEASES.md entry from commits since the last stage/* tag. TRIGGER when preparing to promote main → stage, when the user asks for release notes, or when running the promote workflow. DO NOT trigger for general documentation edits, mid-development work, or changes to RELEASES.md that aren't promotion-related.
 ---
 
 # Release Notes: Draft Entry

@@ -1,6 +1,6 @@
 ---
 name: spec
-description: Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue
+description: Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue. TRIGGER when starting work on a feature with combinatorial logic (role × policy × state), lifecycle state machines, or hardware-critical behavior — especially Critical or High tier modules (auth.py, federation.py, peer_auth.py, storage.py migrations, can_reader.py). DO NOT trigger for simple bug fixes, Low-tier changes, straightforward linear features, or documentation.
 ---
 
 # Structured Feature Spec

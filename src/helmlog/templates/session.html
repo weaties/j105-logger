@@ -4,47 +4,47 @@
 {% block extra_css %}
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
-.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;color:#e8eaf0}
+.field{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;color:var(--text-primary)}
 .track-map{height:350px;border-radius:8px}
 .section{margin-top:16px}
-.section-title{font-size:.82rem;text-transform:uppercase;letter-spacing:.07em;color:#8892a4;margin-bottom:6px;cursor:pointer;user-select:none}
-.section-title:hover{color:#7eb8f7}
+.section-title{font-size:.82rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:6px;cursor:pointer;user-select:none}
+.section-title:hover{color:var(--accent)}
 .section-body{font-size:.82rem}
 .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;font-size:.82rem}
-.meta-label{color:#8892a4}
-.meta-value{color:#e8eaf0}
-.video-link{display:inline-flex;align-items:center;gap:4px;color:#ef4444;text-decoration:none;font-size:.85rem;font-weight:600}
+.meta-label{color:var(--text-secondary)}
+.meta-value{color:var(--text-primary)}
+.video-link{display:inline-flex;align-items:center;gap:4px;color:var(--danger);text-decoration:none;font-size:.85rem;font-weight:600}
 .video-link:hover{text-decoration:underline}
-.back-link{font-size:.82rem;color:#8892a4;text-decoration:none;margin-bottom:8px;display:inline-block}
-.back-link:hover{color:#7eb8f7}
+.back-link{font-size:.82rem;color:var(--text-secondary);text-decoration:none;margin-bottom:8px;display:inline-block}
+.back-link:hover{color:var(--accent)}
 .maneuver-table{width:100%;border-collapse:collapse;font-size:.78rem}
-.maneuver-table th{color:#8892a4;font-weight:400;text-align:left;padding:3px 6px;border-bottom:1px solid #1e3050}
-.maneuver-table td{padding:3px 6px;border-bottom:1px solid #0d1a2e;color:#c4cdd8}
-.maneuver-table tr.active-row td{background:#0d2040;color:#e8eaf0}
-.badge-tack{color:#60a5fa}
+.maneuver-table th{color:var(--text-secondary);font-weight:400;text-align:left;padding:3px 6px;border-bottom:1px solid var(--border)}
+.maneuver-table td{padding:3px 6px;border-bottom:1px solid #0d1a2e;color:var(--text-primary)}
+.maneuver-table tr.active-row td{background:#0d2040;color:var(--text-primary)}
+.badge-tack{color:var(--accent)}
 .badge-gybe{color:#fb923c}
-.badge-rounding{color:#4ade80}
-.wf-mark-label{background:#0a1628!important;border:1px solid #f97316!important;color:#e8eaf0!important;font-size:.7rem!important;padding:1px 4px!important;border-radius:3px!important;box-shadow:none!important}
-.wf-mark-label::before{border-right-color:#f97316!important}
-.thread-item{padding:8px;border:1px solid #1e3050;border-radius:6px;margin-bottom:6px;cursor:pointer;transition:border-color .15s}
-.thread-item:hover{border-color:#2563eb}
+.badge-rounding{color:var(--success)}
+.wf-mark-label{background:var(--bg-primary)!important;border:1px solid var(--warning)!important;color:var(--text-primary)!important;font-size:.7rem!important;padding:1px 4px!important;border-radius:3px!important;box-shadow:none!important}
+.wf-mark-label::before{border-right-color:var(--warning)!important}
+.thread-item{padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;transition:border-color .15s}
+.thread-item:hover{border-color:var(--accent-strong)}
 .thread-item.resolved{opacity:.7}
-.thread-anchor{font-size:.7rem;color:#f97316;margin-left:6px}
-.thread-unread{background:#2563eb;color:#fff;font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
+.thread-anchor{font-size:.7rem;color:var(--warning);margin-left:6px}
+.thread-unread{background:var(--accent-strong);color:var(--text-primary);font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
 .comment-item{padding:6px 0;border-bottom:1px solid #0d1a2e;font-size:.8rem}
 .comment-author{color:#7dd3fc;font-weight:600;font-size:.75rem}
-.comment-time{color:#8892a4;font-size:.7rem;margin-left:4px}
-.comment-edited{color:#8892a4;font-size:.65rem;font-style:italic}
-.comment-body{color:#c4cdd8;margin-top:2px;white-space:pre-wrap}
-.thread-form input,.thread-form select,.thread-form textarea{background:#0d1929;border:1px solid #1e3050;border-radius:4px;color:#e8eaf0;padding:4px 8px;font-size:.8rem;width:100%;box-sizing:border-box}
+.comment-time{color:var(--text-secondary);font-size:.7rem;margin-left:4px}
+.comment-edited{color:var(--text-secondary);font-size:.65rem;font-style:italic}
+.comment-body{color:var(--text-primary);margin-top:2px;white-space:pre-wrap}
+.thread-form input,.thread-form select,.thread-form textarea{background:#0d1929;border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:100%;box-sizing:border-box}
 .thread-form textarea{resize:vertical;min-height:60px}
-.btn-thread{background:#1e3a5f;color:#7eb8f7;border:none;border-radius:4px;padding:4px 12px;font-size:.78rem;cursor:pointer}
-.btn-thread:hover{background:#2563eb;color:#fff}
-.btn-resolve{background:none;border:1px solid #4ade80;color:#4ade80;border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
-.btn-resolve:hover{background:#4ade80;color:#0a1628}
-.btn-unresolve{background:none;border:1px solid #8892a4;color:#8892a4;border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
+.btn-thread{background:var(--border);color:var(--accent);border:none;border-radius:4px;padding:4px 12px;font-size:.78rem;cursor:pointer}
+.btn-thread:hover{background:var(--accent-strong);color:var(--text-primary)}
+.btn-resolve{background:none;border:1px solid var(--success);color:var(--success);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
+.btn-resolve:hover{background:var(--success);color:var(--bg-primary)}
+.btn-unresolve{background:none;border:1px solid var(--text-secondary);color:var(--text-secondary);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
 .discussion-marker{background:none!important;border:none!important}
-.mention{color:#60a5fa;font-weight:600;text-decoration:none}
+.mention{color:var(--accent);font-weight:600;text-decoration:none}
 </style>
 {% endblock %}
 
@@ -68,7 +68,7 @@
 <div id="track-container" class="card" style="display:none">
   <div class="section-title">Track</div>
   <div id="track-map" class="track-map"></div>
-  <div id="track-hint" style="font-size:.72rem;color:#8892a4;margin-top:4px"></div>
+  <div id="track-hint" style="font-size:.72rem;color:var(--text-secondary);margin-top:4px"></div>
 </div>
 
 <div id="wind-field-card" class="card" style="display:none">
@@ -76,9 +76,9 @@
   <div class="section-body" id="wind-field-body">
     <div id="wf-map" style="height:400px;border-radius:8px"></div>
     <div style="margin-top:8px;display:flex;align-items:center;gap:8px">
-      <span style="font-size:.72rem;color:#8892a4;min-width:36px" id="wf-time-label">0:00</span>
+      <span style="font-size:.72rem;color:var(--text-secondary);min-width:36px" id="wf-time-label">0:00</span>
       <input type="range" id="wf-slider" min="0" max="100" value="0" style="flex:1">
-      <button id="wf-play-btn" style="background:none;border:none;color:#7eb8f7;cursor:pointer;font-size:1rem">&#9654;</button>
+      <button id="wf-play-btn" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:1rem">&#9654;</button>
     </div>
     <canvas id="wf-chart" width="800" height="300" style="width:100%;margin-top:12px;border-radius:6px"></canvas>
   </div>
@@ -93,13 +93,13 @@
     </div>
     <div id="polar-diagram-view">
       <canvas id="polar-canvas" width="600" height="600" style="width:100%;max-width:600px;display:block;margin:0 auto"></canvas>
-      <div id="polar-legend" style="font-size:.72rem;color:#8892a4;margin-top:6px;text-align:center"></div>
+      <div id="polar-legend" style="font-size:.72rem;color:var(--text-secondary);margin-top:6px;text-align:center"></div>
     </div>
     <div id="polar-heatmap-view" style="display:none">
       <div id="polar-heatmap" style="overflow-x:auto"></div>
-      <div style="font-size:.72rem;color:#8892a4;margin-top:6px;text-align:center">Green = faster than baseline &middot; Red = slower &middot; Gray = no baseline</div>
+      <div style="font-size:.72rem;color:var(--text-secondary);margin-top:6px;text-align:center">Green = faster than baseline &middot; Red = slower &middot; Gray = no baseline</div>
     </div>
-    <div id="polar-summary" style="font-size:.78rem;color:#8892a4;margin-top:8px;text-align:center"></div>
+    <div id="polar-summary" style="font-size:.78rem;color:var(--text-secondary);margin-top:8px;text-align:center"></div>
   </div>
 </div>
 
@@ -141,8 +141,8 @@
 
 <div class="card" id="discussion-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
-    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('discussion')">Discussion <span id="discussion-badge" style="font-size:.7rem;color:#60a5fa"></span> <span id="discussion-toggle">&#9660;</span></div>
-    <button onclick="showNewThreadForm()" style="background:none;border:none;color:#7eb8f7;cursor:pointer;font-size:.82rem;padding:2px 0">+ New Thread</button>
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('discussion')">Discussion <span id="discussion-badge" style="font-size:.7rem;color:var(--accent)"></span> <span id="discussion-toggle">&#9660;</span></div>
+    <button onclick="showNewThreadForm()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.82rem;padding:2px 0">+ New Thread</button>
   </div>
   <div class="section-body" id="discussion-body" style="margin-top:6px"></div>
 </div>
@@ -152,10 +152,24 @@
   <div class="section-body" id="transcript-body"></div>
 </div>
 
+<div class="card" id="tuning-extraction-card" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('tuning-extraction')">
+      Tuning Extraction <span id="tuning-extraction-badge" style="font-size:.7rem;color:#60a5fa"></span>
+      <span id="tuning-extraction-toggle">&#9660;</span>
+    </div>
+    <button id="extract-tuning-btn" onclick="extractTuning()"
+      style="font-size:.72rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">
+      &#8635; Extract
+    </button>
+  </div>
+  <div class="section-body" id="tuning-extraction-body" style="margin-top:6px"></div>
+</div>
+
 <div class="card" id="maneuvers-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <div class="section-title" style="margin-bottom:0" onclick="toggleSection('maneuvers')">Maneuvers <span id="maneuvers-toggle">&#9660;</span></div>
-    <button id="detect-maneuvers-btn" onclick="detectManeuvers()" style="font-size:.72rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">&#8635; Detect</button>
+    <button id="detect-maneuvers-btn" onclick="detectManeuvers()" style="font-size:.72rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">&#8635; Detect</button>
   </div>
   <div class="section-body" id="maneuvers-body" style="margin-top:6px"></div>
 </div>
@@ -163,6 +177,11 @@
 <div class="card" id="sharing-card" style="display:none">
   <div class="section-title">Co-op Sharing</div>
   <div id="sharing-body"></div>
+</div>
+
+<div class="card" id="match-card" style="display:none">
+  <div class="section-title">Session Match</div>
+  <div id="match-body"></div>
 </div>
 
 <div class="card" id="exports-card" style="display:none">

@@ -2,42 +2,42 @@
 {% block title %}HelmLog — Sails{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:4px}
-h2{font-size:1rem;font-weight:600;color:#e8eaf0;margin:20px 0 10px}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}
+h1{font-size:1.3rem;font-weight:700;color:var(--accent);margin-bottom:4px}
+h2{font-size:1rem;font-weight:600;color:var(--text-primary);margin:20px 0 10px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:16px}
 table{width:100%;border-collapse:collapse;font-size:.85rem}
-th{text-align:left;padding:6px 8px;color:#8892a4;font-weight:500;border-bottom:1px solid #1e3a5f}
-td{padding:6px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
-.ubtn{cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
-.ubtn-danger{border-color:#ef4444;color:#f87171}
-.edit-input{background:#0a1628;border:1px solid #2563eb;border-radius:4px;padding:6px 8px;color:#e8eaf0;font-size:.85rem;width:100%;min-height:36px;box-sizing:border-box;margin:0}
-.edit-select{background:#0a1628;border:1px solid #2563eb;border-radius:4px;padding:6px 8px;color:#e8eaf0;font-size:.85rem;min-height:36px;margin:0}
-.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
-label{font-size:.85rem;color:#8892a4;display:block;margin-bottom:4px}
-input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem;margin-bottom:10px}
+th{text-align:left;padding:6px 8px;color:var(--text-secondary);font-weight:500;border-bottom:1px solid var(--border)}
+td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.ubtn{cursor:pointer;background:none;border:1px solid var(--accent-strong);color:var(--accent);border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
+.ubtn-danger{border-color:var(--danger);color:var(--danger)}
+.edit-input{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;width:100%;min-height:36px;box-sizing:border-box;margin:0}
+.edit-select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;min-height:36px;margin:0}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:var(--accent-strong);color:var(--bg-primary)}
+label{font-size:.85rem;color:var(--text-secondary);display:block;margin-bottom:4px}
+input,select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:.9rem;margin-bottom:10px}
 .pos-badge{font-size:.72rem;padding:2px 6px;border-radius:3px;font-weight:600}
-.pos-upwind{background:#1e3a5f;color:#60a5fa}
-.pos-downwind{background:#1e3a2f;color:#4ade80}
-.pos-both{background:#2e2a1f;color:#fbbf24}
-.stat{color:#e0e8f0;font-variant-numeric:tabular-nums}
-.stat-zero{color:#4b5563}
+.pos-upwind{background:var(--bg-secondary);color:var(--accent);border:1px solid var(--accent-strong)}
+.pos-downwind{background:var(--bg-secondary);color:var(--success);border:1px solid var(--success)}
+.pos-both{background:var(--bg-secondary);color:var(--warning);border:1px solid var(--warning)}
+.stat{color:var(--text-primary);font-variant-numeric:tabular-nums}
+.stat-zero{color:var(--text-muted)}
 .retired{opacity:.5}
 .detail-row td{padding:0;border:none}
-.detail-content{background:#0a1628;padding:12px;border-radius:6px;margin:4px 8px 8px}
-.session-item{display:flex;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid #1e3a5f;font-size:.82rem;flex-wrap:wrap}
+.detail-content{background:var(--bg-input);padding:12px;border-radius:6px;margin:4px 8px 8px}
+.session-item{display:flex;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid var(--border);font-size:.82rem;flex-wrap:wrap}
 .session-item:last-child{border-bottom:none}
-.session-item a{color:#7eb8f7;text-decoration:none}
+.session-item a{color:var(--accent);text-decoration:none}
 .session-item a:hover{text-decoration:underline}
-.wind-tag{color:#8892a4;font-size:.78rem}
+.wind-tag{color:var(--text-secondary);font-size:.78rem}
 .u-actions{white-space:nowrap}
 .u-actions .ubtn{margin-left:4px}
 .u-actions .ubtn:first-child{margin-left:0}
 @media (max-width: 640px) {
   table thead{display:none}
-  tbody tr:not(.detail-row){display:block;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-bottom:10px}
+  tbody tr:not(.detail-row){display:block;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
   tbody td{display:flex;justify-content:space-between;align-items:center;border:none;padding:4px 0;gap:8px}
-  tbody td::before{content:attr(data-label);color:#8892a4;font-size:.78rem;flex-shrink:0;min-width:70px}
-  tbody td:last-child{flex-wrap:wrap;gap:6px;margin-top:6px;padding-top:8px;border-top:1px solid #1e3a5f}
+  tbody td::before{content:attr(data-label);color:var(--text-secondary);font-size:.78rem;flex-shrink:0;min-width:70px}
+  tbody td:last-child{flex-wrap:wrap;gap:6px;margin-top:6px;padding-top:8px;border-top:1px solid var(--border)}
   tbody td:last-child::before{display:none}
   .card{padding:12px}
   .ubtn{padding:6px 12px;font-size:.85rem}
@@ -71,8 +71,8 @@ input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;paddi
 </div>
 <div class="card">
 <h2>Performance</h2>
-<p style="font-size:.82rem;color:#8892a4;margin-bottom:12px">Aggregated VMG by sail and wind band across all sessions.</p>
-<div id="perf-container"><span style="color:#6b7280;font-size:.85rem">Loading…</span></div>
+<p style="font-size:.82rem;color:var(--text-secondary);margin-bottom:12px">Aggregated VMG by sail and wind band across all sessions.</p>
+<div id="perf-container"><span style="color:var(--text-muted);font-size:.85rem">Loading…</span></div>
 </div>
 {% endblock %}
 {% block scripts %}
@@ -93,7 +93,7 @@ async function loadSails() {
     const showGybes = s.point_of_sail !== 'upwind';
     html += '<tr data-sid="' + s.id + '"' + cls + '>'
       + '<td data-label="Type">' + esc(s.type.charAt(0).toUpperCase() + s.type.slice(1)) + '</td>'
-      + '<td data-label="Name" class="s-name">' + esc(s.name) + (s.active ? '' : ' <span style="color:#ef4444;font-size:.75rem">(retired)</span>') + '</td>'
+      + '<td data-label="Name" class="s-name">' + esc(s.name) + (s.active ? '' : ' <span style="color:var(--danger);font-size:.75rem">(retired)</span>') + '</td>'
       + '<td data-label="Point of Sail"><span class="pos-badge ' + POS_CLASS[s.point_of_sail] + '">' + POS_LABELS[s.point_of_sail] + '</span></td>'
       + '<td data-label="Tacks" class="stat' + (showTacks && s.total_tacks ? '' : ' stat-zero') + '">' + (showTacks ? s.total_tacks : '\u2014') + '</td>'
       + '<td data-label="Gybes" class="stat' + (showGybes && s.total_gybes ? '' : ' stat-zero') + '">' + (showGybes ? s.total_gybes : '\u2014') + '</td>'
@@ -123,7 +123,7 @@ async function toggleHistory(sailId) {
   const resp = await fetch('/api/sails/' + sailId + '/sessions');
   const sessions = await resp.json();
   if (!sessions.length) {
-    container.innerHTML = '<span style="color:#8892a4">No sessions yet</span>';
+    container.innerHTML = '<span style="color:var(--text-secondary)">No sessions yet</span>';
     return;
   }
   let html = '';
@@ -137,7 +137,7 @@ async function toggleHistory(sailId) {
     }
     html += '<div class="session-item">'
       + '<a href="/session/' + s.id + '">' + esc(s.name) + '</a>'
-      + '<span style="color:#8892a4">' + s.date + '</span>'
+      + '<span style="color:var(--text-secondary)">' + s.date + '</span>'
       + '<span>' + stats.join(', ') + '</span>'
       + wind
       + '</div>';
@@ -156,8 +156,8 @@ function editSail(sailId) {
 
   nameTd.innerHTML = '<input class="edit-input" id="edit-name-' + sailId + '" value="' + curName.replace(/"/g, '&quot;') + '" />';
   notesTd.innerHTML = '<input class="edit-input" id="edit-notes-' + sailId + '" value="' + curNotes.replace(/"/g, '&quot;') + '" />';
-  actionsTd.innerHTML = '<button onclick="saveSail(' + sailId + ')" class="ubtn" style="border-color:#22c55e;color:#4ade80">Save</button>'
-    + ' <button onclick="loadSails()" class="ubtn" style="border-color:#374151;color:#8892a4">Cancel</button>';
+  actionsTd.innerHTML = '<button onclick="saveSail(' + sailId + ')" class="ubtn" style="border-color:var(--success);color:var(--success)">Save</button>'
+    + ' <button onclick="loadSails()" class="ubtn" style="border-color:var(--border);color:var(--text-secondary)">Cancel</button>';
   document.getElementById('edit-name-' + sailId).focus();
 }
 
@@ -208,14 +208,14 @@ document.getElementById('add-sail-form').addEventListener('submit', async e => {
   });
   const result = document.getElementById('add-result');
   if (r.ok) {
-    result.style.color = '#4ade80';
+    result.style.color = 'var(--success)';
     result.textContent = 'Sail added';
     document.getElementById('add-name').value = '';
     document.getElementById('add-notes').value = '';
     loadSails();
   } else {
     const d = await r.json().catch(() => ({}));
-    result.style.color = '#f87171';
+    result.style.color = 'var(--danger)';
     result.textContent = d.detail || 'Failed to add sail';
   }
 });
@@ -224,11 +224,11 @@ loadSails();
 
 async function loadPerformance() {
   const resp = await fetch('/api/sails/performance');
-  if (!resp.ok) { document.getElementById('perf-container').innerHTML = '<span style="color:#f87171">Failed to load</span>'; return; }
+  if (!resp.ok) { document.getElementById('perf-container').innerHTML = '<span style="color:var(--danger)">Failed to load</span>'; return; }
   const data = await resp.json();
   const sails = data.sails || [];
   if (!sails.length) {
-    document.getElementById('perf-container').innerHTML = '<span style="color:#6b7280">No performance data yet</span>';
+    document.getElementById('perf-container').innerHTML = '<span style="color:var(--text-muted)">No performance data yet</span>';
     return;
   }
 
@@ -245,7 +245,7 @@ async function loadPerformance() {
   }
   html += '</tr><tr><th></th><th></th>';
   for (const b of bands) {
-    html += '<th style="font-size:.72rem;color:#6b7280">Up VMG</th><th style="font-size:.72rem;color:#6b7280">Down VMG</th>';
+    html += '<th style="font-size:.72rem;color:var(--text-muted)">Up VMG</th><th style="font-size:.72rem;color:var(--text-muted)">Down VMG</th>';
   }
   html += '</tr></thead><tbody>';
 

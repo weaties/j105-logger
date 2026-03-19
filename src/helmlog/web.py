@@ -18,7 +18,7 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -361,8 +361,36 @@ def create_app(
     app.state.peer_limiter = peer_limiter
     app.include_router(peer_router)
 
+    # -- Theme middleware: injects resolved CSS variables into request.state --
+    # NOTE: inject_theme_css is registered BEFORE auth_middleware.  In Starlette's
+    # LIFO middleware stack, auth_middleware runs first (outermost), so
+    # request.state.user is already populated when inject_theme_css executes.
+    from helmlog.themes import resolve_theme, theme_to_css
+
+    @app.middleware("http")
+    async def inject_theme_css(request: Request, call_next: Any) -> Any:  # noqa: ANN401
+        """Resolve the active color scheme and store the CSS in request.state."""
+        accept = request.headers.get("accept", "")
+        if "text/html" in accept:
+            user: dict[str, Any] | None = getattr(request.state, "user", None)
+            user_scheme: str | None = user.get("color_scheme") if user else None
+            boat_default = await storage.get_setting("color_scheme_default")
+            custom_schemes = await storage.list_color_schemes()
+            theme = resolve_theme(user_scheme, boat_default, custom_schemes)
+            request.state.theme_css = theme_to_css(theme)
+        else:
+            request.state.theme_css = ""
+        return await call_next(request)
+
     def _tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
-        return {"request": request, "active_page": page, "git_info": _GIT_INFO, **extra}
+        theme_css: str = getattr(request.state, "theme_css", "")
+        return {
+            "request": request,
+            "active_page": page,
+            "git_info": _GIT_INFO,
+            "theme_css": theme_css,
+            **extra,
+        }
 
     from helmlog.auth import (
         _is_auth_disabled,
@@ -535,7 +563,9 @@ def create_app(
         next: str = Form(default="/"),
     ) -> Response:
         def _login_err(msg: str) -> HTMLResponse:
-            ctx = _login_ctx(next, f'<p style="color:#f87171;margin-top:12px">{msg}</p>')
+            ctx = _login_ctx(
+                next, f'<p style="color:var(--danger, #f87171);margin-top:12px">{msg}</p>'
+            )
             return _templates.TemplateResponse(request, "login.html", ctx, status_code=400)
 
         email = email.strip().lower()
@@ -649,7 +679,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -664,7 +694,7 @@ def create_app(
                     "email": inv["email"],
                     "name": name,
                     "role": inv["role"],
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                     "oauth_providers": enabled_providers(),
                 },
                 status_code=400,
@@ -724,7 +754,7 @@ def create_app(
         request: Request,
         email: str = Form(...),
     ) -> HTMLResponse:
-        _generic_msg = '<p style="color:#34d399;margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
+        _generic_msg = '<p style="color:var(--success, #34d399);margin-top:12px">If an account exists for that email, a reset link has been sent.</p>'
         email = email.strip().lower()
 
         from helmlog.email import smtp_configured
@@ -792,7 +822,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Passwords do not match.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Passwords do not match.</p>',
                 },
                 status_code=400,
             )
@@ -803,7 +833,7 @@ def create_app(
                 "auth/reset_password.html",
                 {
                     "token": token,
-                    "error_html": '<p style="color:#f87171;margin-top:12px">Password must be at least 8 characters.</p>',
+                    "error_html": '<p style="color:var(--danger, #f87171);margin-top:12px">Password must be at least 8 characters.</p>',
                 },
                 status_code=400,
             )
@@ -1075,7 +1105,7 @@ def create_app(
             f'<td class="u-dev" data-label="Dev"><input type="checkbox" {"checked" if u.get("is_developer") else ""} disabled style="width:18px;height:18px"/></td>'  # noqa: E501
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
-            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:#22c55e;color:#4ade80">Edit</button></td>'  # noqa: E501
+            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:var(--success);color:var(--success)">Edit</button></td>'  # noqa: E501
             f"</tr>"
             for u in users
         )
@@ -1085,7 +1115,7 @@ def create_app(
             f'<td data-label="IP">{_esc(s.get("ip") or "\u2014")}</td>'
             f'<td data-label="Created">{_local_ts(s["created_at"])}</td>'
             f'<td data-label="Expires">{_local_ts(s["expires_at"])}</td>'
-            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for s in sessions
         )
@@ -1095,7 +1125,7 @@ def create_app(
             f'<td data-label="Role">{_badge(inv["role"])}</td>'
             f'<td data-label="Dev">{"&#9989;" if inv.get("is_developer") else "\u2014"}</td>'
             f'<td data-label="Expires">{_local_ts(inv["expires_at"])}</td>'
-            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:#fca5a5;border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for inv in pending_invitations
         )
@@ -1326,8 +1356,23 @@ def create_app(
         request: Request,
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> Response:
+        from helmlog.themes import PRESET_ORDER, PRESETS
+
+        preset_list = [
+            {"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS
+        ]
+        custom_list = await storage.list_color_schemes()
+        boat_default = await storage.get_setting("color_scheme_default") or ""
         return _templates.TemplateResponse(
-            request, "admin/settings.html", _tpl_ctx(request, "/admin/settings")
+            request,
+            "admin/settings.html",
+            _tpl_ctx(
+                request,
+                "/admin/settings",
+                preset_schemes=preset_list,
+                custom_schemes=custom_list,
+                boat_default=boat_default,
+            ),
         )
 
     @app.get("/api/settings")
@@ -1829,6 +1874,21 @@ def create_app(
         current_dict = await _race_dict(current) if current else None
         today_race_dicts = [await _race_dict(r) for r in today_races]
 
+        # Scheduled start info (#345)
+        sched_row = await storage.get_scheduled_start()
+        scheduled_start_dict: dict[str, Any] | None = None
+        if sched_row is not None:
+            fire_at = datetime.fromisoformat(sched_row["scheduled_start_utc"])
+            if fire_at.tzinfo is None:
+                fire_at = fire_at.replace(tzinfo=UTC)
+            secs = max(0, int((fire_at - now).total_seconds()))
+            scheduled_start_dict = {
+                "scheduled_start_utc": sched_row["scheduled_start_utc"],
+                "event": sched_row["event"],
+                "session_type": sched_row["session_type"],
+                "seconds_until_start": secs,
+            }
+
         return JSONResponse(
             {
                 "date": date_str,
@@ -1841,6 +1901,7 @@ def create_app(
                 "next_practice_num": next_practice_num,
                 "today_races": today_race_dicts,
                 "has_recorder": recorder is not None,
+                "scheduled_start": scheduled_start_dict,
                 "current_debrief": {
                     "race_id": _debrief_race_id,
                     "race_name": _debrief_race_name,
@@ -1963,6 +2024,196 @@ def create_app(
         await _audit(request, "event_rule.delete", detail=_WEEKDAY_NAMES[weekday], user=_user)
 
     # ------------------------------------------------------------------
+    # /api/races/schedule  (#345 — scheduled race starts)
+    # ------------------------------------------------------------------
+
+    _schedule_task: asyncio.Task[None] | None = None
+    _schedule_first_check_done: bool = False
+
+    async def _schedule_fire_loop() -> None:
+        """Background task: poll for a pending scheduled start and fire when due."""
+        nonlocal _schedule_first_check_done
+        while True:
+            try:
+                row = await storage.get_scheduled_start()
+                if row is not None:
+                    fire_at = datetime.fromisoformat(row["scheduled_start_utc"])
+                    if fire_at.tzinfo is None:
+                        fire_at = fire_at.replace(tzinfo=UTC)
+                    now = datetime.now(UTC)
+                    if now >= fire_at:
+                        if not _schedule_first_check_done:
+                            # First check after startup — missed start, don't fire
+                            logger.warning(
+                                "Scheduled start at {} was missed — system was not running",
+                                row["scheduled_start_utc"],
+                            )
+                            await storage.cancel_scheduled_start()
+                        else:
+                            # Normal operation — fire the scheduled start
+                            current = await storage.get_current_race()
+                            if current is not None:
+                                await storage.cancel_scheduled_start()
+                                logger.warning(
+                                    "Scheduled start cancelled — race {} already active",
+                                    current.name,
+                                )
+                            else:
+                                await storage.cancel_scheduled_start()
+                                await _do_scheduled_start(row["event"], row["session_type"])
+                _schedule_first_check_done = True
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Schedule fire loop error: {}", exc)
+            await asyncio.sleep(1)
+
+    async def _do_scheduled_start(event: str, session_type: str) -> None:
+        """Fire a scheduled start — equivalent to pressing Start."""
+        nonlocal _audio_session_id
+        from helmlog.races import build_race_name, local_today
+
+        now = datetime.now(UTC)
+        today = local_today()
+        date_str = today.isoformat()
+        race_num = await storage.count_sessions_for_date(date_str, session_type) + 1
+        name = build_race_name(event, today, race_num, session_type)
+        try:
+            race = await storage.start_race(event, now, date_str, race_num, name, session_type)
+            logger.info("Scheduled start fired: {} (id={})", race.name, race.id)
+
+            # Auto-apply sail defaults
+            try:
+                sail_defaults = await storage.get_sail_defaults()
+                has_any = any(sail_defaults[t] is not None for t in ("main", "jib", "spinnaker"))
+                if has_any:
+                    await storage.insert_sail_change(
+                        race.id,
+                        race.start_utc.isoformat(),
+                        main_id=sail_defaults["main"]["id"] if sail_defaults["main"] else None,
+                        jib_id=sail_defaults["jib"]["id"] if sail_defaults["jib"] else None,
+                        spinnaker_id=(
+                            sail_defaults["spinnaker"]["id"] if sail_defaults["spinnaker"] else None
+                        ),
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Sail defaults failed for scheduled race {}: {}", name, exc)
+
+            # Start audio if recorder is available
+            if recorder is not None and audio_config is not None:
+                from helmlog.audio import AudioDeviceNotFoundError
+
+                try:
+                    session = await recorder.start(audio_config, name=race.name)
+                    _audio_session_id = await storage.write_audio_session(
+                        session,
+                        race_id=race.id,
+                        session_type=session_type,
+                        name=race.name,
+                    )
+                except AudioDeviceNotFoundError as exc:
+                    logger.warning("Audio unavailable for scheduled race {}: {}", name, exc)
+
+            await storage.log_action("race.scheduled_start", detail=race.name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Scheduled start failed: {}", exc)
+
+    @app.on_event("startup")
+    async def _start_schedule_loop() -> None:
+        nonlocal _schedule_task
+        _schedule_task = asyncio.create_task(_schedule_fire_loop())
+
+    @app.on_event("shutdown")
+    async def _stop_schedule_loop() -> None:
+        if _schedule_task is not None:
+            _schedule_task.cancel()
+
+    @app.post("/api/races/schedule", status_code=201)
+    async def api_schedule_start(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        body = await request.json()
+        raw_ts = body.get("scheduled_start_utc")
+        event = body.get("event")
+        session_type = body.get("session_type", "race")
+        if not raw_ts:
+            raise HTTPException(422, detail="scheduled_start_utc is required")
+
+        try:
+            fire_at = datetime.fromisoformat(raw_ts)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(422, detail=f"Invalid timestamp: {exc}") from exc
+        if fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=UTC)
+
+        now = datetime.now(UTC)
+        if fire_at <= now + timedelta(seconds=5):
+            raise HTTPException(
+                422, detail="scheduled_start_utc must be in the future (> now + 5s)"
+            )
+
+        if session_type not in ("race", "practice"):
+            raise HTTPException(422, detail="session_type must be 'race' or 'practice'")
+
+        # If no event provided, resolve from rules / daily override
+        if not event:
+            from helmlog.races import default_event_for_date, local_today
+
+            today = local_today()
+            date_str = today.isoformat()
+            rules = {r["weekday"]: r["event_name"] for r in await storage.list_event_rules()}
+            default_ev = default_event_for_date(today, rules)
+            custom_ev = await storage.get_daily_event(date_str)
+            event = custom_ev or default_ev
+            if event is None:
+                raise HTTPException(422, detail="No event set for today. POST /api/event first.")
+
+        row_id = await storage.schedule_start(fire_at, event, session_type)
+        await _audit(request, "race.schedule", detail=fire_at.isoformat(), user=_user)
+        seconds_until = max(0, int((fire_at - now).total_seconds()))
+        return JSONResponse(
+            {
+                "id": row_id,
+                "scheduled_start_utc": fire_at.isoformat(),
+                "event": event,
+                "session_type": session_type,
+                "seconds_until_start": seconds_until,
+            },
+            status_code=201,
+        )
+
+    @app.get("/api/races/schedule")
+    async def api_get_schedule(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        row = await storage.get_scheduled_start()
+        if row is None:
+            raise HTTPException(404, detail="No scheduled start")
+        fire_at = datetime.fromisoformat(row["scheduled_start_utc"])
+        if fire_at.tzinfo is None:
+            fire_at = fire_at.replace(tzinfo=UTC)
+        now = datetime.now(UTC)
+        seconds_until = max(0, int((fire_at - now).total_seconds()))
+        return JSONResponse(
+            {
+                "id": row["id"],
+                "scheduled_start_utc": row["scheduled_start_utc"],
+                "event": row["event"],
+                "session_type": row["session_type"],
+                "seconds_until_start": seconds_until,
+            }
+        )
+
+    @app.delete("/api/races/schedule", status_code=204)
+    async def api_cancel_schedule(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> None:
+        await storage.cancel_scheduled_start()
+        await _audit(request, "race.schedule_cancel", user=_user)
+
+    # ------------------------------------------------------------------
     # /api/races/start
     # ------------------------------------------------------------------
 
@@ -2001,6 +2252,9 @@ def create_app(
                 status_code=422,
                 detail="No event set for today. POST /api/event first.",
             )
+
+        # Cancel any pending scheduled start (#345)
+        await storage.cancel_scheduled_start()
 
         # Auto-stop any active debrief before starting a new session
         if _debrief_audio_session_id is not None:
@@ -2673,6 +2927,7 @@ def create_app(
             "SELECT r.id, r.name, r.event, r.race_num, r.date,"
             " r.start_utc, r.end_utc, r.session_type,"
             " r.peer_fingerprint, r.peer_co_op_id,"
+            " r.shared_name, r.match_group_id, r.match_confirmed,"
             " (SELECT COUNT(*) > 0 FROM positions p"
             "   WHERE p.ts >= r.start_utc AND p.ts <= COALESCE(r.end_utc, r.start_utc)"
             " ) AS has_track,"
@@ -2720,6 +2975,11 @@ def create_app(
                 "audio_session_id": arow["id"] if arow else None,
                 "peer_fingerprint": row["peer_fingerprint"],
                 "has_wind_field": has_wind_field,
+                "shared_name": row["shared_name"],
+                "match_group_id": row["match_group_id"],
+                "match_status": "confirmed"
+                if row["match_confirmed"]
+                else ("candidate" if row["match_group_id"] else "unmatched"),
             }
         )
 
@@ -3945,6 +4205,142 @@ def create_app(
         return JSONResponse({"deleted": count})
 
     # ------------------------------------------------------------------
+    # /api/tuning — transcript extraction (#276)
+    # ------------------------------------------------------------------
+
+    from helmlog.tuning_extraction import (  # noqa: E501, PLC0415
+        accept_item as _te_accept,
+    )
+    from helmlog.tuning_extraction import (
+        compare_runs as _te_compare,
+    )
+    from helmlog.tuning_extraction import (
+        create_extraction_run as _te_create_run,
+    )
+    from helmlog.tuning_extraction import (
+        delete_run as _te_delete_run,
+    )
+    from helmlog.tuning_extraction import (
+        dismiss_item as _te_dismiss,
+    )
+    from helmlog.tuning_extraction import (
+        get_run_with_items as _te_get_run,
+    )
+    from helmlog.tuning_extraction import (
+        run_extraction as _te_run,
+    )
+
+    @app.post("/api/tuning/extract/{transcript_id}", status_code=201)
+    async def api_tuning_extract(
+        request: Request,
+        transcript_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Create and run a tuning extraction on a transcript."""
+        body = await request.json()
+        method: str = body.get("method", "regex")
+        run_id = await _te_create_run(storage, transcript_id, method)
+        items = await _te_run(storage, run_id)
+        await _audit(
+            request, "tuning.extract", detail=f"run={run_id} items={len(items)}", user=_user
+        )
+        run = await _te_get_run(storage, run_id)
+        return JSONResponse(
+            {"run_id": run_id, "status": run.status if run else "error", "item_count": len(items)},
+            status_code=201,
+        )
+
+    @app.get("/api/tuning/runs")
+    async def api_tuning_runs(
+        transcript_id: int | None = Query(None),
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """List extraction runs, optionally filtered by transcript_id."""
+        db = storage._conn()
+        if transcript_id is not None:
+            cur = await db.execute(
+                "SELECT id, transcript_id, method, created_at, status, item_count, accepted_count"
+                " FROM extraction_runs WHERE transcript_id = ? ORDER BY created_at DESC",
+                (transcript_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT id, transcript_id, method, created_at, status, item_count, accepted_count"
+                " FROM extraction_runs ORDER BY created_at DESC"
+            )
+        rows = await cur.fetchall()
+        return JSONResponse([dict(r) for r in rows])
+
+    @app.get("/api/tuning/runs/{run_id}")
+    async def api_tuning_run_detail(
+        run_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Get an extraction run with all its items."""
+        from helmlog.tuning_extraction import _item_to_dict
+
+        run = await _te_get_run(storage, run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        return JSONResponse(
+            {
+                "id": run.id,
+                "transcript_id": run.transcript_id,
+                "method": run.method,
+                "created_at": run.created_at,
+                "status": run.status,
+                "item_count": run.item_count,
+                "accepted_count": run.accepted_count,
+                "items": [_item_to_dict(i) for i in run.items],
+            }
+        )
+
+    @app.post("/api/tuning/items/{item_id}/accept")
+    async def api_tuning_accept_item(
+        request: Request,
+        item_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Accept an extraction item — adds to boat settings timeline."""
+        user_id: int = _user.get("id", 0)
+        await _te_accept(storage, item_id, user_id)
+        await _audit(request, "tuning.accept", detail=f"item={item_id}", user=_user)
+        return JSONResponse({"status": "accepted"})
+
+    @app.post("/api/tuning/items/{item_id}/dismiss")
+    async def api_tuning_dismiss_item(
+        request: Request,
+        item_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Dismiss an extraction item — excluded from timeline."""
+        user_id: int = _user.get("id", 0)
+        await _te_dismiss(storage, item_id, user_id)
+        await _audit(request, "tuning.dismiss", detail=f"item={item_id}", user=_user)
+        return JSONResponse({"status": "dismissed"})
+
+    @app.delete("/api/tuning/runs/{run_id}")
+    async def api_tuning_delete_run(
+        request: Request,
+        run_id: int,
+        _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Delete an extraction run and its items."""
+        await _te_delete_run(storage, run_id)
+        await _audit(request, "tuning.delete_run", detail=f"run={run_id}", user=_user)
+        return JSONResponse({"status": "deleted"})
+
+    @app.get("/api/tuning/compare")
+    async def api_tuning_compare(
+        run1: int = Query(...),
+        run2: int | None = Query(None),
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Compare one or two extraction runs side by side."""
+        result = await _te_compare(storage, run1, run2)
+        return JSONResponse(result)
+
+    # ------------------------------------------------------------------
     # /api/sessions/{id}/threads  &  /api/threads  &  /api/comments (#282)
     # ------------------------------------------------------------------
 
@@ -4640,6 +5036,150 @@ def create_app(
         return JSONResponse(tags)
 
     # ------------------------------------------------------------------
+    # Color schemes (#347)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/color-schemes")
+    async def api_list_color_schemes(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return all available color schemes (presets + custom)."""
+        from helmlog.themes import PRESET_ORDER, PRESETS
+
+        presets = [
+            {"id": pid, "name": PRESETS[pid].name, "type": "preset"}
+            for pid in PRESET_ORDER
+            if pid in PRESETS
+        ]
+        custom = [
+            {**cs, "type": "custom", "id": f"custom:{cs['id']}"}
+            for cs in await storage.list_color_schemes()
+        ]
+        boat_default = await storage.get_setting("color_scheme_default") or ""
+        return JSONResponse({"presets": presets, "custom": custom, "boat_default": boat_default})
+
+    @app.post("/api/color-schemes", status_code=201)
+    async def api_create_color_scheme(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Create a new custom color scheme (admin only)."""
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        bg = str(body.get("bg", "")).strip()
+        text_color = str(body.get("text_color", "")).strip()
+        accent = str(body.get("accent", "")).strip()
+        if not all([name, bg, text_color, accent]):
+            raise HTTPException(422, detail="name, bg, text_color, accent are required")
+        scheme_id = await storage.create_color_scheme(name, bg, text_color, accent, _user.get("id"))
+        await _audit(request, "color_scheme.create", detail=f"name={name!r}", user=_user)
+        return JSONResponse({"id": scheme_id, "name": name}, status_code=201)
+
+    # NOTE: /default must be registered before /{scheme_id} to avoid route shadowing.
+    @app.put("/api/color-schemes/default")
+    async def api_set_color_scheme_default(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set the boat-wide default color scheme (admin only). Body: {scheme_id: str}."""
+        body = await request.json()
+        scheme = str(body.get("scheme_id", "")).strip()
+        if not scheme:
+            # Clear the default
+            await storage.delete_setting("color_scheme_default")
+            await _audit(request, "color_scheme.default.clear", user=_user)
+            return JSONResponse({"ok": True})
+        # Validate the scheme exists
+        from helmlog.themes import PRESETS
+
+        if not scheme.startswith("custom:") and scheme not in PRESETS:
+            raise HTTPException(422, detail=f"Unknown scheme: {scheme!r}")
+        if scheme.startswith("custom:"):
+            cs_id_str = scheme.removeprefix("custom:")
+            if not cs_id_str.isdigit():
+                raise HTTPException(422, detail="Invalid custom scheme id")
+            cs = await storage.get_color_scheme(int(cs_id_str))
+            if cs is None:
+                raise HTTPException(404, detail="Custom color scheme not found")
+        await storage.set_setting("color_scheme_default", scheme)
+        await _audit(request, "color_scheme.default.set", detail=f"scheme={scheme!r}", user=_user)
+        return JSONResponse({"ok": True})
+
+    @app.put("/api/color-schemes/{scheme_id}")
+    async def api_update_color_scheme(
+        request: Request,
+        scheme_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Update a custom color scheme (admin only)."""
+        body = await request.json()
+        name = str(body.get("name", "")).strip()
+        bg = str(body.get("bg", "")).strip()
+        text_color = str(body.get("text_color", "")).strip()
+        accent = str(body.get("accent", "")).strip()
+        if not all([name, bg, text_color, accent]):
+            raise HTTPException(422, detail="name, bg, text_color, accent are required")
+        ok = await storage.update_color_scheme(scheme_id, name, bg, text_color, accent)
+        if not ok:
+            raise HTTPException(404, detail="Color scheme not found")
+        await _audit(
+            request, "color_scheme.update", detail=f"id={scheme_id} name={name!r}", user=_user
+        )
+        return JSONResponse({"id": scheme_id, "name": name})
+
+    @app.delete("/api/color-schemes/{scheme_id}", status_code=204)
+    async def api_delete_color_scheme(
+        request: Request,
+        scheme_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> None:
+        """Delete a custom color scheme (admin only)."""
+        ok = await storage.delete_color_scheme(scheme_id)
+        if not ok:
+            raise HTTPException(404, detail="Color scheme not found")
+        # If the deleted scheme was the boat default, clear it
+        boat_default = await storage.get_setting("color_scheme_default")
+        if boat_default == f"custom:{scheme_id}":
+            await storage.delete_setting("color_scheme_default")
+        await _audit(request, "color_scheme.delete", detail=f"id={scheme_id}", user=_user)
+
+    @app.patch("/api/me/color-scheme")
+    async def api_set_my_color_scheme(
+        request: Request,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set the calling user's personal color scheme override. Body: {scheme_id: str}."""
+        body = await request.json()
+        scheme = str(body.get("scheme_id") or "").strip() or None
+        user_id = _user.get("id")
+        if user_id is None:
+            raise HTTPException(400, detail="Cannot set scheme for unauthenticated user")
+        if scheme is not None:
+            from helmlog.themes import PRESETS
+
+            if not scheme.startswith("custom:") and scheme not in PRESETS:
+                raise HTTPException(422, detail=f"Unknown scheme: {scheme!r}")
+            if scheme.startswith("custom:"):
+                cs_id_str = scheme.removeprefix("custom:")
+                if not cs_id_str.isdigit():
+                    raise HTTPException(422, detail="Invalid custom scheme id")
+                cs = await storage.get_color_scheme(int(cs_id_str))
+                if cs is None:
+                    raise HTTPException(404, detail="Custom color scheme not found")
+        await storage.set_user_color_scheme(user_id, scheme)
+        return JSONResponse({"ok": True})
+
+    @app.delete("/api/me/color-scheme", status_code=204)
+    async def api_reset_my_color_scheme(
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> None:
+        """Reset the calling user's color scheme to the boat default."""
+        user_id = _user.get("id")
+        if user_id is None:
+            raise HTTPException(400, detail="Cannot reset scheme for unauthenticated user")
+        await storage.set_user_color_scheme(user_id, None)
+
+    # ------------------------------------------------------------------
     # Profile & Avatars (#100)
     # ------------------------------------------------------------------
 
@@ -4650,11 +5190,19 @@ def create_app(
     ) -> Response:
         import time
 
+        from helmlog.themes import PRESET_ORDER, PRESETS
+
         user_id = _user.get("id") or 0
         role = _user.get("role", "viewer")
         role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
         consents = await storage.get_crew_consents(user_id) if user_id else []
         bio_consent = any(c["consent_type"] == "biometric" and c["granted"] for c in consents)
+        preset_list = [
+            {"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS
+        ]
+        custom_list = await storage.list_color_schemes()
+        boat_default = await storage.get_setting("color_scheme_default") or ""
+        current_scheme = _user.get("color_scheme") or ""
         return _templates.TemplateResponse(
             request,
             "profile.html",
@@ -4669,6 +5217,10 @@ def create_app(
                 weight_lbs=_user.get("weight_lbs"),
                 bio_consent=bio_consent,
                 user_id=user_id,
+                preset_schemes=preset_list,
+                custom_schemes=custom_list,
+                boat_default=boat_default,
+                current_scheme=current_scheme,
             ),
         )
 
@@ -5170,15 +5722,46 @@ def create_app(
     ) -> JSONResponse:
         identity = await storage.get_boat_identity()
         boat_card_json: str | None = None
-        if identity:
-            try:
-                from helmlog.federation import load_identity
 
-                _, card = load_identity()
-                boat_card_json = card.to_json()
+        # The filesystem identity is authoritative. If the DB row is missing
+        # (e.g. DB was recreated), rebuild it from the filesystem.
+        try:
+            from helmlog.federation import load_identity
+
+            _, card = load_identity()
+            boat_card_json = card.to_json()
+            if identity:
                 identity["owner_email"] = card.owner_email
-            except FileNotFoundError:
-                pass
+            else:
+                # Re-sync DB from filesystem identity
+                db = storage._conn()
+                from datetime import UTC, datetime
+
+                now_iso = datetime.now(UTC).isoformat()
+                await db.execute(
+                    "INSERT OR REPLACE INTO boat_identity"
+                    " (id, pub_key, fingerprint, sail_number, boat_name, created_at)"
+                    " VALUES (1, ?, ?, ?, ?, ?)",
+                    (
+                        card.pub_key,
+                        card.fingerprint,
+                        card.sail_number,
+                        card.boat_name,
+                        now_iso,
+                    ),
+                )
+                await db.commit()
+                identity = {
+                    "pub_key": card.pub_key,
+                    "fingerprint": card.fingerprint,
+                    "sail_number": card.sail_number,
+                    "boat_name": card.boat_name,
+                    "owner_email": card.owner_email,
+                    "created_at": now_iso,
+                }
+        except FileNotFoundError:
+            pass
+
         return JSONResponse(
             {
                 "identity": identity,
@@ -5554,6 +6137,320 @@ def create_app(
             user=_user,
         )
         return JSONResponse({"status": "unshared", "co_op_id": co_op_id})
+
+    # ── Session matching (local UI endpoints) (#281) ─────────────────
+
+    @app.get("/api/sessions/{session_id}/match")
+    async def api_session_match_status(
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """Get match status for a session."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed, shared_name FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            return JSONResponse(
+                {"status": "unmatched", "match_group_id": None, "shared_name": None}
+            )
+
+        # Look up proposal status + peer info
+        cur2 = await db.execute(
+            "SELECT p.status, p.proposer_fingerprint, p.peer_session_id,"
+            "       cp.boat_name AS peer_boat_name"
+            " FROM session_match_proposals p"
+            " LEFT JOIN co_op_peers cp ON p.proposer_fingerprint = cp.fingerprint"
+            " WHERE p.match_group_id = ?"
+            " LIMIT 1",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "unmatched"
+
+        peer_boat_name: str | None = None
+        peer_session_name: str | None = None
+        if proposal:
+            peer_boat_name = proposal["peer_boat_name"]
+            peer_sid = proposal["peer_session_id"]
+            # Look up the peer's session name on this boat (if it was the proposer,
+            # peer_session_id is the remote session — we won't have the name locally).
+            # If this boat received the proposal, local_session_id == session_id and
+            # peer_session_id is the remote one. Check if we have a local race with that ID.
+            if peer_sid:
+                cur3 = await db.execute("SELECT name FROM races WHERE id = ?", (peer_sid,))
+                peer_race = await cur3.fetchone()
+                if peer_race:
+                    peer_session_name = peer_race["name"]
+
+        return JSONResponse(
+            {
+                "status": status,
+                "match_group_id": match_group_id,
+                "shared_name": row["shared_name"],
+                "match_confirmed": bool(row["match_confirmed"]),
+                "peer_boat_name": peer_boat_name,
+                "peer_session_name": peer_session_name,
+            }
+        )
+
+    @app.post("/api/sessions/{session_id}/match/confirm")
+    async def api_session_match_confirm(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Confirm a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import confirm_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        # Each boat confirms independently on its own DB, so quorum=1.
+        # Federation-wide quorum is tracked via peer API confirmations.
+        ok = await confirm_match(storage, match_group_id, fp, quorum=1)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be confirmed")
+
+        # Get updated status
+        cur2 = await db.execute(
+            "SELECT status FROM session_match_proposals WHERE match_group_id = ?",
+            (match_group_id,),
+        )
+        proposal = await cur2.fetchone()
+        status = dict(proposal)["status"] if proposal else "candidate"
+
+        await _audit(request, "session.match.confirm", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": status})
+
+    @app.post("/api/sessions/{session_id}/match/reject")
+    async def api_session_match_reject(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Reject a pending session match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(404, "No match proposal for this session")
+
+        from helmlog.session_matching import reject_match
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await reject_match(storage, match_group_id, fp)
+        if not ok:
+            raise HTTPException(404, "Match not found or cannot be rejected")
+
+        await _audit(request, "session.match.reject", detail=f"match={match_group_id}", user=_user)
+        return JSONResponse({"match_group_id": match_group_id, "status": "rejected"})
+
+    @app.put("/api/sessions/{session_id}/match/name")
+    async def api_session_match_name(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set or update the shared name for a confirmed match."""
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT match_group_id, match_confirmed FROM races WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(404, "Session not found")
+        match_group_id = row["match_group_id"]
+        if not match_group_id:
+            raise HTTPException(400, "No match proposal for this session")
+        if not row["match_confirmed"]:
+            raise HTTPException(400, "Match must be confirmed before setting a shared name")
+
+        body = await request.json()
+        name = body.get("name", "").strip()
+        if not name:
+            raise HTTPException(422, "name is required")
+
+        from helmlog.session_matching import set_shared_name
+
+        identity = await storage.get_boat_identity()
+        fp = identity["fingerprint"] if identity else "local"
+        ok = await set_shared_name(storage, match_group_id, name, fp)
+        if not ok:
+            raise HTTPException(400, "Failed to set shared name")
+
+        # Push name to co-op peers
+        co_op_cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        co_op_rows = await co_op_cur.fetchall()
+        if co_op_rows:
+            from helmlog.federation import load_identity
+            from helmlog.peer_client import set_match_name as peer_set_match_name
+
+            try:
+                private_key, card = load_identity()
+                coros: list[Any] = []
+                for co_op_row in co_op_rows:
+                    co_op_id = co_op_row["co_op_id"]
+                    peers = await storage.list_co_op_peers(co_op_id)
+                    for peer in peers:
+                        pip = peer.get("tailscale_ip")
+                        if not pip or peer.get("fingerprint") == card.fingerprint:
+                            continue
+                        coros.append(
+                            peer_set_match_name(
+                                pip,
+                                co_op_id,
+                                match_group_id,
+                                name,
+                                private_key,
+                                card.fingerprint,
+                            )
+                        )
+                results = await asyncio.gather(*coros, return_exceptions=True)
+                for r in results:
+                    if isinstance(r, Exception):
+                        logger.warning(f"Peer name push failed: {r}")
+            except Exception:
+                logger.warning("Failed to push shared name to peers (local save succeeded)")
+
+        await _audit(
+            request, "session.match.name", detail=f"match={match_group_id} name={name}", user=_user
+        )
+        return JSONResponse({"match_group_id": match_group_id, "shared_name": name})
+
+    @app.post("/api/sessions/{session_id}/match/scan")
+    @limiter.limit("5/minute")
+    async def api_session_match_scan(
+        request: Request,
+        session_id: int,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Trigger a proximity scan for this session against co-op peers."""
+        db = storage._conn()
+
+        # Find co-ops this session is shared with
+        cur = await db.execute(
+            "SELECT co_op_id FROM session_sharing WHERE session_id = ?",
+            (session_id,),
+        )
+        rows = await cur.fetchall()
+        co_op_ids = [r["co_op_id"] for r in rows]
+        if not co_op_ids:
+            raise HTTPException(400, "Session is not shared with any co-op")
+
+        # Get session centroid and time range
+        from helmlog.session_matching import compute_session_centroid
+
+        centroid_lat, centroid_lon = await compute_session_centroid(storage, session_id)
+        cur2 = await db.execute(
+            "SELECT start_utc, end_utc FROM races WHERE id = ?",
+            (session_id,),
+        )
+        race = await cur2.fetchone()
+        if not race or not race["start_utc"] or not race["end_utc"]:
+            raise HTTPException(400, "Session has no time range")
+
+        from helmlog.federation import load_identity
+        from helmlog.peer_client import propose_session_match
+
+        try:
+            private_key, card = load_identity()
+        except FileNotFoundError:
+            raise HTTPException(409, "Initialize identity first")  # noqa: B904
+
+        # For each co-op, propose matches to all peers in parallel
+        coros: list[Any] = []
+        for co_op_id in co_op_ids:
+            peers = await storage.list_co_op_peers(co_op_id)
+            for peer in peers:
+                ip = peer.get("tailscale_ip")
+                if not ip or peer.get("fingerprint") == card.fingerprint:
+                    continue
+                coros.append(
+                    propose_session_match(
+                        ip,
+                        co_op_id,
+                        private_key,
+                        card.fingerprint,
+                        local_session_id=session_id,
+                        centroid_lat=centroid_lat,
+                        centroid_lon=centroid_lon,
+                        start_utc=race["start_utc"],
+                        end_utc=race["end_utc"],
+                    )
+                )
+        results = await asyncio.gather(*coros, return_exceptions=True)
+        proposals: list[dict[str, Any]] = [r for r in results if isinstance(r, dict)]
+
+        # Mirror the match on the initiating boat: set match_group_id on the
+        # local session and create a local proposal so the status query works.
+        if proposals:
+            from datetime import UTC, datetime, timedelta
+
+            mgid = proposals[0].get("match_group_id")
+            matched_peer_sid = proposals[0].get("matched_session_id")
+            if mgid:
+                await db.execute(
+                    "UPDATE races SET match_group_id = ? WHERE id = ? AND match_group_id IS NULL",
+                    (mgid, session_id),
+                )
+                now = datetime.now(UTC)
+                await db.execute(
+                    "INSERT OR IGNORE INTO session_match_proposals"
+                    " (match_group_id, proposer_fingerprint, local_session_id,"
+                    "  peer_session_id, centroid_lat, centroid_lon,"
+                    "  start_utc, end_utc, status, created_at, expires_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?)",
+                    (
+                        mgid,
+                        card.fingerprint,
+                        session_id,
+                        matched_peer_sid,
+                        centroid_lat,
+                        centroid_lon,
+                        race["start_utc"],
+                        race["end_utc"],
+                        now.isoformat(),
+                        (now + timedelta(hours=48)).isoformat(),
+                    ),
+                )
+                await db.commit()
+
+        await _audit(
+            request,
+            "session.match.scan",
+            detail=f"session={session_id} proposals={len(proposals)}",
+            user=_user,
+        )
+        return JSONResponse({"proposals": proposals})
 
     # ── Peer data proxies (local UI → remote peers) ────────────────────
 
@@ -6101,7 +6998,7 @@ def create_app(
         """Notification dashboard page."""
         return _templates.TemplateResponse(
             "attention.html",
-            {"request": request, "active_page": "/attention", "git_info": _GIT_INFO},
+            _tpl_ctx(request, "/attention"),
         )
 
     # ------------------------------------------------------------------

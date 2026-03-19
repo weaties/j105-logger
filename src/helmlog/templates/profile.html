@@ -2,35 +2,45 @@
 {% block title %}HelmLog — Profile{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}
-.p-card{background:#131f35;border-radius:12px;padding:24px;text-align:center}
+h1{font-size:1.3rem;font-weight:700;color:var(--accent);margin-bottom:12px}
+.p-card{background:var(--bg-secondary);border-radius:12px;padding:24px;text-align:center}
 .p-avatar{width:128px;height:128px;border-radius:50%;object-fit:cover;cursor:pointer;border:3px solid {{ role_color }};margin-bottom:16px}
-.p-avatar-hint{color:#6b7a90;font-size:.75rem;margin-top:-10px;margin-bottom:12px}
-.p-email{color:#8892a4;font-size:.9rem;margin-bottom:8px}
+.p-avatar-hint{color:var(--text-secondary);font-size:.75rem;margin-top:-10px;margin-bottom:12px}
+.p-email{color:var(--text-secondary);font-size:.9rem;margin-bottom:8px}
 .p-role{background:{{ role_color }}22;color:{{ role_color }};padding:2px 10px;border-radius:4px;font-size:.8rem;display:inline-block}
 .p-field{text-align:left;margin-top:24px}
-.p-field-label{color:#8892a4;font-size:.9rem;display:block;margin-bottom:6px}
+.p-field-label{color:var(--text-secondary);font-size:.9rem;display:block;margin-bottom:6px}
 .p-input{
   display:block;width:100%;padding:14px 12px;border-radius:8px;
-  border:1px solid #2a3a5c;background:#0d1829;color:#e0e6ed;
+  border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);
   font-size:1.1rem;box-sizing:border-box;min-height:48px;
 }
-.p-input:focus{border-color:#2563eb;outline:none}
+.p-input:focus{border-color:var(--accent-strong);outline:none}
 .p-row{display:flex;gap:10px;align-items:stretch;margin-top:6px}
 .p-row .p-input{flex:1 1 0;min-width:0;width:auto}
 .p-row .p-btn{
   flex-shrink:0;min-height:48px;padding:12px 20px;font-size:.95rem;
   display:flex;align-items:center;justify-content:center;
-  background:#1e3a5c;color:#e0e6ed;border:1px solid #2a3a5c;border-radius:8px;
+  background:var(--border);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;
   cursor:pointer;font-weight:600;
 }
-.p-row .p-btn:active{background:#2563eb}
+.p-row .p-btn:active{background:var(--accent-strong);color:#fff}
 .p-consent{
   display:flex;align-items:center;gap:8px;margin-top:8px;
-  color:#8892a4;font-size:.9rem;cursor:pointer;padding:8px 0;
+  color:var(--text-secondary);font-size:.9rem;cursor:pointer;padding:8px 0;
 }
 .p-consent input[type="checkbox"]{width:20px;height:20px;cursor:pointer}
-.p-note{color:#6b7a90;font-size:.8rem;margin:6px 0 0;line-height:1.4}
+.p-note{color:var(--text-secondary);font-size:.8rem;margin:6px 0 0;line-height:1.4}
+/* Color scheme picker */
+.scheme-select{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-input);color:var(--text-primary);font-size:1rem;box-sizing:border-box}
+.scheme-preview{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.scheme-swatch{width:28px;height:28px;border-radius:4px;border:2px solid var(--border)}
+.contrast-badge{font-size:.75rem;padding:2px 7px;border-radius:4px;margin-top:6px;display:inline-block}
+.contrast-aa{background:#0d2818;color:var(--success);border:1px solid var(--success)}
+.contrast-aaa{background:#0d2818;color:var(--success);border:1px solid var(--success)}
+.contrast-fail{background:#1f1215;color:var(--danger);border:1px solid #7f1d1d}
+.scheme-reset-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);padding:5px 12px;font-size:.82rem;cursor:pointer;margin-top:8px}
+.scheme-reset-btn:active{background:var(--border)}
 </style>
 {% endblock %}
 {% block content %}
@@ -62,37 +72,97 @@ h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:12px}
       <button type="button" class="p-btn" onclick="saveWeight()">Save</button>
     </div>
   </div>
+
+  <div class="p-field">
+    <label class="p-field-label" for="scheme-select">Color Scheme</label>
+    <p class="p-note">Optimized for phone screens in bright sunlight. Overrides the boat default.</p>
+    <select id="scheme-select" class="scheme-select" onchange="onSchemeChange()">
+      <option value="">— Boat default{% if boat_default %} ({{ boat_default }}){% endif %} —</option>
+      {% for p in preset_schemes %}
+      <option value="{{ p.id }}"{% if current_scheme == p.id %} selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+      {% if custom_schemes %}
+      <optgroup label="Custom">
+        {% for cs in custom_schemes %}
+        <option value="custom:{{ cs.id }}"{% if current_scheme == 'custom:' ~ cs.id|string %} selected{% endif %}>{{ cs.name }}</option>
+        {% endfor %}
+      </optgroup>
+      {% endif %}
+    </select>
+    <div class="scheme-preview" id="scheme-preview"></div>
+    <div id="contrast-badge"></div>
+    <div>
+      <button type="button" class="p-btn" style="margin-top:10px;width:auto;display:inline-flex" onclick="saveScheme()">Apply</button>
+      <button type="button" class="scheme-reset-btn" onclick="resetScheme()">Reset to boat default</button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 {% block scripts %}
 <script>
+const PRESET_COLORS = {
+  'ocean_dark':     {bg:'#0a1628', text:'#e8eaf0', accent:'#7eb8f7'},
+  'sunlight':       {bg:'#FFFFFF', text:'#000000', accent:'#0055AA'},
+  'racing_yellow':  {bg:'#000000', text:'#FFD600', accent:'#FFD600'},
+  'sunset_red':     {bg:'#1a0000', text:'#FFB4A8', accent:'#FF5722'},
+  'reef_green':     {bg:'#001A0A', text:'#A8FFD0', accent:'#00E676'},
+  'daylight_amber': {bg:'#FFFDE7', text:'#3E2723', accent:'#FF8F00'},
+};
+const CUSTOM_COLORS = {
+  {% for cs in custom_schemes %}'custom:{{ cs.id }}': {bg: '{{ cs.bg }}', text: '{{ cs.text_color }}', accent: '{{ cs.accent }}'},
+  {% endfor %}
+};
+
+function relLum(hex) {
+  const h = hex.replace('#','');
+  const r = parseInt(h.slice(0,2),16)/255, g = parseInt(h.slice(2,4),16)/255, b = parseInt(h.slice(4,6),16)/255;
+  const lin = c => c <= 0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4);
+  return 0.2126*lin(r) + 0.7152*lin(g) + 0.0722*lin(b);
+}
+function contrast(fg, bg) {
+  const l1 = relLum(fg), l2 = relLum(bg);
+  const [hi, lo] = l1 >= l2 ? [l1, l2] : [l2, l1];
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function onSchemeChange() {
+  const sel = document.getElementById('scheme-select').value;
+  const colors = PRESET_COLORS[sel] || CUSTOM_COLORS[sel];
+  const preview = document.getElementById('scheme-preview');
+  const badge = document.getElementById('contrast-badge');
+  if (!colors) { preview.innerHTML = ''; badge.innerHTML = ''; return; }
+  preview.innerHTML =
+    `<div class="scheme-swatch" style="background:${colors.bg}"></div>` +
+    `<div class="scheme-swatch" style="background:${colors.text}"></div>` +
+    `<div class="scheme-swatch" style="background:${colors.accent}"></div>` +
+    `<span style="font-size:.8rem;color:var(--text-secondary);align-self:center">${colors.bg} / ${colors.text} / ${colors.accent}</span>`;
+  const ratio = contrast(colors.text, colors.bg).toFixed(1);
+  let cls = ratio >= 7 ? 'contrast-aaa' : ratio >= 4.5 ? 'contrast-aa' : 'contrast-fail';
+  let lbl = ratio >= 7 ? 'AAA' : ratio >= 4.5 ? 'AA ✓' : 'Below AA ⚠';
+  badge.innerHTML = `<span class="contrast-badge ${cls}">${ratio}:1 ${lbl}</span>`;
+}
+
 document.getElementById('file').addEventListener('change', async e => {
   const f = e.target.files[0];
   if (!f) return;
   const fd = new FormData();
   fd.append('file', f);
   const r = await fetch('/profile/avatar', {method:'POST', body:fd});
-  if (r.ok) {
-    window.location.reload();
-  } else {
-    const d = await r.json();
-    alert(d.detail || 'Upload failed');
-  }
+  if (r.ok) { window.location.reload(); }
+  else { const d = await r.json(); alert(d.detail || 'Upload failed'); }
 });
+
 async function saveName() {
   const name = document.getElementById('name-input').value.trim();
   if (!name) { alert('Name must not be blank.'); return; }
   const r = await fetch('/api/me/name', {
-    method:'PATCH',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({name: name})
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name})
   });
   if (r.ok) window.location.reload();
-  else {
-    const d = await r.json().catch(() => ({}));
-    alert(d.detail || 'Failed to save name');
-  }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Failed to save name'); }
 }
+
 async function saveWeight() {
   const v = document.getElementById('weight-input').value;
   const weight = v ? parseFloat(v) : null;
@@ -101,22 +171,34 @@ async function saveWeight() {
     alert('Please check the biometric consent box before saving weight.');
     return;
   }
-  /* Grant or revoke biometric consent to match the checkbox */
   await fetch('/api/crew/{{ user_id }}/consents', {
-    method:'PUT',
-    headers:{'Content-Type':'application/json'},
+    method:'PUT', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({consent_type:'biometric', granted: consentBox.checked})
   });
   const r = await fetch('/api/me/weight', {
-    method:'PATCH',
-    headers:{'Content-Type':'application/json'},
+    method:'PATCH', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({weight_lbs: weight})
   });
   if (r.ok) alert('Weight saved');
-  else {
-    const d = await r.json().catch(() => ({}));
-    alert(d.detail || 'Failed to save weight');
-  }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Failed to save weight'); }
 }
+
+async function saveScheme() {
+  const sel = document.getElementById('scheme-select').value;
+  const r = await fetch('/api/me/color-scheme', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({scheme_id: sel || null})
+  });
+  if (r.ok) window.location.reload();
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Failed to save color scheme'); }
+}
+
+async function resetScheme() {
+  await fetch('/api/me/color-scheme', {method:'DELETE'});
+  window.location.reload();
+}
+
+// Show preview for current selection on load
+onSchemeChange();
 </script>
 {% endblock %}

@@ -419,3 +419,8 @@ The spec is posted as a GitHub issue comment for review before code is written.
 | `/spec` | Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue |
 | `/ideate` | Capture half-baked ideas into the ideation log |
 | `/release-notes` | Draft a RELEASES.md entry from commits since last stage tag |
+| `/skill-eval` | Run evaluation test cases against a skill to measure quality and detect regressions |
+| `/domain` | Sailing instrument domain reference — Signal K paths, NMEA 2000 PGNs, instrument relationships, racing concepts |
+| `/architecture` | Codebase comprehension — module map, data flow, complexity hotspots, risk tier overlay. Full snapshot or delta briefing |
+| `/diagnose` | Systematic Pi troubleshooting runbook — checks all subsystems and reports health |
+| `/skill-compare` | Blind A/B comparison of two skill versions — measures relative improvement across multiple dimensions |
