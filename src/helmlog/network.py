@@ -306,6 +306,240 @@ async def check_internet() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tailscale status
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TailscalePeer:
+    """A peer in the Tailscale network."""
+
+    hostname: str
+    ip: str
+    os: str
+    online: bool
+    relay: bool  # True if connection is relayed via DERP
+    exit_node: bool
+
+
+@dataclass(frozen=True)
+class TailscaleStatus:
+    """Tailscale daemon status."""
+
+    running: bool
+    hostname: str | None
+    ip: str | None
+    tailnet: str | None
+    version: str | None
+    peers: list[TailscalePeer]
+    error: str | None = None
+
+
+async def get_tailscale_status() -> TailscaleStatus:
+    """Query Tailscale status via `tailscale status --json`."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+        )
+        if result.returncode != 0:
+            err = result.stderr.strip() or "tailscale status failed"
+            return TailscaleStatus(
+                running=False,
+                hostname=None,
+                ip=None,
+                tailnet=None,
+                version=None,
+                peers=[],
+                error=err,
+            )
+
+        import json
+
+        data = json.loads(result.stdout)
+
+        # Self info
+        self_info = data.get("Self", {})
+        hostname = self_info.get("HostName")
+        ips = self_info.get("TailscaleIPs", [])
+        ip = ips[0] if ips else None
+        version = data.get("Version")
+
+        # Tailnet name from MagicDNSSuffix or CurrentTailnet
+        tailnet = None
+        current_tailnet = data.get("CurrentTailnet", {})
+        if current_tailnet:
+            tailnet = current_tailnet.get("Name")
+        if not tailnet:
+            tailnet = data.get("MagicDNSSuffix")
+
+        # Peers
+        peers: list[TailscalePeer] = []
+        peer_map = data.get("Peer", {})
+        for _key, p in peer_map.items():
+            peer_ips = p.get("TailscaleIPs", [])
+            peers.append(
+                TailscalePeer(
+                    hostname=p.get("HostName", ""),
+                    ip=peer_ips[0] if peer_ips else "",
+                    os=p.get("OS", ""),
+                    online=p.get("Online", False),
+                    relay=p.get("Relay", "") != "" and p.get("CurAddr", "") == "",
+                    exit_node=p.get("ExitNode", False),
+                )
+            )
+
+        return TailscaleStatus(
+            running=True,
+            hostname=hostname,
+            ip=ip,
+            tailnet=tailnet,
+            version=version,
+            peers=peers,
+        )
+    except FileNotFoundError:
+        return TailscaleStatus(
+            running=False,
+            hostname=None,
+            ip=None,
+            tailnet=None,
+            version=None,
+            peers=[],
+            error="tailscale not installed",
+        )
+    except (subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        return TailscaleStatus(
+            running=False,
+            hostname=None,
+            ip=None,
+            tailnet=None,
+            version=None,
+            peers=[],
+            error=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cloudflare Tunnel status
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CloudflareStatus:
+    """Cloudflare Tunnel daemon status."""
+
+    installed: bool
+    running: bool
+    hostname: str | None  # from CLOUDFLARE_HOSTNAME env
+    version: str | None
+    error: str | None = None
+
+
+async def get_cloudflare_status() -> CloudflareStatus:
+    """Check cloudflared service status and configuration."""
+    import os as _os
+
+    hostname = _os.environ.get("CLOUDFLARE_HOSTNAME")
+
+    # Check if cloudflared is installed
+    try:
+        ver_result = await asyncio.to_thread(
+            subprocess.run,
+            ["cloudflared", "version"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        installed = ver_result.returncode == 0
+        version = ver_result.stdout.strip().split("\n")[0] if installed else None
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return CloudflareStatus(
+            installed=False,
+            running=False,
+            hostname=hostname,
+            version=None,
+        )
+
+    # Check systemd service
+    try:
+        svc_result = await asyncio.to_thread(
+            subprocess.run,
+            ["systemctl", "is-active", "cloudflared"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        running = svc_result.stdout.strip() == "active"
+    except (subprocess.TimeoutExpired, OSError):
+        running = False
+
+    return CloudflareStatus(
+        installed=installed,
+        running=running,
+        hostname=hostname,
+        version=version,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Default route info
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DefaultRoute:
+    """Default network route."""
+
+    interface: str
+    gateway: str
+
+
+async def get_default_route() -> DefaultRoute | None:
+    """Get the default route interface and gateway."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["ip", "-j", "route", "show", "default"],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+        if result.returncode != 0:
+            return None
+        import json
+
+        routes = json.loads(result.stdout)
+        if routes:
+            r = routes[0]
+            return DefaultRoute(interface=r.get("dev", ""), gateway=r.get("gateway", ""))
+        return None
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------
+# DNS check
+# ---------------------------------------------------------------------------
+
+
+async def check_dns() -> bool:
+    """Check whether DNS resolution works (resolve github.com)."""
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            ["host", "-W", "3", "github.com"],
+            capture_output=True,
+            timeout=5.0,
+        )
+        return result.returncode == 0
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Race auto-switch
 # ---------------------------------------------------------------------------
 
