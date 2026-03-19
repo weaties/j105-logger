@@ -6,7 +6,119 @@ not terminate TLS — choose one of the three approaches below.
 
 ---
 
-## Option A — Caddy Reverse Proxy (simplest on Pi)
+## Option A — Cloudflare Tunnel (recommended — automated by setup.sh)
+
+Cloudflare Tunnel gives each boat a public `<boat>.helmlog.org` subdomain with
+zero port-forwarding.  Works behind CGNAT and requires no inbound firewall
+rules.  Each Pi runs its own `cloudflared` tunnel — no central proxy or shared
+state.
+
+### How it works
+
+| URL | Routes to |
+|---|---|
+| `boat.helmlog.org/` | helmlog web UI |
+| `boat.helmlog.org/grafana/` | Grafana dashboards |
+| `boat.helmlog.org/signalk/` | Signal K explorer |
+| `boat.helmlog.org/sk/` | Signal K admin UI |
+
+The existing nginx reverse proxy on port 80 handles all path routing — the
+tunnel just points at `localhost:80`.
+
+### Automated setup (recommended)
+
+1. Create a tunnel in the [Cloudflare Zero Trust dashboard](https://one.dash.cloudflare.com/)
+   - Zone: `helmlog.org` (or your own domain)
+   - Public hostname: `boat.helmlog.org`
+   - Service: `http://localhost:80`
+2. Copy the connector token from the dashboard
+3. Run the configuration wizard:
+
+```bash
+./scripts/configure.sh
+# Enter the tunnel token and hostname when prompted
+```
+
+4. Run setup.sh (or re-run it if already set up):
+
+```bash
+./scripts/setup.sh
+```
+
+That's it. `setup.sh` installs `cloudflared`, registers the systemd service,
+and starts the tunnel.  The public URL is shown in the setup summary.
+
+### Unattended setup (CI / scripted installs)
+
+```bash
+CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoi... \
+CLOUDFLARE_HOSTNAME=boat.helmlog.org \
+ADMIN_EMAIL=you@example.com \
+  ./scripts/configure.sh --non-interactive
+
+./scripts/setup.sh
+```
+
+Or via bootstrap.sh:
+
+```bash
+curl -fsSL .../bootstrap.sh \
+  | ADMIN_EMAIL=you@example.com \
+    CLOUDFLARE_TUNNEL_TOKEN=eyJhIjoi... \
+    CLOUDFLARE_HOSTNAME=boat.helmlog.org \
+    bash
+```
+
+### Managing the tunnel
+
+```bash
+# Check status
+sudo systemctl status cloudflared
+
+# View logs
+sudo journalctl -fu cloudflared
+
+# Restart after config changes
+sudo systemctl restart cloudflared
+
+# Update token (re-run configure.sh, then setup.sh)
+./scripts/configure.sh
+./scripts/setup.sh
+```
+
+### Multi-boat scalability
+
+Each boat runs its own tunnel — one boat going offline doesn't affect others.
+DNS is a CNAME per boat (`boat.helmlog.org → <tunnel-id>.cfargotunnel.com`).
+Create the tunnel in the Cloudflare dashboard, run `configure.sh` on the Pi,
+and you're done.
+
+### Auth safety
+
+**Authentication must be enabled** when using Cloudflare Tunnel.  `setup.sh`
+warns if `AUTH_DISABLED=true` is set alongside a tunnel token.  Consider also
+enabling [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)
+(free tier) for an additional auth layer.
+
+### Manual setup (alternative)
+
+If you prefer not to use the configuration wizard:
+
+```bash
+# Install cloudflared
+curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$(dpkg --print-architecture).deb" \
+  -o /tmp/cloudflared.deb
+sudo dpkg -i /tmp/cloudflared.deb
+
+# Install as service with connector token from dashboard
+sudo cloudflared service install <TOKEN>
+sudo systemctl enable cloudflared
+sudo systemctl start cloudflared
+```
+
+---
+
+## Option B — Caddy Reverse Proxy
 
 Caddy automatically obtains and renews a Let's Encrypt certificate.
 
@@ -42,61 +154,7 @@ public IP.
 
 ---
 
-## Option B — Cloudflare Tunnel (zero port-forwarding)
-
-Cloudflare Tunnel works behind CGNAT and requires no inbound firewall rules.
-
-### Install cloudflared
-
-```bash
-curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-  | sudo gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg
-echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] \
-  https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
-  | sudo tee /etc/apt/sources.list.d/cloudflared.list
-sudo apt update && sudo apt install cloudflared
-```
-
-### Create and configure the tunnel
-
-```bash
-# Authenticate (opens browser)
-cloudflared tunnel login
-
-# Create tunnel
-cloudflared tunnel create helmlog
-
-# Create config at ~/.cloudflared/config.yml
-cat > ~/.cloudflared/config.yml << 'EOF'
-tunnel: helmlog
-credentials-file: /home/pi/.cloudflared/<tunnel-id>.json
-protocol: http2
-
-ingress:
-  - hostname: logger.yourboat.com
-    service: http://localhost:8080
-  - service: http_status:404
-EOF
-
-# Add DNS record
-cloudflared tunnel route dns helmlog logger.yourboat.com
-
-# Run as a service
-sudo cloudflared service install
-sudo systemctl start cloudflared
-```
-
-Traffic is routed through **nginx on port 8080** which handles path-based
-routing — stripping `/grafana/` and `/signalk/` prefixes before proxying to
-the respective backend services. `deploy.sh` writes the nginx config at
-`/etc/nginx/conf.d/cloudflare-tunnel.conf` automatically. See the
-[Corvo hotspot guide](corvo-hotspot-network-setup.md) for the full nginx config.
-
-No router changes needed.  HTTPS is provided by Cloudflare.
-
----
-
-## Option C — Tailscale Funnel (recommended — handled automatically by setup.sh)
+## Option C — Tailscale Funnel (handled automatically by setup.sh)
 
 Tailscale Funnel exposes the Pi to the public internet under a permanent
 `ts.net` HTTPS URL — no separate domain or certificate needed.
@@ -166,3 +224,17 @@ the log.
 > **Tip:** If you're running the logger exclusively over Tailscale and don't
 > need public access, set `AUTH_DISABLED=true` in `.env` to restore the
 > original zero-friction behaviour.
+
+---
+
+## Operator configuration persistence
+
+All operator-supplied settings (email, SMTP, Cloudflare token) are stored in
+`~/.helmlog/config.env`, which survives `reset-pi.sh`.  Run
+`./scripts/configure.sh` at any time to update settings, or
+`./scripts/configure.sh --show` to view current values.
+
+| File | Survives reset? | Purpose |
+|---|---|---|
+| `~/.helmlog/config.env` | Yes | Operator identity + external service credentials |
+| `.env` | No | Runtime config (generated by setup.sh from .env.example + config.env) |
