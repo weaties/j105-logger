@@ -224,7 +224,8 @@ ENV_FILE="$PROJECT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
     set -a
     # shellcheck disable=SC1090
-    source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#')
+    source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#' \
+        | sed "s/=\(.*\)/='\1'/")
     set +a
 fi
 

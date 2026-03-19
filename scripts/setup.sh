@@ -563,13 +563,18 @@ fi
 OPERATOR_CONFIG="$HOME/.helmlog/config.env"
 if [[ -f "$OPERATOR_CONFIG" ]]; then
     info "Merging operator config from $OPERATOR_CONFIG"
-    while IFS='=' read -r key value; do
+    while IFS= read -r line; do
         # Skip empty lines and comments
-        [[ -z "$key" || "$key" =~ ^# ]] && continue
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        # Split on first = only (values like JWT tokens may contain =)
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ -z "$key" ]] && continue
         if grep -qE "^#?\s*${key}=" "$ENV_FILE" 2>/dev/null; then
-            # Uncomment and update existing entry
-            sed -i "s|^#\s*${key}=.*|${key}=${value}|" "$ENV_FILE"
-            sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+            # Uncomment and update existing entry — use @ as sed delimiter
+            # to avoid conflicts with / in values
+            sed -i "s@^#\s*${key}=.*@${key}=${value}@" "$ENV_FILE"
+            sed -i "s@^${key}=.*@${key}=${value}@" "$ENV_FILE"
         elif ! grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
             # Append if not present at all
             echo "${key}=${value}" >> "$ENV_FILE"
@@ -593,9 +598,11 @@ chmod 600 "$ENV_FILE"
 info ".env permissions set to 600."
 
 # Load env vars for service generation
+# Quote values to prevent bash from interpreting special chars in tokens/passwords
 set -a
 # shellcheck disable=SC1090
-source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#')
+source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#' \
+    | sed "s/=\(.*\)/='\1'/")
 set +a
 
 CAN_INTERFACE="${CAN_INTERFACE:-can0}"
