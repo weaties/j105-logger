@@ -1691,7 +1691,7 @@ function placeRcMarker(lat, lon) {
       title: 'RC (Start/Finish)',
       icon: L.divIcon({
         className: '',
-        html: '<div style="background:#ef4444;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff">RC</div>',
+        html: '<div style="background:' + cssVar('--danger') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">RC</div>',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
       }),
@@ -1779,7 +1779,7 @@ async function updateSynthMarks() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#2563eb;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid #fff">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--accent-strong') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">' + key + '</div>',
           iconSize: [22, 22],
           iconAnchor: [11, 11],
         }),
@@ -1816,7 +1816,7 @@ async function loadCycMarksOnMap() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#16a34a;color:#fff;border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid #fff;opacity:0.85">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--success') + ';color:' + cssVar('--bg-primary') + ';border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid ' + cssVar('--bg-primary') + ';opacity:0.85">' + key + '</div>',
           iconSize: [20, 20],
           iconAnchor: [10, 10],
         }),

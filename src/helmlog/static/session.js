@@ -828,7 +828,7 @@ async function loadSailChangeTimeline() {
       return;
     }
     container.style.display = 'block';
-    let html = '<div style="font-size:.75rem;color:var(--text-secondary);margin-top:8px;border-top:1px solid #1e3a5f;padding-top:8px">'
+    let html = '<div style="font-size:.75rem;color:var(--text-secondary);margin-top:8px;border-top:1px solid ' + cssVar('--border') + ';padding-top:8px">'
       + '<strong>Sail Changes</strong></div>';
     html += '<div style="font-size:.75rem;margin-top:4px">';
     changes.forEach((c, i) => {
@@ -878,7 +878,7 @@ async function loadNotes() {
         content = esc(n.body);
       }
       const del = '<button onclick="deleteNote(' + n.id + ')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;padding:0 4px;float:right">&#10005;</button>';
-      return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;overflow:hidden">'
+      return '<div style="padding:4px 0;border-bottom:1px solid ' + cssVar('--border') + ';overflow:hidden">'
         + del + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>' + content + '</div>';
     }).join('');
   } else {
@@ -931,7 +931,7 @@ async function loadTranscript() {
       } else { blocks.push({...seg}); }
     }
     const speakers = [...new Set(blocks.map(b => b.speaker))];
-    const palette = ['#7dd3fc', '#86efac', '#fde68a', '#fca5a5', '#c4b5fd', '#f9a8d4'];
+    const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
     const color = s => palette[speakers.indexOf(s) % palette.length];
     const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
     body.innerHTML = '<div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
@@ -1087,7 +1087,7 @@ async function loadMatch() {
     if (isAdmin) {
       html += '<div style="margin-top:6px">'
         + '<input type="text" id="match-name-input" value="' + esc(data.shared_name || '') + '"'
-        + ' placeholder="Set shared name" style="background:var(--bg-input);border:1px solid #1e3050;border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:60%">'
+        + ' placeholder="Set shared name" style="background:var(--bg-input);border:1px solid ' + cssVar('--border') + ';border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:60%">'
         + ' <button class="btn-export" onclick="setMatchName()">Save</button>'
         + '</div>';
     }
@@ -1243,17 +1243,23 @@ function setPolarView(view) {
 
 // --- Polar diagram (Canvas) ---
 
-const _TWS_COLORS = [
-  [6, '#7dd3fc'],  [8, '#38bdf8'],  [10, '#2563eb'],
-  [12, '#7c3aed'], [14, '#f97316'], [16, '#ef4444'],
-  [18, '#dc2626'], [20, '#991b1b'],
-];
+let _TWS_COLORS = null;
+
+function _initTwsColors() {
+  if (_TWS_COLORS) return;
+  _TWS_COLORS = [
+    [6, cssVar('--accent')],       [8, cssVar('--accent-strong')], [10, cssVar('--accent-strong')],
+    [12, '#7c3aed'],               [14, cssVar('--warning')],      [16, cssVar('--danger')],
+    [18, cssVar('--danger')],      [20, '#991b1b'],
+  ];
+}
 
 function _twsColor(tws) {
+  _initTwsColors();
   for (let i = _TWS_COLORS.length - 1; i >= 0; i--) {
     if (tws >= _TWS_COLORS[i][0]) return _TWS_COLORS[i][1];
   }
-  return '#94a3b8';
+  return cssVar('--text-muted');
 }
 
 function renderPolarDiagram() {
@@ -1961,7 +1967,7 @@ function _renderBoatSettingsPanel() {
       const src = entry.source.startsWith('transcript') ? 'transcript' : entry.source;
       return '<span class="bs-source-badge ' + (entry.source.startsWith('transcript') ? 'transcript' : 'race') + '">' + esc(src) + '</span>';
     }
-    return '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+    return '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem">default</span>';
   };
 
   let html = '';
@@ -2012,18 +2018,18 @@ function _renderBoatSettingsPanel() {
       html += '<div class="bs-row" style="cursor:' + (hasHistory ? 'pointer' : 'default') + '"'
         + (hasHistory ? ' onclick="toggleBsHist(\'' + p.name + '\')"' : '') + '>';
       if (hasHistory) {
-        html += '<span style="color:#6b7a90;font-size:.7rem;margin-right:4px" id="bs-hist-chev-' + p.name + '">\u25B6</span>';
+        html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-right:4px" id="bs-hist-chev-' + p.name + '">\u25B6</span>';
       }
       html += '<span class="bs-label">' + esc(p.label) + '</span>';
       if (entry) {
         html += '<span class="bs-value">' + esc(entry.value) + '</span>';
         if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
         html += srcBadge(entry);
-        if (entry.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
+        if (entry.ts) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
         html += playBtn(entry);
-        if (hasHistory) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px">(' + (hist.length + (entry.supersedes_value ? 1 : 0)) + ' entries)</span>';
+        if (hasHistory) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px">(' + (hist.length + (entry.supersedes_value ? 1 : 0)) + ' entries)</span>';
       } else {
-        html += '<span style="color:#4b5563;font-style:italic">not set</span>';
+        html += '<span style="color:' + cssVar('--text-muted') + ';font-style:italic">not set</span>';
       }
       html += '</div>';
 
@@ -2039,7 +2045,7 @@ function _renderBoatSettingsPanel() {
             html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
             if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
             html += srcBadge(h);
-            if (h.ts) html += '<span style="color:#6b7a90;font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+            if (h.ts) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
             html += playBtn(h);
             html += '</div>';
           }
@@ -2050,7 +2056,7 @@ function _renderBoatSettingsPanel() {
           html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
           html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
           if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-          html += '<span style="color:#6b7a90;font-size:.7rem">default</span>';
+          html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem">default</span>';
           html += '</div>';
         }
         html += '</div>';
@@ -2237,8 +2243,8 @@ async function _loadMarkerPreview(threadId) {
   el.innerHTML = comments.map(c => {
     const a = c.author_name || c.author_email || 'Crew Member';
     const body = c.body.length > 100 ? c.body.slice(0, 100) + '\u2026' : c.body;
-    return '<div style="margin-top:4px;font-size:.72rem;border-left:2px solid #1e3050;padding-left:6px">'
-      + '<span style="color:#7dd3fc;font-weight:600">' + esc(a) + '</span> '
+    return '<div style="margin-top:4px;font-size:.72rem;border-left:2px solid ' + cssVar('--border') + ';padding-left:6px">'
+      + '<span style="color:' + cssVar('--accent') + ';font-weight:600">' + esc(a) + '</span> '
       + '<span style="color:var(--text-primary)">' + esc(body) + '</span></div>';
   }).join('');
 }
@@ -2573,7 +2579,7 @@ async function renderTuningExtractions(runs) {
 
   if (!runs.length) {
     badge.textContent = '';
-    body.innerHTML = '<span style="color:#8892a4">No tuning changes extracted yet. Click &#8635; Extract to analyse the transcript.</span>';
+    body.innerHTML = '<span style="color:' + cssVar('--text-secondary') + '">No tuning changes extracted yet. Click &#8635; Extract to analyse the transcript.</span>';
     return;
   }
 
@@ -2597,17 +2603,17 @@ async function renderTuningExtractions(runs) {
   for (const run of detailed) {
     const items = run.items || [];
     const created = run.created_at ? new Date(run.created_at).toLocaleString() : '';
-    html += '<div style="border:1px solid #1e3050;border-radius:6px;padding:8px;margin-bottom:8px">';
+    html += '<div style="border:1px solid ' + cssVar('--border') + ';border-radius:6px;padding:8px;margin-bottom:8px">';
     html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
-    html += '<div style="font-size:.78rem;color:#7eb8f7;font-weight:600">'
+    html += '<div style="font-size:.78rem;color:' + cssVar('--accent') + ';font-weight:600">'
       + esc(run.method) + ' &middot; ' + items.length + ' items'
-      + '<span style="color:#8892a4;font-weight:400;margin-left:6px">' + esc(created) + '</span>'
+      + '<span style="color:' + cssVar('--text-secondary') + ';font-weight:400;margin-left:6px">' + esc(created) + '</span>'
       + '</div>';
-    html += '<button onclick="deleteTuningRun(' + run.id + ')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.72rem" title="Delete run">&#10005;</button>';
+    html += '<button onclick="deleteTuningRun(' + run.id + ')" style="background:none;border:none;color:' + cssVar('--danger') + ';cursor:pointer;font-size:.72rem" title="Delete run">&#10005;</button>';
     html += '</div>';
 
     if (!items.length) {
-      html += '<span style="color:#8892a4;font-size:.78rem">No items extracted</span>';
+      html += '<span style="color:' + cssVar('--text-secondary') + ';font-size:.78rem">No items extracted</span>';
     } else {
       html += '<table class="maneuver-table"><thead><tr>';
       html += '<th>Parameter</th><th>Value</th><th>Segment</th><th>Conf</th><th>Status</th><th></th>';
@@ -2616,19 +2622,19 @@ async function renderTuningExtractions(runs) {
         const statusCls = 'te-status-' + item.status;
         const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
         html += '<tr>';
-        html += '<td style="font-weight:600;color:#e8eaf0">' + esc(item.parameter_name) + '</td>';
-        html += '<td style="color:#7eb8f7;font-variant-numeric:tabular-nums">' + item.extracted_value + '</td>';
+        html += '<td style="font-weight:600;color:' + cssVar('--text-primary') + '">' + esc(item.parameter_name) + '</td>';
+        html += '<td style="color:' + cssVar('--accent') + ';font-variant-numeric:tabular-nums">' + item.extracted_value + '</td>';
         html += '<td><span class="te-segment-text" title="' + esc(item.segment_text) + '">'
           + esc(item.segment_text.length > 60 ? item.segment_text.slice(0, 60) + '\u2026' : item.segment_text)
           + '</span>'
-          + '<span style="color:#8892a4;font-size:.68rem">[' + fmtSec(item.segment_start) + ' \u2013 ' + fmtSec(item.segment_end) + ']</span>'
+          + '<span style="color:' + cssVar('--text-secondary') + ';font-size:.68rem">[' + fmtSec(item.segment_start) + ' \u2013 ' + fmtSec(item.segment_end) + ']</span>'
           + '</td>';
-        html += '<td style="color:#8892a4">' + (item.confidence * 100).toFixed(0) + '%</td>';
+        html += '<td style="color:' + cssVar('--text-secondary') + '">' + (item.confidence * 100).toFixed(0) + '%</td>';
         html += '<td><span class="' + statusCls + '">' + statusLabel + '</span></td>';
         html += '<td style="white-space:nowrap">';
         if (item.status === 'pending') {
-          html += '<button onclick="acceptTuningItem(' + item.id + ')" class="te-play-btn" title="Accept" style="color:#4ade80">&#10003;</button>';
-          html += '<button onclick="dismissTuningItem(' + item.id + ')" class="te-play-btn" title="Dismiss" style="color:#6b7280">&#10007;</button>';
+          html += '<button onclick="acceptTuningItem(' + item.id + ')" class="te-play-btn" title="Accept" style="color:' + cssVar('--success') + '">&#10003;</button>';
+          html += '<button onclick="dismissTuningItem(' + item.id + ')" class="te-play-btn" title="Dismiss" style="color:' + cssVar('--text-muted') + '">&#10007;</button>';
         }
         if (_session.audio_session_id && !(item.segment_start === 0 && item.segment_end === 0)) {
           html += '<button onclick="playSegmentAudio(' + item.segment_start + ',' + item.segment_end + ')" class="te-play-btn" title="Play segment">&#9654;</button>';
