@@ -2,49 +2,46 @@
 {% block title %}Network — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;padding:6px 8px}
-td{padding:7px 8px;border-bottom:1px solid #0d1a2e}
 .badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
-.badge-up{background:#16a34a22;color:#4ade80}
-.badge-down{background:#7f1d1d22;color:#ef4444}
-.badge-conn{background:#16a34a22;color:#4ade80}
-.badge-off{background:#374151;color:#8892a4}
-.badge-warn{background:#92400e22;color:#f59e0b}
-.badge-relay{background:#7c3aed22;color:#a78bfa}
-.btn-sm{padding:6px 12px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.78rem;cursor:pointer}
-.btn-connect{color:#4ade80;border-color:#16a34a}
-.btn-disconnect{color:#ef4444;border-color:#7f1d1d}
-.btn-refresh{color:#7eb8f7;border-color:#2563eb}
-.btn-add{color:#4ade80;border-color:#16a34a}
-.btn-del{color:#ef4444;border-color:#7f1d1d}
-.btn-edit{color:#f59e0b;border-color:#92400e}
+.badge-up{background:color-mix(in srgb,var(--success) 13%,transparent);color:var(--success)}
+.badge-down{background:color-mix(in srgb,var(--danger) 13%,transparent);color:var(--danger)}
+.badge-conn{background:color-mix(in srgb,var(--success) 13%,transparent);color:var(--success)}
+.badge-off{background:var(--border);color:var(--text-secondary)}
+.badge-warn{background:color-mix(in srgb,var(--warning) 13%,transparent);color:var(--warning)}
+.badge-relay{background:color-mix(in srgb,#a78bfa 13%,transparent);color:#a78bfa}
+.btn-connect{color:var(--success);border-color:var(--success)}
+.btn-disconnect{color:var(--danger);border-color:var(--danger)}
+.btn-refresh{color:var(--accent);border-color:var(--accent-strong)}
+.btn-add{color:var(--success);border-color:var(--success)}
 .form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
-.form-row input{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
-.form-row input::placeholder{color:#586578}
-.form-row label{font-size:.75rem;color:#8892a4}
-.form-row select{padding:6px 10px;border:1px solid #374151;border-radius:4px;background:#0a1628;color:#e8eaf0;font-size:.85rem}
-#add-err,#edit-err{color:#ef4444;font-size:.8rem;margin-top:4px}
-.signal-bar{display:inline-block;width:40px;height:10px;background:#1e293b;border-radius:3px;overflow:hidden;vertical-align:middle;margin-left:6px}
-.signal-bar .fill{height:100%;background:#4ade80;border-radius:3px}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+.form-row label{font-size:.75rem;color:var(--text-secondary)}
+#add-err,#edit-err{color:var(--danger);font-size:.8rem;margin-top:4px}
+.signal-bar{display:inline-block;width:40px;height:10px;background:var(--border);border-radius:3px;overflow:hidden;vertical-align:middle;margin-left:6px}
+.signal-bar .fill{height:100%;background:var(--success);border-radius:3px}
 .stat-row{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px}
 .stat{font-size:.9rem}
-.stat .val{color:#e8eaf0;font-weight:600}
-.stat .lbl{color:#8892a4;font-size:.75rem}
-.internet-ok{color:#4ade80}.internet-fail{color:#ef4444}
-.peer-online{color:#4ade80}.peer-offline{color:#586578}
-dialog{background:#131f35;color:#e8eaf0;border:1px solid #374151;border-radius:12px;padding:20px;max-width:400px;width:90%}
+.stat .val{color:var(--text-primary);font-weight:600}
+.stat .lbl{color:var(--text-secondary);font-size:.75rem}
+.internet-ok{color:var(--success)}.internet-fail{color:var(--danger)}
+.peer-online{color:var(--success)}.peer-offline{color:var(--text-muted)}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:400px;width:90%}
 dialog::backdrop{background:rgba(0,0,0,.6)}
 dialog .form-row{flex-direction:column;align-items:stretch}
 dialog .form-row input,dialog .form-row select{width:100%}
 dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
-.grafana-link{color:#7eb8f7;text-decoration:none;font-size:.85rem}
+.grafana-link{color:var(--accent);text-decoration:none;font-size:.85rem}
 .grafana-link:hover{text-decoration:underline}
 .mono{font-family:monospace;font-size:.82rem}
 .section-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 @media(max-width:768px){.section-grid{grid-template-columns:1fr}}
+.net-muted{color:var(--text-muted)}
+.net-muted-sm{color:var(--text-muted);font-size:.8rem}
+.net-danger-sm{color:var(--danger);font-size:.8rem;margin-top:4px}
+.net-link{color:var(--accent);text-decoration:none}
+.net-src-camera{color:var(--warning)}
+.net-src-saved{color:var(--accent)}
 </style>
 {% endblock %}
 {% block content %}
@@ -125,7 +122,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 
 <div class="card">
 <div class="label">Bandwidth Monitoring</div>
-<p style="color:#8892a4;font-size:.85rem">Per-interface bandwidth metrics are emitted to InfluxDB every monitor interval. View detailed usage, data budgets, and alerts in Grafana.</p>
+<p class="net-muted" style="font-size:.85rem">Per-interface bandwidth metrics are emitted to InfluxDB every monitor interval. View detailed usage, data budgets, and alerts in Grafana.</p>
 <a id="grafana-link" class="grafana-link" href="#" target="_blank">Open Grafana Dashboard &rarr;</a>
 </div>
 {% endblock %}
@@ -171,13 +168,13 @@ async function loadStatus(){
 }
 
 function renderInterfaces(d){
-  if(!d.interfaces||!d.interfaces.length){document.getElementById('iface-table').innerHTML='<p style="color:#8892a4">No interfaces detected.</p>';return}
+  if(!d.interfaces||!d.interfaces.length){document.getElementById('iface-table').innerHTML='<p class="net-muted">No interfaces detected.</p>';return}
   let h='<table><thead><tr><th>Interface</th><th>State</th><th>IP Address</th><th>MAC</th></tr></thead><tbody>';
   for(const i of d.interfaces){
     const badge=i.state==='up'?'<span class="badge badge-up">up</span>':'<span class="badge badge-down">down</span>';
     const isDefault=d.default_route&&d.default_route.interface===i.name;
     const defaultTag=isDefault?' <span class="badge badge-warn" title="Default route">default</span>':'';
-    h+=`<tr><td>${i.name}${defaultTag}</td><td>${badge}</td><td class="mono">${i.ip_address||'—'}</td><td class="mono" style="color:#586578;font-size:.75rem">${i.mac_address||'—'}</td></tr>`;
+    h+=`<tr><td>${i.name}${defaultTag}</td><td>${badge}</td><td class="mono">${i.ip_address||'—'}</td><td class="mono net-muted" style="font-size:.75rem">${i.mac_address||'—'}</td></tr>`;
   }
   h+='</tbody></table>';
   document.getElementById('iface-table').innerHTML=h;
@@ -199,10 +196,10 @@ function renderRouting(d){
 
 function renderTailscale(d){
   const ts=d.tailscale;
-  if(!ts){document.getElementById('tailscale-info').innerHTML='<p style="color:#586578">No data</p>';return}
+  if(!ts){document.getElementById('tailscale-info').innerHTML='<p class="net-muted">No data</p>';return}
   if(!ts.running){
     let h=`<span class="badge badge-down">not running</span>`;
-    if(ts.error)h+=` <span style="color:#ef4444;font-size:.8rem">${ts.error}</span>`;
+    if(ts.error)h+=` <span class="net-danger-sm">${ts.error}</span>`;
     document.getElementById('tailscale-info').innerHTML=h;
     return;
   }
@@ -211,7 +208,7 @@ function renderTailscale(d){
   h+=`<div class="stat"><span class="lbl">Hostname</span> <span class="val">${ts.hostname||'—'}</span></div>`;
   h+=`<div class="stat"><span class="lbl">IP</span> <span class="val mono">${ts.ip||'—'}</span></div>`;
   if(ts.tailnet)h+=`<div class="stat"><span class="lbl">Tailnet</span> <span class="val">${ts.tailnet}</span></div>`;
-  if(ts.version)h+=`<div class="stat"><span class="lbl">Version</span> <span class="val" style="color:#586578;font-size:.8rem">${ts.version}</span></div>`;
+  if(ts.version)h+=`<div class="stat"><span class="lbl">Version</span> <span class="val net-muted-sm">${ts.version}</span></div>`;
   h+='</div>';
   if(ts.peers&&ts.peers.length){
     h+='<table style="margin-top:8px"><thead><tr><th>Peer</th><th>IP</th><th>OS</th><th>Status</th></tr></thead><tbody>';
@@ -221,7 +218,7 @@ function renderTailscale(d){
         :'<span class="badge badge-off">offline</span>';
       const exitTag=p.exit_node?' <span class="badge badge-warn">exit</span>':'';
       const nameClass=p.online?'peer-online':'peer-offline';
-      h+=`<tr><td class="${nameClass}">${p.hostname}</td><td class="mono">${p.ip}</td><td style="color:#586578">${p.os}</td><td>${status}${exitTag}</td></tr>`;
+      h+=`<tr><td class="${nameClass}">${p.hostname}</td><td class="mono">${p.ip}</td><td class="net-muted">${p.os}</td><td>${status}${exitTag}</td></tr>`;
     }
     h+='</tbody></table>';
   }
@@ -230,17 +227,17 @@ function renderTailscale(d){
 
 function renderCloudflare(d){
   const cf=d.cloudflare;
-  if(!cf){document.getElementById('cloudflare-info').innerHTML='<p style="color:#586578">No data</p>';return}
+  if(!cf){document.getElementById('cloudflare-info').innerHTML='<p class="net-muted">No data</p>';return}
   if(!cf.installed){
     document.getElementById('cloudflare-info').innerHTML='<span class="badge badge-off">not installed</span>';
     return;
   }
   let h='<div class="stat-row">';
   h+=`<div class="stat"><span class="lbl">Service</span> ${cf.running?'<span class="badge badge-conn">running</span>':'<span class="badge badge-down">stopped</span>'}</div>`;
-  if(cf.hostname)h+=`<div class="stat"><span class="lbl">Hostname</span> <span class="val"><a href="https://${cf.hostname}" target="_blank" style="color:#7eb8f7">${cf.hostname}</a></span></div>`;
-  if(cf.version)h+=`<div class="stat"><span class="lbl">Version</span> <span class="val" style="color:#586578;font-size:.8rem">${cf.version}</span></div>`;
+  if(cf.hostname)h+=`<div class="stat"><span class="lbl">Hostname</span> <span class="val"><a href="https://${cf.hostname}" target="_blank" class="net-link">${cf.hostname}</a></span></div>`;
+  if(cf.version)h+=`<div class="stat"><span class="lbl">Version</span> <span class="val net-muted-sm">${cf.version}</span></div>`;
   h+='</div>';
-  if(cf.error)h+=`<p style="color:#ef4444;font-size:.8rem;margin-top:4px">${cf.error}</p>`;
+  if(cf.error)h+=`<p class="net-danger-sm">${cf.error}</p>`;
   document.getElementById('cloudflare-info').innerHTML=h;
 }
 
@@ -248,12 +245,12 @@ async function loadProfiles(){
   const r=await fetch('/api/network/profiles');
   if(!r.ok){document.getElementById('profiles-table').textContent='Failed to load';return}
   const profiles=await r.json();
-  if(!profiles.length){document.getElementById('profiles-table').innerHTML='<p style="color:#8892a4">No WLAN profiles. Camera networks appear here automatically when cameras have WiFi SSIDs configured. Click <b>+ Add Profile</b> to add a shore/marina network.</p>';return}
+  if(!profiles.length){document.getElementById('profiles-table').innerHTML='<p class="net-muted">No WLAN profiles. Camera networks appear here automatically when cameras have WiFi SSIDs configured. Click <b>+ Add Profile</b> to add a shore/marina network.</p>';return}
   let h='<table><thead><tr><th>Name</th><th>SSID</th><th>Source</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
   for(const p of profiles){
     const active=_currentSSID&&_currentSSID===p.ssid;
     const badge=active?'<span class="badge badge-conn">active</span>':p.is_default?'<span class="badge badge-up">default</span>':'';
-    const src=p.source==='camera'?'<span style="color:#f59e0b">camera</span>':'<span style="color:#7eb8f7">saved</span>';
+    const src=p.source==='camera'?'<span class="net-src-camera">camera</span>':'<span class="net-src-saved">saved</span>';
     const connectBtn=active?'':`<button class="btn-sm btn-connect" onclick="doConnect('${p.id}')">Connect</button>`;
     let actionBtns=connectBtn;
     if(p.source==='saved'){
