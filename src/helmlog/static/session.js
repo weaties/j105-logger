@@ -1919,8 +1919,9 @@ async function loadBoatSettings() {
     _bsParams = await r.json();
   } catch (e) { console.error('boat settings params error', e); return; }
 
-  // Resolve settings at race start time initially
-  const asOf = _session.end_utc || _session.start_utc;
+  // For completed sessions use end time; for active sessions use now so values
+  // entered during the session are visible rather than being filtered out.
+  const asOf = _session.end_utc || new Date().toISOString();
   await _fetchAndRenderBoatSettings(asOf);
 }
 
