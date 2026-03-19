@@ -5728,9 +5728,7 @@ class Storage:
     # Analysis catalog (#285)
     # ------------------------------------------------------------------
 
-    async def get_catalog_entry(
-        self, plugin_name: str, co_op_id: str
-    ) -> dict[str, Any] | None:
+    async def get_catalog_entry(self, plugin_name: str, co_op_id: str) -> dict[str, Any] | None:
         """Return the catalog entry for (plugin_name, co_op_id), or None."""
         cur = await self._conn().execute(
             "SELECT plugin_name, co_op_id, state, proposing_boat, version, author,"

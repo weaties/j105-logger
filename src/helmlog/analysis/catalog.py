@@ -399,9 +399,7 @@ async def restore(
     existing = await storage.get_catalog_entry(plugin_name, co_op_id)
     if existing is None or existing["state"] != DEPRECATED:
         state = existing["state"] if existing else "(not found)"
-        raise CatalogError(
-            f"Cannot restore {plugin_name!r}: must be deprecated, got {state!r}"
-        )
+        raise CatalogError(f"Cannot restore {plugin_name!r}: must be deprecated, got {state!r}")
 
     await storage.upsert_catalog_entry(
         plugin_name=plugin_name,
