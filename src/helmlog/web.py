@@ -6624,6 +6624,9 @@ def create_app(
         if plugin is None:
             raise HTTPException(404, f"Plugin {plugin_name!r} not found")
 
+        # Mark stale any cache rows where plugin version has changed (#285)
+        await storage.mark_plugin_cache_stale(plugin_name, plugin.meta().version)
+
         session_data = await load_session_data(storage, session_id)
         if session_data is None:
             raise HTTPException(404, "Session not found or not completed")
@@ -6715,6 +6718,11 @@ def create_app(
         if race_row and race_row["peer_fingerprint"]:
             result.pop("raw", None)
 
+        # Include stale_reason so UI can display "model updated — re-run?" (#285)
+        stale_reason = cached.get("stale_reason")
+        if stale_reason is not None:
+            result["stale_reason"] = stale_reason
+
         return JSONResponse(result)
 
     @app.get("/api/analysis/preferences")
@@ -6754,6 +6762,325 @@ def create_app(
             request, "analysis.preference", detail=f"scope={scope} model={model_name}", user=user
         )
         return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------
+    # /api/analysis/catalog — Phase 2 co-op promotion (#285)
+    # ------------------------------------------------------------------
+
+    @app.get("/api/analysis/catalog")
+    async def api_analysis_catalog_list(
+        co_op_id: str,
+        _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+    ) -> JSONResponse:
+        """List analysis catalog entries for a co-op."""
+        entries = await storage.list_catalog_entries(co_op_id)
+        return JSONResponse([dict(e) for e in entries])
+
+    @app.post("/api/analysis/catalog/propose")
+    async def api_analysis_catalog_propose(
+        request: Request,
+        user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Propose a plugin for co-op promotion (boat owner action)."""
+        from helmlog.analysis.catalog import CatalogError, propose_to_co_op  # noqa: PLC0415
+
+        body = await request.json()
+        plugin_name: str = body.get("plugin_name", "").strip()
+        co_op_id: str = body.get("co_op_id", "").strip()
+
+        if not plugin_name or not co_op_id:
+            raise HTTPException(422, "plugin_name and co_op_id are required")
+
+        # Verify this boat is an active co-op member
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership or membership.get("status") == "revoked":
+            raise HTTPException(403, "This boat is not an active member of the co-op")
+
+        # Verify the plugin exists
+        from helmlog.analysis.discovery import get_plugin  # noqa: PLC0415
+
+        plugin = get_plugin(plugin_name)
+        if plugin is None:
+            raise HTTPException(404, f"Plugin {plugin_name!r} not found")
+
+        # Get boat identity for proposing_boat field
+        identity = await storage.get_boat_identity()
+        proposing_boat = identity["fingerprint"] if identity else "unknown"
+
+        meta = plugin.meta()
+        try:
+            entry = await propose_to_co_op(
+                storage,
+                plugin_name,
+                co_op_id,
+                proposing_boat=proposing_boat,
+                version=meta.version,
+                author=meta.author,
+                changelog=meta.changelog,
+            )
+        except CatalogError as exc:
+            raise HTTPException(409, str(exc)) from exc  # noqa: B904
+
+        await _audit(
+            request,
+            "analysis.catalog.propose",
+            detail=f"plugin={plugin_name} co_op={co_op_id}",
+            user=user,
+        )
+        return JSONResponse(entry.to_dict(), status_code=201)
+
+    @app.post("/api/analysis/catalog/{plugin_name}/approve")
+    async def api_analysis_catalog_approve(
+        request: Request,
+        plugin_name: str,
+        user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Approve a proposed plugin (co-op moderator action)."""
+        from helmlog.analysis.catalog import CatalogError, approve  # noqa: PLC0415
+
+        body = await request.json()
+        co_op_id: str = body.get("co_op_id", "").strip()
+        if not co_op_id:
+            raise HTTPException(422, "co_op_id is required")
+
+        # Verify admin is a moderator of this co-op
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership or membership.get("role") != "admin":
+            raise HTTPException(403, "Only co-op moderators can approve proposals")
+
+        # Verify the plugin exists before proceeding
+        from helmlog.analysis.discovery import get_plugin  # noqa: PLC0415
+
+        plugin = get_plugin(plugin_name)
+        if plugin is None:
+            raise HTTPException(404, f"Plugin {plugin_name!r} not found")
+
+        # Caller submits a representative result sample for the data license gate.
+        # In normal usage, the moderator runs the plugin first and submits the output.
+        result_sample: dict[str, Any] = body.get("result_sample", {})
+
+        try:
+            entry = await approve(storage, plugin_name, co_op_id, result_sample=result_sample)
+        except CatalogError as exc:
+            raise HTTPException(422, str(exc)) from exc  # noqa: B904
+
+        await _audit(
+            request,
+            "analysis.catalog.approve",
+            detail=f"plugin={plugin_name} co_op={co_op_id}",
+            user=user,
+        )
+        return JSONResponse(entry.to_dict())
+
+    @app.post("/api/analysis/catalog/{plugin_name}/reject")
+    async def api_analysis_catalog_reject(
+        request: Request,
+        plugin_name: str,
+        user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Reject a proposed plugin (co-op moderator action)."""
+        from helmlog.analysis.catalog import CatalogError, reject  # noqa: PLC0415
+
+        body = await request.json()
+        co_op_id: str = body.get("co_op_id", "").strip()
+        reason: str = body.get("reason", "").strip()
+        if not co_op_id or not reason:
+            raise HTTPException(422, "co_op_id and reason are required")
+
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership or membership.get("role") != "admin":
+            raise HTTPException(403, "Only co-op moderators can reject proposals")
+
+        try:
+            entry = await reject(storage, plugin_name, co_op_id, reason=reason)
+        except CatalogError as exc:
+            raise HTTPException(422, str(exc)) from exc  # noqa: B904
+
+        await _audit(
+            request,
+            "analysis.catalog.reject",
+            detail=f"plugin={plugin_name} co_op={co_op_id} reason={reason}",
+            user=user,
+        )
+        return JSONResponse(entry.to_dict())
+
+    @app.post("/api/analysis/catalog/{plugin_name}/deprecate")
+    async def api_analysis_catalog_deprecate(
+        request: Request,
+        plugin_name: str,
+        user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Deprecate a co-op plugin (moderator or plugin author)."""
+        from helmlog.analysis.catalog import CatalogError, deprecate  # noqa: PLC0415
+
+        body = await request.json()
+        co_op_id: str = body.get("co_op_id", "").strip()
+        if not co_op_id:
+            raise HTTPException(422, "co_op_id is required")
+
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership:
+            raise HTTPException(403, "This boat is not a member of the co-op")
+
+        # Allow admin (moderator) or the proposing boat (author) to deprecate
+        entry_row = await storage.get_catalog_entry(plugin_name, co_op_id)
+        if entry_row is None:
+            raise HTTPException(404, f"Plugin {plugin_name!r} not found in co-op catalog")
+
+        identity = await storage.get_boat_identity()
+        this_fingerprint = identity["fingerprint"] if identity else None
+        is_moderator = membership.get("role") == "admin"
+        is_author = this_fingerprint and entry_row.get("proposing_boat") == this_fingerprint
+
+        if not is_moderator and not is_author:
+            raise HTTPException(403, "Only the co-op moderator or plugin author can deprecate")
+
+        try:
+            entry = await deprecate(storage, plugin_name, co_op_id)
+        except CatalogError as exc:
+            raise HTTPException(422, str(exc)) from exc  # noqa: B904
+
+        await _audit(
+            request,
+            "analysis.catalog.deprecate",
+            detail=f"plugin={plugin_name} co_op={co_op_id}",
+            user=user,
+        )
+        return JSONResponse(entry.to_dict())
+
+    @app.post("/api/analysis/catalog/{plugin_name}/set-default")
+    async def api_analysis_catalog_set_default(
+        request: Request,
+        plugin_name: str,
+        user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Set a co_op_active plugin as the co-op default (co-op moderator action)."""
+        from helmlog.analysis.catalog import CatalogError, set_co_op_default  # noqa: PLC0415
+
+        body = await request.json()
+        co_op_id: str = body.get("co_op_id", "").strip()
+        if not co_op_id:
+            raise HTTPException(422, "co_op_id is required")
+
+        membership = await storage.get_co_op_membership(co_op_id)
+        if not membership or membership.get("role") != "admin":
+            raise HTTPException(403, "Only co-op moderators can set the default model")
+
+        try:
+            entry = await set_co_op_default(storage, plugin_name, co_op_id)
+        except CatalogError as exc:
+            raise HTTPException(422, str(exc)) from exc  # noqa: B904
+
+        await _audit(
+            request,
+            "analysis.catalog.set_default",
+            detail=f"plugin={plugin_name} co_op={co_op_id}",
+            user=user,
+        )
+        return JSONResponse(entry.to_dict())
+
+    @app.post("/api/analysis/ab-compare/{session_id}")
+    async def api_analysis_ab_compare(
+        request: Request,
+        session_id: int,
+        user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    ) -> JSONResponse:
+        """Run two or more analysis models on the same session and return side-by-side results.
+
+        Request body: {"models": ["polar_baseline", "sail_vmg"]}
+
+        Each result panel includes:
+        - plugin display name + version label
+        - metrics, insights, viz
+        - stale_reason if the cached result is from an older plugin version
+        """
+        from helmlog.analysis.cache import AnalysisCache, _compute_data_hash  # noqa: PLC0415
+        from helmlog.analysis.discovery import discover_plugins, load_session_data  # noqa: PLC0415
+        from helmlog.analysis.protocol import AnalysisContext  # noqa: PLC0415
+
+        body = await request.json()
+        model_names: list[str] = body.get("models", [])
+        if len(model_names) < 2:
+            raise HTTPException(422, "At least two model names are required for A/B comparison")
+        if len(model_names) > 5:
+            raise HTTPException(422, "At most 5 models can be compared at once")
+
+        session_data = await load_session_data(storage, session_id)
+        if session_data is None:
+            raise HTTPException(404, "Session not found or not completed")
+
+        db = storage._conn()
+        race_cur = await db.execute(
+            "SELECT peer_fingerprint FROM races WHERE id = ?", (session_id,)
+        )
+        race_row = await race_cur.fetchone()
+        is_co_op = bool(race_row and race_row["peer_fingerprint"])
+
+        ctx = AnalysisContext(user_id=user["id"], is_co_op_data=is_co_op)
+        plugins = discover_plugins()
+        cache = AnalysisCache(storage)
+        data_hash = _compute_data_hash(
+            {
+                "speeds": len(session_data.speeds),
+                "winds": len(session_data.winds),
+                "session_id": session_id,
+            }
+        )
+
+        panels: list[dict[str, Any]] = []
+        for name in model_names:
+            plugin = plugins.get(name)
+            if plugin is None:
+                panels.append({"plugin_name": name, "error": "Plugin not found"})
+                continue
+
+            meta = plugin.meta()
+
+            # Check for version staleness and mark rows
+            stale_count = await storage.mark_plugin_cache_stale(name, meta.version)
+            if stale_count:
+                logger.debug(
+                    "Marked {} stale cache rows for {} after version change", stale_count, name
+                )
+
+            # Check cache (version-stale rows won't match data_hash after being marked)
+            cached_row = await storage.get_analysis_cache(session_id, name)
+            panel: dict[str, Any] = {}
+
+            if (
+                cached_row is not None
+                and cached_row["data_hash"] == data_hash
+                and cached_row.get("stale_reason") is None
+            ):
+                import json as _json  # noqa: PLC0415
+
+                result_dict = _json.loads(cached_row["result_json"])
+            else:
+                result = await plugin.analyze(session_data, ctx)
+                result_dict = result.to_dict(include_raw=True)
+                await cache.put(session_id, name, meta.version, data_hash, result_dict)
+
+                # Re-fetch to get fresh stale_reason (should be None after re-run)
+                cached_row = await storage.get_analysis_cache(session_id, name)
+
+            if is_co_op:
+                result_dict.pop("raw", None)
+
+            stale_reason = cached_row.get("stale_reason") if cached_row else None
+            panel = {
+                **result_dict,
+                "label": f"{meta.display_name} v{meta.version}",
+                "stale_reason": stale_reason,
+            }
+            panels.append(panel)
+
+        await _audit(
+            request,
+            "analysis.ab_compare",
+            detail=f"session={session_id} models={model_names}",
+            user=user,
+        )
+        return JSONResponse({"session_id": session_id, "panels": panels})
 
     # ------------------------------------------------------------------
     # /api/sails/performance — Cross-session VMG (#309)
