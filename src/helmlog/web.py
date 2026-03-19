@@ -1120,7 +1120,7 @@ def create_app(
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
             f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:var(--success);color:var(--success)">Edit</button>'  # noqa: E501
-            f'{_del_btn(u["id"])}</td>'  # noqa: E501
+            f"{_del_btn(u['id'])}</td>"  # noqa: E501
             f"</tr>"
             for u in users
         )
