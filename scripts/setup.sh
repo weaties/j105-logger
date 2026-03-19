@@ -570,15 +570,11 @@ if [[ -f "$OPERATOR_CONFIG" ]]; then
         key="${line%%=*}"
         value="${line#*=}"
         [[ -z "$key" ]] && continue
-        if grep -qE "^#?\s*${key}=" "$ENV_FILE" 2>/dev/null; then
-            # Uncomment and update existing entry — use @ as sed delimiter
-            # to avoid conflicts with / in values
-            sed -i "s@^#\s*${key}=.*@${key}=${value}@" "$ENV_FILE"
-            sed -i "s@^${key}=.*@${key}=${value}@" "$ENV_FILE"
-        elif ! grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
-            # Append if not present at all
-            echo "${key}=${value}" >> "$ENV_FILE"
-        fi
+        # Remove any existing line (commented or not) for this key, then append.
+        # This avoids sed delimiter issues with JWT tokens and passwords.
+        grep -v "^#\{0,1\}\s*${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" || true
+        mv "${ENV_FILE}.tmp" "$ENV_FILE"
+        echo "${key}=${value}" >> "$ENV_FILE"
     done < "$OPERATOR_CONFIG"
 fi
 
