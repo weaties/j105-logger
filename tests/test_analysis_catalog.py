@@ -14,6 +14,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from helmlog.analysis.cache import AnalysisCache
 from helmlog.analysis.catalog import (
     ACTIVE_STATES,
     BOAT_LOCAL,
@@ -22,7 +23,6 @@ from helmlog.analysis.catalog import (
     DEPRECATED,
     PROPOSED,
     REJECTED,
-    CatalogEntry,
     CatalogError,
     approve,
     check_data_license_gate,
@@ -33,11 +33,9 @@ from helmlog.analysis.catalog import (
     set_co_op_default,
     unset_co_op_default,
 )
-from helmlog.analysis.cache import AnalysisCache
 from helmlog.analysis.protocol import PluginMeta
 from helmlog.storage import Storage, StorageConfig
 from helmlog.web import create_app
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -251,9 +249,7 @@ class TestCatalogStateMachine:
         await propose_to_co_op(
             storage, "polar_baseline", "coop1", proposing_boat="fp_a", version="1.0.0"
         )
-        entry = await approve(
-            storage, "polar_baseline", "coop1", result_sample=_CLEAN_RESULT
-        )
+        entry = await approve(storage, "polar_baseline", "coop1", result_sample=_CLEAN_RESULT)
         assert entry.state == CO_OP_ACTIVE
         assert entry.data_license_gate_passed is True
 
@@ -316,9 +312,7 @@ class TestCatalogStateMachine:
     async def test_set_default_clears_previous_default(self, storage: Storage) -> None:
         """Setting a new default implicitly unsets the previous one."""
         for name in ("polar_baseline", "sail_vmg"):
-            await propose_to_co_op(
-                storage, name, "coop1", proposing_boat="fp_a", version="1.0.0"
-            )
+            await propose_to_co_op(storage, name, "coop1", proposing_boat="fp_a", version="1.0.0")
             await approve(storage, name, "coop1", result_sample=_CLEAN_RESULT)
 
         await set_co_op_default(storage, "polar_baseline", "coop1")
@@ -760,7 +754,11 @@ class TestVersionStaleness:
         # Plant a stale cache entry
         cache = AnalysisCache(storage)
         await cache.put(
-            race_id, "polar_baseline", "0.9.0", "oldhash", {"metrics": [], "plugin_name": "polar_baseline", "session_id": race_id, "raw": {}}
+            race_id,
+            "polar_baseline",
+            "0.9.0",
+            "oldhash",
+            {"metrics": [], "plugin_name": "polar_baseline", "session_id": race_id, "raw": {}},
         )
         await storage.mark_plugin_cache_stale("polar_baseline", "1.0.0")
 
@@ -768,9 +766,7 @@ class TestVersionStaleness:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
-            resp = await client.get(
-                f"/api/analysis/results/{race_id}?model=polar_baseline"
-            )
+            resp = await client.get(f"/api/analysis/results/{race_id}?model=polar_baseline")
         assert resp.status_code == 200
         data = resp.json()
         assert data.get("stale_reason") == "version_change"

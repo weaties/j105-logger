@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 49
+_CURRENT_VERSION: int = 50
 
 _MIGRATIONS: dict[int, str] = {
     1: """
