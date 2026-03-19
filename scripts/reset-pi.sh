@@ -11,6 +11,7 @@
 #   - SSH authorized_keys or SSH hardening (safe to keep)
 #   - The git repository itself (just resets to origin/main)
 #   - User's home directory structure beyond helmlog-specific artifacts
+#   - ~/.helmlog/ (operator config — survives reset for re-setup)
 #
 # After running this, you can re-run setup.sh from scratch.
 
@@ -55,6 +56,7 @@ if $DRY_RUN; then
     echo "  - helmlog, signalk, can-interface"
     echo "  - influxdb, grafana-server"
     echo "  - loki, promtail"
+    echo "  - cloudflared (if installed)"
     echo "  - nginx (helmlog site config removed; default restored)"
     echo ""
     echo "Packages to remove:"
@@ -88,6 +90,9 @@ if $DRY_RUN; then
     echo "  - $ENV_FILE"
     echo "  - $PROJECT_DIR/data/"
     echo "  - $PROJECT_DIR/.venv/"
+    echo ""
+    echo "NOT removed:"
+    echo "  - ~/.helmlog/ (operator config — preserved for re-setup)"
     echo ""
     echo "Git repo will be reset to origin/main (hard reset + clean)."
     echo ""
@@ -160,6 +165,21 @@ sudo rm -rf /var/lib/loki /var/lib/promtail
 sudo rm -rf /etc/systemd/system/loki.service.d
 sudo rm -rf /etc/systemd/system/promtail.service.d
 info "Loki + Promtail removed."
+
+# ---------------------------------------------------------------------------
+# 4.1) Remove cloudflared (if installed)
+# ---------------------------------------------------------------------------
+
+step "Removing cloudflared..."
+if command -v cloudflared &>/dev/null; then
+    sudo systemctl stop cloudflared 2>/dev/null || true
+    sudo systemctl disable cloudflared 2>/dev/null || true
+    sudo cloudflared service uninstall 2>/dev/null || true
+    sudo apt-get remove --purge -y cloudflared 2>/dev/null || true
+    info "cloudflared removed."
+else
+    info "cloudflared not installed — skipping."
+fi
 
 # ---------------------------------------------------------------------------
 # 5) Remove nginx package
@@ -300,6 +320,10 @@ echo -e "${GREEN}  Reset complete.${NC}"
 echo -e "${GREEN}══════════════════════════════════════════════════${NC}"
 echo ""
 echo "  The Pi is now in a pre-setup state."
+echo ""
+echo "  Operator config preserved in ~/.helmlog/config.env"
+echo "  (email, Cloudflare token, etc. — will be re-applied on next setup.sh)"
+echo ""
 echo "  To set up again, run:"
 echo ""
 echo "    ./scripts/setup.sh"

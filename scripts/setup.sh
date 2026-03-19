@@ -9,6 +9,7 @@
 # Run from a terminal where you can enter your sudo password when prompted.
 #
 # What this script does:
+#   0)   Interactive configuration wizard (~/.helmlog/config.env)
 #   a)   System prerequisites (git, curl, audio libs, unattended-upgrades)
 #   a.1) Security hardening (auto-updates, mask unused services, SSH hardening)
 #   b)   Node.js 24 LTS
@@ -26,6 +27,7 @@
 #   k.1) Loki + Promtail (centralized log management)
 #   k.2) nginx reverse proxy (single-port access to all services)
 #   k.3) Tailscale DNS (MagicDNS for inter-boat hostname resolution)
+#   k.4) Cloudflare Tunnel (public HTTPS via <boat>.helmlog.org)
 #   l)   Scoped NOPASSWD sudo (replaces blanket Pi OS default)
 #   m)   Summary
 
@@ -52,6 +54,19 @@ NC='\033[0m'
 step()  { echo -e "\n${GREEN}==> $*${NC}"; }
 warn()  { echo -e "${YELLOW}WARN:${NC} $*"; }
 info()  { echo -e "${CYAN}    $*${NC}"; }
+
+# ---------------------------------------------------------------------------
+# 0) Interactive configuration wizard
+#      Prompts operator for external service settings (email, Cloudflare, etc.)
+#      and persists to ~/.helmlog/config.env (survives reset-pi.sh).
+# ---------------------------------------------------------------------------
+
+step "Running configuration wizard..."
+if [[ -f "$SCRIPT_DIR/configure.sh" ]]; then
+    bash "$SCRIPT_DIR/configure.sh"
+else
+    warn "scripts/configure.sh not found — skipping configuration wizard."
+fi
 
 # ---------------------------------------------------------------------------
 # a) System prerequisites
@@ -544,6 +559,24 @@ else
     info ".env already exists — leaving untouched."
 fi
 
+# Merge operator config from ~/.helmlog/config.env (survives reset-pi.sh)
+OPERATOR_CONFIG="$HOME/.helmlog/config.env"
+if [[ -f "$OPERATOR_CONFIG" ]]; then
+    info "Merging operator config from $OPERATOR_CONFIG"
+    while IFS='=' read -r key value; do
+        # Skip empty lines and comments
+        [[ -z "$key" || "$key" =~ ^# ]] && continue
+        if grep -qE "^#?\s*${key}=" "$ENV_FILE" 2>/dev/null; then
+            # Uncomment and update existing entry
+            sed -i "s|^#\s*${key}=.*|${key}=${value}|" "$ENV_FILE"
+            sed -i "s|^${key}=.*|${key}=${value}|" "$ENV_FILE"
+        elif ! grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+            # Append if not present at all
+            echo "${key}=${value}" >> "$ENV_FILE"
+        fi
+    done < "$OPERATOR_CONFIG"
+fi
+
 # Populate InfluxDB connection if we have a token and it's still commented out
 if [[ -n "$INFLUX_TOKEN" && "$INFLUX_TOKEN" != "REPLACE_WITH_INFLUX_TOKEN" ]]; then
     if grep -q '^# INFLUX_URL=' "$ENV_FILE" 2>/dev/null; then
@@ -778,6 +811,76 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# k.4) Cloudflare Tunnel — public HTTPS access via <boat>.helmlog.org
+#       Installs cloudflared and configures as a systemd service if a tunnel
+#       token is present (from config.env → .env). Fully optional.
+# ---------------------------------------------------------------------------
+
+# Source .env to pick up CLOUDFLARE_TUNNEL_TOKEN (may have been merged from config.env)
+CF_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+if [[ -z "$CF_TUNNEL_TOKEN" ]] && [[ -f "$ENV_FILE" ]]; then
+    CF_TUNNEL_TOKEN=$(grep -E '^CLOUDFLARE_TUNNEL_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+fi
+
+if [[ -n "$CF_TUNNEL_TOKEN" ]]; then
+    step "Setting up Cloudflare Tunnel..."
+
+    # Auth safety check: refuse if AUTH_DISABLED=true with a public tunnel
+    AUTH_DISABLED_VAL="${AUTH_DISABLED:-}"
+    if [[ -z "$AUTH_DISABLED_VAL" ]] && [[ -f "$ENV_FILE" ]]; then
+        AUTH_DISABLED_VAL=$(grep -E '^AUTH_DISABLED=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    fi
+    if [[ "${AUTH_DISABLED_VAL,,}" == "true" ]]; then
+        echo ""
+        warn "══════════════════════════════════════════════════════════════"
+        warn "  AUTH_DISABLED=true with a Cloudflare Tunnel is dangerous!"
+        warn "  The Pi will be on the public internet with no authentication."
+        warn "  Set AUTH_DISABLED=false in .env before proceeding."
+        warn "══════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
+    # Install cloudflared if not present
+    if ! command -v cloudflared &>/dev/null; then
+        info "Installing cloudflared..."
+        # Download arm64 deb directly from Cloudflare (no apt repo needed for connector-only use)
+        CF_ARCH="$(dpkg --print-architecture)"
+        CF_DEB="/tmp/cloudflared-${CF_ARCH}.deb"
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" \
+            -o "$CF_DEB"
+        sudo dpkg -i "$CF_DEB"
+        rm -f "$CF_DEB"
+        info "cloudflared $(cloudflared --version 2>&1 | head -1) installed."
+    else
+        info "cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
+    fi
+
+    # Install as systemd service using the connector token
+    # cloudflared service install is idempotent — it updates the token if already installed
+    if ! systemctl list-unit-files cloudflared.service 2>/dev/null | grep -qw cloudflared; then
+        sudo cloudflared service install "$CF_TUNNEL_TOKEN"
+        info "cloudflared systemd service installed."
+    else
+        info "cloudflared service already exists."
+    fi
+
+    sudo systemctl enable cloudflared 2>/dev/null || true
+    sudo systemctl restart cloudflared
+    info "cloudflared service running."
+
+    CF_HOSTNAME="${CLOUDFLARE_HOSTNAME:-}"
+    if [[ -z "$CF_HOSTNAME" ]] && [[ -f "$ENV_FILE" ]]; then
+        CF_HOSTNAME=$(grep -E '^CLOUDFLARE_HOSTNAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    fi
+    if [[ -n "$CF_HOSTNAME" ]]; then
+        info "Public URL: https://${CF_HOSTNAME}/"
+    fi
+else
+    info "No CLOUDFLARE_TUNNEL_TOKEN configured — Cloudflare Tunnel skipped."
+    info "To enable, run: ./scripts/configure.sh"
+fi
+
+# ---------------------------------------------------------------------------
 # l) Scoped NOPASSWD sudo
 #      Creates /etc/sudoers.d/helmlog-allowed with the specific commands
 #      needed for day-to-day operations (deploy.sh, service management).
@@ -827,7 +930,12 @@ Cmnd_Alias HELMLOG_SVCS = \\
     /usr/bin/systemctl stop promtail*, \\
     /usr/bin/systemctl restart promtail*, \\
     /usr/bin/systemctl status promtail*, \\
-    /usr/bin/systemctl is-active promtail*
+    /usr/bin/systemctl is-active promtail*, \\
+    /usr/bin/systemctl start cloudflared*, \\
+    /usr/bin/systemctl stop cloudflared*, \\
+    /usr/bin/systemctl restart cloudflared*, \\
+    /usr/bin/systemctl status cloudflared*, \\
+    /usr/bin/systemctl is-active cloudflared*
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_SVCS
 
 # Self-deploy — the helmlog service user needs to restart itself
@@ -908,6 +1016,18 @@ if [[ -n "${TS_HOSTNAME:-}" ]]; then
     echo "    Race marker: https://${TS_HOSTNAME}/"
     echo "    Grafana:     https://${TS_HOSTNAME}/grafana/"
     echo "    Signal K:    https://${TS_HOSTNAME}/signalk/"
+fi
+# Show Cloudflare public URL if configured
+CF_HOSTNAME_SUMMARY=""
+if [[ -f "$HOME/.helmlog/config.env" ]]; then
+    CF_HOSTNAME_SUMMARY=$(grep -E '^CLOUDFLARE_HOSTNAME=' "$HOME/.helmlog/config.env" 2>/dev/null | cut -d= -f2- || true)
+fi
+if [[ -n "$CF_HOSTNAME_SUMMARY" ]]; then
+    echo ""
+    echo "  Public (Cloudflare Tunnel — authentication required):"
+    echo "    HelmLog:     https://${CF_HOSTNAME_SUMMARY}/"
+    echo "    Grafana:     https://${CF_HOSTNAME_SUMMARY}/grafana/"
+    echo "    Signal K:    https://${CF_HOSTNAME_SUMMARY}/signalk/"
 fi
 echo ""
 if [[ -f "$INFLUX_TOKEN_FILE" ]]; then
