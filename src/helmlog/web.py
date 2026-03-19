@@ -1101,6 +1101,16 @@ def create_app(
         def _fmt_weight(w: float | None) -> str:
             return f"{w:.1f} lbs" if w else "\u2014"
 
+        my_id = _user.get("id")
+
+        def _del_btn(uid: int) -> str:
+            if uid == my_id:
+                return ""
+            return (
+                f' <button onclick="deleteUser({uid})" class="ubtn"'
+                ' style="border-color:var(--danger);color:var(--danger)">Delete</button>'
+            )
+
         user_rows = "".join(
             f'<tr data-uid="{u["id"]}">'
             f'<td class="u-email" data-label="Email">{_esc(u["email"])}</td>'
@@ -1109,7 +1119,8 @@ def create_app(
             f'<td class="u-dev" data-label="Dev"><input type="checkbox" {"checked" if u.get("is_developer") else ""} disabled style="width:18px;height:18px"/></td>'  # noqa: E501
             f'<td class="u-weight" data-label="Weight">{_fmt_weight(u.get("weight_lbs"))}</td>'
             f'<td data-label="Last seen">{_local_ts(u["last_seen"])}</td>'
-            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:var(--success);color:var(--success)">Edit</button></td>'  # noqa: E501
+            f'<td class="u-actions"><button onclick="editUser({u["id"]})" class="ubtn ubtn-edit" style="border-color:var(--success);color:var(--success)">Edit</button>'  # noqa: E501
+            f"{_del_btn(u['id'])}</td>"  # noqa: E501
             f"</tr>"
             for u in users
         )
