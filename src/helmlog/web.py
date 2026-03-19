@@ -76,6 +76,8 @@ def _get_git_info() -> str:
 
 
 _GIT_INFO: str = _get_git_info()
+# Short SHA for version display in the UI (e.g. meta tag for issue reporting)
+_GIT_SHORT_SHA: str = ""
 # SHA the running process was started with — used to detect restart-needed
 _STARTUP_SHA: str = ""
 try:
@@ -88,6 +90,7 @@ try:
         text=True,
         stderr=_sp.DEVNULL,
     ).strip()
+    _GIT_SHORT_SHA = _STARTUP_SHA[:7]
     del _sp, _repo_dir
 except Exception:  # noqa: BLE001
     pass
@@ -388,6 +391,7 @@ def create_app(
             "request": request,
             "active_page": page,
             "git_info": _GIT_INFO,
+            "git_sha": _GIT_SHORT_SHA,
             "theme_css": theme_css,
             **extra,
         }
