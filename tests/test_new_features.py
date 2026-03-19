@@ -572,3 +572,26 @@ async def test_audit_logged_on_race_start(client: AsyncClient, storage: Storage)
     actions = [e["action"] for e in entries]
     assert "race.start" in actions
     assert "event.set" in actions
+
+
+# ---------------------------------------------------------------------------
+# In-app issue reporting (#369)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_version_meta_tag_present(client: AsyncClient) -> None:
+    """The helmlog-version meta tag should be rendered on every page."""
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert 'name="helmlog-version"' in r.text
+
+
+@pytest.mark.asyncio
+async def test_footer_report_links_present(client: AsyncClient) -> None:
+    """Footer should contain bug report and feature request links."""
+    r = await client.get("/")
+    assert r.status_code == 200
+    assert "Report a bug" in r.text
+    assert "Request a feature" in r.text
+    assert "buildIssueUrl" in r.text

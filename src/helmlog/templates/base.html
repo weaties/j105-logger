@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta name="helmlog-version" content="{{ git_sha }}"/>
 <title>{% block title %}HelmLog{% endblock %}</title>
 <link rel="stylesheet" href="/static/base.css"/>
 {% if theme_css %}<style>{{ theme_css }}</style>{% endif %}
@@ -31,7 +32,7 @@
   </div>
 </nav>
 {% block content %}{% endblock %}
-<footer>{{ git_info }}</footer>
+<footer>{{ git_info }}<span class="footer-sep"> · </span><a href="#" onclick="window.open(buildIssueUrl('bug'),'_blank');return false">Report a bug</a><span class="footer-sep"> · </span><a href="#" onclick="window.open(buildIssueUrl('feature'),'_blank');return false">Request a feature</a></footer>
 </div>
 {% endblock %}
 <script src="/static/shared.js"></script>
