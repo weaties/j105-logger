@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 49
+_CURRENT_VERSION: int = 50
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1117,6 +1117,17 @@ _MIGRATIONS: dict[int, str] = {
             plugin_names TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(user_id, session_id)
+        );
+    """,
+    50: """
+        -- WLAN profile management (#256)
+        CREATE TABLE IF NOT EXISTS wlan_profiles (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            ssid        TEXT NOT NULL,
+            password    TEXT,
+            is_default  INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL
         );
     """,
 }
@@ -3356,8 +3367,11 @@ class Storage:
     async def seed_cameras_from_env(self, cameras_str: str) -> int:
         """Seed the cameras table from the CAMERAS env var if table is empty.
 
+        Also applies CAMERA_WIFI_SSID and CAMERA_WIFI_PASSWORD from env if set.
         Returns the number of cameras seeded.
         """
+        import os as _os
+
         db = self._conn()
         cur = await db.execute("SELECT COUNT(*) FROM cameras")
         row = await cur.fetchone()
@@ -3367,12 +3381,16 @@ class Storage:
 
         from helmlog.cameras import parse_cameras_config
 
+        wifi_ssid = _os.environ.get("CAMERA_WIFI_SSID")
+        wifi_password = _os.environ.get("CAMERA_WIFI_PASSWORD")
+
         cameras = parse_cameras_config(cameras_str)
         count = 0
         for cam in cameras:
             await db.execute(
-                "INSERT OR IGNORE INTO cameras (name, ip, model) VALUES (?, ?, ?)",
-                (cam.name, cam.ip, cam.model),
+                "INSERT OR IGNORE INTO cameras (name, ip, model, wifi_ssid, wifi_password)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (cam.name, cam.ip, cam.model, wifi_ssid, wifi_password),
             )
             count += 1
         await db.commit()
@@ -4651,6 +4669,90 @@ class Storage:
             (scheme, user_id),
         )
         await db.commit()
+
+    # ------------------------------------------------------------------
+    # WLAN profiles (#256)
+    # ------------------------------------------------------------------
+
+    async def list_wlan_profiles(self) -> list[dict[str, Any]]:
+        """Return all saved WLAN profiles, ordered by name."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, ssid, password, is_default, created_at"
+            " FROM wlan_profiles ORDER BY name ASC"
+        )
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def get_wlan_profile(self, profile_id: int) -> dict[str, Any] | None:
+        """Return a single WLAN profile by id, or None."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id, name, ssid, password, is_default, created_at"
+            " FROM wlan_profiles WHERE id = ?",
+            (profile_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def add_wlan_profile(
+        self,
+        name: str,
+        ssid: str,
+        password: str | None = None,
+        is_default: bool = False,
+    ) -> int:
+        """Add a WLAN profile. Returns the new row id."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        now = _datetime.now(UTC).isoformat()
+
+        if is_default:
+            await db.execute("UPDATE wlan_profiles SET is_default = 0")
+
+        cur = await db.execute(
+            "INSERT INTO wlan_profiles (name, ssid, password, is_default, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (name, ssid, password, 1 if is_default else 0, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("WLAN profile added: id={} name={} ssid={}", cur.lastrowid, name, ssid)
+        return cur.lastrowid
+
+    async def update_wlan_profile(
+        self,
+        profile_id: int,
+        name: str,
+        ssid: str,
+        password: str | None = None,
+        is_default: bool = False,
+    ) -> bool:
+        """Update a WLAN profile. Returns True if found."""
+        db = self._conn()
+
+        if is_default:
+            await db.execute("UPDATE wlan_profiles SET is_default = 0")
+
+        cur = await db.execute(
+            "UPDATE wlan_profiles SET name = ?, ssid = ?, password = ?, is_default = ?"
+            " WHERE id = ?",
+            (name, ssid, password, 1 if is_default else 0, profile_id),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_wlan_profile(self, profile_id: int) -> bool:
+        """Delete a WLAN profile by id. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM wlan_profiles WHERE id = ?", (profile_id,))
+        await db.commit()
+        deleted = (cur.rowcount or 0) > 0
+        if deleted:
+            logger.info("WLAN profile deleted: id={}", profile_id)
+        return deleted
 
     # ------------------------------------------------------------------
     # Session deletion (#194)

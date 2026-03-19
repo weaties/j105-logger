@@ -1663,13 +1663,25 @@ def create_app(
     async def api_network_status(
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
     ) -> JSONResponse:
-        """Return WLAN status, interface list, and internet connectivity."""
+        """Return WLAN status, interface list, internet, Tailscale, and Cloudflare."""
         import helmlog.network as net_mod
 
-        wlan_status, interfaces, internet = await asyncio.gather(
+        (
+            wlan_status,
+            interfaces,
+            internet,
+            tailscale,
+            cloudflare,
+            default_route,
+            dns,
+        ) = await asyncio.gather(
             net_mod.get_wlan_status(),
             net_mod.list_interfaces(),
             net_mod.check_internet(),
+            net_mod.get_tailscale_status(),
+            net_mod.get_cloudflare_status(),
+            net_mod.get_default_route(),
+            net_mod.check_dns(),
         )
         return JSONResponse(
             {
@@ -1680,10 +1692,48 @@ def create_app(
                     "signal_strength": wlan_status.signal_strength,
                 },
                 "interfaces": [
-                    {"name": i.name, "state": i.state, "ip_address": i.ip_address}
+                    {
+                        "name": i.name,
+                        "state": i.state,
+                        "ip_address": i.ip_address,
+                        "mac_address": i.mac_address,
+                    }
                     for i in interfaces
                 ],
                 "internet": internet,
+                "dns": dns,
+                "default_route": {
+                    "interface": default_route.interface,
+                    "gateway": default_route.gateway,
+                }
+                if default_route
+                else None,
+                "tailscale": {
+                    "running": tailscale.running,
+                    "hostname": tailscale.hostname,
+                    "ip": tailscale.ip,
+                    "tailnet": tailscale.tailnet,
+                    "version": tailscale.version,
+                    "error": tailscale.error,
+                    "peers": [
+                        {
+                            "hostname": p.hostname,
+                            "ip": p.ip,
+                            "os": p.os,
+                            "online": p.online,
+                            "relay": p.relay,
+                            "exit_node": p.exit_node,
+                        }
+                        for p in tailscale.peers
+                    ],
+                },
+                "cloudflare": {
+                    "installed": cloudflare.installed,
+                    "running": cloudflare.running,
+                    "hostname": cloudflare.hostname,
+                    "version": cloudflare.version,
+                    "error": cloudflare.error,
+                },
             }
         )
 

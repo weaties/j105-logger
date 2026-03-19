@@ -51,6 +51,13 @@ CONFIG_FIELDS=(
     "SMTP_FROM|SMTP from address|false"
     "CLOUDFLARE_TUNNEL_TOKEN|Cloudflare tunnel token|true"
     "CLOUDFLARE_HOSTNAME|Cloudflare hostname (e.g. boat.helmlog.org)|false"
+    "INFLUX_URL|InfluxDB URL (e.g. http://localhost:8086)|false"
+    "INFLUX_TOKEN|InfluxDB token|true"
+    "INFLUX_ORG|InfluxDB org|false"
+    "INFLUX_BUCKET|InfluxDB bucket|false"
+    "CAMERAS|Cameras (e.g. Stern:192.168.42.1)|false"
+    "CAMERA_WIFI_SSID|Camera WiFi SSID|false"
+    "CAMERA_WIFI_PASSWORD|Camera WiFi password|true"
 )
 
 # ---------------------------------------------------------------------------
