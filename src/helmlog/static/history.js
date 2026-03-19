@@ -834,12 +834,16 @@ async function toggleHistoryTrack(sessionId) {
   const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
-  const line = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(map);
+  const trackColor = cssVar('--accent-strong');
+  const startColor = cssVar('--success');
+  const endColor = cssVar('--danger');
+  const cursorColor = cssVar('--warning');
+  const line = L.polyline(latLngs, {color: trackColor, weight: 4}).addTo(map);
 
-  L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1}).addTo(map).bindPopup('Start');
-  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1}).addTo(map).bindPopup('Finish');
+  L.circleMarker(latLngs[0], {radius: 6, color: startColor, fillColor: startColor, fillOpacity: 1}).addTo(map).bindPopup('Start');
+  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: endColor, fillColor: endColor, fillOpacity: 1}).addTo(map).bindPopup('Finish');
 
-  const cursor = L.circleMarker([0,0], {radius: 7, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2});
+  const cursor = L.circleMarker([0,0], {radius: 7, color: cursorColor, fillColor: cursorColor, fillOpacity: 1, weight: 2});
   _trackData[sessionId] = {latLngs, timestamps, cursor, map};
 
   // Click track → seek embedded video

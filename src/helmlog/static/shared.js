@@ -1,6 +1,14 @@
 /* shared.js — common utilities loaded by all pages */
 
 // ---------------------------------------------------------------------------
+// CSS variable reader — theme-aware color helper
+// ---------------------------------------------------------------------------
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---------------------------------------------------------------------------
 // Time formatting
 // ---------------------------------------------------------------------------
 

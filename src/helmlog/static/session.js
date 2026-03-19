@@ -107,15 +107,19 @@ async function loadTrack() {
   const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
-  const line = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(_map);
+  const trackColor = cssVar('--accent-strong');
+  const line = L.polyline(latLngs, {color: trackColor, weight: 4}).addTo(_map);
 
-  L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1})
+  const successColor = cssVar('--success');
+  const dangerColor = cssVar('--danger');
+  const warningColor = cssVar('--warning');
+  L.circleMarker(latLngs[0], {radius: 6, color: successColor, fillColor: successColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Start');
-  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1})
+  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: dangerColor, fillColor: dangerColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Finish');
 
   const cursor = L.circleMarker([0, 0], {
-    radius: 7, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2,
+    radius: 7, color: warningColor, fillColor: warningColor, fillOpacity: 1, weight: 2,
   });
 
   _trackData = {latLngs, timestamps, line, cursor};
@@ -1274,11 +1278,13 @@ function renderPolarDiagram() {
   const scale = maxRadius / maxBsp;
 
   // Draw concentric BSP circles
-  ctx.strokeStyle = '#1e3a5f';
+  const polarBorder = cssVar('--border');
+  const polarTextSec = cssVar('--text-secondary');
+  ctx.strokeStyle = polarBorder;
   ctx.lineWidth = 0.5;
   ctx.setLineDash([3, 3]);
   ctx.font = '11px monospace';
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = polarTextSec;
   for (let bsp = 1; bsp <= maxBsp; bsp++) {
     const r = bsp * scale;
     ctx.beginPath();
@@ -1288,7 +1294,7 @@ function renderPolarDiagram() {
   }
 
   // Draw radial TWA lines
-  ctx.strokeStyle = '#1e3a5f';
+  ctx.strokeStyle = polarBorder;
   for (let deg = 0; deg <= 180; deg += 30) {
     const rad = deg * Math.PI / 180;
     const x2 = cx + maxBsp * scale * Math.sin(rad);
@@ -1343,15 +1349,15 @@ function renderPolarDiagram() {
     const x = cx + r * Math.sin(rad);
     const y = cy + r * Math.cos(rad);
 
-    const dotColor = c.delta == null ? '#94a3b8'
-      : c.delta >= 0 ? '#22c55e' : '#ef4444';
+    const dotColor = c.delta == null ? cssVar('--text-muted')
+      : c.delta >= 0 ? cssVar('--success') : cssVar('--danger');
     const dotSize = Math.min(6, Math.max(3, Math.log2(c.samples + 1) * 1.5));
 
     ctx.beginPath();
     ctx.arc(x, y, dotSize, 0, 2 * Math.PI);
     ctx.fillStyle = dotColor;
     ctx.fill();
-    ctx.strokeStyle = '#0a1628';
+    ctx.strokeStyle = cssVar('--bg-primary');
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -1366,14 +1372,14 @@ function renderPolarDiagram() {
       + ' &nbsp; Session: '
       + '<span style="color:var(--success)">\u25cf faster</span> '
       + '<span style="color:var(--danger)">\u25cf slower</span> '
-      + '<span style="color:#94a3b8">\u25cf no baseline</span>';
+      + '<span style="color:var(--text-muted)">\u25cf no baseline</span>';
   }
 }
 
 // --- Heatmap ---
 
 function _deltaColor(delta) {
-  if (delta == null) return '#1e293b';
+  if (delta == null) return cssVar('--bg-secondary');
   const clamped = Math.max(-1, Math.min(1, delta));
   if (clamped >= 0) {
     const t = clamped;
@@ -1440,7 +1446,7 @@ function renderPolarHeatmap() {
 // Maneuvers
 // ---------------------------------------------------------------------------
 
-const _MANEUVER_COLORS = { tack: '#3b82f6', gybe: '#f97316', rounding: '#22c55e' };
+const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
@@ -1579,10 +1585,11 @@ async function loadWindField() {
   // Overlay the boat track
   if (_trackData) {
     _wfTrackLine = L.polyline(_trackData.latLngs, {
-      color: '#2563eb', weight: 3, opacity: 0.7,
+      color: cssVar('--accent-strong'), weight: 3, opacity: 0.7,
     }).addTo(_wfMap);
+    const wfCursorColor = cssVar('--warning');
     _wfCursor = L.circleMarker([0, 0], {
-      radius: 6, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2,
+      radius: 6, color: wfCursorColor, fillColor: wfCursorColor, fillOpacity: 1, weight: 2,
     });
   }
 
@@ -1628,8 +1635,9 @@ function _drawWfMarks(marks) {
   for (const mm of _wfMarkMarkers) _wfMap.removeLayer(mm);
   _wfMarkMarkers = [];
   for (const m of marks) {
+    const wfMarkColor = cssVar('--warning');
     const marker = L.circleMarker([m.lat, m.lon], {
-      radius: 5, color: '#f97316', fillColor: '#f97316', fillOpacity: 0.9, weight: 1,
+      radius: 5, color: wfMarkColor, fillColor: wfMarkColor, fillOpacity: 0.9, weight: 1,
     }).addTo(_wfMap).bindTooltip(m.mark_name, {permanent: true, direction: 'right',
       className: 'wf-mark-label', offset: [8, 0]});
     _wfMarkMarkers.push(marker);
@@ -1784,7 +1792,7 @@ function _renderWfChart(currentS) {
 
   const baseTwd = _wfTimeseries.base_twd;
   const dur = _wfTimeseries.duration_s;
-  const colors = ['#ef4444', '#e8eaf0', '#22c55e']; // port, center, starboard
+  const colors = [cssVar('--danger'), cssVar('--text-primary'), cssVar('--success')]; // port, center, starboard
 
   // Compute TWD and TWS ranges
   let twdMin = Infinity, twdMax = -Infinity;
@@ -1803,7 +1811,9 @@ function _renderWfChart(currentS) {
   function yForTwd(v) { return twdY0 + chartH - (v - twdMin) / (twdMax - twdMin) * chartH; }
 
   // Grid
-  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+  const wfBorder = cssVar('--border');
+  const wfTextSec = cssVar('--text-secondary');
+  ctx.strokeStyle = wfBorder; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
   for (let v = twdMin; v <= twdMax; v += 2) {
     const y = yForTwd(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + chartW, y); ctx.stroke();
@@ -1811,7 +1821,7 @@ function _renderWfChart(currentS) {
   ctx.setLineDash([]);
 
   // Axis labels
-  ctx.fillStyle = '#8892a4'; ctx.font = '11px monospace';
+  ctx.fillStyle = wfTextSec; ctx.font = '11px monospace';
   ctx.fillText('TWD', pad.l - 40, twdY0 + chartH / 2 + 4);
   ctx.fillText(twdMin + '°', pad.l - 40, twdY0 + chartH - 2);
   ctx.fillText(twdMax + '°', pad.l - 40, twdY0 + 12);
@@ -1833,14 +1843,14 @@ function _renderWfChart(currentS) {
   const twsY0 = pad.t + chartH + pad.mid;
   function yForTws(v) { return twsY0 + chartH - (v - twsMin) / (twsMax - twsMin) * chartH; }
 
-  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = wfBorder; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
   for (let v = twsMin; v <= twsMax; v += 2) {
     const y = yForTws(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + chartW, y); ctx.stroke();
   }
   ctx.setLineDash([]);
 
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = wfTextSec;
   ctx.fillText('TWS', pad.l - 40, twsY0 + chartH / 2 + 4);
   ctx.fillText(twsMin + '', pad.l - 40, twsY0 + chartH - 2);
   ctx.fillText(twsMax + '', pad.l - 40, twsY0 + 12);
@@ -1858,7 +1868,7 @@ function _renderWfChart(currentS) {
   }
 
   // Time axis labels
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = wfTextSec;
   const stepMin = Math.max(1, Math.floor(dur / 60 / 8));
   for (let m = 0; m <= dur / 60; m += stepMin) {
     const x = xForT(m * 60);
@@ -1868,7 +1878,7 @@ function _renderWfChart(currentS) {
   // Vertical hairline at current time
   if (currentS >= 0) {
     const x = xForT(currentS);
-    ctx.strokeStyle = '#facc15'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeStyle = cssVar('--warning'); ctx.lineWidth = 1.5; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, twsY0 + chartH); ctx.stroke();
   }
 
@@ -1878,7 +1888,7 @@ function _renderWfChart(currentS) {
   for (let i = 0; i < 3; i++) {
     ctx.fillStyle = colors[i];
     ctx.fillRect(lx, pad.t - 14, 16, 8);
-    ctx.fillStyle = '#8892a4';
+    ctx.fillStyle = wfTextSec;
     ctx.fillText(labels[i], lx + 20, pad.t - 6);
     lx += 70;
   }
@@ -2178,10 +2188,11 @@ function _addDiscussionMarkers() {
       + '</div>';
 
     const hasUnread = t.unread_count > 0;
-    const markerColor = t.resolved ? '#4ade80' : hasUnread ? '#60a5fa' : '#a78bfa';
+    const markerColor = t.resolved ? cssVar('--success') : hasUnread ? cssVar('--accent') : cssVar('--text-secondary');
+    const bgPrimary = cssVar('--bg-primary');
     const markerStyle = t.resolved
-      ? 'width:14px;height:14px;background:transparent;border:2px solid #4ade80;border-radius:50%'
-      : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid #0a1628;border-radius:50%;box-shadow:0 0 4px ' + markerColor;
+      ? 'width:14px;height:14px;background:transparent;border:2px solid ' + cssVar('--success') + ';border-radius:50%'
+      : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid ' + bgPrimary + ';border-radius:50%;box-shadow:0 0 4px ' + markerColor;
     const icon = L.divIcon({
       className: 'discussion-marker',
       html: '<div style="' + markerStyle + '"></div>',
@@ -2451,7 +2462,7 @@ function _showMentionDropdown(el, matches, ctx) {
 
   const dd = document.createElement('div');
   dd.id = 'mention-dropdown';
-  dd.style.cssText = 'position:absolute;z-index:9999;background:#131f35;border:1px solid var(--accent-strong);'
+  dd.style.cssText = 'position:absolute;z-index:9999;background:var(--bg-secondary);border:1px solid var(--accent-strong);'
     + 'border-radius:6px;max-height:150px;overflow-y:auto;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.5)';
 
   const capped = matches.slice(0, 8);
@@ -2460,7 +2471,7 @@ function _showMentionDropdown(el, matches, ctx) {
     item.textContent = u.name;
     item.setAttribute('data-mention-item', '');
     item.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:.82rem;color:var(--text-primary)';
-    if (idx === 0) item.style.background = '#1e3a5f';
+    if (idx === 0) item.style.background = cssVar('--border');
     item.addEventListener('mouseenter', () => { _highlightMentionItem(idx); });
     item.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -2485,7 +2496,7 @@ function _highlightMentionItem(idx) {
   if (!dd) return;
   const items = dd.querySelectorAll('[data-mention-item]');
   items.forEach((el, i) => {
-    el.style.background = i === idx ? '#1e3a5f' : 'none';
+    el.style.background = i === idx ? cssVar('--border') : 'none';
   });
   _mentionIdx = idx;
   if (items[idx]) items[idx].scrollIntoView({block: 'nearest'});
