@@ -1119,7 +1119,7 @@ def create_app(
             f'<td data-label="IP">{_esc(s.get("ip") or "\u2014")}</td>'
             f'<td data-label="Created">{_local_ts(s["created_at"])}</td>'
             f'<td data-label="Expires">{_local_ts(s["expires_at"])}</td>'
-            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeSession(\'{_esc(s["session_id"])}\')" style="cursor:pointer;background:var(--danger);border:none;color:var(--bg-primary);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for s in sessions
         )
@@ -1129,7 +1129,7 @@ def create_app(
             f'<td data-label="Role">{_badge(inv["role"])}</td>'
             f'<td data-label="Dev">{"&#9989;" if inv.get("is_developer") else "\u2014"}</td>'
             f'<td data-label="Expires">{_local_ts(inv["expires_at"])}</td>'
-            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:#7f1d1d;border:none;color:var(--danger);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
+            f'<td><button onclick="revokeInvite({int(inv["id"])})" style="cursor:pointer;background:var(--danger);border:none;color:var(--bg-primary);border-radius:4px;padding:6px 12px;font-size:.85rem">Revoke</button></td>'  # noqa: E501
             f"</tr>"
             for inv in pending_invitations
         )
