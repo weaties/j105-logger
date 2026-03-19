@@ -23,6 +23,8 @@ class PluginMeta:
     display_name: str
     description: str
     version: str
+    author: str = ""
+    changelog: str = ""
 
 
 # ---------------------------------------------------------------------------
