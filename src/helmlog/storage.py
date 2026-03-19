@@ -4094,7 +4094,8 @@ class Storage:
         cur = await self._conn().execute(
             "SELECT id, email, name, role, created_at, last_seen, is_developer,"
             " weight_lbs"
-            " FROM users ORDER BY created_at"
+            " FROM users WHERE email NOT LIKE 'deleted_%@redacted'"
+            " ORDER BY created_at"
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
