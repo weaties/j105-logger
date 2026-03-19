@@ -1363,3 +1363,91 @@ tools.
   when the plugin infrastructure is further along and we have a better sense of
   what the community actually wants. The ethos questions matter more than the
   technical ones here.
+
+---
+
+## IDX-024: On-device transcript and thread summarization via AI HAT+ 2
+
+- **Date captured:** 2026-03-19
+- **Origin:** Conversation about using the Raspberry Pi AI HAT+ 2 (Hailo-8, 26 TOPS) for summarizing transcripts and co-op discussion threads
+- **Status:** `raw`
+- **Related:** IDX-021 (live keyword detection on Hailo), IDX-013 (co-op discussion threads), `src/helmlog/transcribe.py`, `src/helmlog/audio.py`, AI HAT+ 2 hardware
+
+**Description:**
+Summarize post-session audio transcripts and (eventually) co-op discussion
+threads, either on-device or via API. The AI HAT+ 2's Hailo-8 NPU (26 TOPS)
+can accelerate encoder-style models but is not well-suited for autoregressive
+LLM token generation — so the summarization path depends on connectivity and
+quality requirements.
+
+**Three approaches, in order of likely value:**
+
+1. **Hybrid (recommended starting point):** Use the Hailo NPU to accelerate
+   faster-whisper's encoder (the transcription step that precedes summarization),
+   then send the transcript text to the **Claude API** (Haiku for cost, Sonnet
+   for quality) for summarization when connectivity is available (post-sail,
+   via Tailscale). Results cached in SQLite alongside the transcript. This gives
+   the best summary quality by far — small on-device LLMs struggle with the
+   nuance of sailing tactical discussion.
+
+2. **Offline fallback (small on-device LLM on CPU):** For summarization without
+   connectivity, run a quantized LLM on the Pi 5's ARM cores via `llama.cpp`:
+   - **Qwen2.5-1.5B (Q4, ~1 GB)** — best quality-to-size ratio at this scale
+   - **Phi-3.5-mini (3.8B, Q4, ~2.3 GB)** — better quality, fits in 8GB Pi 5
+     with ~3-4 GB free after helmlog + faster-whisper
+   - **Gemma 2 2B (Q4, ~1.5 GB)** — decent instruction following
+   - **BART-large-CNN (~0.5 GB)** — purpose-built summarizer, much faster,
+     but extractive only (good for "key moments" extraction, not narrative summary)
+   The Hailo NPU doesn't help here — these models run on CPU. Quality will be
+   noticeably worse than API-based summarization, especially for domain-specific
+   sailing vocabulary and tactical nuance.
+
+3. **Task-specific model on Hailo (future):** If Hailo's model zoo expands to
+   support small encoder-decoder summarization models (BART, T5), these could
+   run efficiently on the NPU. Currently the Hailo ecosystem is vision-heavy
+   and this path isn't practical.
+
+**What to summarize:**
+
+- **Session transcripts:** After Whisper transcription completes, generate a
+  summary of the crew conversation — key decisions, tactical calls, wind shift
+  observations, maneuver discussions. Store alongside the full transcript in
+  SQLite. Display on the session detail page.
+- **Co-op discussion threads (future, depends on IDX-013):** When threads
+  accumulate replies, generate a thread summary — key points, unresolved
+  questions, action items. Useful for catching up on a discussion you missed.
+- **Multi-session digest:** Summarize patterns across multiple sessions —
+  "over the last 5 races, crew consistently discussed difficulty with leeward
+  mark approaches" — requires aggregating transcripts.
+
+**Key design questions:**
+- **When to summarize?** Immediately after transcription? On-demand when the
+  user views the session? Batch overnight?
+- **Summary length/format?** Bullet points? Narrative paragraph? Structured
+  (key decisions, wind observations, crew discussion topics)?
+- **Hailo for whisper acceleration:** The Hailo-8 can accelerate the Whisper
+  encoder via HailoRT — this would speed up the transcription step that
+  precedes summarization. Worth benchmarking vs CPU-only faster-whisper.
+- **Cost management for API path:** Haiku is ~$0.25/MTok input — a typical
+  session transcript might be 2-5K tokens, so ~$0.001 per summary. Negligible
+  per session but worth tracking.
+- **Privacy:** Transcripts contain crew conversation (PII). API summarization
+  sends this to Anthropic's servers. The data-licensing policy requires that
+  PII handling respects deletion rights. Need to ensure API calls don't result
+  in data retention beyond the response. Anthropic's API data policy (no
+  training on API data) helps here.
+
+**Connection to IDX-021:**
+IDX-021 proposes live keyword detection on the Hailo during recording. This
+idea is complementary — IDX-021 handles real-time triggers, this handles
+post-session understanding. Both benefit from Hailo-accelerated Whisper
+(faster transcription = faster time-to-summary and time-to-keywords).
+
+**Notes:**
+- *2026-03-19:* Initial capture. The hybrid approach (Hailo-accelerated Whisper
+  + Claude API summarization) is the clear starting point — it uses the Hailo
+  where it's strong (encoder acceleration) and the API where it's strong
+  (language understanding). On-device LLM fallback is a nice-to-have for
+  offline use but the quality gap is significant for domain-specific content.
+  First step: benchmark faster-whisper on Hailo vs CPU to see if the
+  acceleration is worth the integration effort.
