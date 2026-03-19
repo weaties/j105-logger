@@ -440,7 +440,30 @@ cat > "$HOME/.signalk/plugin-config-data/signalk-to-influxdb2.json" << EOF
   "enabled": true
 }
 EOF
-info "Plugin config written."
+info "signalk-to-influxdb2 plugin config written."
+
+step "Configuring signalk-derived-data plugin (true heading + true wind)..."
+# Signal K uses the plugin id "derived-data" for the config filename, not the
+# npm package name "signalk-derived-data".
+cat > "$HOME/.signalk/plugin-config-data/derived-data.json" << 'EOF'
+{
+  "configuration": {
+    "heading": {
+      "heading": true
+    },
+    "wind": {
+      "trueWind": true,
+      "groundWind": true,
+      "groundWindDirection": true
+    },
+    "traffic": {
+      "notificationZones": []
+    }
+  },
+  "enabled": true
+}
+EOF
+info "signalk-derived-data plugin config written."
 
 # ---------------------------------------------------------------------------
 # g) uv + Python dependencies
@@ -515,21 +538,21 @@ if [[ ! -f "$SK_SECURITY_FILE" ]]; then
     SK_ADMIN_PASS="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)"
     export SK_ADMIN_PASS
 
-    # bcrypt-hash via uv (--with pulls bcrypt on the fly; it is NOT a project dep)
-    "$UV_BIN" run --with bcrypt --project "$PROJECT_DIR" python -c "
-import os, json, bcrypt
-pw = os.environ['SK_ADMIN_PASS'].encode()
-h = bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12)).decode()
-data = {
-    'allowedCorsOrigins': '',
-    'immutableConfig': False,
-    'acls': [],
-    'users': [
-        {'userId': 'admin', 'type': 'password', 'password': h, 'roles': ['admin']}
-    ],
-    'devices': []
-}
-print(json.dumps(data, indent=2))
+    # Hash via Signal K's own bcryptjs to ensure compatibility.
+    # Signal K uses the field name 'username' (not 'userId') for login matching.
+    node -e "
+const bcrypt = require('/usr/lib/node_modules/signalk-server/node_modules/bcryptjs');
+const hash = bcrypt.hashSync(process.env.SK_ADMIN_PASS, 12);
+const data = {
+  allowedCorsOrigins: '',
+  immutableConfig: false,
+  acls: [],
+  users: [
+    { username: 'admin', type: 'password', password: hash, roles: ['admin'] }
+  ],
+  devices: []
+};
+console.log(JSON.stringify(data, null, 2));
 " > "$SK_SECURITY_FILE"
 
     # Save the plaintext password for the operator
