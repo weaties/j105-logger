@@ -1691,7 +1691,7 @@ function placeRcMarker(lat, lon) {
       title: 'RC (Start/Finish)',
       icon: L.divIcon({
         className: '',
-        html: '<div style="background:#ef4444;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff">RC</div>',
+        html: '<div style="background:' + cssVar('--danger') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">RC</div>',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
       }),
@@ -1716,9 +1716,10 @@ function updateWindArrow(lat, lon) {
   const endLat = lat + arrowLen * Math.cos(rad);
   const endLon = lon + arrowLen * Math.sin(rad) / Math.cos(lat * Math.PI / 180);
   if (_synthWindArrow) _synthMap.removeLayer(_synthWindArrow);
+  const synthArrowColor = cssVar('--warning');
   _synthWindArrow = L.polyline(
     [[lat, lon], [endLat, endLon]],
-    {color: '#fbbf24', weight: 3, dashArray: '6,4', opacity: 0.8}
+    {color: synthArrowColor, weight: 3, dashArray: '6,4', opacity: 0.8}
   ).addTo(_synthMap);
   // Arrowhead
   const headLen = 0.003;
@@ -1726,8 +1727,8 @@ function updateWindArrow(lat, lon) {
   const a2 = rad - 2.6;
   const h1 = [endLat + headLen * Math.cos(a1), endLon + headLen * Math.sin(a1) / Math.cos(lat * Math.PI / 180)];
   const h2 = [endLat + headLen * Math.cos(a2), endLon + headLen * Math.sin(a2) / Math.cos(lat * Math.PI / 180)];
-  L.polyline([[endLat, endLon], h1], {color: '#fbbf24', weight: 3}).addTo(_synthMap);
-  L.polyline([[endLat, endLon], h2], {color: '#fbbf24', weight: 3}).addTo(_synthMap);
+  L.polyline([[endLat, endLon], h1], {color: synthArrowColor, weight: 3}).addTo(_synthMap);
+  L.polyline([[endLat, endLon], h2], {color: synthArrowColor, weight: 3}).addTo(_synthMap);
 }
 
 function onSynthWindChange() {
@@ -1778,7 +1779,7 @@ async function updateSynthMarks() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#2563eb;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid #fff">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--accent-strong') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">' + key + '</div>',
           iconSize: [22, 22],
           iconAnchor: [11, 11],
         }),
@@ -1796,7 +1797,7 @@ async function updateSynthMarks() {
 
     if (lineCoords.length > 1) {
       _synthCourseLine = L.polyline(lineCoords, {
-        color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4,6',
+        color: cssVar('--accent'), weight: 2, opacity: 0.7, dashArray: '4,6',
       }).addTo(_synthMap);
     }
   } catch (_) {}
@@ -1815,7 +1816,7 @@ async function loadCycMarksOnMap() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#16a34a;color:#fff;border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid #fff;opacity:0.85">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--success') + ';color:' + cssVar('--bg-primary') + ';border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid ' + cssVar('--bg-primary') + ';opacity:0.85">' + key + '</div>',
           iconSize: [20, 20],
           iconAnchor: [10, 10],
         }),
@@ -1863,7 +1864,7 @@ async function drawCustomCourseLine() {
     }
     if (coords.length > 1) {
       _synthCourseLine = L.polyline(coords, {
-        color: '#fbbf24', weight: 3, opacity: 0.8,
+        color: cssVar('--warning'), weight: 3, opacity: 0.8,
       }).addTo(_synthMap);
     }
   } catch (_) {}
@@ -1881,7 +1882,7 @@ function _updateCourseLine() {
   });
   if (coords.length > 1) {
     _synthCourseLine = L.polyline(coords, {
-      color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4,6',
+      color: cssVar('--accent'), weight: 2, opacity: 0.7, dashArray: '4,6',
     }).addTo(_synthMap);
   }
 }

@@ -19,10 +19,10 @@
 .back-link:hover{color:var(--accent)}
 .maneuver-table{width:100%;border-collapse:collapse;font-size:.78rem}
 .maneuver-table th{color:var(--text-secondary);font-weight:400;text-align:left;padding:3px 6px;border-bottom:1px solid var(--border)}
-.maneuver-table td{padding:3px 6px;border-bottom:1px solid #0d1a2e;color:var(--text-primary)}
-.maneuver-table tr.active-row td{background:#0d2040;color:var(--text-primary)}
+.maneuver-table td{padding:3px 6px;border-bottom:1px solid var(--border);color:var(--text-primary)}
+.maneuver-table tr.active-row td{background:var(--bg-secondary);color:var(--text-primary)}
 .badge-tack{color:var(--accent)}
-.badge-gybe{color:#fb923c}
+.badge-gybe{color:var(--warning)}
 .badge-rounding{color:var(--success)}
 .wf-mark-label{background:var(--bg-primary)!important;border:1px solid var(--warning)!important;color:var(--text-primary)!important;font-size:.7rem!important;padding:1px 4px!important;border-radius:3px!important;box-shadow:none!important}
 .wf-mark-label::before{border-right-color:var(--warning)!important}
@@ -30,16 +30,16 @@
 .thread-item:hover{border-color:var(--accent-strong)}
 .thread-item.resolved{opacity:.7}
 .thread-anchor{font-size:.7rem;color:var(--warning);margin-left:6px}
-.thread-unread{background:var(--accent-strong);color:var(--text-primary);font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
-.comment-item{padding:6px 0;border-bottom:1px solid #0d1a2e;font-size:.8rem}
-.comment-author{color:#7dd3fc;font-weight:600;font-size:.75rem}
+.thread-unread{background:var(--accent-strong);color:var(--bg-primary);font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
+.comment-item{padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem}
+.comment-author{color:var(--accent);font-weight:600;font-size:.75rem}
 .comment-time{color:var(--text-secondary);font-size:.7rem;margin-left:4px}
 .comment-edited{color:var(--text-secondary);font-size:.65rem;font-style:italic}
 .comment-body{color:var(--text-primary);margin-top:2px;white-space:pre-wrap}
-.thread-form input,.thread-form select,.thread-form textarea{background:#0d1929;border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:100%;box-sizing:border-box}
+.thread-form input,.thread-form select,.thread-form textarea{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:100%;box-sizing:border-box}
 .thread-form textarea{resize:vertical;min-height:60px}
 .btn-thread{background:var(--border);color:var(--accent);border:none;border-radius:4px;padding:4px 12px;font-size:.78rem;cursor:pointer}
-.btn-thread:hover{background:var(--accent-strong);color:var(--text-primary)}
+.btn-thread:hover{background:var(--accent-strong);color:var(--bg-primary)}
 .btn-resolve{background:none;border:1px solid var(--success);color:var(--success);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
 .btn-resolve:hover{background:var(--success);color:var(--bg-primary)}
 .btn-unresolve{background:none;border:1px solid var(--text-secondary);color:var(--text-secondary);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
@@ -155,11 +155,11 @@
 <div class="card" id="tuning-extraction-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <div class="section-title" style="margin-bottom:0" onclick="toggleSection('tuning-extraction')">
-      Tuning Extraction <span id="tuning-extraction-badge" style="font-size:.7rem;color:#60a5fa"></span>
+      Tuning Extraction <span id="tuning-extraction-badge" style="font-size:.7rem;color:var(--accent)"></span>
       <span id="tuning-extraction-toggle">&#9660;</span>
     </div>
     <button id="extract-tuning-btn" onclick="extractTuning()"
-      style="font-size:.72rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">
+      style="font-size:.72rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">
       &#8635; Extract
     </button>
   </div>
