@@ -12,9 +12,9 @@ td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 .ubtn-danger{border-color:var(--danger);color:var(--danger)}
 .edit-input{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;width:100%;min-height:36px;box-sizing:border-box;margin:0}
 .edit-select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;min-height:36px;margin:0}
-.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:var(--accent-strong);color:var(--bg-primary)}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer}
 label{font-size:.85rem;color:var(--text-secondary);display:block;margin-bottom:4px}
-input,select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:.9rem;margin-bottom:10px}
+input,select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:.9rem;margin-bottom:10px;width:100%;box-sizing:border-box}
 .pos-badge{font-size:.72rem;padding:2px 6px;border-radius:3px;font-weight:600}
 .pos-upwind{background:var(--bg-secondary);color:var(--accent);border:1px solid var(--accent-strong)}
 .pos-downwind{background:var(--bg-secondary);color:var(--success);border:1px solid var(--success)}
@@ -65,7 +65,7 @@ input,select{background:var(--bg-input);border:1px solid var(--accent-strong);bo
 <label>Point of Sail</label>
 <select id="add-pos"><option value="">Auto (by type)</option><option value="upwind">Upwind</option><option value="downwind">Downwind</option><option value="both">Both</option></select>
 <label>Notes</label><input type="text" id="add-notes" placeholder="Optional"/>
-<button class="btn" type="submit">Add Sail</button>
+<button class="btn btn-primary" type="submit">Add Sail</button>
 </form>
 <div id="add-result" style="margin-top:8px;font-size:.85rem"></div>
 </div>
