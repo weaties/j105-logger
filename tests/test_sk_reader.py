@@ -234,6 +234,100 @@ class TestSKReaderDelta:
 
 
 # ---------------------------------------------------------------------------
+# TestSelfVesselFilter — context matching for self-vessel deltas (#208)
+# ---------------------------------------------------------------------------
+
+
+class TestSelfVesselFilter:
+    """Self-vessel context filter accepts UUID-style and literal 'vessels.self'."""
+
+    def test_literal_vessels_self_accepted(self) -> None:
+        """The literal context 'vessels.self' is always accepted."""
+        buf: dict[str, float] = {}
+        records = process_delta(_delta("navigation.headingTrue", 1.0), buf)
+        assert len(records) == 1
+
+    def test_uuid_context_accepted_when_matching_self(self) -> None:
+        """A UUID context matching the resolved self identity is accepted."""
+        buf: dict[str, float] = {}
+        uuid_ctx = "vessels.urn:mrn:signalk:uuid:26bf9a06-2956-41c4-976c-db16b80c9334"
+        msg = json.dumps(
+            {
+                "context": uuid_ctx,
+                "updates": [
+                    {
+                        "timestamp": _TS,
+                        "values": [
+                            {"path": "navigation.headingTrue", "value": 1.0},
+                        ],
+                    }
+                ],
+            }
+        )
+        records = process_delta(msg, buf, self_context=uuid_ctx)
+        assert len(records) == 1
+        assert isinstance(records[0], HeadingRecord)
+
+    def test_uuid_context_rejected_when_not_matching_self(self) -> None:
+        """A UUID context that doesn't match the resolved self is rejected."""
+        buf: dict[str, float] = {}
+        self_ctx = "vessels.urn:mrn:signalk:uuid:aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        other_ctx = "vessels.urn:mrn:signalk:uuid:11111111-2222-3333-4444-555555555555"
+        msg = json.dumps(
+            {
+                "context": other_ctx,
+                "updates": [
+                    {
+                        "timestamp": _TS,
+                        "values": [
+                            {"path": "navigation.headingTrue", "value": 1.0},
+                        ],
+                    }
+                ],
+            }
+        )
+        records = process_delta(msg, buf, self_context=self_ctx)
+        assert records == []
+
+    def test_uuid_context_rejected_when_no_self_context_provided(self) -> None:
+        """Without self_context, UUID contexts are still rejected (backward compat)."""
+        buf: dict[str, float] = {}
+        msg = json.dumps(
+            {
+                "context": "vessels.urn:mrn:signalk:uuid:26bf9a06-2956-41c4-976c-db16b80c9334",
+                "updates": [
+                    {
+                        "timestamp": _TS,
+                        "values": [
+                            {"path": "navigation.headingTrue", "value": 1.0},
+                        ],
+                    }
+                ],
+            }
+        )
+        records = process_delta(msg, buf)
+        assert records == []
+
+    def test_no_context_field_defaults_to_self(self) -> None:
+        """Deltas without a context field are treated as self-vessel."""
+        buf: dict[str, float] = {}
+        msg = json.dumps(
+            {
+                "updates": [
+                    {
+                        "timestamp": _TS,
+                        "values": [
+                            {"path": "navigation.headingTrue", "value": 1.0},
+                        ],
+                    }
+                ],
+            }
+        )
+        records = process_delta(msg, buf)
+        assert len(records) == 1
+
+
+# ---------------------------------------------------------------------------
 # TestSKReaderReconnect — reconnect and cancellation behaviour
 # ---------------------------------------------------------------------------
 
