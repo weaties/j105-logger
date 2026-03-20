@@ -15,6 +15,12 @@
 - [ ] New tests added for new functionality
 - [ ] Manual testing (describe below)
 
+## AI usage
+
+<!-- If you used AI tools, check the box and briefly describe how -->
+
+- [ ] AI-assisted (tool and scope: _e.g., Claude Code for test generation_)
+
 ## Checklist
 
 - [ ] Changes follow the [coding standards](CONTRIBUTING.md#coding-standards)

@@ -39,7 +39,30 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: |
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+
+            Review with these project-specific priorities:
+
+            HIGH PRIORITY — always flag:
+            - Security issues in auth.py, peer_auth.py, federation.py (Critical tier modules)
+            - Data licensing violations: check docs/data-licensing.md — PII exposure, missing
+              deletion support, co-op data bulk export, gambling/protest firewall breaches
+            - Schema migration issues in storage.py: backwards compatibility, FK cascades
+            - Missing or broken type annotations (mypy must pass)
+            - Architecture violations: business logic in main.py, hardware imports outside
+              isolated modules, raw dicts instead of dataclasses/TypedDict
+            - Missing tests for new functionality (project follows TDD)
+
+            MEDIUM PRIORITY — flag if confident:
+            - Embargo enforcement gaps when serving co-op track data
+            - Export code that leaks GPS precision or serves data policy-restricted fields
+            - Auth decorator missing on new web.py endpoints
+            - Rate limiting missing on new API endpoints
+
+            DO NOT comment on:
+            - Code formatting or style — Ruff handles this in CI
+            - Line length — enforced by Ruff (100 chars, E501 suppressed in web.py)
+            - Import ordering — enforced by Ruff
+            - Pre-existing mypy errors in web.py (known issues with datetime | None and AudioRecorder | None)
 
