@@ -816,7 +816,9 @@ async function loadSetupCurrentValues() {
     for (const row of rows) {
       setupCurrentValues[row.parameter] = row.value;
       const el = document.getElementById('setup-' + row.parameter);
-      if (el) {
+      // Don't overwrite a field the user is actively editing or that has a
+      // pending save timer — their unsaved value would be lost.
+      if (el && document.activeElement !== el && !_setupSaveTimers[row.parameter]) {
         el.value = row.value;
         el.classList.toggle('has-value', !!row.value);
       }
@@ -847,6 +849,7 @@ function onSetupChange(paramName) {
 async function saveSetupValue(paramName, value) {
   // Manual UI settings are boat-level (race_id=null), not per-race.
   // Per-race settings come from transcript extraction with a race_id.
+  delete _setupSaveTimers[paramName];  // Clear pending-save guard so loadSetupCurrentValues can refresh this field
   const ts = new Date().toISOString();
   try {
     const resp = await fetch('/api/boat-settings', {
