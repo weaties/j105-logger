@@ -548,7 +548,7 @@ const data = {
   immutableConfig: false,
   acls: [],
   users: [
-    { username: 'admin', type: 'password', password: hash, roles: ['admin'] }
+    { username: 'admin', type: 'admin', password: hash, roles: ['admin'] }
   ],
   devices: []
 };
