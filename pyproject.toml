@@ -101,6 +101,7 @@ ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "src/helmlog/web.py" = ["E501"]  # HTML strings contain long lines that can't be wrapped
+"src/helmlog/routes/*.py" = ["E501"]  # HTML strings inherited from web.py split
 
 [tool.ruff.lint.isort]
 known-first-party = ["helmlog"]

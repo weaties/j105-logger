@@ -4576,7 +4576,9 @@ class Storage:
 
     async def get_avatar_path(self, user_id: int) -> str | None:
         """Return the avatar_path for a user, or None."""
-        cur = await self._read_conn().execute("SELECT avatar_path FROM users WHERE id = ?", (user_id,))
+        cur = await self._read_conn().execute(
+            "SELECT avatar_path FROM users WHERE id = ?", (user_id,)
+        )
         row = await cur.fetchone()
         return row["avatar_path"] if row else None
 
@@ -4586,7 +4588,9 @@ class Storage:
 
     async def get_setting(self, key: str) -> str | None:
         """Return the stored value for *key*, or None if not set."""
-        cur = await self._read_conn().execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        cur = await self._read_conn().execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        )
         row = await cur.fetchone()
         return str(row["value"]) if row else None
 

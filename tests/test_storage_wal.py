@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import pytest_asyncio
 
 from helmlog.storage import Storage, StorageConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest_asyncio.fixture
