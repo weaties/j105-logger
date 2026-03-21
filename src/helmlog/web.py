@@ -56,6 +56,7 @@ def create_app(
 
     from helmlog.routes._helpers import limiter
 
+    limiter.reset()
     app = FastAPI(title="HelmLog", docs_url=None, redoc_url=None)
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
