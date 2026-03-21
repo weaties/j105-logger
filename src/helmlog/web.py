@@ -85,6 +85,7 @@ def create_app(
     app.state.audio_config = audio_config
     app.state.session_state = AppSessionState()
     app.state.startup_sha = STARTUP_SHA
+    app.state.ws_clients: set = set()  # type: ignore[assignment]
 
     from helmlog.races import RaceConfig
 
@@ -195,6 +196,7 @@ def create_app(
         tags,
         videos,
         visualizations,
+        ws,
     )
 
     for module in (
@@ -222,7 +224,23 @@ def create_app(
         analysis,
         notifications,
         visualizations,
+        ws,
     ):
         app.include_router(module.router)
+
+    # -- Wire WebSocket broadcast to storage live updates --
+    import asyncio as _asyncio
+
+    from helmlog.routes.ws import broadcast
+
+    def _on_live_update(data: dict) -> None:  # type: ignore[type-arg]
+        """Sync callback from Storage.update_live() → schedule async broadcast."""
+        try:
+            loop = _asyncio.get_running_loop()
+            loop.create_task(broadcast(app.state.ws_clients, {"type": "instruments", "data": data}))
+        except RuntimeError:
+            pass  # no event loop running (e.g., during tests)
+
+    storage.set_live_callback(_on_live_update)
 
     return app

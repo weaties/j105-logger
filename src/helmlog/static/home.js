@@ -185,26 +185,30 @@ function tick() {
   }
 }
 
+function renderInstrumentData(d) {
+  const set = (id, val, decimals=1) => {
+    const el = document.getElementById(id);
+    el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
+  };
+  set('iv-sog', d.sog_kts, 1);
+  set('iv-cog', d.cog_deg, 0);
+  set('iv-hdg', d.heading_deg, 0);
+  set('iv-bsp', d.bsp_kts, 1);
+  set('iv-aws', d.aws_kts, 1);
+  set('iv-awa', d.awa_deg, 0);
+  set('iv-tws', d.tws_kts, 1);
+  set('iv-twa', d.twa_deg, 0);
+  set('iv-twd', d.twd_deg, 0);
+  if (Object.values(d).some(v => v != null)) {
+    lastInstrumentDataMs = Date.now();
+  }
+}
+
 async function loadInstruments() {
   try {
     const r = await fetch('/api/instruments');
     const d = await r.json();
-    const set = (id, val, decimals=1) => {
-      const el = document.getElementById(id);
-      el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
-    };
-    set('iv-sog', d.sog_kts, 1);
-    set('iv-cog', d.cog_deg, 0);
-    set('iv-hdg', d.heading_deg, 0);
-    set('iv-bsp', d.bsp_kts, 1);
-    set('iv-aws', d.aws_kts, 1);
-    set('iv-awa', d.awa_deg, 0);
-    set('iv-tws', d.tws_kts, 1);
-    set('iv-twa', d.twa_deg, 0);
-    set('iv-twd', d.twd_deg, 0);
-    if (Object.values(d).some(v => v != null)) {
-      lastInstrumentDataMs = Date.now();
-    }
+    renderInstrumentData(d);
   } catch(e) { console.error('instruments error', e); }
 }
 
@@ -2162,12 +2166,73 @@ async function runSynthesize() {
   }
 }
 
+// -- WebSocket live push with polling fallback --
+let _stateInterval = null;
+let _instrumentInterval = null;
+let _healthInterval = null;
+let _wsRetryMs = 1000;
+let _ws = null;
+
+function _startPolling() {
+  if (!_stateInterval) _stateInterval = setInterval(loadState, 10000);
+  if (!_instrumentInterval) _instrumentInterval = setInterval(loadInstruments, 2000);
+  if (!_healthInterval) _healthInterval = setInterval(checkSystemHealth, 30000);
+}
+
+function _stopPolling() {
+  if (_stateInterval) { clearInterval(_stateInterval); _stateInterval = null; }
+  if (_instrumentInterval) { clearInterval(_instrumentInterval); _instrumentInterval = null; }
+  if (_healthInterval) { clearInterval(_healthInterval); _healthInterval = null; }
+}
+
+function _connectWS() {
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _ws = new WebSocket(`${proto}//${location.host}/ws/live`);
+
+    _ws.onopen = () => {
+      _wsRetryMs = 1000;
+      _stopPolling();
+    };
+
+    _ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'instruments') renderInstrumentData(msg.data);
+        else if (msg.type === 'state') render(msg.data);
+        else if (msg.type === 'health') {
+          const h = msg.data;
+          const banner = document.getElementById('health-banner');
+          const warnings = [];
+          if (h.disk_pct > 85) warnings.push('Disk ' + h.disk_pct.toFixed(0) + '% full');
+          if (h.cpu_temp_c != null && h.cpu_temp_c > 75) warnings.push('CPU temp ' + h.cpu_temp_c.toFixed(0) + '°C');
+          if (warnings.length) {
+            banner.textContent = '\u26a0 ' + warnings.join(' \u00b7 ');
+            banner.style.display = 'block';
+          } else {
+            banner.style.display = 'none';
+          }
+        }
+      } catch(e) { console.error('ws message parse error', e); }
+    };
+
+    _ws.onclose = () => {
+      _startPolling();
+      setTimeout(_connectWS, Math.min(_wsRetryMs *= 2, 30000));
+    };
+
+    _ws.onerror = () => { /* onclose will fire */ };
+  } catch(e) {
+    _startPolling();
+  }
+}
+
+// Initial data load + start polling, then attempt WebSocket upgrade
 loadState();
 loadCrewSummary();
 loadSailsSummary();
-setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
-setInterval(loadInstruments, 2000);
 checkSystemHealth();
-setInterval(checkSystemHealth, 30000);
+_startPolling();
+_connectWS();

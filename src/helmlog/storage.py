@@ -11,6 +11,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiosqlite
@@ -1186,6 +1187,7 @@ class Storage:
         self._live: dict[str, float | None] = dict.fromkeys(_LIVE_KEYS)
         self._live_tw_ref: int | None = None
         self._live_tw_angle_raw: float | None = None
+        self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
 
     @property
     def session_active(self) -> bool:
@@ -1228,6 +1230,12 @@ class Storage:
                 self._live_tw_ref = record.reference
                 self._live_tw_angle_raw = record.wind_angle_deg
                 self._recompute_true_wind()
+        if self._on_live_update is not None:
+            self._on_live_update(dict(self._live))
+
+    def set_live_callback(self, cb: Callable[[dict[str, float | None]], None]) -> None:
+        """Register a callback invoked on every live instrument update."""
+        self._on_live_update = cb
 
     def live_instruments(self) -> dict[str, float | None]:
         """Return a snapshot of the current in-memory instrument cache."""
