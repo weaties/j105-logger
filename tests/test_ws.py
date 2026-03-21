@@ -19,11 +19,10 @@ if TYPE_CHECKING:
 async def test_ws_connect_and_receive_snapshot(storage: Storage) -> None:
     """WebSocket client receives an initial instrument snapshot on connect."""
     app = create_app(storage)
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws/live") as ws:
-            msg = ws.receive_json()
-            assert msg["type"] == "instruments"
-            assert "data" in msg
+    with TestClient(app) as client, client.websocket_connect("/ws/live") as ws:
+        msg = ws.receive_json()
+        assert msg["type"] == "instruments"
+        assert "data" in msg
 
 
 @pytest.mark.asyncio
@@ -40,7 +39,7 @@ async def test_ws_disconnect_cleanup(storage: Storage) -> None:
 @pytest.mark.asyncio
 async def test_live_callback_is_registered(storage: Storage) -> None:
     """create_app() registers a live update callback on storage."""
-    app = create_app(storage)
+    create_app(storage)
     assert storage._on_live_update is not None
 
 

@@ -9,8 +9,6 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from loguru import logger
 
-from helmlog.routes._helpers import get_storage
-
 router = APIRouter()
 
 
@@ -60,7 +58,7 @@ async def ws_live(websocket: WebSocket) -> None:
             msg = await asyncio.wait_for(websocket.receive_text(), timeout=300)
             if msg == "ping":
                 await websocket.send_json({"type": "pong"})
-    except (WebSocketDisconnect, asyncio.TimeoutError, Exception):  # noqa: BLE001
+    except (TimeoutError, WebSocketDisconnect, Exception):  # noqa: BLE001
         pass
     finally:
         clients.discard(websocket)

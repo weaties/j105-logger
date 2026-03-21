@@ -11,13 +11,13 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiosqlite
 from loguru import logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from helmlog.audio import AudioSession

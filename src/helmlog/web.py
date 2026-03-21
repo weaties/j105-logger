@@ -85,7 +85,7 @@ def create_app(
     app.state.audio_config = audio_config
     app.state.session_state = AppSessionState()
     app.state.startup_sha = STARTUP_SHA
-    app.state.ws_clients: set = set()  # type: ignore[assignment]
+    app.state.ws_clients = set()  # WebSocket client connections
 
     from helmlog.races import RaceConfig
 
