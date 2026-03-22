@@ -1589,3 +1589,118 @@ trim) — enabling much richer post-race debrief and polar analysis.
   part — no off-the-shelf model exists for sail trim classification.
   Training data collection could start now by capturing labeled stills
   during sessions.
+
+---
+
+## IDX-027: Race cards with yacht club burgee and crew snapshot
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about making the race list more visually rich and informative
+- **Status:** `raw`
+- **Related:** `web.py`, `races.py`, `storage.py`, `templates/history.html`, `templates/session.html`, IDX-013 (co-op threads with crew visibility)
+
+**Description:**
+Each race in the history/session list should display as a visual "card"
+featuring two key elements: (1) a thumbnail of the yacht club burgee for
+the club hosting the race, and (2) a snapshot of the crew that was aboard.
+
+**Burgee thumbnails:** Yacht clubs have distinctive burgee flags that are
+instantly recognizable to sailors. Showing the burgee next to a race
+immediately communicates *where* a race happened without reading text.
+This requires a burgee image source — options include:
+- A curated local library of burgee images (SVG or PNG) bundled with
+  HelmLog, keyed by club name or a standardized club identifier
+- User-uploaded burgee images when configuring a race/regatta
+- A community-maintained burgee registry that HelmLog can pull from
+- Scraping from yacht club websites (fragile, IP concerns)
+
+**Crew snapshot:** Show who was on the boat for each race — names and
+positions (helm, tactician, trimmer, bow, etc.). This makes the history
+browsable by *who you sailed with*, not just when and where. Combined
+with audio transcripts (already captured), you can revisit the crew
+conversations from a specific race with a specific crew.
+
+**Key design questions:**
+- Where does the burgee image come from? A local curated set is most
+  reliable but requires maintenance. User upload is simplest but
+  means every user re-uploads the same burgees.
+- How are yacht clubs identified? Need a consistent identifier —
+  club name strings are fragile (abbreviations, typos). Could use
+  a canonical club registry or let users define their clubs.
+- How is crew captured per race? Currently there's no per-session
+  crew roster. Options: manual entry in the web UI before/after a
+  race, voice recognition from audio to identify speakers, or a
+  simple crew check-in feature.
+- Storage: burgee images in `static/` or `data/`? Crew roster as a
+  new table or JSON column on sessions?
+- Co-op implications: if crew names are shared across co-op, they
+  become PII subject to data-licensing rules. Crew positions alone
+  may be sufficient for co-op views.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This would significantly improve the
+  visual experience of browsing race history. The burgee concept is
+  especially compelling — sailors immediately recognize club burgees
+  and it adds a sense of place and community to the data. Crew
+  snapshots connect to several other ideas (IDX-013 crew visibility,
+  audio transcription with diarization). The main prerequisite is a
+  per-session crew management feature, which doesn't exist yet.
+
+---
+
+## IDX-028: Boat owner headshots in co-op peer views
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about visual identity — making other boats in the co-op feel like people, not just data
+- **Status:** `raw`
+- **Related:** `federation.py`, `peer_api.py`, `peer_client.py`, `web.py`, IDX-027 (race cards with burgee/crew), IDX-013 (co-op threads with crew visibility), IDX-018 (anti-parasocial design)
+
+**Description:**
+When viewing other boats in the co-op — peer list, session comparisons,
+track overlays, discussion threads — show a headshot of the boat's owner.
+This puts a face to the data and makes the co-op feel like a community of
+people rather than an anonymous fleet of boat names and sail numbers.
+
+Currently, boats in the co-op are identified by boat name and Ed25519
+fingerprint. Adding an owner headshot (and optionally name) makes the
+experience more personal and builds trust — you're sharing your data with
+Dave on *Aria*, not with `fingerprint:a3b7c9...`.
+
+**How it could work:**
+- Owner uploads a headshot during `helmlog identity init` or via the
+  admin settings page
+- The headshot is included in the boat card (the identity bundle shared
+  during co-op join/invite)
+- Peer boats cache the headshot locally after receiving the boat card
+- The image is displayed as a small avatar wherever that boat appears:
+  co-op peer list, session list, track comparison views, thread posts
+
+**Key design questions:**
+- **Image size/format:** Boat cards are exchanged over Tailscale between
+  Pis. Keep headshots small — a 128x128 JPEG or WebP thumbnail. Resize
+  on upload.
+- **Boat card format:** Currently the boat card contains Ed25519 public
+  key, boat name, and metadata. Adding a base64-encoded image increases
+  card size but keeps it self-contained. Alternatively, serve the image
+  via the peer API and let peers fetch it.
+- **Updates:** What happens when the owner changes their photo? Need a
+  card versioning or update mechanism so peers get the new image.
+- **Privacy / PII:** A headshot is biometric-adjacent PII under the data
+  licensing policy. The owner consents by uploading, but co-op peers
+  cache it — does deletion/anonymization need to propagate? If the
+  owner leaves the co-op, peers should purge the cached headshot.
+- **Multi-owner boats:** Some boats have co-owners or the "owner" rotates
+  (club boats, charter boats). May need to support multiple faces or
+  use a boat logo as fallback.
+- **Fallback:** Boats without a headshot should show a generated avatar
+  (initials, or a deterministic pattern from the fingerprint) rather
+  than a blank placeholder.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This pairs naturally with IDX-027 (burgee
+  + crew for your own races) — together they create a visually rich,
+  people-first experience. The PII angle needs careful design: headshots
+  cached on peer boats must be deletable when someone leaves the co-op.
+  The anti-parasocial principles from IDX-018 apply here too — showing
+  faces builds genuine connection but shouldn't create social pressure
+  or surveillance dynamics.
