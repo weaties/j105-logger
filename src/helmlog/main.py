@@ -17,6 +17,7 @@ import signal
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from loguru import logger
 
@@ -46,6 +47,37 @@ def _setup_logging() -> None:
 # ---------------------------------------------------------------------------
 # run
 # ---------------------------------------------------------------------------
+
+
+async def _bandwidth_loop(storage: object) -> None:
+    """Background task: sample per-interface byte counters every 60 s (#403).
+
+    Writes cumulative counters to the bandwidth_log table so the web dashboard
+    can show bandwidth usage over time.
+    """
+    from helmlog.storage import Storage
+
+    assert isinstance(storage, Storage)
+
+    while True:
+        try:
+            import psutil  # type: ignore[import-untyped]
+
+            now = datetime.now(UTC)
+            counters: dict[str, Any] = psutil.net_io_counters(pernic=True) or {}
+            for iface, c in counters.items():
+                await storage.write_bandwidth_sample(
+                    timestamp=now,
+                    interface=iface,
+                    bytes_sent=int(c.bytes_sent),
+                    bytes_recv=int(c.bytes_recv),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Bandwidth sampling error (will retry): {}", exc)
+
+        await asyncio.sleep(60)
 
 
 async def _weather_loop(storage: object, fetcher: object) -> None:
@@ -256,19 +288,39 @@ async def _run() -> None:
         await storage.seed_cameras_from_env(cameras_str)
 
     from helmlog.deploy import DeployConfig
-    from helmlog.external import external_data_enabled
+    from helmlog.external import external_data_should_fetch
     from helmlog.monitor import monitor_loop
 
+    metered = os.environ.get("METERED", "false").lower() == "true"
+    if metered:
+        logger.info("Metered mode active — external API calls disabled (#403)")
+        # Warn if Cloudflare Tunnel is running on a metered connection
+        try:
+            from helmlog.network import get_cloudflare_status
+
+            cf_status = await get_cloudflare_status()
+            if cf_status.running:
+                logger.warning(
+                    "Cloudflare Tunnel is running on a metered connection — "
+                    "consider disabling: sudo systemctl stop cloudflared"
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     async with ExternalFetcher() as fetcher:
-        if external_data_enabled():
+        if external_data_should_fetch():
             weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
             tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
         else:
-            logger.info("External data fetching disabled (EXTERNAL_DATA_ENABLED=false)")
+            if metered:
+                logger.info("Weather/tide fetches skipped (METERED=true)")
+            else:
+                logger.info("External data fetching disabled (EXTERNAL_DATA_ENABLED=false)")
             weather_task = asyncio.create_task(asyncio.sleep(1e9))  # no-op placeholder
             tide_task = asyncio.create_task(asyncio.sleep(1e9))
         web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
         monitor_task = asyncio.create_task(monitor_loop())
+        bandwidth_task = asyncio.create_task(_bandwidth_loop(storage))
         deploy_config = DeployConfig()
         if deploy_config.mode == "evergreen":
             deploy_task = asyncio.create_task(_deploy_loop(storage, deploy_config))
@@ -314,12 +366,14 @@ async def _run() -> None:
             tide_task.cancel()
             web_task.cancel()
             monitor_task.cancel()
+            bandwidth_task.cancel()
             deploy_task.cancel()
             await asyncio.gather(
                 weather_task,
                 tide_task,
                 web_task,
                 monitor_task,
+                bandwidth_task,
                 deploy_task,
                 return_exceptions=True,
             )

@@ -1454,6 +1454,15 @@ def create_app(
             )
         return JSONResponse({"updated": changed})
 
+    @app.get("/api/bandwidth")
+    async def api_bandwidth(
+        hours: int = 24,
+        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+    ) -> JSONResponse:
+        """Return per-interface bandwidth totals for the last *hours* hours (#403)."""
+        summary = await storage.get_bandwidth_summary(hours=hours)
+        return JSONResponse({"interfaces": summary, "hours": hours})
+
     @app.get("/api/cameras")
     async def api_list_cameras(
         _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008

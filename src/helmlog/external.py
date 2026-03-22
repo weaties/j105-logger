@@ -68,6 +68,20 @@ def external_data_enabled() -> bool:
     return os.environ.get("EXTERNAL_DATA_ENABLED", "true").lower() != "false"
 
 
+def external_data_should_fetch() -> bool:
+    """Check if external data fetching should proceed (#403).
+
+    Returns False if EXTERNAL_DATA_ENABLED=false OR METERED=true.
+    Use this instead of external_data_enabled() when deciding whether
+    to launch weather/tide background tasks.
+    """
+    import os
+
+    if not external_data_enabled():
+        return False
+    return os.environ.get("METERED", "false").lower() != "true"
+
+
 def _reduce_precision(val: float, decimals: int = 2) -> float:
     """Reduce GPS coordinate precision for external API calls (#209).
 
