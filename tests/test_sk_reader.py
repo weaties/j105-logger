@@ -418,10 +418,12 @@ class TestSKReaderReconnect:
     async def test_reconnects_with_backoff_on_exception(self) -> None:
         """Reader applies backoff delay when connection raises an exception."""
         connect_calls: list[int] = [0]
+        got_attempt = asyncio.Event()
 
         class FailWS:
             async def __aenter__(self) -> FailWS:
                 connect_calls[0] += 1
+                got_attempt.set()
                 raise ConnectionRefusedError("no server")
 
             async def __aexit__(self, *_: object) -> None:
@@ -436,7 +438,8 @@ class TestSKReaderReconnect:
         with patch("helmlog.sk_reader._ws_connect", lambda _uri: FailWS()):
             reader = SKReader(SKReaderConfig(reconnect_delay_s=0.05))
             task = asyncio.create_task(self._collect_one(reader))
-            await asyncio.sleep(0.15)  # let at least 2 retries fire
+            # Wait for at least one reconnect attempt — no wall-clock racing
+            await asyncio.wait_for(got_attempt.wait(), timeout=5.0)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
