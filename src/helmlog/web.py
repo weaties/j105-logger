@@ -385,6 +385,13 @@ def create_app(
             request.state.theme_css = ""
         return await call_next(request)
 
+    from helmlog.bandwidth import bandwidth_middleware
+
+    @app.middleware("http")
+    async def track_bandwidth(request: Request, call_next: Any) -> Any:  # noqa: ANN401
+        """Track per-request bandwidth attribution (#403)."""
+        return await bandwidth_middleware(request, call_next)
+
     def _tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
         theme_css: str = getattr(request.state, "theme_css", "")
         return {
@@ -1453,15 +1460,6 @@ def create_app(
                 user=_user,
             )
         return JSONResponse({"updated": changed})
-
-    @app.get("/api/bandwidth")
-    async def api_bandwidth(
-        hours: int = 24,
-        _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-    ) -> JSONResponse:
-        """Return per-interface bandwidth totals for the last *hours* hours (#403)."""
-        summary = await storage.get_bandwidth_summary(hours=hours)
-        return JSONResponse({"interfaces": summary, "hours": hours})
 
     @app.get("/api/cameras")
     async def api_list_cameras(

@@ -125,7 +125,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 51
+_CURRENT_VERSION: int = 50
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1129,20 +1129,6 @@ _MIGRATIONS: dict[int, str] = {
             is_default  INTEGER NOT NULL DEFAULT 0,
             created_at  TEXT NOT NULL
         );
-    """,
-    51: """
-        -- Bandwidth logging for metered-connection mode (#403)
-        CREATE TABLE IF NOT EXISTS bandwidth_log (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp   TEXT NOT NULL,
-            interface   TEXT NOT NULL,
-            bytes_sent  INTEGER NOT NULL,
-            bytes_recv  INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_bandwidth_log_ts
-            ON bandwidth_log(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_bandwidth_log_iface
-            ON bandwidth_log(interface, timestamp);
     """,
 }
 
@@ -6128,47 +6114,6 @@ class Storage:
             names,
         )
         return {str(row["name"]): int(row["id"]) for row in await cur.fetchall()}
-
-    # ------------------------------------------------------------------
-    # Bandwidth logging (#403)
-    # ------------------------------------------------------------------
-
-    async def write_bandwidth_sample(
-        self,
-        *,
-        timestamp: datetime,
-        interface: str,
-        bytes_sent: int,
-        bytes_recv: int,
-    ) -> None:
-        """Write a bandwidth sample to the bandwidth_log table."""
-        db = self._conn()
-        await db.execute(
-            "INSERT INTO bandwidth_log (timestamp, interface, bytes_sent, bytes_recv) "
-            "VALUES (?, ?, ?, ?)",
-            (_ts(timestamp), interface, bytes_sent, bytes_recv),
-        )
-        await db.commit()
-
-    async def get_bandwidth_summary(self, *, hours: int = 24) -> list[dict[str, Any]]:
-        """Return per-interface bandwidth totals for the last *hours* hours."""
-        from datetime import UTC, timedelta
-        from datetime import datetime as _datetime
-
-        db = self._conn()
-        cutoff = _datetime.now(UTC) - timedelta(hours=hours)
-        cur = await db.execute(
-            "SELECT interface, "
-            "  SUM(bytes_sent) AS total_sent, "
-            "  SUM(bytes_recv) AS total_recv, "
-            "  COUNT(*) AS samples "
-            "FROM bandwidth_log "
-            "WHERE timestamp >= ? "
-            "GROUP BY interface "
-            "ORDER BY total_recv DESC",
-            (_ts(cutoff),),
-        )
-        return [dict(r) for r in await cur.fetchall()]
 
     # ------------------------------------------------------------------
     # Helpers

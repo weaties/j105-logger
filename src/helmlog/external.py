@@ -90,6 +90,16 @@ def _reduce_precision(val: float, decimals: int = 2) -> float:
     return round(val, decimals)
 
 
+def _track_response(component: str, resp: httpx.Response) -> None:
+    """Record bandwidth for an httpx response (best-effort)."""
+    try:
+        from helmlog.bandwidth import track_httpx_response
+
+        track_httpx_response(component, resp)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 class ExternalFetcher:
     """Fetches external environmental data from web APIs."""
 
@@ -124,6 +134,7 @@ class ExternalFetcher:
         try:
             resp = await self._http().get(_NOAA_STATIONS_URL, params={"type": "tidepredictions"})
             resp.raise_for_status()
+            _track_response("tides", resp)
             data: dict[str, Any] = resp.json()
             self._stations_cache = data["stations"]
             logger.debug("Fetched {} NOAA tide stations", len(self._stations_cache))
@@ -205,6 +216,7 @@ class ExternalFetcher:
                 },
             )
             resp.raise_for_status()
+            _track_response("tides", resp)
             data: dict[str, Any] = resp.json()
         except httpx.HTTPError as exc:
             logger.warning("Tide predictions fetch failed: {}", exc)
@@ -309,6 +321,7 @@ class ExternalFetcher:
         try:
             resp = await self._http().get(_OPEN_METEO_URL, params=params)
             resp.raise_for_status()
+            _track_response("weather", resp)
         except httpx.HTTPError as exc:
             logger.warning("Weather fetch failed: {}", exc)
             return None
