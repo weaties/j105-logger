@@ -1645,3 +1645,62 @@ conversations from a specific race with a specific crew.
   snapshots connect to several other ideas (IDX-013 crew visibility,
   audio transcription with diarization). The main prerequisite is a
   per-session crew management feature, which doesn't exist yet.
+
+---
+
+## IDX-028: Boat owner headshots in co-op peer views
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about visual identity — making other boats in the co-op feel like people, not just data
+- **Status:** `raw`
+- **Related:** `federation.py`, `peer_api.py`, `peer_client.py`, `web.py`, IDX-027 (race cards with burgee/crew), IDX-013 (co-op threads with crew visibility), IDX-018 (anti-parasocial design)
+
+**Description:**
+When viewing other boats in the co-op — peer list, session comparisons,
+track overlays, discussion threads — show a headshot of the boat's owner.
+This puts a face to the data and makes the co-op feel like a community of
+people rather than an anonymous fleet of boat names and sail numbers.
+
+Currently, boats in the co-op are identified by boat name and Ed25519
+fingerprint. Adding an owner headshot (and optionally name) makes the
+experience more personal and builds trust — you're sharing your data with
+Dave on *Aria*, not with `fingerprint:a3b7c9...`.
+
+**How it could work:**
+- Owner uploads a headshot during `helmlog identity init` or via the
+  admin settings page
+- The headshot is included in the boat card (the identity bundle shared
+  during co-op join/invite)
+- Peer boats cache the headshot locally after receiving the boat card
+- The image is displayed as a small avatar wherever that boat appears:
+  co-op peer list, session list, track comparison views, thread posts
+
+**Key design questions:**
+- **Image size/format:** Boat cards are exchanged over Tailscale between
+  Pis. Keep headshots small — a 128x128 JPEG or WebP thumbnail. Resize
+  on upload.
+- **Boat card format:** Currently the boat card contains Ed25519 public
+  key, boat name, and metadata. Adding a base64-encoded image increases
+  card size but keeps it self-contained. Alternatively, serve the image
+  via the peer API and let peers fetch it.
+- **Updates:** What happens when the owner changes their photo? Need a
+  card versioning or update mechanism so peers get the new image.
+- **Privacy / PII:** A headshot is biometric-adjacent PII under the data
+  licensing policy. The owner consents by uploading, but co-op peers
+  cache it — does deletion/anonymization need to propagate? If the
+  owner leaves the co-op, peers should purge the cached headshot.
+- **Multi-owner boats:** Some boats have co-owners or the "owner" rotates
+  (club boats, charter boats). May need to support multiple faces or
+  use a boat logo as fallback.
+- **Fallback:** Boats without a headshot should show a generated avatar
+  (initials, or a deterministic pattern from the fingerprint) rather
+  than a blank placeholder.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This pairs naturally with IDX-027 (burgee
+  + crew for your own races) — together they create a visually rich,
+  people-first experience. The PII angle needs careful design: headshots
+  cached on peer boats must be deletable when someone leaves the co-op.
+  The anti-parasocial principles from IDX-018 apply here too — showing
+  faces builds genuine connection but shouldn't create social pressure
+  or surveillance dynamics.
