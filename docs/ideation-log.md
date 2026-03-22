@@ -1746,3 +1746,82 @@ the policy states that the boat owns its data and has deletion rights over PII
   and effort is estimable. The main blocker is resolving the design questions above,
   particularly cascade behavior and co-op retraction. Could be promoted to a GitHub
   issue once those are settled.
+
+---
+
+## IDX-030: DIY rudder angle sensor + Signal K integration for rudder angle logging
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about what exists around rudder angle — calibration offset is captured (#337) but no actual rudder angle data logging yet
+- **Status:** `raw`
+- **Related:** #343 (B&G PGN survey), #337 (calibration values), IDX-022 (calibration analysis), IDX-011 (write-back to B&G), `sk_reader.py`, `boat_settings.py`
+
+**Description:**
+Two parts to this idea: (1) log rudder angle data in HelmLog, and (2) build a
+DIY rudder angle sensor instead of buying the B&G rudder transducer (which runs
+several hundred dollars).
+
+**Part 1 — HelmLog rudder angle logging:**
+Subscribe to `steering.rudderAngle` in `sk_reader.py` and store it as a
+time-series channel alongside existing instrument data. The `rudder_angle_offset`
+calibration parameter already exists in `boat_settings.py` (from #337). Once the
+data is flowing, rudder angle becomes available for export, session replay, and
+performance analysis (e.g., correlating rudder movement with VMG, detecting
+over-steering, comparing tack technique).
+
+This is partially blocked on #343 (PGN survey) — if Signal K is already decoding
+PGN 127245 (NMEA 2000 standard rudder angle) from the B&G network, HelmLog just
+subscribes. If the B&G system doesn't broadcast rudder angle (no transducer
+installed), Part 2 provides the data source.
+
+**Part 2 — DIY rudder angle sensor:**
+Build a low-cost rudder angle sensor using off-the-shelf components and publish
+the reading to Signal K, so HelmLog (and any other Signal K consumer) can use it
+without buying B&G's proprietary transducer.
+
+Candidate hardware approaches:
+- **Rotary encoder / potentiometer on the rudder post:** Mount a continuous-turn
+  potentiometer or absolute rotary encoder (e.g., AS5600 magnetic encoder, ~$3)
+  on the rudder post or quadrant. Direct mechanical coupling gives reliable angle
+  measurement. Needs a bracket or coupling to attach to the post.
+- **Hall effect sensor + magnet:** Mount a magnet on the rudder post and a
+  hall-effect angle sensor nearby. Non-contact, no wear. The AS5600 is actually
+  a hall-effect sensor with I2C output — cheap and readily available.
+- **IMU on the rudder blade:** Mount a small IMU (e.g., BNO055) on the rudder
+  blade itself. Measures absolute orientation. More complex but doesn't need
+  mechanical coupling to the post.
+
+Candidate microcontrollers:
+- **ESP32** — WiFi built in, can POST Signal K deltas directly over HTTP or
+  WebSocket. Lots of Arduino/MicroPython examples for AS5600 + ESP32. Low power,
+  can run off a small USB supply. This is probably the simplest path.
+- **Raspberry Pi Pico W** — similar WiFi capability, MicroPython or C SDK.
+  Slightly more I/O flexibility than ESP32.
+- **Pi Zero 2W** — overkill for this but could run a full Signal K plugin
+  if more processing is needed.
+
+Signal K integration:
+- The sensor publishes deltas to Signal K Server's HTTP PUT API or WebSocket
+  delta channel. Signal K path: `steering.rudderAngle` (radians, standard SK
+  units). The sensor is just another data source to Signal K — no HelmLog code
+  changes needed beyond the subscription in Part 1.
+- Signal K's `signalk-to-nmea2000` plugin can optionally re-broadcast the
+  rudder angle as PGN 127245 onto the NMEA 2000 bus, making it available on
+  B&G displays too (connects to IDX-011's write-back concept).
+
+**Open questions:**
+- What's the best mounting approach for the rudder post on this specific boat?
+  Need to inspect the quadrant/tiller arrangement below decks.
+- Waterproofing and power — the sensor will be in the lazarette or near the
+  rudder post. USB power from the Pi? Battery with charging?
+- Calibration — the AS5600 gives absolute angle, but mounting offset needs to
+  be zeroed. Could use the existing `rudder_angle_offset` in boat_settings.
+- Sampling rate — how fast does rudder angle need to be sampled for useful
+  analysis? 5 Hz? 10 Hz? B&G typically sends PGN 127245 at 10 Hz.
+
+**Notes:**
+- *2026-03-22:* Initial capture. The AS5600 + ESP32 path looks like the sweet
+  spot — under $10 in parts, well-documented, WiFi-native. The HelmLog side
+  (Part 1) is straightforward once Signal K has the data. The mechanical
+  mounting is the main unknown — need to look at the boat's rudder post
+  arrangement to design a bracket.
