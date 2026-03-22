@@ -1518,3 +1518,74 @@ metadata. The deploy result dict already contains most of this information.
   annotation query. The GitHub compare link in the annotation tooltip is
   the high-value detail — one click from "something changed" to "here's
   what changed."
+
+---
+
+## IDX-026: Vision-based sail settings capture for post-race analysis
+
+- **Date captured:** 2026-03-22
+- **Origin:** Phase four data entry planning — exploring ways to capture sail configuration automatically
+- **Status:** `raw`
+- **Related:** `cameras.py`, `insta360.py`, `storage.py`, `boat_settings.py`, IDX-022 (B&G calibration values)
+
+**Description:**
+Use computer vision to detect and record sail settings from camera imagery
+during sailing sessions. The Insta360 X4 (or a dedicated camera) captures
+the physical state of the sails — trim, draft, twist, cunningham tension,
+outhaul, vang, backstay, jib lead position, etc. — and a vision model
+classifies or measures these settings, storing them as time-series data
+alongside instrument readings.
+
+This fills a major gap in sailing data analysis: instrument systems record
+wind, speed, and heading, but the *sail configuration* that produced those
+numbers is lost unless someone manually logs it. By capturing sail settings
+automatically via vision, every tack, gust response, and mode change has
+both the "what happened" (instruments) and the "what we were doing" (sail
+trim) — enabling much richer post-race debrief and polar analysis.
+
+**Potential approaches:**
+1. **On-device inference (Hailo AI HAT+):** Run a sail-state classification
+   model on the NPU. Low latency, no connectivity needed, but requires a
+   custom-trained model and the Hailo ecosystem is still maturing for
+   custom models.
+2. **Post-session batch processing:** After a session, run vision analysis
+   on captured video/stills. Can use larger, more capable models (cloud or
+   local). Latency doesn't matter since it's for debrief, not real-time.
+3. **Periodic snapshot + cloud API:** Take a photo every N seconds, send to
+   a vision API (Claude, etc.) for classification. Simple but requires
+   connectivity and has cost implications over long sessions.
+
+**What to detect:**
+- Mainsail: reef state, cunningham, outhaul, vang, traveler position
+- Jib/genoa: lead position, sheet tension, halyard tension
+- Spinnaker: pole height/angle, sheet/guy trim, halyard
+- General: heel angle from horizon (cross-check with instruments),
+  sail shape (draft depth, draft position, twist)
+
+**Key design questions:**
+- Which camera angle gives the best view of sail settings? The Insta360's
+  360° field is an advantage but distortion correction adds complexity.
+  A dedicated mast-mounted or boom-mounted camera might give cleaner input.
+- How to label training data? Sail settings are continuous, not discrete —
+  do we classify into buckets (light/medium/heavy trim) or try to measure
+  actual values? Buckets are easier to train and probably sufficient for
+  debrief.
+- How to store the data? Extend `boat_settings` with sail-state columns,
+  or create a new `sail_settings` table with foreign key to sessions?
+- Integration with polar analysis: once sail settings are captured, the
+  polar builder could segment performance by sail configuration — "your
+  VMG in 12 kts TWS is X with the outhaul eased vs Y with it tight."
+- Privacy: sail settings are competitive information. Should these be
+  excluded from co-op sharing by default, or included as part of the
+  "view-only" co-op data?
+
+**Notes:**
+- *2026-03-22:* Initial capture. This is a "phase four" data entry concept —
+  phases one through three presumably cover instrument data, manual entries,
+  and audio/transcript capture. Vision-based sail settings would be a
+  significant step toward fully automated sailing data collection. The
+  Insta360 integration (`cameras.py`) and AI HAT+ (IDX-021) provide
+  infrastructure building blocks, but the vision model itself is the hard
+  part — no off-the-shelf model exists for sail trim classification.
+  Training data collection could start now by capturing labeled stills
+  during sessions.
