@@ -1704,3 +1704,45 @@ Dave on *Aria*, not with `fingerprint:a3b7c9...`.
   The anti-parasocial principles from IDX-018 apply here too — showing
   faces builds genuine connection but shouldn't create social pressure
   or surveillance dynamics.
+
+---
+
+## IDX-029: Owner/admin data deletion — sessions, races, debriefs, practices, synthesized data
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about data management capabilities; user noted this could be promoted to an actionable issue
+- **Status:** `raw`
+- **Related:** Data licensing policy (`docs/data-licensing.md`), `storage.py`, `web.py`, `transcribe.py`, `audio.py`
+
+**Description:**
+Boat owners and admins currently have no way to delete sessions, races, debriefs,
+practice sessions, or synthesized data through the UI or CLI. As data accumulates
+on the Pi's limited storage, and as users refine their workflow, they need the
+ability to clean up unwanted records. This is also a data-licensing requirement —
+the policy states that the boat owns its data and has deletion rights over PII
+(audio, transcripts, diarized content).
+
+**Key design questions:**
+- **Soft delete vs hard purge:** Soft delete (mark as deleted, hide from UI) is
+  safer and allows undo, but doesn't reclaim disk space until a separate purge
+  step. Hard delete is simpler but irreversible.
+- **Cascade behavior:** Deleting a session should cascade to its instrument data,
+  audio recordings, transcripts, and any synthesized data derived from it. Need
+  to define the full dependency graph.
+- **Co-op implications:** If session data has been shared with co-op peers, does
+  deletion send a retraction to peers? The data-licensing policy may require
+  notifying peers to purge cached data.
+- **Audit trail:** Should deletions be logged for compliance? The data-licensing
+  policy requires audit logging for co-op data access — deletion should likely
+  be logged too.
+- **Authorization:** Owner can delete anything on their boat. Admin role (if
+  distinct from owner) may need scoped permissions. Crew members should not
+  be able to delete.
+- **Disk reclamation:** Audio WAV files and video metadata can be large. Deletion
+  should remove files from `data/` as well as database rows.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This is close to actionable — the scope is clear
+  and effort is estimable. The main blocker is resolving the design questions above,
+  particularly cascade behavior and co-op retraction. Could be promoted to a GitHub
+  issue once those are settled.
