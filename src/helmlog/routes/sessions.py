@@ -797,10 +797,14 @@ async def api_delete_session(
 ) -> None:
     """Delete a session and all related data (admin only)."""
     storage = get_storage(request)
-    cur = await storage._conn().execute("SELECT name FROM races WHERE id = ?", (session_id,))
+    cur = await storage._conn().execute(
+        "SELECT name, end_utc FROM races WHERE id = ?", (session_id,)
+    )
     row = await cur.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Session not found")
+    if row["end_utc"] is None:
+        raise HTTPException(status_code=409, detail="Cannot delete an active session")
     files = await storage.delete_race_session(session_id)
     # Clean up physical files
     for f in files:

@@ -53,6 +53,35 @@ async function init() {
   loadSharing();
   loadMatch();
   renderExports();
+  renderDangerZone();
+}
+
+// ---------------------------------------------------------------------------
+// Danger zone — session deletion (#409)
+// ---------------------------------------------------------------------------
+
+function renderDangerZone() {
+  const role = cfg.dataset.userRole;
+  if (role !== 'admin') return;
+  if (!_session.end_utc) return; // active session — cannot delete
+  document.getElementById('danger-zone').style.display = '';
+}
+
+async function deleteSession() {
+  const name = _session.name || 'this session';
+  if (!confirm('Delete "' + name + '"?\n\nThis will permanently remove all data, audio, and files. This cannot be undone.')) return;
+  const btn = document.getElementById('delete-session-btn');
+  btn.disabled = true;
+  btn.textContent = 'Deleting\u2026';
+  const r = await fetch('/api/sessions/' + SESSION_ID, { method: 'DELETE' });
+  if (r.ok) {
+    window.location.href = '/history';
+  } else {
+    btn.disabled = false;
+    btn.textContent = 'Delete Session';
+    const data = await r.json().catch(() => null);
+    alert('Delete failed: ' + (data && data.detail ? data.detail : r.statusText));
+  }
 }
 
 // ---------------------------------------------------------------------------
