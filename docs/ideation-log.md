@@ -1825,3 +1825,94 @@ Signal K integration:
   (Part 1) is straightforward once Signal K has the data. The mechanical
   mounting is the main unknown — need to look at the boat's rudder post
   arrangement to design a bracket.
+
+---
+
+## IDX-031: Pluggable AI provider abstraction for all AI workloads
+
+- **Date captured:** 2026-03-23
+- **Origin:** Conversation about configuring multiple AI providers for offloading transcription, diarization, video/still analysis, thread summarization, and future AI workloads
+- **Status:** `raw`
+- **Related:** IDX-024 (on-device transcript summarization via Hailo + Claude API), IDX-021 (live keyword detection on Hailo NPU), `src/helmlog/transcribe.py` (existing `TRANSCRIBE_URL` remote-offload pattern)
+
+**Description:**
+HelmLog has a growing number of AI-powered workloads — transcription
+(faster-whisper), diarization (pyannote), and planned features like thread
+summarization (IDX-024), video/still analysis (IDX-026), and live keyword
+detection (IDX-021). Today these are tightly coupled to specific
+implementations (faster-whisper on-device, pyannote on-device). The idea is a
+**pluggable provider abstraction** that lets any AI workload route to any
+configured backend, with the user able to configure multiple providers and
+priority/fallback chains.
+
+**Candidate providers:**
+- **Self-hosted** — a Mac at home running Whisper, llama.cpp, or other models
+  over the local network or Tailscale. Zero marginal cost, full privacy, but
+  requires hardware and setup.
+- **Anthropic (Claude API)** — strong for summarization, analysis, reasoning.
+  Already discussed in IDX-024 for transcript summaries.
+- **OpenAI** — Whisper API for transcription, GPT for summarization/analysis,
+  vision models for still/video frame analysis.
+- **Google (Gemini)** — long-context models useful for analyzing full session
+  transcripts or multi-image analysis. Competitive pricing.
+- **Perplexity** — search-augmented generation, potentially useful for
+  contextualizing weather/racing conditions against external knowledge.
+- **On-device (Hailo NPU / Pi CPU)** — lowest latency, no connectivity
+  required, but limited model capability. Already the default for
+  transcription.
+
+**Workloads that would use the abstraction:**
+1. **Transcription** — `transcribe.py` already has `TRANSCRIBE_URL` for remote
+   offload. This is the existing precedent for the pattern.
+2. **Diarization** — currently pyannote on-device. Could offload to a more
+   capable model remotely.
+3. **Video/still analysis** — analyzing sail trim photos, start-line video,
+   mark roundings. Requires vision-capable models (GPT-4o, Claude, Gemini).
+4. **Thread/transcript summarization** — IDX-024's use case. Route to Claude,
+   GPT, Gemini, or a local LLM depending on connectivity and preference.
+5. **Race debrief generation** — synthesizing instrument data + transcript +
+   video into a structured debrief narrative.
+6. **Future workloads** — anything AI-powered that gets added later
+   automatically benefits from the provider abstraction.
+
+**Design sketch:**
+- A provider registry configured via environment variables or a config file.
+  Each provider has: name, type (api/self-hosted/on-device), endpoint,
+  credentials, supported capabilities (transcription, vision, text-gen, etc.),
+  cost tier, and priority.
+- Each AI workload declares what capability it needs (e.g., "transcription",
+  "vision", "text-generation"). The abstraction resolves the best available
+  provider based on: user priority preferences, connectivity status,
+  capability match, and cost constraints.
+- Fallback chains: if the preferred provider is unreachable (e.g., no internet
+  on the water), fall back to the next provider (e.g., on-device). The Pi is
+  often offline during racing — graceful degradation is essential.
+- Credential management: API keys stored in `.env` or a secrets file,
+  per-provider. Never committed to git.
+- Cost tracking: log API usage per provider per workload so the user can see
+  what they're spending. Store in SQLite alongside the workload results.
+
+**Open questions:**
+- How granular should provider configuration be? Per-workload overrides
+  (e.g., "use OpenAI Whisper for transcription but Claude for summaries")
+  vs. a single priority list?
+- Should the abstraction handle batching/queueing? E.g., queue up
+  transcription jobs while offshore, process them when back on WiFi.
+- How to handle provider-specific features? E.g., Gemini's long context
+  window, Claude's structured output, OpenAI's function calling. Lowest
+  common denominator vs. provider-specific extensions?
+- Self-hosted discovery: how does the Pi find a Mac running a local model
+  server? Tailscale + mDNS? Explicit config?
+- Data licensing implications: sending crew audio/transcripts to external
+  APIs requires consent per the data-licensing policy. How does this
+  interact with the per-person consent model for PII?
+
+**Notes:**
+- *2026-03-23:* Initial capture. The `TRANSCRIBE_URL` pattern in
+  `transcribe.py` is already a minimal version of this — a single remote
+  endpoint for one workload. This idea generalizes it to N providers × M
+  workloads with fallback chains. IDX-024 would become one consumer of this
+  abstraction rather than its own bespoke provider selection. The PII/consent
+  question is the trickiest design constraint — the data-licensing policy
+  is clear that audio and transcripts are PII, so routing them to external
+  APIs needs explicit user/crew consent.
