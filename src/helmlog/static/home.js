@@ -789,6 +789,11 @@ function renderSetupPanel(data) {
         }
         html += '</select>';
       } else {
+        if (canEdit) {
+          html += '<button type="button" class="setup-pm-btn" '
+            + 'onclick="toggleSetupSign(\'' + p.name + '\')" '
+            + 'aria-label="Toggle sign">&plusmn;</button>';
+        }
         html += '<input class="setup-input' + (curVal ? ' has-value' : '') + '" '
           + 'type="number" step="any" id="setup-' + p.name + '" '
           + 'value="' + escAttr(curVal) + '" '
@@ -835,6 +840,23 @@ function updateSetupSummary() {
   const count = Object.keys(setupCurrentValues).length;
   const el = document.getElementById('setup-summary');
   if (el) el.textContent = count > 0 ? count + ' set' : '';
+}
+
+function toggleSetupSign(paramName) {
+  const el = document.getElementById('setup-' + paramName);
+  if (!el) return;
+  const cur = el.value.trim();
+  if (!cur || cur === '0') {
+    // Empty or zero — set to minus so user can type digits
+    el.value = '-';
+    el.focus();
+    return;
+  }
+  const num = parseFloat(cur);
+  if (isNaN(num)) return;
+  el.value = String(-num);
+  el.classList.toggle('has-value', true);
+  onSetupChange(paramName);
 }
 
 function onSetupChange(paramName) {
