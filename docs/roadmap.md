@@ -18,24 +18,11 @@ Checked items are complete.
 
 ## Open — planned features
 
-- [ ] **Boatspeed vs historical baseline** (#40) — query SQLite for `(TWS, TWA, BSP)` tuples,
-      bucket by wind condition, surface a "are we fast or slow?" delta on the race page and in
-      CSV exports. CLI: `helmlog build-polar`.
-
-- [ ] **Public web access / auth** (#25) — magic-link invite tokens, role-based access
-      (`admin` / `crew` / `viewer`), session cookies in SQLite, HTTPS deployment guide
-      (Caddy / Cloudflare Tunnel / Tailscale Funnel).
-
-- [x] **Grafana race track panel** (#18) — Geomap panel with speed-coloured GPS track,
-      wind tooltip, and YouTube deep-link per track point.
-
 - [ ] **External SSD** (#19) — mount at `/mnt/ssd`, relocate SQLite + audio + InfluxDB data,
       nightly `systemd` backup timer (`scripts/backup.sh`), graceful SD-card fallback.
 
 - [ ] **Transcript export** — download transcript as plain text or PDF from the History UI
       (currently transcripts are stored in SQLite but not exportable from the web UI).
-
-- [ ] **WEB_PIN access control** — env var is reserved; not yet implemented.
 
 - [ ] **FastPacket reassembly** — support multi-frame NMEA 2000 messages
       (e.g. PGN 129029 GNSS Position Data) if needed for direct-CAN path.
@@ -43,93 +30,21 @@ Checked items are complete.
 - [ ] **Integration test replay** — replay a recorded `candump .log` file through the full
       stack (reader → decoder → storage → export) to catch regressions with real data.
 
+- [ ] **AIS fleet tracking** (#394) — capture public AIS broadcast data (position, SOG,
+      COG, MMSI) from Signal K for race fleet performance analysis. AIS data is already
+      available on the VHF radio broadcast and captured by Signal K; this feature reads
+      it for fleet-level context while respecting the existing AIS exclusion policy for
+      non-member vessel storage.
+
 ### Data co-op platform
 
 Items below track the data licensing policy technical requirements
 (`docs/data-licensing.md` Section 12) and federation design phases
 (`docs/federation-design.md` Section 13). Phases 1 and 2 of the federation
-design are complete; Phases 3–5 remain.
-
-#### Done (Phases 1 & 2)
-
-- [x] **Boat identity model** — Ed25519 keypair generation, boat cards, fingerprints;
-      CLI: `helmlog identity init/show`; stored in `~/.helmlog/identity/`.
-
-- [x] **Co-op data model** — `co_op_memberships`, `session_sharing`, `co_op_peers`,
-      `co_op_audit`, `request_nonces`, and `boat_identity` tables (schema v28);
-      signed charter and membership records; revocation support.
-
-- [x] **Session sharing** — per-session co-op share/unshare via session detail page
-      (`POST /api/sessions/{id}/share`); storage, API, and data model complete.
-      ⚠️ Setting an embargo timestamp is supported by the API (`embargo_until` field)
-      but is not yet exposed in the webapp UI — embargo can only be set via the API
-      directly (tracked as a follow-on UI task).
-
-- [x] **Peer API** (`peer_api.py`) — `/peer/identity`, `/peer/sessions`,
-      `/peer/sessions/{id}/track`, `/peer/sessions/{id}/results`; data field
-      allowlist enforced per data licensing policy.
-
-- [x] **Request authentication** (`peer_auth.py`) — Ed25519 signing middleware,
-      nonce replay protection, clock-skew tolerance, rate-limit detection.
-
-- [x] **Peer client** (`peer_client.py`) — async HTTP client for querying peers;
-      used by the co-op view in `web.py`.
-
-- [x] **Audit logging** — `co_op_audit` table records every peer data access
-      (action, resource, points returned, bytes transferred); volume-based
-      rate-limit detection with auto-freeze.
-
-- [x] **Embargo enforcement** — API blocks track data for sessions under active
-      embargo; tested end-to-end in `tests/integration/test_embargo_e2e.py`.
-
-- [x] **Data licensing field allowlist** — peer API strips PII fields before
-      serving to co-op members; tested in `tests/integration/test_data_license_e2e.py`.
-
-- [x] **Integration test suite** — 32 in-process tests (Layer 1) across
-      `test_federation_e2e.py`, `test_auth_e2e.py`, `test_embargo_e2e.py`,
-      `test_data_license_e2e.py`; Docker compose suite (Layer 3) via
-      `tests/integration/docker-compose.yml`.
-
-- [x] **Delete / anonymization** — session hard delete (`DELETE /api/sessions/{id}`);
-      user account anonymization (email replaced, name/avatar cleared, auth sessions
-      purged via `DELETE /api/users/{id}`); diarized transcript speaker anonymization
-      with per-speaker redaction map. ⚠️ The "30-day soft-delete grace period with
-      recoverable suppression" described in earlier designs is not yet implemented —
-      all deletes are currently immediate and irreversible.
-
-- [x] **AIS exclusion** — 23 AIS PGNs and SK paths blocked at ingestion;
-      non-member vessel tracking data never stored.
-
-- [x] **No bulk export enforcement** — peer API is view-only (no bulk export
-      endpoints); rate limiting + volume-based auto-freeze deter scraping;
-      own-boat data export unrestricted.
-
-- [x] **Audio PII deletion** — whole-recording deletion on crew PII request
-      (`DELETE /api/audio/{id}`). ⚠️ API endpoint is complete but no UI button
-      is currently exposed in the webapp — deletion must be done via the API directly.
-      Per-segment editing is a future capability.
-
-- [x] **Processing offload audit trail** — `transcribe.start` action recorded in
-      the audit table when a transcription job is triggered; application log records
-      which URL audio was sent to and how many chars/segments were returned. Warning
-      logged when `TRANSCRIBE_URL` uses plain HTTP (non-localhost) to alert about
-      unencrypted PII in transit.
-
-- [x] **GPS precision control** — `?gps_precision=N` query parameter on export
-      endpoints (`/api/sessions/{id}/export`) reduces coordinate precision to N
-      decimal places (e.g. 2 dp ≈ 1.1 km resolution). ⚠️ No webapp UI; export
-      must be triggered via the API to use this. The peer API does not
-      currently enforce reduced precision on track data served to co-op members.
-
-- [x] **Auth hardening** — auth required on all data-reading GET endpoints;
-      crew+ auth required for audio download/stream/transcript.
+design are complete; Phase 2.5 (session matching) is complete; Phases 3–5
+remain.
 
 #### Phase 3 — Fleet benchmarking (not started)
-
-- [ ] **Maneuver detection** (`maneuver_detect.py`) — detect tacks, gybes, mark roundings,
-      starts, and acceleration events from instrument data (heading rate, BSP delta, GPS
-      track geometry). Store as typed events in `maneuver_events` table. Auto-calibrate
-      thresholds from co-op data.
 
 - [ ] **Condition binning** — bucket sessions and maneuvers by environmental conditions
       (TWS bands, wave state) so benchmarks compare apples-to-apples. Configurable bins
@@ -206,7 +121,8 @@ design are complete; Phases 3–5 remain.
 - [x] NMEA 2000 PGN decoders for 7 standard PGNs (127250, 128259, 128267, 129025, 129026, 130306, 130310)
 - [x] Signal K WebSocket reader (`sk_reader.py`) — primary data source
 - [x] Legacy direct-CAN path (`can_reader.py`) available via `DATA_SOURCE=can`
-- [x] SQLite storage with async writes and integer-versioned migrations (schema v28)
+- [x] SQLite storage with async writes and integer-versioned migrations (schema v50)
+- [x] WAL mode with read/write connection split for concurrent access
 - [x] Batch SQLite writes — flush every 1 s / 200 records
 - [x] Timestamp indexes (schema migration v2)
 - [x] Non-blocking recv via `asyncio.to_thread`
@@ -227,25 +143,38 @@ design are complete; Phases 3–5 remain.
 ### Video
 - [x] YouTube video metadata fetching via `yt-dlp`
 - [x] `link-video` CLI with sync-point offset
-- [x] Video deep-links in History page (📹 Videos panel)
+- [x] Video deep-links in History page
 
 ### Web interface
 - [x] FastAPI web app on port 3002 (`web.py`)
+- [x] Route architecture — `web.py` split into 24 domain routers under `routes/`
+      (admin, analysis, audio, auth, boat_settings, cameras, comments, crew,
+      deployment, federation, instruments, me, network, notes, notifications,
+      pages, polar, races, sails, sessions, settings, tags, videos,
+      visualizations, ws)
 - [x] Race marker — Start / End race with event naming and auto day-of-week defaults
 - [x] Practice and debrief session types
 - [x] Live instrument data panel (BSP, TWS, TWA, HDG, COG, SOG, AWS, AWA, TWD)
+- [x] WebSocket live push for real-time instrument data (`routes/ws.py`)
 - [x] History page — search, filter by type, date range, pagination
 - [x] Race results (boat registry, place / DNF / DNS per race)
 - [x] Race notes — text, key/value settings, photo upload (with ETag caching)
 - [x] Crew tracking per race (6 positions with recent-sailor quick-tap chips)
-- [x] Sail inventory (Boats page) and per-race sail selection
+- [x] Sail inventory (Boats page) and per-race sail selection; sail management overhaul
+      (tack/gybe counts, history, defaults)
+- [x] Threaded comments with @mentions and notifications
+- [x] Session tags
 - [x] Grafana deep-link buttons scoped to race time window
 - [x] System health warning banner (disk > 85 %, CPU temp > 75 °C)
-- [x] Inline audio player and WAV download (`↓ WAV`)
+- [x] Inline audio player and WAV download
 - [x] Audio stream and download endpoints with range request support
 - [x] Dedicated session detail page at `/session/{id}` (#180)
 - [x] Simplified home page — idle: start buttons only; active: current race card (#170)
 - [x] Hamburger menu navigation for mobile (#230)
+- [x] Customizable color schemes — 6 presets with WCAG contrast validation (`themes.py`)
+- [x] Attention/notification dashboard
+- [x] Admin network management page (#256)
+- [x] Auto-start recording for sessions (#345, #346)
 
 ### Audio
 - [x] WAV recording per session via `sounddevice` (Gordik 2T1R / any UAC device)
@@ -257,31 +186,73 @@ design are complete; Phases 3–5 remain.
 - [x] Speaker diarisation via pyannote.audio (opt-in with `HF_TOKEN`)
 - [x] `segments_json` column in `transcripts` table (schema v16)
 - [x] Colour-coded speaker blocks in History page transcript panel
+- [x] Transcript-based tuning extraction — parse sail trim changes, settings,
+      and observations from diarized transcripts (`tuning_extraction.py`)
 
-### System health
+### Performance analysis
+- [x] Polar performance baseline — build and query BSP vs (TWS, TWA) buckets;
+      CLI: `helmlog build-polar`; live delta on race page and in exports (`polar.py`)
+- [x] Maneuver detection — tacks, gybes, mark roundings detected from heading rate,
+      BSP delta, and TWA transitions (`maneuver_detector.py`)
+- [x] Race/practice session classification (`race_classifier.py`)
+- [x] Course analysis (`courses.py`)
+- [x] Synthesized instrument channels (`synthesize.py`)
+- [x] Wind field analysis (`wind_field.py`)
+- [x] Pluggable analysis framework (`analysis/`) — protocol-based plugins with
+      discovery, SQLite caching (schema v42), and multi-level preference resolution;
+      built-in plugins: polar baseline, sail VMG comparison
+- [x] Pluggable visualization framework (`visualization/`) — protocol-based viz plugins
+      with discovery and preferences; built-in: polar scatter, speed/VMG time series,
+      track performance map
+- [x] Semantic layer — machine-readable domain knowledge for instrument relationships,
+      Signal K paths, and analysis context (`semantic_layer.py`)
+
+### Cameras & video pipeline
+- [x] Insta360 X4 camera control via OSC HTTP API (`cameras.py`)
+- [x] Insta360 / local video metadata extraction and race matching (`insta360.py`)
+- [x] Video processing pipeline orchestration (`pipeline.py`)
+- [x] YouTube upload and API integration (`youtube.py`)
+
+### Auth & access control
+- [x] Magic-link and invitation-based auth (`auth.py`) — invite tokens, role-based
+      access (`admin` / `crew` / `viewer`), session cookies in SQLite (#25, #268)
+- [x] OAuth authentication support (`oauth.py`)
+- [x] Auth required on all data-reading GET endpoints
+- [x] Crew+ auth required for audio download/stream/transcript
+
+### System health & monitoring
 - [x] psutil background task → `system_health` InfluxDB measurement every 60 s
 - [x] `/api/system-health` endpoint
 - [x] Home page warning banner for disk and temperature thresholds
 - [x] Fan speed on Pi Health dashboard
+- [x] Bandwidth attribution — per-component, per-user traffic tracking to InfluxDB
+      with metered/local network tagging (`bandwidth.py`)
+- [x] Network bandwidth Grafana dashboard
+- [x] WLAN profile management via nmcli/NetworkManager (`network.py`)
 
 ### Infrastructure
 - [x] Raspberry Pi setup script (`scripts/setup.sh`) — idempotent, installs full stack
+- [x] Interactive Pi configuration wizard (`scripts/configure.sh`)
 - [x] Deploy script (`scripts/deploy.sh`) — pull + sync deps + restart service
 - [x] `can-interface.service` → `signalk.service` → `helmlog.service` dependency chain
 - [x] Grafana provisioning (datasource + dashboards) via `scripts/provision-grafana.sh`
 - [x] CAN HAT hardware setup & loopback testing on Pi (all 7 PGNs verified in loopback)
-- [x] Full test suite (700+ tests — all modules covered)
+- [x] Full test suite (1,300+ tests across 56 test files — all modules covered)
 - [x] ruff + mypy clean
-- [x] GitHub Actions CI workflow (tests, lint, type checking) (#219)
+- [x] GitHub Actions CI workflow (tests, lint, type checking, integration tests) (#219)
 - [x] Docker-based Claude Code dev container (#229)
 - [x] Deployment management admin page, evergreen mode (#222)
+- [x] Self-update / deploy management logic (`deploy.py`)
+- [x] Notification system (schema v43) — in-app notifications for @mentions and events
+      (`notifications.py`)
+- [x] Boat settings management with calibration values (`boat_settings.py`)
 
 ### Licensing & governance
 - [x] AGPLv3 software license (`LICENSE`)
 - [x] Data licensing policy (`docs/data-licensing.md`) — 13-section policy covering data
       ownership, co-op sharing model, anonymous fleet benchmarking, governance, crew access,
       retention/deletion, cross-co-op boundaries, non-member protections, AI/ML rights,
-      commercial use, tide/current data, and technical requirements (21 revisions)
+      commercial use, tide/current data, and technical requirements
 - [x] Co-op charter template (`docs/co-op-charter-template.md`) — fillable template for
       individual co-ops to define mission, membership, governance, active agreements, and
       fleet-specific rules
@@ -298,17 +269,28 @@ design are complete; Phases 3–5 remain.
 - [x] Schema v28 — 6 new federation tables: `boat_identity`, `co_op_memberships`,
       `session_sharing`, `co_op_peers`, `co_op_audit`, `request_nonces`
 - [x] Peer API (`peer_api.py`) — `/peer/identity`, `/peer/sessions`,
-      `/peer/sessions/{id}/track`, `/peer/sessions/{id}/results`
+      `/peer/sessions/{id}/track`, `/peer/sessions/{id}/results`,
+      `/peer/sessions/{id}/match-proposals`
 - [x] Request authentication (`peer_auth.py`) — Ed25519 signing middleware,
       nonce replay protection, clock-skew tolerance
 - [x] Peer client (`peer_client.py`) — async HTTP client for querying peers
 - [x] Audit logging — `co_op_audit` table with volume-based rate-limit detection
 - [x] Data licensing field allowlist enforced on all peer API endpoints
-- [x] Integration test suite — 32 in-process tests (Layer 1):
+- [x] Integration test suite — 38 in-process tests (Layer 1):
       `test_federation_e2e.py`, `test_auth_e2e.py`, `test_embargo_e2e.py`,
-      `test_data_license_e2e.py`
+      `test_data_license_e2e.py`, `test_session_matching_e2e.py`
 - [x] Docker compose integration test environment — two-container fleet simulation
       (Layer 3): `tests/integration/docker-compose.yml`
+- [x] Pi test harness (Layer 2) — Mac orchestrator driving two Pis over Tailscale
+      (`scripts/pi_harness.py`)
+
+### Federation — Phase 2.5 (session matching)
+- [x] Proximity-based session matching across co-op boats — time overlap + geographic
+      radius pairing with quorum confirmation (`session_matching.py`, #281)
+- [x] Match proposal lifecycle: Unmatched → Candidate → Matched → Named;
+      confirm/reject endpoints; 48-hour candidate expiry after embargo lift
+- [x] Federation match proposal routes (`routes/federation.py`)
+- [x] Session match proposal storage (schema v45)
 
 ### Data policy compliance (#194–#211)
 - [x] AIS data filtering — 23 AIS PGNs and SK paths blocked at ingestion
@@ -318,7 +300,12 @@ design are complete; Phases 3–5 remain.
 - [x] Audio PII deletion (whole-recording deletion on crew request)
 - [x] Processing offload audit trail (what was sent, where, when)
 - [x] TLS warning for non-Tailscale transcription URLs
-- [x] Auth required on all data-reading GET endpoints
-- [x] Crew+ auth required for audio download/stream/transcript
 - [x] Default video privacy to "private"
 - [x] WiFi passwords masked in camera API responses
+
+### Pluggable analysis — Phase 2 (catalog lifecycle)
+- [x] Model catalog lifecycle state machine (6 states, 7 transitions) in
+      `analysis/catalog.py` — available → selected → active → deprecated
+- [x] Data licensing gate for co-op promotion (per data-licensing.md §8)
+- [x] Schema migration 50: `analysis_catalog` table with state tracking
+- [x] A/B comparison and version staleness detection (#285)
