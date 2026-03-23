@@ -1711,7 +1711,7 @@ Dave on *Aria*, not with `fingerprint:a3b7c9...`.
 
 - **Date captured:** 2026-03-22
 - **Origin:** Conversation about data management capabilities; user noted this could be promoted to an actionable issue
-- **Status:** `raw`
+- **Status:** `promoted` → [#409](https://github.com/weaties/helmlog/issues/409)
 - **Related:** Data licensing policy (`docs/data-licensing.md`), `storage.py`, `web.py`, `transcribe.py`, `audio.py`
 
 **Description:**
@@ -1746,6 +1746,10 @@ the policy states that the boat owns its data and has deletion rights over PII
   and effort is estimable. The main blocker is resolving the design questions above,
   particularly cascade behavior and co-op retraction. Could be promoted to a GitHub
   issue once those are settled.
+- *2026-03-23:* Promoted to #409. Design decisions: hard delete (not soft),
+  admin-only (admin = boat owner), active session guard (409), cascade via
+  `delete_race_session()`, co-op sharing rows cascade via FK, audit logged.
+  UI delete button on session detail page.
 
 ---
 
