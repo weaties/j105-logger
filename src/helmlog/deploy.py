@@ -237,6 +237,12 @@ async def _github_changelog(config: DeployConfig, from_sha: str) -> list[dict[st
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
+        try:
+            from helmlog.bandwidth import track_httpx_response
+
+            track_httpx_response("deploy", resp)
+        except Exception:  # noqa: BLE001
+            pass
         data = resp.json()
 
     commits: list[dict[str, str]] = []

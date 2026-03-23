@@ -68,12 +68,36 @@ def external_data_enabled() -> bool:
     return os.environ.get("EXTERNAL_DATA_ENABLED", "true").lower() != "false"
 
 
+def external_data_should_fetch() -> bool:
+    """Check if external data fetching should proceed (#403).
+
+    Returns False if EXTERNAL_DATA_ENABLED=false OR METERED=true.
+    Use this instead of external_data_enabled() when deciding whether
+    to launch weather/tide background tasks.
+    """
+    import os
+
+    if not external_data_enabled():
+        return False
+    return os.environ.get("METERED", "false").lower() != "true"
+
+
 def _reduce_precision(val: float, decimals: int = 2) -> float:
     """Reduce GPS coordinate precision for external API calls (#209).
 
     0.01° ≈ 1.1 km — sufficient for weather/tide lookups.
     """
     return round(val, decimals)
+
+
+def _track_response(component: str, resp: httpx.Response) -> None:
+    """Record bandwidth for an httpx response (best-effort)."""
+    try:
+        from helmlog.bandwidth import track_httpx_response
+
+        track_httpx_response(component, resp)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 class ExternalFetcher:
@@ -110,6 +134,7 @@ class ExternalFetcher:
         try:
             resp = await self._http().get(_NOAA_STATIONS_URL, params={"type": "tidepredictions"})
             resp.raise_for_status()
+            _track_response("tides", resp)
             data: dict[str, Any] = resp.json()
             self._stations_cache = data["stations"]
             logger.debug("Fetched {} NOAA tide stations", len(self._stations_cache))
@@ -191,6 +216,7 @@ class ExternalFetcher:
                 },
             )
             resp.raise_for_status()
+            _track_response("tides", resp)
             data: dict[str, Any] = resp.json()
         except httpx.HTTPError as exc:
             logger.warning("Tide predictions fetch failed: {}", exc)
@@ -295,6 +321,7 @@ class ExternalFetcher:
         try:
             resp = await self._http().get(_OPEN_METEO_URL, params=params)
             resp.raise_for_status()
+            _track_response("weather", resp)
         except httpx.HTTPError as exc:
             logger.warning("Weather fetch failed: {}", exc)
             return None

@@ -122,6 +122,13 @@ def create_app(
             request.state.theme_css = ""
         return await call_next(request)
 
+    from helmlog.bandwidth import bandwidth_middleware
+
+    @app.middleware("http")
+    async def track_bandwidth(request: Request, call_next: Any) -> Any:  # noqa: ANN401
+        """Track per-request bandwidth attribution (#403)."""
+        return await bandwidth_middleware(request, call_next)
+
     from helmlog.auth import _is_auth_disabled, _resolve_user
 
     _PUBLIC_PATHS = {
