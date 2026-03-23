@@ -192,7 +192,7 @@ async def bandwidth_middleware(request: Request, call_next: Any) -> Response:  #
                 route=route,
             )
 
-    asyncio.get_event_loop().call_soon(lambda: asyncio.to_thread(_write))
+    asyncio.get_event_loop().run_in_executor(None, _write)
     return response
 
 
