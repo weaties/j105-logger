@@ -151,12 +151,18 @@ _PAIR: dict[str, Callable[[dict[str, float], datetime], PGNRecord | None]] = {
 # ---------------------------------------------------------------------------
 
 
-def process_delta(raw: str, buf: dict[str, float]) -> list[PGNRecord]:
+def process_delta(
+    raw: str, buf: dict[str, float], *, self_context: str | None = None
+) -> list[PGNRecord]:
     """Parse a Signal K delta message; return any records it produces.
 
     Updates *buf* in-place for multi-field records (COG+SOG, wind speed+angle).
     Unknown paths are silently ignored at DEBUG level.
     Malformed numeric values are logged at WARNING and skipped.
+
+    *self_context* is the resolved self-vessel context from the SK API
+    (e.g. ``"vessels.urn:mrn:signalk:uuid:..."``) so UUID-style contexts are
+    accepted when they match.
     """
     try:
         delta: Any = json.loads(raw)
@@ -168,7 +174,12 @@ def process_delta(raw: str, buf: dict[str, float]) -> list[PGNRecord]:
 
     # Reject other-vessel data — only process self-vessel deltas (#208)
     context: str = delta.get("context", "vessels.self")
-    if context and context != "vessels.self" and not context.endswith(".self"):
+    if (
+        context
+        and context != "vessels.self"
+        and not context.endswith(".self")
+        and (not self_context or context != self_context)
+    ):
         logger.warning("SK: rejecting non-self delta (context={!r})", context)
         return []
 
@@ -247,9 +258,29 @@ class SKReader:
     def __init__(self, config: SKReaderConfig) -> None:
         self._config = config
         self._buf: dict[str, float] = {}
+        self._self_context: str | None = None
 
     def __aiter__(self) -> AsyncIterator[PGNRecord]:
         return self._stream()
+
+    async def _resolve_self_context(self) -> str | None:
+        """Fetch the self-vessel context from the Signal K REST API."""
+        import httpx
+
+        config = self._config
+        url = f"http://{config.host}:{config.port}/signalk/v1/api/self"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=5.0)
+                resp.raise_for_status()
+                # Response is a JSON string like "vessels.urn:mrn:signalk:uuid:..."
+                ctx = resp.json()
+                if isinstance(ctx, str) and ctx:
+                    logger.info("SK: resolved self context → {}", ctx)
+                    return ctx
+        except Exception as exc:
+            logger.warning("SK: could not resolve self context from {}: {}", url, exc)
+        return None
 
     async def _stream(self) -> AsyncGenerator[PGNRecord, None]:
         config = self._config
@@ -257,12 +288,17 @@ class SKReader:
         delay = 1.0
         while True:
             try:
+                # Resolve self-vessel context on first connect or if not yet known
+                if self._self_context is None:
+                    self._self_context = await self._resolve_self_context()
                 logger.info("SK: connecting to {}", uri)
                 async with _ws_connect(uri) as ws:
                     delay = 1.0
                     logger.info("SK: connected")
                     async for raw in ws:
-                        for record in process_delta(str(raw), self._buf):
+                        for record in process_delta(
+                            str(raw), self._buf, self_context=self._self_context
+                        ):
                             yield record
             except asyncio.CancelledError:
                 logger.info("SK: cancelled — stopping")

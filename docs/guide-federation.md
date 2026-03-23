@@ -3,7 +3,7 @@
 > How to create your boat's cryptographic identity, start or join a co-op,
 > and share race sessions with your fleet.
 
-_Requires: HelmLog with federation support (schema v28+)._
+_Requires: HelmLog with federation support (schema v38+)._
 
 ---
 
@@ -129,7 +129,20 @@ series is over.
 
 ---
 
-## 5. Data ownership
+## 5. Session matching
+
+When multiple co-op boats share sessions from the same time window and
+geographic area, HelmLog automatically pairs them using proximity-based
+matching. This lets you overlay tracks from the same race without manually
+coordinating session IDs across boats.
+
+Matching uses time overlap and geographic radius — if two boats were sailing
+in roughly the same place at roughly the same time, their sessions are linked.
+Matched sessions appear together in the co-op view for easy comparison.
+
+---
+
+## 6. Data ownership
 
 Your data stays on your Pi. When another boat queries the co-op, their Pi
 talks directly to yours over Tailscale. You can:

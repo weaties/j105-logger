@@ -1,6 +1,14 @@
 /* shared.js — common utilities loaded by all pages */
 
 // ---------------------------------------------------------------------------
+// CSS variable reader — theme-aware color helper
+// ---------------------------------------------------------------------------
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---------------------------------------------------------------------------
 // Time formatting
 // ---------------------------------------------------------------------------
 
@@ -136,6 +144,54 @@ function parseVideoPosition(str) {
   if (parts.length === 2) return parts[0] * 60 + parts[1];
   if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Grafana URL helpers
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// GitHub issue URL builder (in-app bug reports / feature requests)
+// ---------------------------------------------------------------------------
+
+function buildIssueUrl(kind) {
+  var version = '';
+  var meta = document.querySelector('meta[name="helmlog-version"]');
+  if (meta) version = meta.getAttribute('content') || '';
+
+  var page = location.pathname + location.search;
+  var screen = window.innerWidth + '×' + window.innerHeight;
+  var ua = navigator.userAgent;
+  var ts = new Date().toISOString();
+
+  // Extract session/race ID from URL if applicable
+  var idMatch = page.match(/\/(session|race)\/(\d+)/);
+  var idLine = idMatch ? '| ' + idMatch[1] + '_id | `' + idMatch[2] + '` |\n' : '';
+
+  var isBug = kind === 'bug';
+  var title = isBug ? '[Bug] ' : '[Feature] ';
+  var labels = isBug ? 'from-app,bug' : 'from-app,enhancement';
+
+  var body = isBug
+    ? '## Description\n\n<!-- Describe the bug -->\n\n'
+      + '## Steps to reproduce\n\n1. \n2. \n3. \n\n'
+      + '## Expected vs actual behavior\n\n<!-- What did you expect? What happened instead? -->\n\n'
+    : '## Description\n\n<!-- Describe the feature you\'d like -->\n\n'
+      + '## Use case\n\n<!-- Why is this needed? -->\n\n';
+
+  body += '---\n\n*Submitted from HelmLog UI*\n\n'
+    + '| | |\n|---|---|\n'
+    + '| Page | `' + page + '` |\n'
+    + '| Version | `' + version + '` |\n'
+    + '| Browser | `' + ua + '` |\n'
+    + '| Screen | `' + screen + '` |\n'
+    + idLine
+    + '| Time | `' + ts + '` |\n';
+
+  return 'https://github.com/weaties/helmlog/issues/new'
+    + '?title=' + encodeURIComponent(title)
+    + '&body=' + encodeURIComponent(body)
+    + '&labels=' + encodeURIComponent(labels);
 }
 
 // ---------------------------------------------------------------------------

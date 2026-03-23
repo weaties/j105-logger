@@ -9,6 +9,7 @@ let tickInterval = null;
 let curRaceStartMs = null;
 let debriefStartMs = null;
 let lastInstrumentDataMs = 0;
+let scheduleCountdownInterval = null;
 
 async function loadState() {
   try {
@@ -111,6 +112,33 @@ function render(s) {
 
   btnStartRace.textContent = `▶ START RACE ${s.next_race_num}`;
 
+  // --- Scheduled start (#345) ---
+  const btnSchedule = document.getElementById('btn-schedule-toggle');
+  const schedPanel = document.getElementById('schedule-panel');
+  const schedCountdown = document.getElementById('schedule-countdown');
+  if (s.scheduled_start && isIdle) {
+    // Active countdown
+    btnSchedule.classList.add('hidden');
+    btnStartRace.classList.add('hidden');
+    btnStartPractice.classList.add('hidden');
+    schedPanel.classList.add('hidden');
+    schedCountdown.classList.remove('hidden');
+    const fireAt = new Date(s.scheduled_start.scheduled_start_utc);
+    document.getElementById('schedule-countdown-event').textContent =
+      s.scheduled_start.event + ' (' + s.scheduled_start.session_type + ')';
+    _startScheduleCountdown(fireAt);
+  } else if (isIdle) {
+    // No schedule — show the button
+    btnSchedule.classList.remove('hidden');
+    schedCountdown.classList.add('hidden');
+    _stopScheduleCountdown();
+  } else {
+    btnSchedule.classList.add('hidden');
+    schedPanel.classList.add('hidden');
+    schedCountdown.classList.add('hidden');
+    _stopScheduleCountdown();
+  }
+
   // --- Debrief last race button: show when idle, has recorder, and finished races exist ---
   const lastFinished = (s.today_races || []).filter(r => r.end_utc).slice(-1)[0];
   if (isIdle && s.has_recorder && lastFinished) {
@@ -157,26 +185,30 @@ function tick() {
   }
 }
 
+function renderInstrumentData(d) {
+  const set = (id, val, decimals=1) => {
+    const el = document.getElementById(id);
+    el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
+  };
+  set('iv-sog', d.sog_kts, 1);
+  set('iv-cog', d.cog_deg, 0);
+  set('iv-hdg', d.heading_deg, 0);
+  set('iv-bsp', d.bsp_kts, 1);
+  set('iv-aws', d.aws_kts, 1);
+  set('iv-awa', d.awa_deg, 0);
+  set('iv-tws', d.tws_kts, 1);
+  set('iv-twa', d.twa_deg, 0);
+  set('iv-twd', d.twd_deg, 0);
+  if (Object.values(d).some(v => v != null)) {
+    lastInstrumentDataMs = Date.now();
+  }
+}
+
 async function loadInstruments() {
   try {
     const r = await fetch('/api/instruments');
     const d = await r.json();
-    const set = (id, val, decimals=1) => {
-      const el = document.getElementById(id);
-      el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
-    };
-    set('iv-sog', d.sog_kts, 1);
-    set('iv-cog', d.cog_deg, 0);
-    set('iv-hdg', d.heading_deg, 0);
-    set('iv-bsp', d.bsp_kts, 1);
-    set('iv-aws', d.aws_kts, 1);
-    set('iv-awa', d.awa_deg, 0);
-    set('iv-tws', d.tws_kts, 1);
-    set('iv-twa', d.twa_deg, 0);
-    set('iv-twd', d.twd_deg, 0);
-    if (Object.values(d).some(v => v != null)) {
-      lastInstrumentDataMs = Date.now();
-    }
+    renderInstrumentData(d);
   } catch(e) { console.error('instruments error', e); }
 }
 
@@ -360,16 +392,16 @@ function updateCrewSummary(crew) {
       const g = c.gear_weight || 0;
       totalBody += b;
       totalGear += g;
-      wt = ' <span style="color:#6b7a90;font-size:.72rem">(' + (b ? b.toFixed(0) : '0');
+      wt = ' <span style="color:var(--text-muted);font-size:.72rem">(' + (b ? b.toFixed(0) : '0');
       if (g) wt += '+' + g.toFixed(0) + 'g';
       wt += ')</span>';
     }
-    return '<span style="color:#8892a4">' + escHtml(pos) + ':</span> ' + name + wt;
+    return '<span style="color:var(--text-secondary)">' + escHtml(pos) + ':</span> ' + name + wt;
   });
   let html = parts.join(' &nbsp;\u00b7&nbsp; ');
   if (hasWeight) {
     const total = totalBody + totalGear;
-    html += '<div style="color:#8892a4;font-size:.75rem;margin-top:3px">'
+    html += '<div style="color:var(--text-secondary);font-size:.75rem;margin-top:3px">'
       + 'Total crew weight: ' + total.toFixed(0) + ' lbs'
       + ' (body ' + totalBody.toFixed(0) + ' + gear ' + totalGear.toFixed(0) + ')</div>';
   }
@@ -400,7 +432,7 @@ function updateCrewTotalWeight() {
   if (el) {
     if (count > 0) {
       el.innerHTML = '<strong>Total weight: ' + total.toFixed(1) + ' lbs</strong>'
-        + ' <span style="color:#8892a4">=&nbsp;crew ' + totalBody.toFixed(1)
+        + ' <span style="color:var(--text-secondary)">=&nbsp;crew ' + totalBody.toFixed(1)
         + '&nbsp;+&nbsp;gear ' + totalGear.toFixed(1) + '</span>';
       el.style.display = 'block';
     } else {
@@ -412,12 +444,12 @@ function updateCrewTotalWeight() {
   if (setupEl) {
     if (count > 0) {
       setupEl.innerHTML = '<span class="setup-label">Crew weight</span>'
-        + '<span style="color:#e0e6ed">' + total.toFixed(1) + ' lbs</span>'
-        + '<span style="color:#6b7a90;font-size:.75rem;margin-left:6px">'
+        + '<span style="color:var(--text-primary)">' + total.toFixed(1) + ' lbs</span>'
+        + '<span style="color:var(--text-muted);font-size:.75rem;margin-left:6px">'
         + '(body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')</span>';
     } else {
       setupEl.innerHTML = '<span class="setup-label">Crew weight</span>'
-        + '<span style="color:#6b7a90">\u2014</span>';
+        + '<span style="color:var(--text-muted)">\u2014</span>';
     }
   }
 }
@@ -647,7 +679,7 @@ function updateSailsSummary(data) {
   if (countEl) countEl.textContent = names.length > 0 ? names.length + ' set' : '';
   if (!summaryEl) return;
   if (!names.length) { summaryEl.innerHTML = ''; return; }
-  summaryEl.innerHTML = '<span style="color:#8892a4">' + names.map(n => escHtml(n)).join(' \u00b7 ') + '</span>';
+  summaryEl.innerHTML = '<span style="color:var(--text-secondary)">' + names.map(n => escHtml(n)).join(' \u00b7 ') + '</span>';
   summaryEl.style.display = _sailsExpanded ? 'none' : '';
 }
 
@@ -738,7 +770,7 @@ function renderSetupPanel(data) {
     html += '<div class="setup-cat-body" id="setup-cat-' + cat.category + '" style="display:'
       + (isOpen ? '' : 'none') + '">';
     if (cat.category === 'crew') {
-      html += '<div id="setup-crew-weight-summary" class="setup-row" style="color:#8892a4;font-size:.82rem"></div>';
+      html += '<div id="setup-crew-weight-summary" class="setup-row" style="color:var(--text-secondary);font-size:.82rem"></div>';
     }
     for (const p of cat.parameters) {
       const curVal = setupCurrentValues[p.name] || '';
@@ -757,6 +789,11 @@ function renderSetupPanel(data) {
         }
         html += '</select>';
       } else {
+        if (canEdit) {
+          html += '<button type="button" class="setup-pm-btn" '
+            + 'onclick="toggleSetupSign(\'' + p.name + '\')" '
+            + 'aria-label="Toggle sign">&plusmn;</button>';
+        }
         html += '<input class="setup-input' + (curVal ? ' has-value' : '') + '" '
           + 'type="number" step="any" id="setup-' + p.name + '" '
           + 'value="' + escAttr(curVal) + '" '
@@ -788,7 +825,9 @@ async function loadSetupCurrentValues() {
     for (const row of rows) {
       setupCurrentValues[row.parameter] = row.value;
       const el = document.getElementById('setup-' + row.parameter);
-      if (el) {
+      // Don't overwrite a field the user is actively editing or that has a
+      // pending save timer — their unsaved value would be lost.
+      if (el && document.activeElement !== el && !_setupSaveTimers[row.parameter]) {
         el.value = row.value;
         el.classList.toggle('has-value', !!row.value);
       }
@@ -801,6 +840,23 @@ function updateSetupSummary() {
   const count = Object.keys(setupCurrentValues).length;
   const el = document.getElementById('setup-summary');
   if (el) el.textContent = count > 0 ? count + ' set' : '';
+}
+
+function toggleSetupSign(paramName) {
+  const el = document.getElementById('setup-' + paramName);
+  if (!el) return;
+  const cur = el.value.trim();
+  if (!cur || cur === '0') {
+    // Empty or zero — set to minus so user can type digits
+    el.value = '-';
+    el.focus();
+    return;
+  }
+  const num = parseFloat(cur);
+  if (isNaN(num)) return;
+  el.value = String(-num);
+  el.classList.toggle('has-value', true);
+  onSetupChange(paramName);
 }
 
 function onSetupChange(paramName) {
@@ -819,6 +875,7 @@ function onSetupChange(paramName) {
 async function saveSetupValue(paramName, value) {
   // Manual UI settings are boat-level (race_id=null), not per-race.
   // Per-race settings come from transcript extraction with a race_id.
+  delete _setupSaveTimers[paramName];  // Clear pending-save guard so loadSetupCurrentValues can refresh this field
   const ts = new Date().toISOString();
   try {
     const resp = await fetch('/api/boat-settings', {
@@ -845,7 +902,7 @@ function showSetupStatus(msg, isError) {
   const el = document.getElementById('setup-status');
   if (!el) return;
   el.textContent = msg;
-  el.style.color = isError ? '#fca5a5' : '#4ade80';
+  el.style.color = isError ? 'var(--danger)' : 'var(--success)';
   el.style.display = '';
   setTimeout(() => { el.style.display = 'none'; }, 2000);
 }
@@ -934,6 +991,76 @@ async function stopDebrief() {
   await loadState();
 }
 
+// --- Scheduled start (#345) ---
+
+function toggleSchedulePanel() {
+  const panel = document.getElementById('schedule-panel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) {
+    // Pre-fill with a time 5 minutes from now
+    const d = new Date(Date.now() + 5 * 60000);
+    const pad = n => String(n).padStart(2, '0');
+    const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    document.getElementById('schedule-time').value = local;
+  }
+}
+
+async function submitSchedule() {
+  const input = document.getElementById('schedule-time');
+  if (!input.value) { alert('Please set a start time'); return; }
+  const localDate = new Date(input.value);
+  const utcIso = localDate.toISOString();
+  try {
+    const resp = await fetch('/api/races/schedule', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({scheduled_start_utc: utcIso})
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => null);
+      alert(err && err.detail ? err.detail : 'Failed to schedule start');
+      return;
+    }
+    document.getElementById('schedule-panel').classList.add('hidden');
+    await loadState();
+  } catch(e) {
+    console.error('submitSchedule error', e);
+    alert('Error: ' + e.message);
+  }
+}
+
+async function cancelSchedule() {
+  await fetch('/api/races/schedule', {method: 'DELETE'});
+  await loadState();
+}
+
+function _startScheduleCountdown(fireAt) {
+  _stopScheduleCountdown();
+  const el = document.getElementById('schedule-countdown-time');
+  function update() {
+    const diff = Math.max(0, Math.floor((fireAt - Date.now()) / 1000));
+    if (diff <= 0) {
+      el.textContent = 'Starting...';
+      _stopScheduleCountdown();
+      // Poll state to pick up the new race
+      setTimeout(() => loadState(), 2000);
+      return;
+    }
+    const m = Math.floor(diff / 60);
+    const s = diff % 60;
+    el.textContent = `${m}:${String(s).padStart(2, '0')}`;
+  }
+  update();
+  scheduleCountdownInterval = setInterval(update, 1000);
+}
+
+function _stopScheduleCountdown() {
+  if (scheduleCountdownInterval) {
+    clearInterval(scheduleCountdownInterval);
+    scheduleCountdownInterval = null;
+  }
+}
+
 async function saveEvent() {
   const name = document.getElementById('event-input').value.trim();
   if(!name) return;
@@ -951,7 +1078,7 @@ const _pickerBoats = {};
 
 function renderResultRow(res, raceId) {
   const name = res.boat_name
-    ? res.sail_number + ' <span style="color:#8892a4;font-size:.78rem">' + res.boat_name + '</span>'
+    ? res.sail_number + ' <span style="color:var(--text-secondary);font-size:.78rem">' + res.boat_name + '</span>'
     : res.sail_number;
   const dnfCls = res.dnf ? ' active-dnf' : '';
   const dnsCls = res.dns ? ' active-dns' : '';
@@ -1043,7 +1170,7 @@ function showBoatDropdown(raceId, searchText) {
     const js = searchText.trim().replace(/\\/g,'\\\\').replace(/'/g,"\\'");
     html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="selectNewBoat(' + raceId + ',\'' + js + '\')">+ Add &ldquo;' + esc + '&rdquo;</div>';
   }
-  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  if (!html) html = '<div class="boat-option" style="color:var(--text-secondary);cursor:default">No boats found</div>';
   const dd = document.getElementById('picker-dropdown-' + raceId);
   if (dd) dd.innerHTML = html;
 }
@@ -1160,7 +1287,7 @@ function addSettingsRow() {
   // giving browser-native typeahead for previously used keys.
   row.innerHTML = '<input class="field" placeholder="Key" list="settings-key-suggestions" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
     + '<input class="field" placeholder="Value" style="flex:1;padding:6px 8px;font-size:.85rem"/>'
-    + '<button onclick="this.parentElement.remove()" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
+    + '<button onclick="this.parentElement.remove()" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:1.1rem">✕</button>';
   container.appendChild(row);
 }
 
@@ -1238,7 +1365,7 @@ function renderNote(n, sessionId) {
     try {
       const obj = JSON.parse(n.body);
       content = Object.entries(obj).map(([k, v]) =>
-        '<span style="color:#8892a4">' + k.replace(/&/g, '&amp;') + ':</span> ' + String(v).replace(/&/g, '&amp;')
+        '<span style="color:var(--text-secondary)">' + k.replace(/&/g, '&amp;') + ':</span> ' + String(v).replace(/&/g, '&amp;')
       ).join(' &nbsp;·&nbsp; ');
     } catch { content = n.body; }
   } else {
@@ -1246,12 +1373,12 @@ function renderNote(n, sessionId) {
   }
   const delBtn = sessionId != null
     ? '<button onclick="deleteNote(' + n.id + ',' + sessionId + ')" '
-      + 'style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;'
+      + 'style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;'
       + 'padding:0 4px;float:right" title="Delete">✕</button>'
     : '';
-  return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;font-size:.82rem;overflow:hidden">'
+  return '<div style="padding:4px 0;border-bottom:1px solid var(--border);font-size:.82rem;overflow:hidden">'
     + delBtn
-    + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>'
+    + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>'
     + content + '</div>';
 }
 
@@ -1267,7 +1394,7 @@ async function refreshNotes(sessionId) {
   const notes = await r.json();
   el.innerHTML = notes.length
     ? notes.map(n => renderNote(n, sessionId)).join('')
-    : '<div style="color:#8892a4;font-size:.8rem">No notes yet</div>';
+    : '<div style="color:var(--text-secondary);font-size:.8rem">No notes yet</div>';
 }
 
 async function toggleNotes(sessionId) {
@@ -1333,8 +1460,8 @@ async function _loadSails(sessionId, el) {
       + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</option>'
     ).join('');
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
-      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
-      + '<select id="sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<span style="color:var(--text-secondary);width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="sail-select-' + slot + '-' + sessionId + '" style="flex:1;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--accent-strong);border-radius:4px;padding:3px 6px;font-size:.78rem">'
       + '<option value="">— none —</option>' + opts
       + '</select></div>';
   });
@@ -1368,13 +1495,13 @@ async function _loadVideos(sessionId, el) {
     html += videos.map(v => {
       const lbl = v.label ? '<b>' + v.label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</b> — ' : '';
       const ttl = (v.title || v.youtube_url).replace(/&/g,'&amp;').replace(/</g,'&lt;');
-      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:#7eb8f7">' + ttl.substring(0,50) + '</a>';
-      const del = '<button onclick="deleteVideo(' + v.id + ',' + sessionId + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
-      return '<div style="font-size:.78rem;color:#8892a4;margin-bottom:2px">' + lbl + yt + del + '</div>';
+      const yt = '<a href="' + v.youtube_url.replace(/&/g,'&amp;') + '" target="_blank" style="color:var(--accent)">' + ttl.substring(0,50) + '</a>';
+      const del = '<button onclick="deleteVideo(' + v.id + ',' + sessionId + ')" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">✕</button>';
+      return '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:2px">' + lbl + yt + del + '</div>';
     }).join('');
     html += '</div>';
   } else {
-    html += '<div style="font-size:.78rem;color:#8892a4;margin-bottom:4px">No videos linked yet</div>';
+    html += '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">No videos linked yet</div>';
   }
   html += _videoAddForm(sessionId);
   el.innerHTML = html;
@@ -1386,16 +1513,16 @@ function _videoAddForm(sessionId) {
   // Format as datetime-local value (YYYY-MM-DDTHH:mm:ss, no timezone suffix)
   const defaultSyncUtc = startUtc ? new Date(startUtc).toISOString().substring(0, 19) : '';
   return '<div id="video-add-form-' + sessionId + '" style="display:none;margin-top:4px">'
-    + '<div style="font-size:.75rem;color:#8892a4;margin-bottom:4px">Link a YouTube video</div>'
+    + '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:4px">Link a YouTube video</div>'
     + '<input id="video-url-' + sessionId + '" class="field" placeholder="YouTube URL" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-label-' + sessionId + '" class="field" placeholder="Label (e.g. Bow cam)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
+    + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional) — UTC time + video position at the same moment:</div>'
     + '<input id="video-sync-utc-' + sessionId + '" class="field" type="datetime-local" step="1" placeholder="UTC time at sync point" value="' + defaultSyncUtc + '" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos-' + sessionId + '" class="field" placeholder="Video position at that moment (mm:ss, optional)" style="margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<button class="btn btn-primary" style="font-size:.82rem;padding:7px 14px" onclick="submitAddVideo(' + sessionId + ')">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + ' <button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\'video-add-form-' + sessionId + '\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">+ Add Video</button>';
 }
 
 async function submitAddVideo(sessionId) {
@@ -1447,17 +1574,17 @@ async function _loadSailInventory() {
   const r = await fetch('/api/sails?include_inactive=1');
   const data = await r.json();
   const allSails = ['main','jib','spinnaker'].flatMap(t => (data[t] || []).map(s => ({...s, type:t})));
-  if (!allSails.length) { el.innerHTML = '<div style="font-size:.78rem;color:#8892a4">No sails yet</div>'; return; }
+  if (!allSails.length) { el.innerHTML = '<div style="font-size:.78rem;color:var(--text-secondary)">No sails yet</div>'; return; }
   el.innerHTML = '<table style="width:100%;font-size:.78rem;border-collapse:collapse">'
-    + '<tr><th style="text-align:left;color:#8892a4;padding-bottom:4px">Type</th>'
-    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Name</th>'
-    + '<th style="text-align:left;color:#8892a4;padding-bottom:4px">Status</th>'
+    + '<tr><th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Type</th>'
+    + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Name</th>'
+    + '<th style="text-align:left;color:var(--text-secondary);padding-bottom:4px">Status</th>'
     + '<th></th></tr>'
-    + allSails.map(s => '<tr style="border-top:1px solid #1e3a5f">'
-      + '<td style="padding:3px 6px 3px 0;color:#8892a4">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
-      + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:#8892a4') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
-      + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? '#4ade80' : '#8892a4') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
-      + '<td><button onclick="toggleRetireSail(' + s.id + ',' + (s.active ? 'false' : 'true') + ')" style="font-size:.72rem;color:#8892a4;background:none;border:none;cursor:pointer">'
+    + allSails.map(s => '<tr style="border-top:1px solid var(--border)">'
+      + '<td style="padding:3px 6px 3px 0;color:var(--text-secondary)">' + s.type.charAt(0).toUpperCase() + s.type.slice(1) + '</td>'
+      + '<td style="padding:3px 6px 3px 0' + (s.active ? '' : ';color:var(--text-secondary)') + '">' + s.name.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</td>'
+      + '<td style="padding:3px 6px 3px 0;color:' + (s.active ? 'var(--success)' : 'var(--text-secondary)') + '">' + (s.active ? 'Active' : 'Retired') + '</td>'
+      + '<td><button onclick="toggleRetireSail(' + s.id + ',' + (s.active ? 'false' : 'true') + ')" style="font-size:.72rem;color:var(--text-secondary);background:none;border:none;cursor:pointer">'
       + (s.active ? 'Retire' : 'Restore') + '</button></td>'
       + '</tr>'
     ).join('')
@@ -1593,7 +1720,7 @@ function placeRcMarker(lat, lon) {
       title: 'RC (Start/Finish)',
       icon: L.divIcon({
         className: '',
-        html: '<div style="background:#ef4444;color:#fff;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid #fff">RC</div>',
+        html: '<div style="background:' + cssVar('--danger') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">RC</div>',
         iconSize: [24, 24],
         iconAnchor: [12, 12],
       }),
@@ -1618,9 +1745,10 @@ function updateWindArrow(lat, lon) {
   const endLat = lat + arrowLen * Math.cos(rad);
   const endLon = lon + arrowLen * Math.sin(rad) / Math.cos(lat * Math.PI / 180);
   if (_synthWindArrow) _synthMap.removeLayer(_synthWindArrow);
+  const synthArrowColor = cssVar('--warning');
   _synthWindArrow = L.polyline(
     [[lat, lon], [endLat, endLon]],
-    {color: '#fbbf24', weight: 3, dashArray: '6,4', opacity: 0.8}
+    {color: synthArrowColor, weight: 3, dashArray: '6,4', opacity: 0.8}
   ).addTo(_synthMap);
   // Arrowhead
   const headLen = 0.003;
@@ -1628,8 +1756,8 @@ function updateWindArrow(lat, lon) {
   const a2 = rad - 2.6;
   const h1 = [endLat + headLen * Math.cos(a1), endLon + headLen * Math.sin(a1) / Math.cos(lat * Math.PI / 180)];
   const h2 = [endLat + headLen * Math.cos(a2), endLon + headLen * Math.sin(a2) / Math.cos(lat * Math.PI / 180)];
-  L.polyline([[endLat, endLon], h1], {color: '#fbbf24', weight: 3}).addTo(_synthMap);
-  L.polyline([[endLat, endLon], h2], {color: '#fbbf24', weight: 3}).addTo(_synthMap);
+  L.polyline([[endLat, endLon], h1], {color: synthArrowColor, weight: 3}).addTo(_synthMap);
+  L.polyline([[endLat, endLon], h2], {color: synthArrowColor, weight: 3}).addTo(_synthMap);
 }
 
 function onSynthWindChange() {
@@ -1680,7 +1808,7 @@ async function updateSynthMarks() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#2563eb;color:#fff;border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid #fff">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--accent-strong') + ';color:' + cssVar('--bg-primary') + ';border-radius:50%;width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;border:2px solid ' + cssVar('--bg-primary') + '">' + key + '</div>',
           iconSize: [22, 22],
           iconAnchor: [11, 11],
         }),
@@ -1698,7 +1826,7 @@ async function updateSynthMarks() {
 
     if (lineCoords.length > 1) {
       _synthCourseLine = L.polyline(lineCoords, {
-        color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4,6',
+        color: cssVar('--accent'), weight: 2, opacity: 0.7, dashArray: '4,6',
       }).addTo(_synthMap);
     }
   } catch (_) {}
@@ -1717,7 +1845,7 @@ async function loadCycMarksOnMap() {
         title: key + ': ' + m.name,
         icon: L.divIcon({
           className: '',
-          html: '<div style="background:#16a34a;color:#fff;border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid #fff;opacity:0.85">' + key + '</div>',
+          html: '<div style="background:' + cssVar('--success') + ';color:' + cssVar('--bg-primary') + ';border-radius:3px;width:20px;height:20px;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;border:1px solid ' + cssVar('--bg-primary') + ';opacity:0.85">' + key + '</div>',
           iconSize: [20, 20],
           iconAnchor: [10, 10],
         }),
@@ -1765,7 +1893,7 @@ async function drawCustomCourseLine() {
     }
     if (coords.length > 1) {
       _synthCourseLine = L.polyline(coords, {
-        color: '#fbbf24', weight: 3, opacity: 0.8,
+        color: cssVar('--warning'), weight: 3, opacity: 0.8,
       }).addTo(_synthMap);
     }
   } catch (_) {}
@@ -1783,7 +1911,7 @@ function _updateCourseLine() {
   });
   if (coords.length > 1) {
     _synthCourseLine = L.polyline(coords, {
-      color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4,6',
+      color: cssVar('--accent'), weight: 2, opacity: 0.7, dashArray: '4,6',
     }).addTo(_synthMap);
   }
 }
@@ -1951,19 +2079,19 @@ async function importPeerWindModel() {
       const pts = (trackData.track || []).length;
       status.textContent = 'Imported wind model from ' + (info.boat || 'peer') +
         ' + ' + pts + ' track points for collision avoidance';
-      status.style.color = '#16a34a';
+      status.style.color = 'var(--success)';
     } else {
       _importedPeerTracks = null;
       _importedPeerInfo = null;
       status.textContent = 'Wind model imported (track not available for collision avoidance)';
-      status.style.color = '#fbbf24';
+      status.style.color = 'var(--warning)';
     }
 
     // Enable collision avoidance checkbox
     document.getElementById('synth-collision').checked = !!_importedPeerTracks;
   } catch (e) {
     status.textContent = 'Error: ' + e.message;
-    status.style.color = '#ef4444';
+    status.style.color = 'var(--danger)';
     _importedPeerTracks = null;
     _importedPeerInfo = null;
     _importedStartUtc = null;
@@ -2060,12 +2188,73 @@ async function runSynthesize() {
   }
 }
 
+// -- WebSocket live push with polling fallback --
+let _stateInterval = null;
+let _instrumentInterval = null;
+let _healthInterval = null;
+let _wsRetryMs = 1000;
+let _ws = null;
+
+function _startPolling() {
+  if (!_stateInterval) _stateInterval = setInterval(loadState, 10000);
+  if (!_instrumentInterval) _instrumentInterval = setInterval(loadInstruments, 2000);
+  if (!_healthInterval) _healthInterval = setInterval(checkSystemHealth, 30000);
+}
+
+function _stopPolling() {
+  if (_stateInterval) { clearInterval(_stateInterval); _stateInterval = null; }
+  if (_instrumentInterval) { clearInterval(_instrumentInterval); _instrumentInterval = null; }
+  if (_healthInterval) { clearInterval(_healthInterval); _healthInterval = null; }
+}
+
+function _connectWS() {
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _ws = new WebSocket(`${proto}//${location.host}/ws/live`);
+
+    _ws.onopen = () => {
+      _wsRetryMs = 1000;
+      _stopPolling();
+    };
+
+    _ws.onmessage = (evt) => {
+      try {
+        const msg = JSON.parse(evt.data);
+        if (msg.type === 'instruments') renderInstrumentData(msg.data);
+        else if (msg.type === 'state') render(msg.data);
+        else if (msg.type === 'health') {
+          const h = msg.data;
+          const banner = document.getElementById('health-banner');
+          const warnings = [];
+          if (h.disk_pct > 85) warnings.push('Disk ' + h.disk_pct.toFixed(0) + '% full');
+          if (h.cpu_temp_c != null && h.cpu_temp_c > 75) warnings.push('CPU temp ' + h.cpu_temp_c.toFixed(0) + '°C');
+          if (warnings.length) {
+            banner.textContent = '\u26a0 ' + warnings.join(' \u00b7 ');
+            banner.style.display = 'block';
+          } else {
+            banner.style.display = 'none';
+          }
+        }
+      } catch(e) { console.error('ws message parse error', e); }
+    };
+
+    _ws.onclose = () => {
+      _startPolling();
+      setTimeout(_connectWS, Math.min(_wsRetryMs *= 2, 30000));
+    };
+
+    _ws.onerror = () => { /* onclose will fire */ };
+  } catch(e) {
+    _startPolling();
+  }
+}
+
+// Initial data load + start polling, then attempt WebSocket upgrade
 loadState();
 loadCrewSummary();
 loadSailsSummary();
-setInterval(loadState, 10000);
 setInterval(tick, 1000);
 loadInstruments();
-setInterval(loadInstruments, 2000);
 checkSystemHealth();
-setInterval(checkSystemHealth, 30000);
+_startPolling();
+_connectWS();

@@ -10,11 +10,22 @@ cp .env.example .env                # configure local settings
 
 ## Development Workflow
 
-1. Branch off `main`: `git checkout -b feature/my-feature main`
-2. Follow TDD: write a failing test, implement, pass, lint
-3. Run all checks before pushing (see below)
-4. Push and create a PR targeting `main`
-5. All changes to `main` must come through merged PRs
+### Issue → PR lifecycle
+
+1. **Claim the issue**: apply the `in-progress` label and comment:
+   ```bash
+   gh issue edit <number> --add-label "in-progress"
+   gh issue comment <number> --body "In progress on \`<branch-name>\`"
+   ```
+2. Branch off `main`: `git checkout -b feature/my-feature main`
+3. Follow TDD (`/tdd` skill): write a failing test, implement, pass, lint
+4. For complex features touching Critical/High tier modules, write a
+   structured spec first (`/spec` skill) and post it on the issue for review
+5. Run all checks before pushing (see below)
+6. Push and create a PR targeting `main`
+7. PR body **must** include `Closes #<issue>` (or `Fixes #<issue>` for bugs)
+   so GitHub auto-closes the issue on merge
+8. All changes to `main` must come through merged PRs — never push directly
 
 ### Required Checks
 
@@ -24,6 +35,18 @@ uv run ruff check .              # lint clean
 uv run ruff format --check .     # format clean
 uv run mypy src/                 # types clean
 ```
+
+For federation/co-op/peer API changes, also run integration tests:
+
+```bash
+uv run pytest tests/integration/ -v
+```
+
+### Promotion gate
+
+The `promote.yml` workflow gates `main → stage` promotion on RELEASES.md:
+a new `##` heading must exist in the promoted commits. Use `/release-notes`
+to draft the entry before promoting.
 
 ## Data Licensing Policy
 
@@ -75,10 +98,23 @@ Use the `/data-license` skill to review changes against the policy.
 
 ## Testing
 
-- Tests live in `tests/` and run without hardware
+- Tests live in `tests/` and run without hardware (~1,100+ test functions)
 - Use the `storage` fixture from `conftest.py` for in-memory SQLite
 - Use `httpx.AsyncClient` with `ASGITransport` for web route tests
 - Mock hardware modules (`audio.py`, `can_reader.py`, `sk_reader.py`, `cameras.py`)
+
+### Integration tests
+
+Federation, co-op, and peer API changes require integration tests (`tests/integration/`).
+Three layers are available:
+
+| Layer | What | When |
+|---|---|---|
+| **1 — In-process pytest** | Two boats with real Ed25519 keys, in-memory SQLite, `httpx.ASGITransport` | Every PR touching federation code (runs in CI) |
+| **2 — Pi harness** | Mac orchestrator → two real Pis over Tailscale | Pre-merge manual validation for federation PRs |
+| **3 — Docker compose** | Two containers on Mac (arm64 capable) | Network failure / process isolation testing |
+
+Use the `/integration-test` skill to run the appropriate layer.
 
 ## AI Agent Collaboration
 
@@ -104,29 +140,64 @@ AI agents in your contributions:
 
 Claude Code skills are available for common workflows:
 
+### Development workflow
+
 | Skill | Purpose |
 |---|---|
-| `/tdd` | Test-driven development cycle |
-| `/new-module` | Scaffold a new hardware-isolated module |
-| `/new-migration` | Add a SQLite schema migration |
-| `/deploy-pi` | Pi deployment reference |
-| `/pr-checklist` | Pre-PR verification checks |
-| `/data-license` | Review changes against the data licensing policy |
+| `/tdd` | Test-driven development cycle (red-green-refactor) |
+| `/new-module` | Scaffold a new hardware-isolated module with tests |
+| `/new-migration` | Add a SQLite schema migration to storage.py |
+| `/pr-checklist` | Pre-PR verification (tests, lint, types, docs, risk-tier checks) |
+| `/spec` | Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue |
+| `/integration-test` | Run federation integration tests (Layer 1/2/3) |
 
-## Module Review Guide
+### Review and compliance
 
-Some modules require extra care:
+| Skill | Purpose |
+|---|---|
+| `/data-license` | Review code changes against the data licensing policy |
+| `/release-notes` | Draft a RELEASES.md entry from commits since last stage tag |
+| `/skill-eval` | Run evaluation test cases against a skill to measure quality |
 
-| Module | Risk | Notes |
+### Reference and operations
+
+| Skill | Purpose |
+|---|---|
+| `/domain` | Sailing instrument reference — Signal K paths, NMEA 2000 PGNs, racing concepts |
+| `/architecture` | Codebase comprehension — module map, data flow, complexity hotspots, risk tiers |
+| `/deploy-pi` | Pi deployment reference and service architecture |
+| `/diagnose` | Systematic Pi troubleshooting runbook — checks all subsystems |
+
+### Ideation and planning
+
+| Skill | Purpose |
+|---|---|
+| `/ideate` | Capture half-baked ideas into the ideation log for future reference |
+
+## Risk Tiers and Module Review
+
+A PR's risk tier is the **highest** tier of any file it touches. The
+`/pr-checklist` skill resolves the tier automatically. New modules default
+to **Standard** until explicitly classified.
+
+| Tier | Modules | Verification |
 |---|---|---|
-| `storage.py` | High | Schema migrations must be backwards-compatible; FK constraints affect cascading deletes |
-| `auth.py` | High | Security-sensitive; changes affect all authenticated endpoints |
-| `main.py` | Medium | Wiring only — no business logic; changes affect startup order |
-| `web.py` | Medium | Large file; check auth decorators and rate limits on new endpoints |
-| `export.py` | Medium | Data leaves the system; check GPS precision and data policy compliance |
-| `transcribe.py` | Low | Isolated; mock-friendly |
-| `cameras.py`, `sk_reader.py`, `can_reader.py` | Low | Hardware-isolated; well-contained |
-| `nmea2000.py`, `races.py`, `polar.py` | Low | Pure logic; easy to test |
+| **Critical** | `auth.py`, `peer_auth.py`, `federation.py`, `storage.py` (migrations), `can_reader.py` | TDD + integration tests + `/data-license` + spec review before implementation |
+| **High** | `sk_reader.py`, `peer_api.py`, `peer_client.py`, `export.py`, `transcribe.py`, `boat_settings.py` | TDD + integration tests where applicable |
+| **Standard** | `web.py`, `polar.py`, `external.py`, `races.py`, `triggers.py`, `maneuver_detector.py`, `race_classifier.py`, `courses.py`, `session_matching.py` | TDD + standard PR checklist |
+| **Low** | Templates, CSS, JS, docs, config, scripts | Smoke test / visual check |
+
+### Module-specific notes
+
+| Module | Notes |
+|---|---|
+| `storage.py` | Schema migrations must be backwards-compatible; FK constraints affect cascading deletes |
+| `auth.py`, `peer_auth.py` | Security-sensitive; changes affect all authenticated endpoints and inter-boat signing |
+| `federation.py` | Ed25519 identity and co-op charter management; cryptographic operations |
+| `web.py` | Large file (~6,800 lines); check auth decorators and rate limits on new endpoints |
+| `export.py` | Data leaves the system; check GPS precision and data policy compliance |
+| `main.py` | Wiring only — no business logic; changes affect startup order |
+| `cameras.py`, `sk_reader.py`, `can_reader.py` | Hardware-isolated; well-contained |
 
 ## Review Process
 

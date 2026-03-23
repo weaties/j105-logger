@@ -51,7 +51,9 @@ didn't send it."
 
 1. **"Will it make me faster?"**
    Yes. You'll see your boat speed, angles, and maneuvers compared to the
-   fleet average. You'll know exactly where you're losing and gaining.
+   fleet average. Automated analysis highlights polar performance, VMG by
+   sail, and maneuver efficiency. You'll know exactly where you're losing
+   and gaining.
 
 2. **"Is my data safe?"**
    Your data stays on your boat. You choose what to share, race by race.
@@ -109,6 +111,7 @@ more useful the fleet benchmarks are for everyone, including you.
 | Raspberry Pi 5 (4GB) | ~$60 |
 | CAN bus HAT or Signal K gateway | ~$30-80 |
 | SD card (32GB+) | ~$10 |
+| USB audio (optional, e.g. Gordik 2T1R) | ~$25 |
 | Tailscale account | Free |
 | Helm Log software | Free |
 
@@ -118,12 +121,6 @@ via Signal K, and internet access (phone hotspot is fine).
 Tailscale is a lightweight private network that encrypts all traffic
 between your boats' Pis. It's what lets the boats talk to each other
 without a central server. The free tier supports up to 100 devices.
-
-For crew members who don't want to install Tailscale, helmlog.org
-provides a lightweight gateway that routes requests to the right Pi.
-No data is stored on the gateway — it's a pass-through. This is the
-one piece of shared infrastructure, and it handles only routing, not
-data storage.
 
 ### The setup sequence
 
@@ -143,7 +140,8 @@ don't need 100% coverage to start.
    sailor as a backup admin.
 
 4. **Run it for a few weeks.** Share races, compare tracks, show people
-   the fleet benchmark view. Let the value speak for itself.
+   the fleet benchmark view and session matching. Let the value speak for
+   itself.
 
 5. **Invite the rest of the fleet.** Once the early adopters are hooked,
    the remaining boats will want in. Help them set up one at a time.
@@ -167,7 +165,7 @@ Each Pi has two things worth backing up:
    there's no backup, the boat needs to re-join the co-op as a new
    identity. Back this up to a USB stick or the boat owner's phone.
 
-2. **The database** (`data/helmlog.db`) — all session data, race
+2. **The database** (`data/logger.db`) — all session data, race
    results, transcripts, and notes. Without a backup, historical data on
    a dead Pi is gone.
 

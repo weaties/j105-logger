@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   test:
@@ -63,6 +64,105 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      - name: mypy
-        run: uv run mypy src/
-        continue-on-error: true  # pre-existing errors from aiosqlite/slowapi; track trend
+      - name: mypy (baseline enforcement)
+        run: |
+          # 110 pre-existing errors in storage.py and web.py (aiosqlite Row types,
+          # union-attr on Optional fields). Fail if new errors are introduced.
+          # Reduce this number as errors are fixed.
+          BASELINE=110
+          ERROR_COUNT=$(uv run mypy src/ 2>&1 | grep -c "^src/helmlog/.*: error:" || true)
+          echo "mypy errors: $ERROR_COUNT (baseline: $BASELINE)"
+          if [ "$ERROR_COUNT" -gt "$BASELINE" ]; then
+            echo "::error::mypy error count ($ERROR_COUNT) exceeds baseline ($BASELINE). New type errors introduced."
+            uv run mypy src/ 2>&1 | grep "^src/helmlog/.*: error:" | head -20
+            exit 1
+          fi
+          echo "mypy baseline check passed (no new errors introduced)"
+
+  data-license-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Check for data-sensitive file changes
+        id: check-files
+        run: |
+          # Files that handle user data, PII, or co-op sharing
+          SENSITIVE_PATTERNS=(
+            "src/helmlog/storage.py"
+            "src/helmlog/export.py"
+            "src/helmlog/peer_api.py"
+            "src/helmlog/peer_client.py"
+            "src/helmlog/federation.py"
+            "src/helmlog/transcribe.py"
+            "src/helmlog/audio.py"
+            "src/helmlog/auth.py"
+            "src/helmlog/web.py"
+          )
+
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD 2>/dev/null || echo "")
+          MATCHED_FILES=""
+
+          for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+            if echo "$CHANGED_FILES" | grep -q "^${pattern}$"; then
+              MATCHED_FILES="${MATCHED_FILES}${pattern}\n"
+            fi
+          done
+
+          if [ -n "$MATCHED_FILES" ]; then
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+            echo -e "Data-sensitive files changed:\n${MATCHED_FILES}"
+            echo "files<<EOF" >> "$GITHUB_OUTPUT"
+            echo -e "$MATCHED_FILES" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "No data-sensitive files changed"
+          fi
+
+      - name: Post data-license reminder
+        if: steps.check-files.outputs.matched == 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const files = `${{ steps.check-files.outputs.files }}`.trim();
+            const body = `### Data Licensing Review Required
+
+            This PR modifies data-sensitive files:
+
+            \`\`\`
+            ${files}
+            \`\`\`
+
+            Please ensure changes comply with the [data licensing policy](docs/data-licensing.md):
+            - **PII handling**: audio, photos, emails, biometrics have deletion/anonymization rights
+            - **Co-op data**: view-only, no bulk export, audit logging required
+            - **Embargo**: check embargo timestamps before serving track data
+            - **Gambling/protest firewalls**: no betting facilitation or protest committee exports
+
+            Run \`/data-license\` in Claude Code to review, or manually check against \`docs/data-licensing.md\`.`;
+
+            // Check if we already posted this comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.data.find(c =>
+              c.body.includes('Data Licensing Review Required') &&
+              c.user.type === 'Bot'
+            );
+            if (!existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body,
+              });
+            }

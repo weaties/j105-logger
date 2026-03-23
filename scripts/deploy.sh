@@ -196,6 +196,18 @@ else
     echo "    nginx not configured — run setup.sh to install."
 fi
 
+echo "==> Checking cloudflared service..."
+if systemctl list-unit-files cloudflared.service 2>/dev/null | grep -qw cloudflared; then
+    if sudo systemctl is-active --quiet cloudflared 2>/dev/null; then
+        echo "    cloudflared is running."
+    else
+        sudo systemctl restart cloudflared 2>/dev/null || true
+        echo "    cloudflared restarted."
+    fi
+else
+    echo "    cloudflared not installed — skipping."
+fi
+
 echo "==> Fixing data directory permissions..."
 chmod -R g+w "$PROJECT_DIR/data" 2>/dev/null || true
 
@@ -212,7 +224,8 @@ ENV_FILE="$PROJECT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
     set -a
     # shellcheck disable=SC1090
-    source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#')
+    source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#' \
+        | sed "s/=\(.*\)/='\1'/")
     set +a
 fi
 

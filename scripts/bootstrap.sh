@@ -113,14 +113,26 @@ bootstrap() {
     info "On branch: $(git rev-parse --abbrev-ref HEAD) ($(git rev-parse --short HEAD))"
 
     # -------------------------------------------------------------------
-    # 3. Run setup.sh (installs everything — 10-20 minutes)
+    # 3. Configure operator settings (persists to ~/.helmlog/config.env)
+    # -------------------------------------------------------------------
+
+    step "Running configuration wizard..."
+    if [[ -n "${ADMIN_EMAIL:-}" || -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
+        # Unattended mode — pass env vars through to configure.sh
+        bash "$HELMLOG_DIR/scripts/configure.sh" --non-interactive
+    else
+        bash "$HELMLOG_DIR/scripts/configure.sh"
+    fi
+
+    # -------------------------------------------------------------------
+    # 4. Run setup.sh (installs everything — 10-20 minutes)
     # -------------------------------------------------------------------
 
     step "Running setup.sh (this takes 10–20 minutes on a Pi 4/5)..."
     bash "$HELMLOG_DIR/scripts/setup.sh"
 
     # -------------------------------------------------------------------
-    # 4. Set ADMIN_EMAIL in .env for future deploys
+    # 5. Set ADMIN_EMAIL in .env for future deploys
     # -------------------------------------------------------------------
 
     ENV_FILE="$HELMLOG_DIR/.env"
@@ -135,7 +147,7 @@ bootstrap() {
     fi
 
     # -------------------------------------------------------------------
-    # 5. Create admin user
+    # 6. Create admin user
     # -------------------------------------------------------------------
 
     step "Creating admin user..."
@@ -184,7 +196,7 @@ bootstrap() {
     LOGIN_URL=$(echo "$ADD_USER_OUTPUT" | grep -oE 'http[s]?://[^ ]+\?token=[^ ]+' | head -1) || true
 
     # -------------------------------------------------------------------
-    # 6. Summary
+    # 7. Summary
     # -------------------------------------------------------------------
 
     # Final safety net — make sure helmlog is running before we declare victory.

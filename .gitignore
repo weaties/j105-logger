@@ -1,14 +1,16 @@
 # Data files — never commit
 data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
 data/*.sqlite
 data/*.csv
 data/audio/
 data/notes/
 
-# Claude Code project directory (except shared skills)
-.claude/
+# Claude Code project directory (except shared skills and evals)
+.claude/*
 !.claude/skills/
-!.claude/skills/**
 
 # Credentials reference (contains real secrets — never commit)
 docs/credentials.md

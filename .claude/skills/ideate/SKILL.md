@@ -1,6 +1,6 @@
 ---
 name: ideate
-description: Capture half-baked ideas into the ideation log for future reference
+description: Capture half-baked ideas into the ideation log (docs/ideation-log.md) for future reference. TRIGGER when the user mentions a speculative idea, "what if we...", "it would be cool if...", or explicitly asks to log an idea. Also trigger when a conversation surfaces an interesting possibility that isn't actionable yet. DO NOT trigger for concrete feature requests (those should be GitHub issues), bug reports, or actionable tasks with clear next steps.
 ---
 
 # Ideation Capture: `$ARGUMENTS`

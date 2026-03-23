@@ -1,0 +1,364 @@
+"""Shared helpers and models for route handlers.
+
+Routers import from here instead of web.py to avoid circular imports.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
+if TYPE_CHECKING:
+    import asyncio
+    from datetime import datetime
+
+    from fastapi import Request
+
+    from helmlog.storage import Storage
+
+# ---------------------------------------------------------------------------
+# Templates
+# ---------------------------------------------------------------------------
+
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
+_STATIC_DIR = Path(__file__).parent.parent / "static"
+templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+# Shared rate limiter — the same instance is also stored on app.state.limiter by create_app()
+limiter = Limiter(key_func=get_remote_address, config_filename="/dev/null")
+
+# ---------------------------------------------------------------------------
+# Git version info — read once at import time
+# ---------------------------------------------------------------------------
+
+
+def _get_git_info() -> str:
+    """Return 'branch @ shortsha · clean/dirty' from the current git repo."""
+    import subprocess
+
+    try:
+        _repo = str(Path(__file__).resolve().parents[3])
+        _git = ["git", "-c", f"safe.directory={_repo}", "--no-optional-locks"]
+
+        def _run(args: list[str]) -> str:
+            return subprocess.check_output(
+                [*_git, *args], cwd=_repo, stderr=subprocess.DEVNULL, text=True
+            ).strip()
+
+        branch = _run(["rev-parse", "--abbrev-ref", "HEAD"])
+        sha = _run(["rev-parse", "--short=7", "HEAD"])
+
+        dirty = bool(_run(["status", "--porcelain"]))
+
+        if not dirty:
+            try:
+                unpushed = _run(["rev-list", "@{upstream}..HEAD", "--count"])
+                if int(unpushed) > 0:
+                    dirty = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        import socket
+
+        hostname = socket.gethostname()
+        status = "dirty" if dirty else "clean"
+        return f"{hostname} · {branch} @ {sha} · {status}"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+GIT_INFO: str = _get_git_info()
+GIT_SHORT_SHA: str = ""
+STARTUP_SHA: str = ""
+try:
+    import subprocess as _sp
+
+    _repo_dir = str(Path(__file__).resolve().parents[3])
+    STARTUP_SHA = _sp.check_output(  # noqa: S603, S607
+        ["git", "-c", f"safe.directory={_repo_dir}", "rev-parse", "HEAD"],
+        cwd=_repo_dir,
+        text=True,
+        stderr=_sp.DEVNULL,
+    ).strip()
+    GIT_SHORT_SHA = STARTUP_SHA[:7]
+    del _sp, _repo_dir
+except Exception:  # noqa: BLE001
+    pass
+
+# ---------------------------------------------------------------------------
+# Shared request helpers
+# ---------------------------------------------------------------------------
+
+
+def get_storage(request: Request) -> Storage:
+    """Return the Storage instance from the app state."""
+    return request.app.state.storage  # type: ignore[no-any-return]
+
+
+def tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
+    """Build the standard template context dict."""
+    theme_css: str = getattr(request.state, "theme_css", "")
+    return {
+        "request": request,
+        "active_page": page,
+        "git_info": GIT_INFO,
+        "git_sha": GIT_SHORT_SHA,
+        "theme_css": theme_css,
+        **extra,
+    }
+
+
+async def audit(
+    request: Request,
+    action: str,
+    detail: str | None = None,
+    user: dict[str, Any] | None = None,
+) -> None:
+    """Fire-and-forget audit log entry."""
+    storage = get_storage(request)
+    uid = user.get("id") if user else None
+    ip = request.client.host if request.client else None
+    ua = request.headers.get("user-agent")
+    await storage.log_action(action, detail=detail, user_id=uid, ip_address=ip, user_agent=ua)
+
+
+async def load_cameras(request: Request) -> list[Any]:
+    """Load cameras from the database and return Camera objects."""
+    from helmlog.cameras import Camera
+
+    storage = get_storage(request)
+    rows = await storage.list_cameras()
+    return [
+        Camera(
+            name=r["name"],
+            ip=r["ip"],
+            model=r["model"],
+            wifi_ssid=r.get("wifi_ssid"),
+            wifi_password=r.get("wifi_password"),
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Settings definitions
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SettingDef:
+    """Metadata for one admin-configurable setting."""
+
+    key: str
+    label: str
+    input_type: str  # "text", "number", "select"
+    default: str
+    help_text: str = ""
+    options: tuple[str, ...] = ()
+    sensitive: bool = False
+
+
+SETTINGS_DEFS: tuple[SettingDef, ...] = (
+    SettingDef(
+        key="TRANSCRIBE_URL",
+        label="Remote transcription URL",
+        input_type="text",
+        default="",
+        help_text="Base URL for the remote transcription worker (e.g. http://macbook:8321). Leave blank for local transcription.",
+    ),
+    SettingDef(
+        key="WHISPER_MODEL",
+        label="Whisper model size",
+        input_type="select",
+        default="base",
+        options=("tiny", "base", "small", "medium", "large"),
+        help_text="Larger models are more accurate but slower.",
+    ),
+    SettingDef(
+        key="PI_API_URL",
+        label="Pi API URL",
+        input_type="text",
+        default="http://corvopi:3002",
+        help_text="Base URL for the HelmLog API (used by the video pipeline).",
+    ),
+    SettingDef(
+        key="TIMEZONE",
+        label="Display timezone",
+        input_type="text",
+        default="America/Los_Angeles",
+        help_text="IANA timezone name for display (e.g. America/Los_Angeles).",
+    ),
+    SettingDef(
+        key="VIDEO_PRIVACY",
+        label="YouTube upload privacy",
+        input_type="select",
+        default="private",
+        options=("private", "unlisted", "public"),
+        help_text="Privacy status for auto-uploaded YouTube videos. Default is 'private' per data policy.",
+    ),
+    SettingDef(
+        key="EXTERNAL_DATA_ENABLED",
+        label="External data fetching",
+        input_type="select",
+        default="true",
+        options=("true", "false"),
+        help_text="Enable weather/tide fetching (sends GPS position to Open-Meteo and NOAA).",
+    ),
+    SettingDef(
+        key="VIDEO_CLEANUP_AFTER_UPLOAD",
+        label="Delete video after upload",
+        input_type="select",
+        default="false",
+        options=("true", "false"),
+        help_text="Delete stitched MP4 from Mac after successful YouTube upload.",
+    ),
+    SettingDef(
+        key="PI_SESSION_COOKIE",
+        label="Pi session cookie",
+        input_type="text",
+        default="",
+        sensitive=True,
+        help_text="Session cookie for the Pi API (used by the video pipeline to link videos to sessions).",
+    ),
+    SettingDef(
+        key="CAMERA_START_TIMEOUT",
+        label="Camera timeout (seconds)",
+        input_type="number",
+        default="10",
+        help_text="Timeout in seconds for camera start/stop HTTP commands.",
+    ),
+    SettingDef(
+        key="MONITOR_INTERVAL_S",
+        label="Health monitor interval (seconds)",
+        input_type="number",
+        default="2",
+        help_text="How often to collect Pi health metrics for the dashboard (1\u2013300 seconds).",
+    ),
+    SettingDef(
+        key="NETWORK_AUTO_SWITCH",
+        label="Auto-switch WLAN for races",
+        input_type="select",
+        default="false",
+        options=("true", "false"),
+        help_text="Automatically switch WLAN to camera Wi-Fi on race start and revert on race end.",
+    ),
+    SettingDef(
+        key="NETWORK_DEFAULT_PROFILE",
+        label="Default WLAN profile ID",
+        input_type="text",
+        default="",
+        help_text="WLAN profile ID to revert to after a race ends (used with auto-switch).",
+    ),
+)
+
+SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}
+
+# ---------------------------------------------------------------------------
+# Pydantic request models
+# ---------------------------------------------------------------------------
+
+
+class EventRequest(BaseModel):
+    event_name: str
+
+
+class CrewEntry(BaseModel):
+    position_id: int
+    user_id: int | None = None
+    attributed: bool = True
+    body_weight: float | None = None
+    gear_weight: float | None = None
+
+
+class WeightUpdate(BaseModel):
+    weight_lbs: float | None = None
+
+
+class PositionEntry(BaseModel):
+    name: str
+    display_order: int
+
+
+class BoatCreate(BaseModel):
+    sail_number: str
+    name: str | None = None
+    class_name: str | None = None
+
+
+class BoatUpdate(BaseModel):
+    sail_number: str | None = None
+    name: str | None = None
+    class_name: str | None = None
+
+
+class RaceResultEntry(BaseModel):
+    place: int
+    boat_id: int | None = None
+    sail_number: str | None = None
+    finish_time: str | None = None
+    dnf: bool = False
+    dns: bool = False
+    notes: str | None = None
+
+
+class NoteCreate(BaseModel):
+    body: str | None = None
+    note_type: str = "text"
+    ts: str | None = None  # UTC ISO 8601; defaults to server time if absent
+
+
+class VideoCreate(BaseModel):
+    youtube_url: str
+    label: str = ""
+    sync_utc: str  # UTC ISO 8601
+    sync_offset_s: float = 0.0
+
+
+class VideoUpdate(BaseModel):
+    label: str | None = None
+    sync_utc: str | None = None
+    sync_offset_s: float | None = None
+
+
+class SailCreate(BaseModel):
+    type: str  # 'main' | 'jib' | 'spinnaker'
+    name: str
+    notes: str | None = None
+    point_of_sail: str | None = None  # 'upwind' | 'downwind' | 'both'
+
+
+class SailUpdate(BaseModel):
+    name: str | None = None
+    notes: str | None = None
+    active: bool | None = None
+    point_of_sail: str | None = None  # 'upwind' | 'downwind' | 'both'
+
+
+class RaceSailsSet(BaseModel):
+    main_id: int | None = None
+    jib_id: int | None = None
+    spinnaker_id: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# App session state (replaces closure variables in create_app)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AppSessionState:
+    """Mutable state shared across race/debrief route handlers."""
+
+    audio_session_id: int | None = None
+    debrief_audio_session_id: int | None = None
+    debrief_race_id: int | None = None
+    debrief_race_name: str | None = None
+    debrief_start_utc: datetime | None = None
+    schedule_task: asyncio.Task[None] | None = field(default=None, repr=False)
+    schedule_first_check_done: bool = False

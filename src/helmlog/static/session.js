@@ -12,6 +12,9 @@ let _ytReady = false;
 let _syncTimer = null;
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
+let _transcriptId = null; // transcript ID for tuning extraction
+let _tuningSegmentAudio = null; // shared <audio> for segment playback
+let _tuningSegmentTimer = null; // timeupdate stop timer
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -48,6 +51,7 @@ async function init() {
   await loadDiscussion();
   _checkThreadHash();
   loadSharing();
+  loadMatch();
   renderExports();
 }
 
@@ -65,12 +69,20 @@ function renderHeader() {
   const peerBadge = s.peer_fingerprint
     ? '<span class="badge badge-peer" title="Peer boat">PEER</span>'
     : '';
-  document.getElementById('session-name').innerHTML = esc(s.name) + badge + peerBadge;
+  const matchBadge = s.match_status === 'confirmed'
+    ? '<span class="badge badge-practice" title="Co-op matched">MATCHED</span>'
+    : s.match_status === 'candidate'
+    ? '<span class="badge badge-debrief" title="Pending match">PENDING</span>'
+    : '';
+  const displayName = s.shared_name || s.name;
+  document.getElementById('session-name').innerHTML = esc(displayName) + badge + peerBadge + matchBadge;
 
   const start = fmtTime(s.start_utc);
   const end = s.end_utc ? fmtTime(s.end_utc) : 'in progress';
   const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDuration(Math.round(s.duration_s)) + ')' : '';
-  document.getElementById('session-meta').innerHTML = s.date + ' &middot; ' + start + ' &rarr; ' + end + dur;
+  let meta = s.date + ' &middot; ' + start + ' &rarr; ' + end + dur;
+  if (s.shared_name) meta += '<br><span style="font-size:.72rem;color:var(--text-secondary)">Local: ' + esc(s.name) + '</span>';
+  document.getElementById('session-meta').innerHTML = meta;
 }
 
 // ---------------------------------------------------------------------------
@@ -95,15 +107,19 @@ async function loadTrack() {
   const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
-  const line = L.polyline(latLngs, {color: '#2563eb', weight: 4}).addTo(_map);
+  const trackColor = cssVar('--accent-strong');
+  const line = L.polyline(latLngs, {color: trackColor, weight: 4}).addTo(_map);
 
-  L.circleMarker(latLngs[0], {radius: 6, color: '#22c55e', fillColor: '#22c55e', fillOpacity: 1})
+  const successColor = cssVar('--success');
+  const dangerColor = cssVar('--danger');
+  const warningColor = cssVar('--warning');
+  L.circleMarker(latLngs[0], {radius: 6, color: successColor, fillColor: successColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Start');
-  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: '#ef4444', fillColor: '#ef4444', fillOpacity: 1})
+  L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: dangerColor, fillColor: dangerColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Finish');
 
   const cursor = L.circleMarker([0, 0], {
-    radius: 7, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2,
+    radius: 7, color: warningColor, fillColor: warningColor, fillOpacity: 1, weight: 2,
   });
 
   _trackData = {latLngs, timestamps, line, cursor};
@@ -346,12 +362,12 @@ async function loadVideos() {
     body.innerHTML = videos.map(v => {
       const lbl = v.label ? '<b>' + esc(v.label) + '</b> — ' : '';
       const ttl = esc(v.title || v.youtube_url).substring(0, 60);
-      const link = '<a href="' + esc(v.youtube_url) + '" target="_blank" style="color:#7eb8f7">' + ttl + '</a>';
-      const del = '<button onclick="deleteVideo(' + v.id + ')" style="color:#ef4444;background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">&#10005;</button>';
+      const link = '<a href="' + esc(v.youtube_url) + '" target="_blank" style="color:var(--accent)">' + ttl + '</a>';
+      const del = '<button onclick="deleteVideo(' + v.id + ')" style="color:var(--danger);background:none;border:none;cursor:pointer;font-size:.8rem;margin-left:8px">&#10005;</button>';
       return '<div style="margin-bottom:4px">' + lbl + link + del + '</div>';
     }).join('');
   } else {
-    body.innerHTML = '<span style="color:#8892a4">No videos linked</span>';
+    body.innerHTML = '<span style="color:var(--text-secondary)">No videos linked</span>';
   }
   body.innerHTML += _videoAddForm();
 }
@@ -362,13 +378,13 @@ function _videoAddForm() {
   return '<div id="video-add-form" style="display:none;margin-top:8px">'
     + '<input id="video-url" class="field" placeholder="YouTube URL" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-label" class="field" placeholder="Label (e.g. Bow cam)" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<div style="font-size:.72rem;color:#8892a4;margin-bottom:2px">Sync calibration (optional):</div>'
+    + '<div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:2px">Sync calibration (optional):</div>'
     + '<input id="video-sync-utc" class="field" type="datetime-local" step="1" value="' + defaultSync + '" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
     + '<input id="video-sync-pos" class="field" placeholder="Video position (mm:ss)" style="width:100%;margin-bottom:4px;padding:6px 8px;font-size:.82rem"/>'
-    + '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb" onclick="submitAddVideo()">Add Video</button>'
-    + ' <button onclick="document.getElementById(\'video-add-form\').style.display=\'none\'" style="background:none;border:none;color:#8892a4;cursor:pointer;font-size:.82rem">Cancel</button>'
+    + '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)" onclick="submitAddVideo()">Add Video</button>'
+    + ' <button onclick="document.getElementById(\'video-add-form\').style.display=\'none\'" style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.82rem">Cancel</button>'
     + '</div>'
-    + '<button onclick="document.getElementById(\'video-add-form\').style.display=\'\'" style="font-size:.78rem;color:#7eb8f7;background:none;border:none;cursor:pointer;padding:4px 0;margin-top:4px">+ Add Video</button>';
+    + '<button onclick="document.getElementById(\'video-add-form\').style.display=\'\'" style="font-size:.78rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:4px 0;margin-top:4px">+ Add Video</button>';
 }
 
 async function submitAddVideo() {
@@ -472,7 +488,7 @@ function showBoatDropdown(searchText) {
     const js = searchText.trim().replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     html += '<div class="boat-option boat-option-new" onmousedown="event.preventDefault()" onclick="selectNewBoat(\'' + js + '\')">+ Add &ldquo;' + esc(searchText.trim()) + '&rdquo;</div>';
   }
-  if (!html) html = '<div class="boat-option" style="color:#8892a4;cursor:default">No boats found</div>';
+  if (!html) html = '<div class="boat-option" style="color:var(--text-secondary);cursor:default">No boats found</div>';
   document.getElementById('picker-dropdown').innerHTML = html;
 }
 
@@ -549,23 +565,23 @@ function renderCrewCollapsed() {
         const g = c.gear_weight || 0;
         totalBody += b;
         totalGear += g;
-        wt = ' <span style="color:#6b7a90;font-size:.75rem">('
+        wt = ' <span style="color:var(--text-muted);font-size:.75rem">('
           + (b ? b.toFixed(0) : '0');
         if (g) wt += '+' + g.toFixed(0) + 'g';
         wt += ' lbs)</span>';
       }
-      return '<span style="color:#8892a4">' + pos + ':</span> ' + name + wt;
+      return '<span style="color:var(--text-secondary)">' + pos + ':</span> ' + name + wt;
     });
     let html = lines.join(' &nbsp;\u00b7&nbsp; ');
     if (hasWeight) {
       const total = totalBody + totalGear;
-      html += '<div style="color:#8892a4;font-size:.78rem;margin-top:4px">'
+      html += '<div style="color:var(--text-secondary);font-size:.78rem;margin-top:4px">'
         + 'Total crew weight: ' + total.toFixed(0) + ' lbs'
         + ' (body ' + totalBody.toFixed(0) + ' + gear ' + totalGear.toFixed(0) + ')</div>';
     }
     summary.innerHTML = html;
   } else {
-    summary.innerHTML = '<span style="color:#8892a4">No crew recorded</span>';
+    summary.innerHTML = '<span style="color:var(--text-secondary)">No crew recorded</span>';
   }
 }
 
@@ -697,7 +713,7 @@ function _updateSessionCrewTotal() {
   const total = totalBody + totalGear;
   if (count > 0) {
     el.innerHTML = '<strong>Total weight: ' + total.toFixed(1) + ' lbs</strong>'
-      + ' <span style="color:#8892a4">=&nbsp;crew ' + totalBody.toFixed(1)
+      + ' <span style="color:var(--text-secondary)">=&nbsp;crew ' + totalBody.toFixed(1)
       + '&nbsp;+&nbsp;gear ' + totalGear.toFixed(1) + '</span>';
     el.style.display = 'block';
   } else {
@@ -757,12 +773,12 @@ async function loadSails() {
       + esc(s.name) + '</option>'
     ).join('');
     html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px">'
-      + '<span style="color:#8892a4;width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
-      + '<select id="sail-select-' + slot + '" style="flex:1;background:#1a2840;color:#e0e8f0;border:1px solid #2563eb;border-radius:4px;padding:3px 6px;font-size:.78rem">'
+      + '<span style="color:var(--text-secondary);width:68px;flex-shrink:0">' + slot.charAt(0).toUpperCase() + slot.slice(1) + '</span>'
+      + '<select id="sail-select-' + slot + '" style="flex:1;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--accent-strong);border-radius:4px;padding:3px 6px;font-size:.78rem">'
       + '<option value="">\u2014 none \u2014</option>' + opts
       + '</select></div>';
   });
-  html += '<button class="btn-export" style="background:#2563eb;color:#fff;border-color:#2563eb;font-size:.78rem;margin-top:4px" onclick="saveSails()">Save Sails</button>';
+  html += '<button class="btn-export" style="background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong);font-size:.78rem;margin-top:4px" onclick="saveSails()">Save Sails</button>';
   html += '<div id="sail-changes-timeline"></div>';
   body.innerHTML = html;
 
@@ -812,7 +828,7 @@ async function loadSailChangeTimeline() {
       return;
     }
     container.style.display = 'block';
-    let html = '<div style="font-size:.75rem;color:#8892a4;margin-top:8px;border-top:1px solid #1e3a5f;padding-top:8px">'
+    let html = '<div style="font-size:.75rem;color:var(--text-secondary);margin-top:8px;border-top:1px solid ' + cssVar('--border') + ';padding-top:8px">'
       + '<strong>Sail Changes</strong></div>';
     html += '<div style="font-size:.75rem;margin-top:4px">';
     changes.forEach((c, i) => {
@@ -824,8 +840,8 @@ async function loadSailChangeTimeline() {
       const label = names.length ? names.join(' · ') : '(none)';
       const isFirst = i === 0;
       html += '<div style="display:flex;gap:8px;align-items:baseline;margin-bottom:2px">'
-        + '<span style="color:#8892a4;min-width:70px">' + timeStr + '</span>'
-        + '<span' + (isFirst ? ' style="color:#6b7a90"' : '') + '>'
+        + '<span style="color:var(--text-secondary);min-width:70px">' + timeStr + '</span>'
+        + '<span' + (isFirst ? ' style="color:var(--text-muted)"' : '') + '>'
         + (isFirst ? '(start) ' : '') + label + '</span>'
         + '</div>';
     });
@@ -855,18 +871,18 @@ async function loadNotes() {
         try {
           const obj = JSON.parse(n.body);
           content = Object.entries(obj).map(([k, v]) =>
-            '<span style="color:#8892a4">' + esc(k) + ':</span> ' + esc(v)
+            '<span style="color:var(--text-secondary)">' + esc(k) + ':</span> ' + esc(v)
           ).join(' &middot; ');
         } catch { content = esc(n.body); }
       } else {
         content = esc(n.body);
       }
-      const del = '<button onclick="deleteNote(' + n.id + ')" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:.8rem;padding:0 4px;float:right">&#10005;</button>';
-      return '<div style="padding:4px 0;border-bottom:1px solid #0d1a2e;overflow:hidden">'
-        + del + '<span style="color:#8892a4;margin-right:6px">' + t + '</span>' + content + '</div>';
+      const del = '<button onclick="deleteNote(' + n.id + ')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;padding:0 4px;float:right">&#10005;</button>';
+      return '<div style="padding:4px 0;border-bottom:1px solid ' + cssVar('--border') + ';overflow:hidden">'
+        + del + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>' + content + '</div>';
     }).join('');
   } else {
-    body.innerHTML = '<span style="color:#8892a4">No notes</span>';
+    body.innerHTML = '<span style="color:var(--text-secondary)">No notes</span>';
   }
 }
 
@@ -883,23 +899,28 @@ async function loadTranscript() {
   const card = document.getElementById('transcript-card');
   card.style.display = '';
   const body = document.getElementById('transcript-body');
-  body.innerHTML = '<span style="color:#8892a4">Loading\u2026</span>';
+  body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
 
   const r = await fetch('/api/audio/' + _session.audio_session_id + '/transcript');
   if (r.status === 404) {
-    body.innerHTML = '<span style="color:#8892a4">No transcript yet. </span>'
+    body.innerHTML = '<span style="color:var(--text-secondary)">No transcript yet. </span>'
       + '<button class="btn-export" style="font-size:.75rem" onclick="startTranscript()">&#9654; Transcribe</button>';
     return;
   }
   const t = await r.json();
   if (t.status === 'pending' || t.status === 'running') {
-    body.innerHTML = '<span style="color:#facc15">Transcription in progress\u2026</span>';
+    body.innerHTML = '<span style="color:var(--warning)">Transcription in progress\u2026</span>';
     setTimeout(loadTranscript, 3000);
     return;
   }
   if (t.status === 'error') {
-    body.innerHTML = '<span style="color:#f87171">Error: ' + esc(t.error_msg || 'unknown') + '</span>';
+    body.innerHTML = '<span style="color:var(--danger)">Error: ' + esc(t.error_msg || 'unknown') + '</span>';
     return;
+  }
+  // Store transcript ID for tuning extraction
+  if (t.id) {
+    _transcriptId = t.id;
+    loadTuningExtractions();
   }
   if (t.segments && t.segments.length > 0) {
     const blocks = [];
@@ -910,21 +931,21 @@ async function loadTranscript() {
       } else { blocks.push({...seg}); }
     }
     const speakers = [...new Set(blocks.map(b => b.speaker))];
-    const palette = ['#7dd3fc', '#86efac', '#fde68a', '#fca5a5', '#c4b5fd', '#f9a8d4'];
+    const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
     const color = s => palette[speakers.indexOf(s) % palette.length];
     const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
-    body.innerHTML = '<div style="max-height:400px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">'
+    body.innerHTML = '<div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
       + blocks.map(b =>
         '<div style="margin-bottom:8px">'
         + '<span style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem">' + esc(b.speaker) + '</span>'
-        + '<span style="color:#8892a4;font-size:.7rem;margin-left:4px">[' + fmt(b.start) + ']</span>'
-        + '<div style="color:#c4cdd8;font-size:.8rem;margin-top:2px">' + esc(b.text.trim()) + '</div>'
+        + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[' + fmt(b.start) + ']</span>'
+        + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">' + esc(b.text.trim()) + '</div>'
         + '</div>'
       ).join('')
       + '</div>';
   } else {
     const text = t.text ? esc(t.text) : '(empty)';
-    body.innerHTML = '<div style="font-size:.8rem;color:#c4cdd8;white-space:pre-wrap;max-height:300px;overflow-y:auto;background:#0d1929;border-radius:6px;padding:8px">' + text + '</div>';
+    body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
   }
 }
 
@@ -969,11 +990,11 @@ function renderSharing(data) {
   let html = '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">';
   for (const c of data.co_ops) {
     if (c.shared) {
-      html += '<button class="btn-export" style="background:#0d2818;border:1px solid #16a34a;color:#4ade80"'
+      html += '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--success);color:var(--success)"'
         + ' onclick="unshareSession(\'' + esc(c.co_op_id) + '\')">'
         + esc(c.co_op_name) + ' &#10003;</button>';
     } else {
-      html += '<button class="btn-export" style="background:#1e293b;border:1px solid #374151;color:#e8eaf0"'
+      html += '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--border);color:var(--text-primary)"'
         + ' onclick="shareSession(\'' + esc(c.co_op_id) + '\')">'
         + 'Share with ' + esc(c.co_op_name) + '</button>';
     }
@@ -982,9 +1003,9 @@ function renderSharing(data) {
 
   // Show sharing details
   if (data.sharing && data.sharing.length) {
-    html += '<div style="margin-top:8px;font-size:.78rem;color:#8892a4">';
+    html += '<div style="margin-top:8px;font-size:.78rem;color:var(--text-secondary)">';
     for (const s of data.sharing) {
-      html += '<div>Shared with <strong style="color:#e8eaf0">' + esc(s.co_op_name || s.co_op_id) + '</strong>';
+      html += '<div>Shared with <strong style="color:var(--text-primary)">' + esc(s.co_op_name || s.co_op_id) + '</strong>';
       if (s.embargo_until) html += ' (embargo until ' + esc(s.embargo_until).slice(0, 10) + ')';
       html += ' &mdash; ' + esc(s.shared_at).slice(0, 19) + '</div>';
     }
@@ -1012,6 +1033,129 @@ async function unshareSession(coopId) {
   if (r.ok) { loadSharing(); } else {
     const d = await r.json().catch(() => ({}));
     alert(d.detail || 'Failed to unshare');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Session Match (#281)
+// ---------------------------------------------------------------------------
+
+async function loadMatch() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match');
+  if (!r.ok) return;
+  const data = await r.json();
+
+  const card = document.getElementById('match-card');
+  const body = document.getElementById('match-body');
+  const role = document.getElementById('app-config').dataset.userRole;
+  const isAdmin = role === 'admin';
+
+  if (data.status === 'unmatched') {
+    if (!isAdmin) return; // viewers don't see scan button
+    card.style.display = '';
+    body.innerHTML = '<div style="font-size:.82rem;color:var(--text-secondary)">No match found.</div>'
+      + '<button class="btn-export" style="margin-top:6px" onclick="scanForMatches()">Scan for matches</button>';
+    return;
+  }
+
+  card.style.display = '';
+  let html = '<div style="font-size:.82rem">';
+
+  // Peer info line (shared between candidate and confirmed states)
+  const peerLine = data.peer_boat_name
+    ? '<div style="color:var(--text-secondary);margin-bottom:6px">Matched boat: <strong style="color:var(--text-primary)">'
+      + esc(data.peer_boat_name) + '</strong>'
+      + (data.peer_session_name ? ' — ' + esc(data.peer_session_name) : '')
+      + '</div>'
+    : '';
+
+  if (data.status === 'candidate') {
+    html += '<div style="color:var(--warning);margin-bottom:6px">Pending match — awaiting confirmation</div>';
+    html += peerLine;
+    if (isAdmin) {
+      html += '<div style="display:flex;gap:6px">'
+        + '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--success);color:var(--success)" onclick="confirmMatch()">Confirm</button>'
+        + '<button class="btn-export" style="background:var(--bg-secondary);border:1px solid var(--danger);color:var(--danger)" onclick="rejectMatch()">Reject</button>'
+        + '</div>';
+    }
+  } else if (data.status === 'confirmed') {
+    html += '<div style="color:var(--success);margin-bottom:6px">Matched with co-op boats</div>';
+    html += peerLine;
+    if (data.shared_name) {
+      html += '<div style="margin-bottom:4px">Shared name: <strong style="color:var(--text-primary)">' + esc(data.shared_name) + '</strong></div>';
+    }
+    if (isAdmin) {
+      html += '<div style="margin-top:6px">'
+        + '<input type="text" id="match-name-input" value="' + esc(data.shared_name || '') + '"'
+        + ' placeholder="Set shared name" style="background:var(--bg-input);border:1px solid ' + cssVar('--border') + ';border-radius:4px;color:var(--text-primary);padding:4px 8px;font-size:.8rem;width:60%">'
+        + ' <button class="btn-export" onclick="setMatchName()">Save</button>'
+        + '</div>';
+    }
+  }
+
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+async function scanForMatches() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/scan', {method: 'POST'});
+  if (r.ok) {
+    const d = await r.json();
+    const n = d.proposals ? d.proposals.length : 0;
+    alert(n + ' match proposal(s) sent to peers.');
+    loadMatch();
+    renderHeader();
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Scan failed');
+  }
+}
+
+async function confirmMatch() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/confirm', {method: 'POST'});
+  if (r.ok) {
+    loadMatch();
+    // Reload detail to update header badges
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Confirm failed');
+  }
+}
+
+async function rejectMatch() {
+  if (!confirm('Reject this session match?')) return;
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/reject', {method: 'POST'});
+  if (r.ok) {
+    loadMatch();
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Reject failed');
+  }
+}
+
+async function setMatchName() {
+  const input = document.getElementById('match-name-input');
+  const btn = document.querySelector('#match-body button[onclick="setMatchName()"]');
+  const name = input ? input.value.trim() : '';
+  if (!name) { alert('Enter a name'); return; }
+  if (btn) { btn.textContent = 'Saving...'; btn.disabled = true; }
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/match/name', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name})
+  });
+  if (r.ok) {
+    if (btn) { btn.textContent = 'Saved ✓'; setTimeout(() => { btn.textContent = 'Save'; btn.disabled = false; }, 1500); }
+    loadMatch();
+    const dr = await fetch('/api/sessions/' + SESSION_ID + '/detail');
+    if (dr.ok) { _session = await dr.json(); renderHeader(); }
+  } else {
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Failed to set name');
   }
 }
 
@@ -1074,7 +1218,7 @@ async function loadPolar() {
       + above + ' bins above, ' + below + ' below'
       + (noBaseline ? ' &middot; ' + noBaseline + ' bins no baseline' : '')
       + ' &middot; ' + data.session_sample_count + ' samples'
-      + ' &middot; <button onclick="rebuildPolarBaseline()" style="background:none;border:none;color:#7eb8f7;cursor:pointer;font-size:.78rem;text-decoration:underline;padding:0">Rebuild baseline</button>';
+      + ' &middot; <button onclick="rebuildPolarBaseline()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;text-decoration:underline;padding:0">Rebuild baseline</button>';
   } catch (e) { /* non-fatal */ }
 }
 
@@ -1099,17 +1243,23 @@ function setPolarView(view) {
 
 // --- Polar diagram (Canvas) ---
 
-const _TWS_COLORS = [
-  [6, '#7dd3fc'],  [8, '#38bdf8'],  [10, '#2563eb'],
-  [12, '#7c3aed'], [14, '#f97316'], [16, '#ef4444'],
-  [18, '#dc2626'], [20, '#991b1b'],
-];
+let _TWS_COLORS = null;
+
+function _initTwsColors() {
+  if (_TWS_COLORS) return;
+  _TWS_COLORS = [
+    [6, cssVar('--accent')],       [8, cssVar('--accent-strong')], [10, cssVar('--accent-strong')],
+    [12, '#7c3aed'],               [14, cssVar('--warning')],      [16, cssVar('--danger')],
+    [18, cssVar('--danger')],      [20, '#991b1b'],
+  ];
+}
 
 function _twsColor(tws) {
+  _initTwsColors();
   for (let i = _TWS_COLORS.length - 1; i >= 0; i--) {
     if (tws >= _TWS_COLORS[i][0]) return _TWS_COLORS[i][1];
   }
-  return '#94a3b8';
+  return cssVar('--text-muted');
 }
 
 function renderPolarDiagram() {
@@ -1134,11 +1284,13 @@ function renderPolarDiagram() {
   const scale = maxRadius / maxBsp;
 
   // Draw concentric BSP circles
-  ctx.strokeStyle = '#1e3a5f';
+  const polarBorder = cssVar('--border');
+  const polarTextSec = cssVar('--text-secondary');
+  ctx.strokeStyle = polarBorder;
   ctx.lineWidth = 0.5;
   ctx.setLineDash([3, 3]);
   ctx.font = '11px monospace';
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = polarTextSec;
   for (let bsp = 1; bsp <= maxBsp; bsp++) {
     const r = bsp * scale;
     ctx.beginPath();
@@ -1148,7 +1300,7 @@ function renderPolarDiagram() {
   }
 
   // Draw radial TWA lines
-  ctx.strokeStyle = '#1e3a5f';
+  ctx.strokeStyle = polarBorder;
   for (let deg = 0; deg <= 180; deg += 30) {
     const rad = deg * Math.PI / 180;
     const x2 = cx + maxBsp * scale * Math.sin(rad);
@@ -1203,15 +1355,15 @@ function renderPolarDiagram() {
     const x = cx + r * Math.sin(rad);
     const y = cy + r * Math.cos(rad);
 
-    const dotColor = c.delta == null ? '#94a3b8'
-      : c.delta >= 0 ? '#22c55e' : '#ef4444';
+    const dotColor = c.delta == null ? cssVar('--text-muted')
+      : c.delta >= 0 ? cssVar('--success') : cssVar('--danger');
     const dotSize = Math.min(6, Math.max(3, Math.log2(c.samples + 1) * 1.5));
 
     ctx.beginPath();
     ctx.arc(x, y, dotSize, 0, 2 * Math.PI);
     ctx.fillStyle = dotColor;
     ctx.fill();
-    ctx.strokeStyle = '#0a1628';
+    ctx.strokeStyle = cssVar('--bg-primary');
     ctx.lineWidth = 1;
     ctx.stroke();
   }
@@ -1224,16 +1376,16 @@ function renderPolarDiagram() {
         '<span style="color:' + d.color + '">\u25cf ' + d.tws + ' kt</span>'
       ).join(' &nbsp; ')
       + ' &nbsp; Session: '
-      + '<span style="color:#22c55e">\u25cf faster</span> '
-      + '<span style="color:#ef4444">\u25cf slower</span> '
-      + '<span style="color:#94a3b8">\u25cf no baseline</span>';
+      + '<span style="color:var(--success)">\u25cf faster</span> '
+      + '<span style="color:var(--danger)">\u25cf slower</span> '
+      + '<span style="color:var(--text-muted)">\u25cf no baseline</span>';
   }
 }
 
 // --- Heatmap ---
 
 function _deltaColor(delta) {
-  if (delta == null) return '#1e293b';
+  if (delta == null) return cssVar('--bg-secondary');
   const clamped = Math.max(-1, Math.min(1, delta));
   if (clamped >= 0) {
     const t = clamped;
@@ -1261,23 +1413,23 @@ function renderPolarHeatmap() {
   let html = '<table style="border-collapse:collapse;font-size:.72rem;width:100%">';
 
   // Header row: TWA labels
-  html += '<tr><th style="padding:2px 4px;color:#8892a4;text-align:right;font-weight:normal">TWS\\TWA</th>';
+  html += '<tr><th style="padding:2px 4px;color:var(--text-secondary);text-align:right;font-weight:normal">TWS\\TWA</th>';
   for (const twa of data.twa_bins) {
-    html += '<th style="padding:2px 4px;color:#8892a4;font-weight:normal;min-width:36px">' + twa + '\u00b0</th>';
+    html += '<th style="padding:2px 4px;color:var(--text-secondary);font-weight:normal;min-width:36px">' + twa + '\u00b0</th>';
   }
   html += '</tr>';
 
   // One row per TWS
   for (const tws of data.tws_bins) {
-    html += '<tr><td style="padding:2px 4px;color:#8892a4;text-align:right;white-space:nowrap">' + tws + ' kt</td>';
+    html += '<tr><td style="padding:2px 4px;color:var(--text-secondary);text-align:right;white-space:nowrap">' + tws + ' kt</td>';
     for (const twa of data.twa_bins) {
       const c = cellMap[tws + ',' + twa];
       if (!c) {
-        html += '<td style="padding:2px 4px;background:#0d1929;border:1px solid #0a1628"></td>';
+        html += '<td style="padding:2px 4px;background:var(--bg-secondary);border:1px solid var(--bg-input)"></td>';
         continue;
       }
       const bg = _deltaColor(c.delta);
-      const textColor = c.delta == null ? '#8892a4' : '#e8eaf0';
+      const textColor = c.delta == null ? 'var(--text-secondary)' : 'var(--text-primary)';
       const text = c.delta != null
         ? (c.delta >= 0 ? '+' : '') + c.delta.toFixed(2)
         : c.session_mean != null ? c.session_mean.toFixed(1) : '';
@@ -1286,7 +1438,7 @@ function renderPolarHeatmap() {
         + '\nBaseline: ' + (c.baseline_mean != null ? c.baseline_mean.toFixed(2) : 'n/a')
         + '\nP90: ' + (c.baseline_p90 != null ? c.baseline_p90.toFixed(2) : 'n/a')
         + '\nSamples: ' + c.samples;
-      html += '<td style="padding:2px 4px;background:' + bg + ';border:1px solid #0a1628;'
+      html += '<td style="padding:2px 4px;background:' + bg + ';border:1px solid var(--bg-input);'
         + 'color:' + textColor + ';text-align:center;cursor:default" title="' + title + '">'
         + text + '</td>';
     }
@@ -1300,7 +1452,7 @@ function renderPolarHeatmap() {
 // Maneuvers
 // ---------------------------------------------------------------------------
 
-const _MANEUVER_COLORS = { tack: '#3b82f6', gybe: '#f97316', rounding: '#22c55e' };
+const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
@@ -1316,21 +1468,21 @@ function renderManeuverCard() {
   card.style.display = '';
 
   if (!_maneuvers.length) {
-    body.innerHTML = '<span style="color:#8892a4">No maneuvers detected. Click &#8635; Detect to analyse this session.</span>';
+    body.innerHTML = '<span style="color:var(--text-secondary)">No maneuvers detected. Click &#8635; Detect to analyse this session.</span>';
     return;
   }
 
   const tacks = _maneuvers.filter(m => m.type === 'tack').length;
   const gybes = _maneuvers.filter(m => m.type === 'gybe').length;
   const roundings = _maneuvers.filter(m => m.type === 'rounding').length;
-  const summary = '<div style="color:#8892a4;font-size:.75rem;margin-bottom:6px">'
+  const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px">'
     + tacks + ' tack' + (tacks !== 1 ? 's' : '')
     + ' &middot; ' + gybes + ' gybe' + (gybes !== 1 ? 's' : '')
     + ' &middot; ' + roundings + ' rounding' + (roundings !== 1 ? 's' : '')
     + '</div>';
 
   let rows = _maneuvers.map((m, idx) => {
-    const color = _MANEUVER_COLORS[m.type] || '#8892a4';
+    const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
     const typeBadge = '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
     const t = fmtTime(m.ts);
     const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—';
@@ -1358,7 +1510,7 @@ function _addManeuverMarkers() {
 
   _maneuvers.forEach((m, idx) => {
     if (m.lat == null || m.lon == null) return;
-    const color = _MANEUVER_COLORS[m.type] || '#8892a4';
+    const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
     const marker = L.circleMarker([m.lat, m.lon], {
       radius: 7,
       color: color,
@@ -1439,10 +1591,11 @@ async function loadWindField() {
   // Overlay the boat track
   if (_trackData) {
     _wfTrackLine = L.polyline(_trackData.latLngs, {
-      color: '#2563eb', weight: 3, opacity: 0.7,
+      color: cssVar('--accent-strong'), weight: 3, opacity: 0.7,
     }).addTo(_wfMap);
+    const wfCursorColor = cssVar('--warning');
     _wfCursor = L.circleMarker([0, 0], {
-      radius: 6, color: '#facc15', fillColor: '#facc15', fillOpacity: 1, weight: 2,
+      radius: 6, color: wfCursorColor, fillColor: wfCursorColor, fillOpacity: 1, weight: 2,
     });
   }
 
@@ -1488,8 +1641,9 @@ function _drawWfMarks(marks) {
   for (const mm of _wfMarkMarkers) _wfMap.removeLayer(mm);
   _wfMarkMarkers = [];
   for (const m of marks) {
+    const wfMarkColor = cssVar('--warning');
     const marker = L.circleMarker([m.lat, m.lon], {
-      radius: 5, color: '#f97316', fillColor: '#f97316', fillOpacity: 0.9, weight: 1,
+      radius: 5, color: wfMarkColor, fillColor: wfMarkColor, fillOpacity: 0.9, weight: 1,
     }).addTo(_wfMap).bindTooltip(m.mark_name, {permanent: true, direction: 'right',
       className: 'wf-mark-label', offset: [8, 0]});
     _wfMarkMarkers.push(marker);
@@ -1644,7 +1798,7 @@ function _renderWfChart(currentS) {
 
   const baseTwd = _wfTimeseries.base_twd;
   const dur = _wfTimeseries.duration_s;
-  const colors = ['#ef4444', '#e8eaf0', '#22c55e']; // port, center, starboard
+  const colors = [cssVar('--danger'), cssVar('--text-primary'), cssVar('--success')]; // port, center, starboard
 
   // Compute TWD and TWS ranges
   let twdMin = Infinity, twdMax = -Infinity;
@@ -1663,7 +1817,9 @@ function _renderWfChart(currentS) {
   function yForTwd(v) { return twdY0 + chartH - (v - twdMin) / (twdMax - twdMin) * chartH; }
 
   // Grid
-  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+  const wfBorder = cssVar('--border');
+  const wfTextSec = cssVar('--text-secondary');
+  ctx.strokeStyle = wfBorder; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
   for (let v = twdMin; v <= twdMax; v += 2) {
     const y = yForTwd(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + chartW, y); ctx.stroke();
@@ -1671,7 +1827,7 @@ function _renderWfChart(currentS) {
   ctx.setLineDash([]);
 
   // Axis labels
-  ctx.fillStyle = '#8892a4'; ctx.font = '11px monospace';
+  ctx.fillStyle = wfTextSec; ctx.font = '11px monospace';
   ctx.fillText('TWD', pad.l - 40, twdY0 + chartH / 2 + 4);
   ctx.fillText(twdMin + '°', pad.l - 40, twdY0 + chartH - 2);
   ctx.fillText(twdMax + '°', pad.l - 40, twdY0 + 12);
@@ -1693,14 +1849,14 @@ function _renderWfChart(currentS) {
   const twsY0 = pad.t + chartH + pad.mid;
   function yForTws(v) { return twsY0 + chartH - (v - twsMin) / (twsMax - twsMin) * chartH; }
 
-  ctx.strokeStyle = '#1e3a5f'; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = wfBorder; ctx.lineWidth = 0.5; ctx.setLineDash([3, 3]);
   for (let v = twsMin; v <= twsMax; v += 2) {
     const y = yForTws(v);
     ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(pad.l + chartW, y); ctx.stroke();
   }
   ctx.setLineDash([]);
 
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = wfTextSec;
   ctx.fillText('TWS', pad.l - 40, twsY0 + chartH / 2 + 4);
   ctx.fillText(twsMin + '', pad.l - 40, twsY0 + chartH - 2);
   ctx.fillText(twsMax + '', pad.l - 40, twsY0 + 12);
@@ -1718,7 +1874,7 @@ function _renderWfChart(currentS) {
   }
 
   // Time axis labels
-  ctx.fillStyle = '#8892a4';
+  ctx.fillStyle = wfTextSec;
   const stepMin = Math.max(1, Math.floor(dur / 60 / 8));
   for (let m = 0; m <= dur / 60; m += stepMin) {
     const x = xForT(m * 60);
@@ -1728,7 +1884,7 @@ function _renderWfChart(currentS) {
   // Vertical hairline at current time
   if (currentS >= 0) {
     const x = xForT(currentS);
-    ctx.strokeStyle = '#facc15'; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeStyle = cssVar('--warning'); ctx.lineWidth = 1.5; ctx.setLineDash([]);
     ctx.beginPath(); ctx.moveTo(x, pad.t); ctx.lineTo(x, twsY0 + chartH); ctx.stroke();
   }
 
@@ -1738,7 +1894,7 @@ function _renderWfChart(currentS) {
   for (let i = 0; i < 3; i++) {
     ctx.fillStyle = colors[i];
     ctx.fillRect(lx, pad.t - 14, 16, 8);
-    ctx.fillStyle = '#8892a4';
+    ctx.fillStyle = wfTextSec;
     ctx.fillText(labels[i], lx + 20, pad.t - 6);
     lx += 70;
   }
@@ -1751,6 +1907,7 @@ function _renderWfChart(currentS) {
 let _bsParams = null;       // parameter definitions from /api/boat-settings/parameters
 let _bsResolved = null;     // resolved settings at current playback time
 let _bsLastAsOf = null;     // debounce: last as_of value we fetched
+let _bsHistory = null;      // all race-specific setting entries (full timeline)
 
 async function loadBoatSettings() {
   const card = document.getElementById('boat-settings-card');
@@ -1762,8 +1919,9 @@ async function loadBoatSettings() {
     _bsParams = await r.json();
   } catch (e) { console.error('boat settings params error', e); return; }
 
-  // Resolve settings at race start time initially
-  const asOf = _session.end_utc || _session.start_utc;
+  // For completed sessions use end time; for active sessions use now so values
+  // entered during the session are visible rather than being filtered out.
+  const asOf = _session.end_utc || new Date().toISOString();
   await _fetchAndRenderBoatSettings(asOf);
 }
 
@@ -1771,9 +1929,13 @@ async function _fetchAndRenderBoatSettings(asOf) {
   if (!asOf || !_bsParams) return;
   _bsLastAsOf = asOf;
   try {
-    const r = await fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
-      + '&as_of=' + encodeURIComponent(asOf));
-    _bsResolved = await r.json();
+    const [resolveRes, historyRes] = await Promise.all([
+      fetch('/api/boat-settings/resolve?race_id=' + SESSION_ID
+        + '&as_of=' + encodeURIComponent(asOf)),
+      fetch('/api/boat-settings?race_id=' + SESSION_ID),
+    ]);
+    if (resolveRes.ok) _bsResolved = await resolveRes.json();
+    if (historyRes.ok) _bsHistory = await historyRes.json();
   } catch (e) { console.error('boat settings resolve error', e); return; }
   _renderBoatSettingsPanel();
 }
@@ -1782,15 +1944,37 @@ function _renderBoatSettingsPanel() {
   const body = document.getElementById('boat-settings-body');
   if (!_bsParams || !_bsResolved) return;
 
-  // Build lookup: parameter name → resolved entry
+  // Build lookup: parameter name → resolved entry (current value)
   const byParam = {};
   for (const entry of _bsResolved) byParam[entry.parameter] = entry;
 
+  // Build lookup: parameter name → all race-specific history entries
+  const histByParam = {};
+  if (_bsHistory) {
+    for (const entry of _bsHistory) {
+      if (!histByParam[entry.parameter]) histByParam[entry.parameter] = [];
+      histByParam[entry.parameter].push(entry);
+    }
+  }
+
+  const fmtTs = (ts) => {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  };
+
+  const srcBadge = (entry) => {
+    if (entry.race_id !== null) {
+      const src = entry.source.startsWith('transcript') ? 'transcript' : entry.source;
+      return '<span class="bs-source-badge ' + (entry.source.startsWith('transcript') ? 'transcript' : 'race') + '">' + esc(src) + '</span>';
+    }
+    return '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem">default</span>';
+  };
+
   let html = '';
-  let anyValue = false;
 
   for (const cat of _bsParams.categories) {
-    // For the crew category, check if we have crew weight data OR parameter values
+    // Crew weight row
     let crewWeightHtml = '';
     if (cat.category === 'crew' && _sessionCrew && _sessionCrew.length) {
       let totalBody = 0, totalGear = 0, hasW = false;
@@ -1804,16 +1988,11 @@ function _renderBoatSettingsPanel() {
           + '<span class="bs-label">Crew weight</span>'
           + '<span class="bs-value">' + total.toFixed(1) + '</span>'
           + '<span class="bs-unit">lbs</span>'
-          + '<span style="color:#6b7a90;font-size:.75rem;margin-left:6px">'
+          + '<span style="color:var(--text-muted);font-size:.75rem;margin-left:6px">'
           + '(body ' + totalBody.toFixed(1) + ' + gear ' + totalGear.toFixed(1) + ')</span>'
           + '</div>';
       }
     }
-
-    // Check if any param in this category has a value
-    const catHasValues = cat.parameters.some(p => byParam[p.name]);
-    if (!catHasValues && !crewWeightHtml) continue;
-    if (crewWeightHtml) anyValue = true;
 
     html += '<div class="setup-cat-header" onclick="toggleSetupCatSession(\'' + cat.category + '\')">';
     html += '<span class="setup-cat-label">' + esc(cat.label) + '</span>';
@@ -1824,38 +2003,79 @@ function _renderBoatSettingsPanel() {
 
     for (const p of cat.parameters) {
       const entry = byParam[p.name];
-      if (!entry) continue;
-      anyValue = true;
+      const hist = histByParam[p.name] || [];
+      const hasHistory = hist.length > 1 || (entry && entry.supersedes_value);
+      const paramId = 'bs-hist-' + p.name;
 
-      html += '<div class="bs-row">';
+      // Play button for transcript-sourced entries: compute audio offset from ts
+      const playBtn = (e) => {
+        if (!e.source || !e.source.startsWith('transcript') || !_session.audio_session_id || !e.ts || !_session.start_utc) return '';
+        const offsetS = (Date.parse(e.ts) - Date.parse(_session.start_utc)) / 1000;
+        if (offsetS < 0) return '';
+        return '<button onclick="playSegmentAudio(' + offsetS.toFixed(1) + ',' + (offsetS + 8).toFixed(1) + ')" class="te-play-btn" title="Play transcript segment" style="margin-left:4px">&#9654;</button>';
+      };
+
+      // Current value row
+      html += '<div class="bs-row" style="cursor:' + (hasHistory ? 'pointer' : 'default') + '"'
+        + (hasHistory ? ' onclick="toggleBsHist(\'' + p.name + '\')"' : '') + '>';
+      if (hasHistory) {
+        html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-right:4px" id="bs-hist-chev-' + p.name + '">\u25B6</span>';
+      }
       html += '<span class="bs-label">' + esc(p.label) + '</span>';
-      html += '<span class="bs-value">' + esc(entry.value) + '</span>';
-      if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
-
-      // Source badge for race-specific or transcript settings
-      if (entry.race_id !== null) {
-        const src = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        const srcLabel = entry.source.startsWith('transcript') ? 'transcript' : 'race';
-        html += '<span class="bs-source-badge ' + src + '">' + srcLabel + '</span>';
+      if (entry) {
+        html += '<span class="bs-value">' + esc(entry.value) + '</span>';
+        if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+        html += srcBadge(entry);
+        if (entry.ts) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px" title="' + esc(entry.ts) + '">@ ' + fmtTs(entry.ts) + '</span>';
+        html += playBtn(entry);
+        if (hasHistory) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px">(' + (hist.length + (entry.supersedes_value ? 1 : 0)) + ' entries)</span>';
+      } else {
+        html += '<span style="color:' + cssVar('--text-muted') + ';font-style:italic">not set</span>';
       }
-
-      // Show superseded boat-level value
-      if (entry.supersedes_value) {
-        html += '<span class="bs-superseded">' + esc(entry.supersedes_value);
-        if (p.unit) html += ' ' + esc(p.unit);
-        html += '</span>';
-      }
-
       html += '</div>';
+
+      // Collapsible history (hidden by default)
+      if (hasHistory) {
+        html += '<div id="' + paramId + '" style="display:none">';
+        // Previous race-specific values, newest to oldest
+        if (hist.length > 1) {
+          for (let i = hist.length - 2; i >= 0; i--) {
+            const h = hist[i];
+            html += '<div class="bs-row" style="padding-left:24px;opacity:0.6">';
+            html += '<span class="bs-label" style="font-size:.75rem">\u2514 previous</span>';
+            html += '<span class="bs-value" style="font-size:.78rem">' + esc(h.value) + '</span>';
+            if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+            html += srcBadge(h);
+            if (h.ts) html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem;margin-left:6px" title="' + esc(h.ts) + '">@ ' + fmtTs(h.ts) + '</span>';
+            html += playBtn(h);
+            html += '</div>';
+          }
+        }
+        // Superseded default at the bottom
+        if (entry && entry.supersedes_value) {
+          html += '<div class="bs-row" style="padding-left:24px;opacity:0.5">';
+          html += '<span class="bs-label" style="font-size:.75rem">\u2514 default</span>';
+          html += '<span class="bs-value" style="font-size:.78rem">' + esc(entry.supersedes_value) + '</span>';
+          if (p.unit) html += '<span class="bs-unit">' + esc(p.unit) + '</span>';
+          html += '<span style="color:' + cssVar('--text-muted') + ';font-size:.7rem">default</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
     }
     html += '</div>';
   }
 
-  if (!anyValue) {
-    html = '<span class="bs-empty">No boat settings recorded</span>';
-  }
-
   body.innerHTML = html;
+}
+
+function toggleBsHist(paramName) {
+  const body = document.getElementById('bs-hist-' + paramName);
+  const chev = document.getElementById('bs-hist-chev-' + paramName);
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  if (chev) chev.textContent = hidden ? '\u25BC' : '\u25B6';
 }
 
 function toggleSetupCatSession(cat) {
@@ -1895,14 +2115,14 @@ async function loadDiscussion() {
   card.style.display = '';
   const body = document.getElementById('discussion-body');
   const r = await fetch('/api/sessions/' + SESSION_ID + '/threads');
-  if (!r.ok) { body.innerHTML = '<span style="color:#8892a4">Failed to load</span>'; return; }
+  if (!r.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
   _threads = await r.json();
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
   _addDiscussionMarkers();
   if (!_threads.length) {
-    body.innerHTML = '<span style="color:#8892a4">No discussions yet. Start one with + New Thread above.</span>';
+    body.innerHTML = '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
     return;
   }
   body.innerHTML = _threads.map(t => {
@@ -1915,17 +2135,17 @@ async function loadDiscussion() {
       ? '<span class="thread-unread">' + t.unread_count + '</span>'
       : '';
     const resolved = t.resolved ? ' resolved' : '';
-    const resolvedTag = t.resolved ? '<span style="color:#4ade80;font-size:.7rem;margin-left:6px">&#10003; Resolved</span>' : '';
+    const resolvedTag = t.resolved ? '<span style="color:var(--success);font-size:.7rem;margin-left:6px">&#10003; Resolved</span>' : '';
     const title = _threadTitle(t);
     const author = t.author_name || t.author_email || 'Crew Member';
     const count = t.comment_count === 1 ? '1 comment' : t.comment_count + ' comments';
     const resolutionHtml = t.resolved && t.resolution_summary
-      ? '<div style="background:#0d2a1a;border:1px solid #22543d;border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:#86efac">'
+      ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:var(--success)">'
         + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
       : '';
     return '<div class="thread-item' + resolved + '" onclick="openThread(' + t.id + ')">'
-      + '<div><strong style="color:#e8eaf0">' + title + '</strong>' + anchor + unread + resolvedTag + '</div>'
-      + '<div style="font-size:.72rem;color:#8892a4;margin-top:2px">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.created_at) + '</div>'
+      + '<div><strong style="color:var(--text-primary)">' + title + '</strong>' + anchor + unread + resolvedTag + '</div>'
+      + '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:2px">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.created_at) + '</div>'
       + resolutionHtml
       + '</div>';
   }).join('');
@@ -1955,9 +2175,9 @@ function _addDiscussionMarkers() {
     const title = _threadTitle(t);
     const unread = t.unread_count > 0 ? ' <span class="thread-unread">' + t.unread_count + '</span>' : '';
     const resolvedHtml = t.resolved
-      ? '<div style="color:#4ade80;font-size:.7rem;margin-top:2px">&#10003; Resolved</div>'
+      ? '<div style="color:var(--success);font-size:.7rem;margin-top:2px">&#10003; Resolved</div>'
         + (t.resolution_summary
-          ? '<div style="background:#0d2a1a;border:1px solid #22543d;border-radius:4px;padding:4px 6px;margin-top:3px;font-size:.7rem;color:#86efac">'
+          ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 6px;margin-top:3px;font-size:.7rem;color:var(--success)">'
             + esc(t.resolution_summary.length > 120 ? t.resolution_summary.slice(0, 120) + '\u2026' : t.resolution_summary) + '</div>'
           : '')
       : '';
@@ -1965,20 +2185,21 @@ function _addDiscussionMarkers() {
     const count = t.comment_count === 1 ? '1 comment' : t.comment_count + ' comments';
 
     const popup = '<div style="max-width:260px">'
-      + '<div style="font-weight:600;color:#e8eaf0;font-size:.82rem">' + title + unread + '</div>'
-      + '<div style="font-size:.7rem;color:#8892a4">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.anchor_timestamp) + '</div>'
+      + '<div style="font-weight:600;color:var(--text-primary);font-size:.82rem">' + title + unread + '</div>'
+      + '<div style="font-size:.7rem;color:var(--text-secondary)">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.anchor_timestamp) + '</div>'
       + resolvedHtml
       + '<div id="discussion-marker-preview-' + t.id + '">'
-      + '<div style="font-size:.7rem;color:#8892a4;margin-top:4px">Loading\u2026</div></div>'
+      + '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">Loading\u2026</div></div>'
       + '<div style="margin-top:6px"><a href="#" data-open-thread="' + t.id + '" '
-      + 'style="color:#7eb8f7;font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
+      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
       + '</div>';
 
     const hasUnread = t.unread_count > 0;
-    const markerColor = t.resolved ? '#4ade80' : hasUnread ? '#60a5fa' : '#a78bfa';
+    const markerColor = t.resolved ? cssVar('--success') : hasUnread ? cssVar('--accent') : cssVar('--text-secondary');
+    const bgPrimary = cssVar('--bg-primary');
     const markerStyle = t.resolved
-      ? 'width:14px;height:14px;background:transparent;border:2px solid #4ade80;border-radius:50%'
-      : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid #0a1628;border-radius:50%;box-shadow:0 0 4px ' + markerColor;
+      ? 'width:14px;height:14px;background:transparent;border:2px solid ' + cssVar('--success') + ';border-radius:50%'
+      : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid ' + bgPrimary + ';border-radius:50%;box-shadow:0 0 4px ' + markerColor;
     const icon = L.divIcon({
       className: 'discussion-marker',
       html: '<div style="' + markerStyle + '"></div>',
@@ -2017,15 +2238,15 @@ async function _loadMarkerPreview(threadId) {
   const t = await r.json();
   const comments = (t.comments || []).slice(-3);
   if (!comments.length) {
-    el.innerHTML = '<div style="font-size:.72rem;color:#8892a4;margin-top:4px">No comments yet</div>';
+    el.innerHTML = '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:4px">No comments yet</div>';
     return;
   }
   el.innerHTML = comments.map(c => {
     const a = c.author_name || c.author_email || 'Crew Member';
     const body = c.body.length > 100 ? c.body.slice(0, 100) + '\u2026' : c.body;
-    return '<div style="margin-top:4px;font-size:.72rem;border-left:2px solid #1e3050;padding-left:6px">'
-      + '<span style="color:#7dd3fc;font-weight:600">' + esc(a) + '</span> '
-      + '<span style="color:#c4cdd8">' + esc(body) + '</span></div>';
+    return '<div style="margin-top:4px;font-size:.72rem;border-left:2px solid ' + cssVar('--border') + ';padding-left:6px">'
+      + '<span style="color:' + cssVar('--accent') + ';font-weight:600">' + esc(a) + '</span> '
+      + '<span style="color:var(--text-primary)">' + esc(body) + '</span></div>';
   }).join('');
 }
 
@@ -2037,7 +2258,7 @@ function showNewThreadForm(anchorTimestamp) {
   const anchorLabel = anchorTimestamp ? fmtTime(anchorTimestamp) : '';
   const anchorHidden = anchorTimestamp
     ? '<input type="hidden" id="new-thread-anchor-ts" value="' + esc(anchorTimestamp) + '"/>'
-      + '<div style="font-size:.72rem;color:#f97316;margin-bottom:6px">Anchored to track at ' + anchorLabel + '</div>'
+      + '<div style="font-size:.72rem;color:var(--warning);margin-bottom:6px">Anchored to track at ' + anchorLabel + '</div>'
     : '<input type="hidden" id="new-thread-anchor-ts" value=""/>';
   form.innerHTML = anchorHidden
     + '<div style="display:flex;gap:6px;margin-bottom:6px">'
@@ -2053,7 +2274,7 @@ function showNewThreadForm(anchorTimestamp) {
     + '<textarea id="new-thread-body" placeholder="First comment\u2026"></textarea>'
     + '<div style="margin-top:6px;display:flex;gap:6px">'
     + '<button class="btn-thread" onclick="submitNewThread()">Create Thread</button>'
-    + '<button class="btn-thread" style="background:none;color:#8892a4" onclick="loadDiscussion()">Cancel</button>'
+    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadDiscussion()">Cancel</button>'
     + '</div>';
   body.prepend(form);
 }
@@ -2083,7 +2304,7 @@ async function submitNewThread() {
 
 async function openThread(threadId) {
   const body = document.getElementById('discussion-body');
-  body.innerHTML = '<span style="color:#8892a4">Loading\u2026</span>';
+  body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
   // Mark as read
   fetch('/api/threads/' + threadId + '/read', {method: 'POST'});
   const r = await fetch('/api/threads/' + threadId);
@@ -2102,7 +2323,7 @@ async function openThread(threadId) {
     resolveBtn = '<button class="btn-resolve" onclick="resolveThread(' + t.id + ')">Resolve</button>';
   }
   const resolutionHtml = t.resolved && t.resolution_summary
-    ? '<div style="background:#0d2a1a;border:1px solid #4ade80;border-radius:4px;padding:6px 8px;margin-top:6px;font-size:.78rem;color:#86efac">'
+    ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:6px 8px;margin-top:6px;font-size:.78rem;color:var(--success)">'
       + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
     : '';
   const commentsHtml = (t.comments || []).map(c => {
@@ -2115,14 +2336,14 @@ async function openThread(threadId) {
       + '</div>';
   }).join('');
   body.innerHTML = '<div style="margin-bottom:8px">'
-    + '<button style="background:none;border:none;color:#7eb8f7;cursor:pointer;font-size:.78rem;padding:0" onclick="loadDiscussion()">&larr; All threads</button>'
+    + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadDiscussion()">&larr; All threads</button>'
     + '</div>'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
-    + '<div style="flex:1;min-width:0"><strong style="color:#e8eaf0;font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
+    + '<div style="flex:1;min-width:0"><strong style="color:var(--text-primary);font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
     + '<div style="flex-shrink:0">' + resolveBtn + '</div>'
     + '</div>'
     + resolutionHtml
-    + '<div id="thread-comments">' + (commentsHtml || '<span style="color:#8892a4">No comments yet</span>') + '</div>'
+    + '<div id="thread-comments">' + (commentsHtml || '<span style="color:var(--text-secondary)">No comments yet</span>') + '</div>'
     + '<div class="thread-form" style="margin-top:8px">'
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
@@ -2155,7 +2376,7 @@ function resolveThread(threadId) {
   form.innerHTML = '<textarea id="resolve-summary" placeholder="Resolution summary (optional)"></textarea>'
     + '<div style="margin-top:4px;display:flex;gap:6px">'
     + '<button class="btn-resolve" onclick="_submitResolve(' + threadId + ')">Confirm Resolve</button>'
-    + '<button class="btn-thread" style="background:none;color:#8892a4" onclick="document.getElementById(\'resolve-form\').remove()">Cancel</button>'
+    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="document.getElementById(\'resolve-form\').remove()">Cancel</button>'
     + '</div>';
   container.after(form);
   document.getElementById('resolve-summary').focus();
@@ -2187,7 +2408,7 @@ let _mentionUsers = null; // [{id, name}, ...]
 function _renderMentions(escapedText) {
   if (!_mentionUsers || !_mentionUsers.length) {
     // Fallback: highlight single-word @mentions
-    return escapedText.replace(/@([\w.\-]+)/g, '<span style="color:#60a5fa;font-weight:600">@$1</span>');
+    return escapedText.replace(/@([\w.\-]+)/g, '<span style="color:var(--accent);font-weight:600">@$1</span>');
   }
   // Sort names longest-first so "dan weatbrook" matches before "dan"
   const names = _mentionUsers.map(u => u.name).filter(Boolean).sort((a, b) => b.length - a.length);
@@ -2196,7 +2417,7 @@ function _renderMentions(escapedText) {
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     result = result.replace(
       new RegExp('@' + escaped, 'g'),
-      '<span style="color:#60a5fa;font-weight:600">@' + name + '</span>'
+      '<span style="color:var(--accent);font-weight:600">@' + name + '</span>'
     );
   }
   return result;
@@ -2248,7 +2469,7 @@ function _showMentionDropdown(el, matches, ctx) {
 
   const dd = document.createElement('div');
   dd.id = 'mention-dropdown';
-  dd.style.cssText = 'position:absolute;z-index:9999;background:#131f35;border:1px solid #2563eb;'
+  dd.style.cssText = 'position:absolute;z-index:9999;background:var(--bg-secondary);border:1px solid var(--accent-strong);'
     + 'border-radius:6px;max-height:150px;overflow-y:auto;min-width:160px;box-shadow:0 4px 12px rgba(0,0,0,.5)';
 
   const capped = matches.slice(0, 8);
@@ -2256,8 +2477,8 @@ function _showMentionDropdown(el, matches, ctx) {
     const item = document.createElement('div');
     item.textContent = u.name;
     item.setAttribute('data-mention-item', '');
-    item.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:.82rem;color:#e8eaf0';
-    if (idx === 0) item.style.background = '#1e3a5f';
+    item.style.cssText = 'padding:6px 10px;cursor:pointer;font-size:.82rem;color:var(--text-primary)';
+    if (idx === 0) item.style.background = cssVar('--border');
     item.addEventListener('mouseenter', () => { _highlightMentionItem(idx); });
     item.addEventListener('mousedown', (e) => {
       e.preventDefault();
@@ -2282,7 +2503,7 @@ function _highlightMentionItem(idx) {
   if (!dd) return;
   const items = dd.querySelectorAll('[data-mention-item]');
   items.forEach((el, i) => {
-    el.style.background = i === idx ? '#1e3a5f' : 'none';
+    el.style.background = i === idx ? cssVar('--border') : 'none';
   });
   _mentionIdx = idx;
   if (items[idx]) items[idx].scrollIntoView({block: 'nearest'});
@@ -2338,6 +2559,159 @@ document.addEventListener('keydown', _handleMentionKeydown);
 document.addEventListener('click', (e) => {
   if (!e.target.closest('#mention-dropdown')) _removeMentionDropdown();
 });
+
+// ---------------------------------------------------------------------------
+// Tuning Extraction
+// ---------------------------------------------------------------------------
+
+async function loadTuningExtractions() {
+  if (!_transcriptId) return;
+  const r = await fetch('/api/tuning/runs?transcript_id=' + _transcriptId);
+  if (!r.ok) return;
+  const runs = await r.json();
+  renderTuningExtractions(runs);
+}
+
+async function renderTuningExtractions(runs) {
+  const card = document.getElementById('tuning-extraction-card');
+  const body = document.getElementById('tuning-extraction-body');
+  const badge = document.getElementById('tuning-extraction-badge');
+  card.style.display = '';
+
+  if (!runs.length) {
+    badge.textContent = '';
+    body.innerHTML = '<span style="color:' + cssVar('--text-secondary') + '">No tuning changes extracted yet. Click &#8635; Extract to analyse the transcript.</span>';
+    return;
+  }
+
+  // Fetch full details for each run (includes items)
+  const detailed = [];
+  for (const run of runs) {
+    const dr = await fetch('/api/tuning/runs/' + run.id);
+    if (dr.ok) detailed.push(await dr.json());
+  }
+
+  const totalItems = detailed.reduce((n, r) => n + (r.items ? r.items.length : 0), 0);
+  const totalAccepted = detailed.reduce((n, r) => n + (r.accepted_count || 0), 0);
+  badge.textContent = totalItems ? '(' + totalItems + ' items, ' + totalAccepted + ' accepted)' : '';
+
+  const fmtSec = s => {
+    const m = Math.floor(s / 60);
+    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  };
+
+  let html = '';
+  for (const run of detailed) {
+    const items = run.items || [];
+    const created = run.created_at ? new Date(run.created_at).toLocaleString() : '';
+    html += '<div style="border:1px solid ' + cssVar('--border') + ';border-radius:6px;padding:8px;margin-bottom:8px">';
+    html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">';
+    html += '<div style="font-size:.78rem;color:' + cssVar('--accent') + ';font-weight:600">'
+      + esc(run.method) + ' &middot; ' + items.length + ' items'
+      + '<span style="color:' + cssVar('--text-secondary') + ';font-weight:400;margin-left:6px">' + esc(created) + '</span>'
+      + '</div>';
+    html += '<button onclick="deleteTuningRun(' + run.id + ')" style="background:none;border:none;color:' + cssVar('--danger') + ';cursor:pointer;font-size:.72rem" title="Delete run">&#10005;</button>';
+    html += '</div>';
+
+    if (!items.length) {
+      html += '<span style="color:' + cssVar('--text-secondary') + ';font-size:.78rem">No items extracted</span>';
+    } else {
+      html += '<table class="maneuver-table"><thead><tr>';
+      html += '<th>Parameter</th><th>Value</th><th>Segment</th><th>Conf</th><th>Status</th><th></th>';
+      html += '</tr></thead><tbody>';
+      for (const item of items) {
+        const statusCls = 'te-status-' + item.status;
+        const statusLabel = item.status.charAt(0).toUpperCase() + item.status.slice(1);
+        html += '<tr>';
+        html += '<td style="font-weight:600;color:' + cssVar('--text-primary') + '">' + esc(item.parameter_name) + '</td>';
+        html += '<td style="color:' + cssVar('--accent') + ';font-variant-numeric:tabular-nums">' + item.extracted_value + '</td>';
+        html += '<td><span class="te-segment-text" title="' + esc(item.segment_text) + '">'
+          + esc(item.segment_text.length > 60 ? item.segment_text.slice(0, 60) + '\u2026' : item.segment_text)
+          + '</span>'
+          + '<span style="color:' + cssVar('--text-secondary') + ';font-size:.68rem">[' + fmtSec(item.segment_start) + ' \u2013 ' + fmtSec(item.segment_end) + ']</span>'
+          + '</td>';
+        html += '<td style="color:' + cssVar('--text-secondary') + '">' + (item.confidence * 100).toFixed(0) + '%</td>';
+        html += '<td><span class="' + statusCls + '">' + statusLabel + '</span></td>';
+        html += '<td style="white-space:nowrap">';
+        if (item.status === 'pending') {
+          html += '<button onclick="acceptTuningItem(' + item.id + ')" class="te-play-btn" title="Accept" style="color:' + cssVar('--success') + '">&#10003;</button>';
+          html += '<button onclick="dismissTuningItem(' + item.id + ')" class="te-play-btn" title="Dismiss" style="color:' + cssVar('--text-muted') + '">&#10007;</button>';
+        }
+        if (_session.audio_session_id && !(item.segment_start === 0 && item.segment_end === 0)) {
+          html += '<button onclick="playSegmentAudio(' + item.segment_start + ',' + item.segment_end + ')" class="te-play-btn" title="Play segment">&#9654;</button>';
+        }
+        html += '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  }
+  body.innerHTML = html;
+}
+
+async function extractTuning() {
+  if (!_transcriptId) { alert('No transcript available for extraction'); return; }
+  const btn = document.getElementById('extract-tuning-btn');
+  if (btn) { btn.textContent = '\u23F3'; btn.disabled = true; }
+  try {
+    const r = await fetch('/api/tuning/extract/' + _transcriptId, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({method: 'regex'}),
+    });
+    if (!r.ok) { alert('Extraction failed: ' + r.status); return; }
+    await loadTuningExtractions();
+  } finally {
+    if (btn) { btn.innerHTML = '&#8635; Extract'; btn.disabled = false; }
+  }
+}
+
+async function acceptTuningItem(itemId) {
+  const r = await fetch('/api/tuning/items/' + itemId + '/accept', {method: 'POST'});
+  if (!r.ok) { alert('Failed to accept item'); return; }
+  await loadTuningExtractions();
+  await loadBoatSettings();
+}
+
+async function dismissTuningItem(itemId) {
+  const r = await fetch('/api/tuning/items/' + itemId + '/dismiss', {method: 'POST'});
+  if (!r.ok) { alert('Failed to dismiss item'); return; }
+  await loadTuningExtractions();
+  await loadBoatSettings();
+}
+
+async function deleteTuningRun(runId) {
+  if (!confirm('Delete this extraction run and all its items?')) return;
+  const r = await fetch('/api/tuning/runs/' + runId, {method: 'DELETE'});
+  if (!r.ok) { alert('Failed to delete run'); return; }
+  await loadTuningExtractions();
+}
+
+function playSegmentAudio(start, end) {
+  if (!_session.audio_session_id) return;
+  if (!_tuningSegmentAudio) {
+    _tuningSegmentAudio = document.createElement('audio');
+    _tuningSegmentAudio.src = '/api/audio/' + _session.audio_session_id + '/stream';
+    _tuningSegmentAudio.preload = 'auto';
+  }
+  const audio = _tuningSegmentAudio;
+  // Clear any previous stop timer
+  if (_tuningSegmentTimer) {
+    audio.removeEventListener('timeupdate', _tuningSegmentTimer);
+    _tuningSegmentTimer = null;
+  }
+  audio.currentTime = start;
+  audio.play();
+  _tuningSegmentTimer = function() {
+    if (audio.currentTime >= end) {
+      audio.pause();
+      audio.removeEventListener('timeupdate', _tuningSegmentTimer);
+      _tuningSegmentTimer = null;
+    }
+  };
+  audio.addEventListener('timeupdate', _tuningSegmentTimer);
+}
 
 // ---------------------------------------------------------------------------
 // Go

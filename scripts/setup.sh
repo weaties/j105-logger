@@ -9,6 +9,7 @@
 # Run from a terminal where you can enter your sudo password when prompted.
 #
 # What this script does:
+#   0)   Interactive configuration wizard (~/.helmlog/config.env)
 #   a)   System prerequisites (git, curl, audio libs, unattended-upgrades)
 #   a.1) Security hardening (auto-updates, mask unused services, SSH hardening)
 #   b)   Node.js 24 LTS
@@ -25,6 +26,8 @@
 #   k)   helmlog systemd service (runs as helmlog)
 #   k.1) Loki + Promtail (centralized log management)
 #   k.2) nginx reverse proxy (single-port access to all services)
+#   k.3) Tailscale DNS (MagicDNS for inter-boat hostname resolution)
+#   k.4) Cloudflare Tunnel (public HTTPS via <boat>.helmlog.org)
 #   l)   Scoped NOPASSWD sudo (replaces blanket Pi OS default)
 #   m)   Summary
 
@@ -51,6 +54,19 @@ NC='\033[0m'
 step()  { echo -e "\n${GREEN}==> $*${NC}"; }
 warn()  { echo -e "${YELLOW}WARN:${NC} $*"; }
 info()  { echo -e "${CYAN}    $*${NC}"; }
+
+# ---------------------------------------------------------------------------
+# 0) Interactive configuration wizard
+#      Prompts operator for external service settings (email, Cloudflare, etc.)
+#      and persists to ~/.helmlog/config.env (survives reset-pi.sh).
+# ---------------------------------------------------------------------------
+
+step "Running configuration wizard..."
+if [[ -f "$SCRIPT_DIR/configure.sh" ]]; then
+    bash "$SCRIPT_DIR/configure.sh"
+else
+    warn "scripts/configure.sh not found — skipping configuration wizard."
+fi
 
 # ---------------------------------------------------------------------------
 # a) System prerequisites
@@ -367,6 +383,9 @@ datasources:
       token: ${INFLUX_TOKEN}
     isDefault: true
 EOF
+# Grafana runs as user grafana — provisioning files must be group-readable
+sudo chown root:grafana /etc/grafana/provisioning/datasources/influxdb.yaml
+sudo chmod 640 /etc/grafana/provisioning/datasources/influxdb.yaml
 sudo systemctl restart grafana-server
 info "Grafana installed on port 3001 (loopback-only, login required)."
 info "Default Grafana admin credentials: admin / changeme123 — change after first login."
@@ -421,7 +440,30 @@ cat > "$HOME/.signalk/plugin-config-data/signalk-to-influxdb2.json" << EOF
   "enabled": true
 }
 EOF
-info "Plugin config written."
+info "signalk-to-influxdb2 plugin config written."
+
+step "Configuring signalk-derived-data plugin (true heading + true wind)..."
+# Signal K uses the plugin id "derived-data" for the config filename, not the
+# npm package name "signalk-derived-data".
+cat > "$HOME/.signalk/plugin-config-data/derived-data.json" << 'EOF'
+{
+  "configuration": {
+    "heading": {
+      "heading": true
+    },
+    "wind": {
+      "trueWind": true,
+      "groundWind": true,
+      "groundWindDirection": true
+    },
+    "traffic": {
+      "notificationZones": []
+    }
+  },
+  "enabled": true
+}
+EOF
+info "signalk-derived-data plugin config written."
 
 # ---------------------------------------------------------------------------
 # g) uv + Python dependencies
@@ -496,21 +538,21 @@ if [[ ! -f "$SK_SECURITY_FILE" ]]; then
     SK_ADMIN_PASS="$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 20)"
     export SK_ADMIN_PASS
 
-    # bcrypt-hash via uv (--with pulls bcrypt on the fly; it is NOT a project dep)
-    "$UV_BIN" run --with bcrypt --project "$PROJECT_DIR" python -c "
-import os, json, bcrypt
-pw = os.environ['SK_ADMIN_PASS'].encode()
-h = bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12)).decode()
-data = {
-    'allowedCorsOrigins': '',
-    'immutableConfig': False,
-    'acls': [],
-    'users': [
-        {'userId': 'admin', 'type': 'password', 'password': h, 'roles': ['admin']}
-    ],
-    'devices': []
-}
-print(json.dumps(data, indent=2))
+    # Hash via Signal K's own bcryptjs to ensure compatibility.
+    # Signal K uses the field name 'username' (not 'userId') for login matching.
+    node -e "
+const bcrypt = require('/usr/lib/node_modules/signalk-server/node_modules/bcryptjs');
+const hash = bcrypt.hashSync(process.env.SK_ADMIN_PASS, 12);
+const data = {
+  allowedCorsOrigins: '',
+  immutableConfig: false,
+  acls: [],
+  users: [
+    { username: 'admin', type: 'admin', password: hash, roles: ['admin'] }
+  ],
+  devices: []
+};
+console.log(JSON.stringify(data, null, 2));
 " > "$SK_SECURITY_FILE"
 
     # Save the plaintext password for the operator
@@ -540,6 +582,25 @@ else
     info ".env already exists — leaving untouched."
 fi
 
+# Merge operator config from ~/.helmlog/config.env (survives reset-pi.sh)
+OPERATOR_CONFIG="$HOME/.helmlog/config.env"
+if [[ -f "$OPERATOR_CONFIG" ]]; then
+    info "Merging operator config from $OPERATOR_CONFIG"
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^# ]] && continue
+        # Split on first = only (values like JWT tokens may contain =)
+        key="${line%%=*}"
+        value="${line#*=}"
+        [[ -z "$key" ]] && continue
+        # Remove any existing line (commented or not) for this key, then append.
+        # This avoids sed delimiter issues with JWT tokens and passwords.
+        grep -v "^#\{0,1\}\s*${key}=" "$ENV_FILE" > "${ENV_FILE}.tmp" || true
+        mv "${ENV_FILE}.tmp" "$ENV_FILE"
+        echo "${key}=${value}" >> "$ENV_FILE"
+    done < "$OPERATOR_CONFIG"
+fi
+
 # Populate InfluxDB connection if we have a token and it's still commented out
 if [[ -n "$INFLUX_TOKEN" && "$INFLUX_TOKEN" != "REPLACE_WITH_INFLUX_TOKEN" ]]; then
     if grep -q '^# INFLUX_URL=' "$ENV_FILE" 2>/dev/null; then
@@ -556,9 +617,11 @@ chmod 600 "$ENV_FILE"
 info ".env permissions set to 600."
 
 # Load env vars for service generation
+# Quote values to prevent bash from interpreting special chars in tokens/passwords
 set -a
 # shellcheck disable=SC1090
-source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#')
+source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE" | grep -v '^#' \
+    | sed "s/=\(.*\)/='\1'/")
 set +a
 
 CAN_INTERFACE="${CAN_INTERFACE:-can0}"
@@ -572,14 +635,15 @@ info "$PROJECT_DIR/data (SQLite DB)"
 info "$PROJECT_DIR/data/audio (WAV recordings)"
 info "$PROJECT_DIR/data/notes (photo notes)"
 
-# Shared ownership: deploy user owns, deploy user's group is shared with helmlog.
+# Shared ownership: helmlog service account owns (so the service can always write
+# its own DB), deploy user's group enables write access for admin CLI commands.
 # setgid ensures new files/dirs inherit the group so both users can always read/write.
-sudo chown -R "$CURRENT_USER:$CURRENT_USER" "$PROJECT_DIR/data"
+sudo chown -R "helmlog:$CURRENT_USER" "$PROJECT_DIR/data"
 sudo chmod -R g+ws "$PROJECT_DIR/data"
 # Default POSIX ACL: new files created in data/ (e.g. by `helmlog add-user`)
 # automatically get group rw regardless of the creating user's umask.
 sudo setfacl -R -d -m g::rw "$PROJECT_DIR/data"
-info "data/ owned by $CURRENT_USER, group-writable + default ACL (helmlog is a member)."
+info "data/ owned by helmlog:$CURRENT_USER, group-writable + default ACL."
 
 # ---------------------------------------------------------------------------
 # i) netdev group (allows non-root SocketCAN access)
@@ -642,7 +706,7 @@ Wants=signalk.service
 
 [Service]
 User=helmlog
-Group=helmlog
+Group=${CURRENT_USER}
 WorkingDirectory=${PROJECT_DIR}
 EnvironmentFile=${ENV_FILE}
 Environment=UV_CACHE_DIR=/var/cache/helmlog
@@ -754,6 +818,95 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# k.3) Tailscale DNS — enable MagicDNS so Pis can resolve each other by hostname
+#      Requires Tailscale to be installed and logged in already.
+# ---------------------------------------------------------------------------
+
+if command -v tailscale &>/dev/null; then
+    step "Enabling Tailscale MagicDNS..."
+    if tailscale status &>/dev/null; then
+        sudo tailscale set --accept-dns=true
+        sudo tailscale set --operator="${CURRENT_USER}"
+        info "Tailscale DNS enabled; ${CURRENT_USER} set as operator (no sudo needed for tailscale set)."
+    else
+        warn "Tailscale is installed but not logged in — run 'sudo tailscale up' first, then re-run setup.sh."
+    fi
+else
+    warn "Tailscale not installed — skipping DNS configuration."
+    warn "Install Tailscale for inter-boat communication: https://tailscale.com/download/linux"
+fi
+
+# ---------------------------------------------------------------------------
+# k.4) Cloudflare Tunnel — public HTTPS access via <boat>.helmlog.org
+#       Installs cloudflared and configures as a systemd service if a tunnel
+#       token is present (from config.env → .env). Fully optional.
+# ---------------------------------------------------------------------------
+
+# Source .env to pick up CLOUDFLARE_TUNNEL_TOKEN (may have been merged from config.env)
+CF_TUNNEL_TOKEN="${CLOUDFLARE_TUNNEL_TOKEN:-}"
+if [[ -z "$CF_TUNNEL_TOKEN" ]] && [[ -f "$ENV_FILE" ]]; then
+    CF_TUNNEL_TOKEN=$(grep -E '^CLOUDFLARE_TUNNEL_TOKEN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+fi
+
+if [[ -n "$CF_TUNNEL_TOKEN" ]]; then
+    step "Setting up Cloudflare Tunnel..."
+
+    # Auth safety check: refuse if AUTH_DISABLED=true with a public tunnel
+    AUTH_DISABLED_VAL="${AUTH_DISABLED:-}"
+    if [[ -z "$AUTH_DISABLED_VAL" ]] && [[ -f "$ENV_FILE" ]]; then
+        AUTH_DISABLED_VAL=$(grep -E '^AUTH_DISABLED=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    fi
+    if [[ "${AUTH_DISABLED_VAL,,}" == "true" ]]; then
+        echo ""
+        warn "══════════════════════════════════════════════════════════════"
+        warn "  AUTH_DISABLED=true with a Cloudflare Tunnel is dangerous!"
+        warn "  The Pi will be on the public internet with no authentication."
+        warn "  Set AUTH_DISABLED=false in .env before proceeding."
+        warn "══════════════════════════════════════════════════════════════"
+        echo ""
+    fi
+
+    # Install cloudflared if not present
+    if ! command -v cloudflared &>/dev/null; then
+        info "Installing cloudflared..."
+        # Download arm64 deb directly from Cloudflare (no apt repo needed for connector-only use)
+        CF_ARCH="$(dpkg --print-architecture)"
+        CF_DEB="/tmp/cloudflared-${CF_ARCH}.deb"
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${CF_ARCH}.deb" \
+            -o "$CF_DEB"
+        sudo dpkg -i "$CF_DEB"
+        rm -f "$CF_DEB"
+        info "cloudflared $(cloudflared --version 2>&1 | head -1) installed."
+    else
+        info "cloudflared already installed: $(cloudflared --version 2>&1 | head -1)"
+    fi
+
+    # Install as systemd service using the connector token
+    # cloudflared service install is idempotent — it updates the token if already installed
+    if ! systemctl list-unit-files cloudflared.service 2>/dev/null | grep -qw cloudflared; then
+        sudo cloudflared service install "$CF_TUNNEL_TOKEN"
+        info "cloudflared systemd service installed."
+    else
+        info "cloudflared service already exists."
+    fi
+
+    sudo systemctl enable cloudflared 2>/dev/null || true
+    sudo systemctl restart cloudflared
+    info "cloudflared service running."
+
+    CF_HOSTNAME="${CLOUDFLARE_HOSTNAME:-}"
+    if [[ -z "$CF_HOSTNAME" ]] && [[ -f "$ENV_FILE" ]]; then
+        CF_HOSTNAME=$(grep -E '^CLOUDFLARE_HOSTNAME=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)
+    fi
+    if [[ -n "$CF_HOSTNAME" ]]; then
+        info "Public URL: https://${CF_HOSTNAME}/"
+    fi
+else
+    info "No CLOUDFLARE_TUNNEL_TOKEN configured — Cloudflare Tunnel skipped."
+    info "To enable, run: ./scripts/configure.sh"
+fi
+
+# ---------------------------------------------------------------------------
 # l) Scoped NOPASSWD sudo
 #      Creates /etc/sudoers.d/helmlog-allowed with the specific commands
 #      needed for day-to-day operations (deploy.sh, service management).
@@ -768,58 +921,48 @@ sudo tee "$SUDOERS_FILE" > /dev/null << EOF
 # Only the commands listed here run without a password prompt.
 # For full sudo access (package installs, system config), type your password.
 
-# Service management — used by deploy.sh and daily operations
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status helmlog.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status signalk.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status grafana-server.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status influxdb.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status loki.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl start promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status promtail.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl is-active helmlog.service
+# Service management — used by deploy.sh, /diagnose, and daily operations
+# Trailing * allows extra flags (--no-pager, -l, --since, etc.) which sudoers
+# would otherwise reject due to exact-argument matching.
+# Note: \\\\ in the heredoc produces \\ in the file (sudoers line continuation).
+Cmnd_Alias HELMLOG_SVCS = \\
+    /usr/bin/systemctl daemon-reload, \\
+    /usr/bin/systemctl start helmlog*, \\
+    /usr/bin/systemctl stop helmlog*, \\
+    /usr/bin/systemctl restart helmlog*, \\
+    /usr/bin/systemctl status helmlog*, \\
+    /usr/bin/systemctl is-active helmlog*, \\
+    /usr/bin/systemctl start signalk*, \\
+    /usr/bin/systemctl stop signalk*, \\
+    /usr/bin/systemctl restart signalk*, \\
+    /usr/bin/systemctl status signalk*, \\
+    /usr/bin/systemctl is-active signalk*, \\
+    /usr/bin/systemctl start grafana-server*, \\
+    /usr/bin/systemctl stop grafana-server*, \\
+    /usr/bin/systemctl restart grafana-server*, \\
+    /usr/bin/systemctl status grafana-server*, \\
+    /usr/bin/systemctl is-active grafana-server*, \\
+    /usr/bin/systemctl start influxdb*, \\
+    /usr/bin/systemctl stop influxdb*, \\
+    /usr/bin/systemctl restart influxdb*, \\
+    /usr/bin/systemctl status influxdb*, \\
+    /usr/bin/systemctl is-active influxdb*, \\
+    /usr/bin/systemctl start loki*, \\
+    /usr/bin/systemctl stop loki*, \\
+    /usr/bin/systemctl restart loki*, \\
+    /usr/bin/systemctl status loki*, \\
+    /usr/bin/systemctl is-active loki*, \\
+    /usr/bin/systemctl start promtail*, \\
+    /usr/bin/systemctl stop promtail*, \\
+    /usr/bin/systemctl restart promtail*, \\
+    /usr/bin/systemctl status promtail*, \\
+    /usr/bin/systemctl is-active promtail*, \\
+    /usr/bin/systemctl start cloudflared*, \\
+    /usr/bin/systemctl stop cloudflared*, \\
+    /usr/bin/systemctl restart cloudflared*, \\
+    /usr/bin/systemctl status cloudflared*, \\
+    /usr/bin/systemctl is-active cloudflared*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_SVCS
 
 # Self-deploy — the helmlog service user needs to restart itself
 helmlog ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart helmlog
@@ -835,14 +978,18 @@ ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/rsync
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/systemd/system/grafana-server.service.d/port.conf
 
 # nginx reverse proxy
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/sbin/nginx -t
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl reload nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart nginx.service
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx
-${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/systemctl status nginx.service
+Cmnd_Alias HELMLOG_NGINX = \\
+    /usr/sbin/nginx -t, \\
+    /usr/bin/systemctl reload nginx*, \\
+    /usr/bin/systemctl restart nginx*, \\
+    /usr/bin/systemctl status nginx*, \\
+    /usr/bin/systemctl is-active nginx*
+${CURRENT_USER} ALL=(ALL) NOPASSWD: HELMLOG_NGINX
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/cp ${PROJECT_DIR}/scripts/nginx/helmlog.conf /etc/nginx/sites-available/helmlog
+
+# Tailscale management — federation peer discovery, DNS
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale set *
+${CURRENT_USER} ALL=(ALL) NOPASSWD: /usr/bin/tailscale status
 
 # .git/ ownership repair (deploy.sh may need to fix files owned by helmlog)
 ${CURRENT_USER} ALL=(ALL) NOPASSWD: /bin/chown -R ${CURRENT_USER}\:${CURRENT_USER} ${PROJECT_DIR}/.git/
@@ -895,6 +1042,18 @@ if [[ -n "${TS_HOSTNAME:-}" ]]; then
     echo "    Race marker: https://${TS_HOSTNAME}/"
     echo "    Grafana:     https://${TS_HOSTNAME}/grafana/"
     echo "    Signal K:    https://${TS_HOSTNAME}/signalk/"
+fi
+# Show Cloudflare public URL if configured
+CF_HOSTNAME_SUMMARY=""
+if [[ -f "$HOME/.helmlog/config.env" ]]; then
+    CF_HOSTNAME_SUMMARY=$(grep -E '^CLOUDFLARE_HOSTNAME=' "$HOME/.helmlog/config.env" 2>/dev/null | cut -d= -f2- || true)
+fi
+if [[ -n "$CF_HOSTNAME_SUMMARY" ]]; then
+    echo ""
+    echo "  Public (Cloudflare Tunnel — authentication required):"
+    echo "    HelmLog:     https://${CF_HOSTNAME_SUMMARY}/"
+    echo "    Grafana:     https://${CF_HOSTNAME_SUMMARY}/grafana/"
+    echo "    Signal K:    https://${CF_HOSTNAME_SUMMARY}/signalk/"
 fi
 echo ""
 if [[ -f "$INFLUX_TOKEN_FILE" ]]; then

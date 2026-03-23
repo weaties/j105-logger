@@ -2,42 +2,42 @@
 {% block title %}Federation — HelmLog{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7}
-h2{font-size:1rem;font-weight:600;color:#7eb8f7;margin:0 0 10px}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:12px}
-.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#8892a4;margin-bottom:8px}
-.field{background:#0a1628;border:1px solid #2563eb;border-radius:6px;
-padding:9px 12px;color:#e8eaf0;font-size:.9rem;width:100%;box-sizing:border-box}
+h1{font-size:1.3rem;font-weight:700;color:var(--accent)}
+h2{font-size:1rem;font-weight:600;color:var(--accent);margin:0 0 10px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+.field{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;
+padding:9px 12px;color:var(--text-primary);font-size:.9rem;width:100%;box-sizing:border-box}
 textarea.field{min-height:100px;font-family:monospace;font-size:.8rem;resize:vertical}
-.btn-add{padding:9px 16px;border:none;border-radius:6px;background:#2563eb;
-color:#fff;font-weight:700;cursor:pointer;font-size:.9rem}
+.btn-add{padding:9px 16px;border:none;border-radius:6px;background:var(--accent-strong);
+color:var(--bg-primary);font-weight:700;cursor:pointer;font-size:.9rem}
 .btn-add:disabled{opacity:.5;cursor:not-allowed}
-.btn-sm{padding:8px 12px;border:1px solid #374151;border-radius:4px;
-background:#0a1628;font-size:.78rem;cursor:pointer;min-height:36px}
-.btn-copy{color:#7eb8f7;border-color:#2563eb}
-.btn-del{color:#ef4444;border-color:#7f1d1d}
+.btn-sm{padding:8px 12px;border:1px solid var(--border);border-radius:4px;
+background:var(--bg-input);font-size:.78rem;cursor:pointer;min-height:36px}
+.btn-copy{color:var(--accent);border-color:var(--accent-strong)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
 .table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
 table{width:100%;border-collapse:collapse;font-size:.87rem}
-th{text-align:left;color:#8892a4;font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
-padding:6px 8px;border-bottom:1px solid #1e3a5f}
-td{padding:7px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
+padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 tr:last-child td{border-bottom:none}
-.empty{color:#8892a4;text-align:center;padding:20px 0}
+.empty{color:var(--text-secondary);text-align:center;padding:20px 0}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:.9rem;align-items:baseline}
-.kv dt{color:#8892a4;font-size:.8rem;text-align:right;white-space:nowrap}
+.kv dt{color:var(--text-secondary);font-size:.8rem;text-align:right;white-space:nowrap}
 .kv dd{margin:0;word-break:break-all}
 .mono{font-family:monospace;font-size:.82rem}
 .badge{display:inline-block;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
 padding:2px 7px;border-radius:3px;margin-left:6px}
-.badge-admin{background:#1e3a5f;color:#60a5fa}
-.badge-member{background:#1a3329;color:#4ade80}
-.badge-active{background:#0d2818;color:#4ade80}
-.badge-inactive{background:#1f1215;color:#f87171}
+.badge-admin{background:var(--border);color:var(--accent)}
+.badge-member{background:var(--bg-secondary);color:var(--success)}
+.badge-active{background:var(--bg-secondary);color:var(--success)}
+.badge-inactive{background:var(--bg-secondary);color:var(--danger)}
 .status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
-.status.ok{display:block;background:#0d2818;color:#4ade80;border:1px solid #16a34a}
-.status.err{display:block;background:#1f1215;color:#f87171;border:1px solid #7f1d1d}
+.status.ok{display:block;background:var(--bg-secondary);color:var(--success);border:1px solid var(--success)}
+.status.err{display:block;background:var(--bg-secondary);color:var(--danger);border:1px solid var(--danger)}
 .form-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px}
-.peer-section{margin-top:12px;padding-top:10px;border-top:1px solid #1e3a5f}
+.peer-section{margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
 select.field{appearance:auto}
 </style>
 {% endblock %}
@@ -85,7 +85,7 @@ select.field{appearance:auto}
 <!-- ═══════════════════ Join Co-op ═══════════════════ -->
 <div class="card" id="join-card" style="display:none">
   <div class="label">Join a Co-op</div>
-  <p style="font-size:.8rem;color:#8892a4;margin:0 0 8px">Paste the invite bundle JSON that the co-op admin sent you.</p>
+  <p style="font-size:.8rem;color:var(--text-secondary);margin:0 0 8px">Paste the invite bundle JSON that the co-op admin sent you.</p>
   <div class="form-grid">
     <textarea id="join-bundle-json" class="field"
       placeholder='Paste the invite bundle JSON here...'></textarea>
@@ -113,7 +113,7 @@ async function loadIdentity(){
     if(!data.identity){
       HAS_IDENTITY=false;
       el.innerHTML=`
-        <p style="color:#8892a4;margin-bottom:12px">No identity initialized yet.</p>
+        <p style="color:var(--text-secondary);margin-bottom:12px">No identity initialized yet.</p>
         <div class="form-grid">
           <input id="id-sail" class="field" placeholder="Sail number *" maxlength="30"/>
           <input id="id-name" class="field" placeholder="Boat name *" maxlength="60"/>
@@ -141,7 +141,7 @@ async function loadIdentity(){
     document.getElementById('create-coop-card').style.display='';
     document.getElementById('join-card').style.display='';
   }catch(e){
-    el.innerHTML='<div class="empty" style="color:#ef4444">Failed to load identity: '+esc(e.message)+'</div>';
+    el.innerHTML='<div class="empty" style="color:var(--danger)">Failed to load identity: '+esc(e.message)+'</div>';
   }
 }
 
@@ -232,7 +232,7 @@ async function loadCoops(){
     el.innerHTML=html;
     updateInviteDropdown();
   }catch(e){
-    el.innerHTML='<div class="empty" style="color:#ef4444">Failed to load co-ops: '+esc(e.message)+'</div>';
+    el.innerHTML='<div class="empty" style="color:var(--danger)">Failed to load co-ops: '+esc(e.message)+'</div>';
   }
 }
 
@@ -363,7 +363,7 @@ async function queryPeers(coopId,btn){
   const el=document.getElementById('peers-'+coopId);
   try{
     const r=await fetch('/api/federation/co-ops/'+encodeURIComponent(coopId)+'/peer-sessions');
-    if(!r.ok){el.innerHTML='<div class="empty" style="color:#ef4444">Failed to load</div>';return}
+    if(!r.ok){el.innerHTML='<div class="empty" style="color:var(--danger)">Failed to load</div>';return}
     const data=await r.json();
     const peers=data.peers||[];
     if(!peers.length){el.innerHTML='<div class="empty">No peers responded</div>';return}
@@ -374,14 +374,14 @@ async function queryPeers(coopId,btn){
         :'<span class="badge badge-inactive">offline</span>';
       html+='<div style="margin-bottom:12px">';
       html+='<div style="font-weight:600;font-size:.9rem">'+esc(p.boat_name||p.fingerprint)
-        +' <span style="color:#8892a4">#'+esc(p.sail_number||'')+'</span> '+statusBadge+'</div>';
+        +' <span style="color:var(--text-secondary)">#'+esc(p.sail_number||'')+'</span> '+statusBadge+'</div>';
       if(p.sessions&&p.sessions.length){
         html+='<div class="table-wrap"><table><thead>'
           +'<tr><th>Session</th><th>Type</th><th>Date</th><th>Status</th></tr>'
           +'</thead><tbody>';
         for(const s of p.sessions){
           if(s.status==='embargoed'){
-            html+='<tr><td colspan="3" style="color:#8892a4">Embargoed</td>'
+            html+='<tr><td colspan="3" style="color:var(--text-secondary)">Embargoed</td>'
               +'<td>Available '+esc(s.available_at||'').slice(0,10)+'</td></tr>';
           }else{
             html+='<tr><td>'+esc(s.name||'')+'</td>'
@@ -398,7 +398,7 @@ async function queryPeers(coopId,btn){
     }
     el.innerHTML=html;
   }catch(e){
-    el.innerHTML='<div class="empty" style="color:#ef4444">Error: '+esc(e.message)+'</div>';
+    el.innerHTML='<div class="empty" style="color:var(--danger)">Error: '+esc(e.message)+'</div>';
   }finally{
     btn.disabled=false;btn.textContent='Load Peer Sessions';
   }

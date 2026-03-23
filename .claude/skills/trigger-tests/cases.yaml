@@ -1,0 +1,227 @@
+# Skill trigger test suite
+#
+# Each case is a user prompt with expected trigger/no-trigger outcomes.
+# Use /skill-eval or manual testing to validate trigger accuracy.
+#
+# Convention:
+#   should_trigger: [list of skills that SHOULD activate]
+#   should_not_trigger: [list of skills that must NOT activate]
+#
+# Re-run this suite after any description change to check for regressions.
+
+# --- TDD triggers ---
+
+- name: tdd-new-feature
+  prompt: "Add a heel angle column to the CSV export"
+  should_trigger: [tdd]
+  should_not_trigger: [pr-checklist, release-notes, ideate]
+  tags: [tdd, positive]
+
+- name: tdd-bug-fix
+  prompt: "Fix the off-by-one error in polar bin lookup"
+  should_trigger: [tdd]
+  should_not_trigger: [spec, integration-test]
+  tags: [tdd, positive]
+
+- name: tdd-not-for-docs
+  prompt: "Update the README with the new CLI commands"
+  should_trigger: []
+  should_not_trigger: [tdd]
+  tags: [tdd, negative]
+
+- name: tdd-not-for-css
+  prompt: "Make the nav bar darker on the history page"
+  should_trigger: []
+  should_not_trigger: [tdd, data-license]
+  tags: [tdd, negative]
+
+# --- Data license triggers ---
+
+- name: data-license-export-endpoint
+  prompt: "Add a new API endpoint that exports session audio as WAV"
+  should_trigger: [tdd, data-license]
+  should_not_trigger: [integration-test]
+  tags: [data-license, positive]
+
+- name: data-license-peer-api
+  prompt: "Modify peer_api.py to include wind data in co-op session responses"
+  should_trigger: [tdd, data-license, integration-test]
+  should_not_trigger: []
+  tags: [data-license, positive]
+
+- name: data-license-deletion
+  prompt: "Add a delete-my-data endpoint that removes all audio and transcripts for a user"
+  should_trigger: [tdd, data-license]
+  should_not_trigger: []
+  tags: [data-license, positive]
+
+- name: data-license-not-for-polar
+  prompt: "Refactor the polar baseline builder to use numpy"
+  should_trigger: [tdd]
+  should_not_trigger: [data-license, integration-test]
+  tags: [data-license, negative]
+
+- name: data-license-not-for-css
+  prompt: "Fix the table alignment on the session detail page"
+  should_trigger: []
+  should_not_trigger: [data-license, tdd]
+  tags: [data-license, negative]
+
+# --- Integration test triggers ---
+
+- name: integration-federation-change
+  prompt: "Refactor the co-op invite flow in federation.py"
+  should_trigger: [tdd, integration-test]
+  should_not_trigger: []
+  tags: [integration-test, positive]
+
+- name: integration-peer-auth-change
+  prompt: "Fix the nonce replay check in peer_auth.py"
+  should_trigger: [tdd, integration-test]
+  should_not_trigger: []
+  tags: [integration-test, positive]
+
+- name: integration-not-for-web
+  prompt: "Add a new chart to the session detail page"
+  should_trigger: [tdd]
+  should_not_trigger: [integration-test, data-license]
+  tags: [integration-test, negative]
+
+# --- PR checklist triggers ---
+
+- name: pr-checklist-ready-for-pr
+  prompt: "All tests pass, let's create the PR"
+  should_trigger: [pr-checklist]
+  should_not_trigger: [tdd, ideate]
+  tags: [pr-checklist, positive]
+
+- name: pr-checklist-push-up
+  prompt: "Push this up and open a PR for review"
+  should_trigger: [pr-checklist]
+  should_not_trigger: [tdd]
+  tags: [pr-checklist, positive]
+
+- name: pr-checklist-not-mid-implementation
+  prompt: "Now implement the save function"
+  should_trigger: [tdd]
+  should_not_trigger: [pr-checklist]
+  tags: [pr-checklist, negative]
+
+# --- Spec triggers ---
+
+- name: spec-complex-feature
+  prompt: "Start work on issue #200 — adding role-based access control to co-op data"
+  should_trigger: [spec]
+  should_not_trigger: [ideate]
+  tags: [spec, positive]
+
+- name: spec-not-for-simple-bug
+  prompt: "Fix the broken date formatting in the history page"
+  should_trigger: [tdd]
+  should_not_trigger: [spec, integration-test]
+  tags: [spec, negative]
+
+# --- Architecture triggers ---
+
+- name: architecture-overview
+  prompt: "Give me a system overview, I've been away for a week"
+  should_trigger: [architecture]
+  should_not_trigger: [tdd, pr-checklist]
+  tags: [architecture, positive]
+
+- name: architecture-what-changed
+  prompt: "What changed since last Tuesday?"
+  should_trigger: [architecture]
+  should_not_trigger: [release-notes]
+  tags: [architecture, positive]
+
+- name: architecture-not-for-specific-code
+  prompt: "How does the polar bin lookup work?"
+  should_trigger: []
+  should_not_trigger: [architecture]
+  tags: [architecture, negative]
+
+# --- Diagnose triggers ---
+
+- name: diagnose-pi-down
+  prompt: "Helmlog isn't recording on the Pi, what's wrong?"
+  should_trigger: [diagnose]
+  should_not_trigger: [tdd, deploy-pi]
+  tags: [diagnose, positive]
+
+- name: diagnose-not-for-mac-dev
+  prompt: "My pytest run is failing with an import error"
+  should_trigger: []
+  should_not_trigger: [diagnose]
+  tags: [diagnose, negative]
+
+# --- Ideate triggers ---
+
+- name: ideate-speculative-idea
+  prompt: "What if we could overlay AIS targets on the race replay?"
+  should_trigger: [ideate]
+  should_not_trigger: [tdd, spec]
+  tags: [ideate, positive]
+
+- name: ideate-not-for-concrete-feature
+  prompt: "Add heel angle to the CSV export — here's the issue"
+  should_trigger: [tdd]
+  should_not_trigger: [ideate]
+  tags: [ideate, negative]
+
+# --- Release notes triggers ---
+
+- name: release-notes-promotion
+  prompt: "Let's prepare to promote main to stage"
+  should_trigger: [release-notes]
+  should_not_trigger: [pr-checklist, tdd]
+  tags: [release-notes, positive]
+
+- name: release-notes-not-for-doc-edit
+  prompt: "Update the architecture diagram in CLAUDE.md"
+  should_trigger: []
+  should_not_trigger: [release-notes, tdd]
+  tags: [release-notes, negative]
+
+# --- Domain triggers ---
+
+- name: domain-wind-reference
+  prompt: "Which wind reference code does B&G use for true wind?"
+  should_trigger: [domain]
+  should_not_trigger: [tdd, spec]
+  tags: [domain, positive]
+
+- name: domain-sk-reader-work
+  prompt: "Add water temperature parsing to sk_reader.py"
+  should_trigger: [tdd, domain]
+  should_not_trigger: [integration-test]
+  tags: [domain, positive]
+
+- name: domain-not-for-css
+  prompt: "Change the font size on the home page"
+  should_trigger: []
+  should_not_trigger: [domain, tdd]
+  tags: [domain, negative]
+
+# --- Ambiguous / edge cases ---
+
+- name: ambiguous-storage-query-only
+  prompt: "Add a new query method to storage.py for session stats"
+  should_trigger: [tdd]
+  should_not_trigger: [integration-test, spec]
+  notes: "storage.py query change is Standard tier, not Critical — no spec or integration tests needed"
+  tags: [ambiguous, tdd, storage]
+
+- name: ambiguous-storage-migration
+  prompt: "Add a new table to storage.py for storing camera events"
+  should_trigger: [tdd, spec]
+  should_not_trigger: []
+  notes: "storage.py migration is Critical tier — spec should trigger"
+  tags: [ambiguous, spec, storage]
+
+- name: ambiguous-web-data-endpoint
+  prompt: "Add an endpoint to web.py that returns co-op session data as JSON"
+  should_trigger: [tdd, data-license]
+  should_not_trigger: [spec]
+  notes: "web.py is Standard tier but co-op data endpoint needs data-license review"
+  tags: [ambiguous, data-license, web]

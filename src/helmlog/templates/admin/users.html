@@ -2,29 +2,29 @@
 {% block title %}HelmLog — Admin Users{% endblock %}
 {% block extra_css %}
 <style>
-h1{font-size:1.3rem;font-weight:700;color:#7eb8f7;margin-bottom:4px}
-h2{font-size:1rem;font-weight:600;color:#e8eaf0;margin:20px 0 10px}
-.card{background:#131f35;border-radius:12px;padding:16px;margin-bottom:16px}
+h1{font-size:1.3rem;font-weight:700;color:var(--accent);margin-bottom:4px}
+h2{font-size:1rem;font-weight:600;color:var(--text-primary);margin:20px 0 10px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:16px}
 table{width:100%;border-collapse:collapse;font-size:.85rem}
-th{text-align:left;padding:6px 8px;color:#8892a4;font-weight:500;border-bottom:1px solid #1e3a5f}
-td{padding:6px 8px;border-bottom:1px solid #0d1a2e;vertical-align:middle}
-label{font-size:.85rem;color:#8892a4;display:block;margin-bottom:4px}
-input,select{background:#0a1628;border:1px solid #2563eb;border-radius:6px;padding:8px 10px;color:#e8eaf0;font-size:.9rem;margin-bottom:10px}
-.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:#2563eb;color:#fff}
-#invite-result{margin-top:12px;font-size:.85rem;color:#4ade80;word-break:break-all}
-.ubtn{cursor:pointer;background:none;border:1px solid #2563eb;color:#7eb8f7;border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
-.edit-input{background:#0a1628;border:1px solid #2563eb;border-radius:4px;padding:6px 8px;color:#e8eaf0;font-size:.85rem;width:100%;min-height:36px;box-sizing:border-box;margin:0}
-.edit-select{background:#0a1628;border:1px solid #2563eb;border-radius:4px;padding:6px 8px;color:#e8eaf0;font-size:.85rem;min-height:36px;margin:0}
+th{text-align:left;padding:6px 8px;color:var(--text-secondary);font-weight:500;border-bottom:1px solid var(--border)}
+td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+label{font-size:.85rem;color:var(--text-secondary);display:block;margin-bottom:4px}
+input,select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;padding:8px 10px;color:var(--text-primary);font-size:.9rem;margin-bottom:10px}
+.btn{padding:10px 18px;border:none;border-radius:8px;font-size:.9rem;font-weight:700;cursor:pointer;background:var(--accent-strong);color:var(--bg-primary)}
+#invite-result{margin-top:12px;font-size:.85rem;color:var(--success);word-break:break-all}
+.ubtn{cursor:pointer;background:none;border:1px solid var(--accent-strong);color:var(--accent);border-radius:4px;padding:4px 10px;font-size:.8rem;white-space:nowrap}
+.edit-input{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;width:100%;min-height:36px;box-sizing:border-box;margin:0}
+.edit-select{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:4px;padding:6px 8px;color:var(--text-primary);font-size:.85rem;min-height:36px;margin:0}
 .u-actions{white-space:nowrap}
 .u-actions .ubtn{margin-left:4px}
 .u-actions .ubtn:first-child{margin-left:0}
 /* --- Mobile: table → stacked cards --- */
 @media (max-width: 640px) {
   table thead{display:none}
-  tbody tr{display:block;border:1px solid #1e3a5f;border-radius:8px;padding:12px;margin-bottom:10px}
+  tbody tr{display:block;border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:10px}
   tbody td{display:flex;justify-content:space-between;align-items:center;border:none;padding:4px 0;gap:8px}
-  tbody td::before{content:attr(data-label);color:#8892a4;font-size:.78rem;flex-shrink:0;min-width:70px}
-  tbody td:last-child{flex-wrap:wrap;gap:6px;margin-top:6px;padding-top:8px;border-top:1px solid #1e3a5f}
+  tbody td::before{content:attr(data-label);color:var(--text-secondary);font-size:.78rem;flex-shrink:0;min-width:70px}
+  tbody td:last-child{flex-wrap:wrap;gap:6px;margin-top:6px;padding-top:8px;border-top:1px solid var(--border)}
   tbody td:last-child::before{display:none}
   .card{padding:12px}
   .ubtn{padding:6px 12px;font-size:.85rem}
@@ -88,6 +88,12 @@ async function revokeSession(sid) {
   await fetch('/admin/sessions/' + sid, {method:'DELETE'});
   location.reload();
 }
+async function deleteUser(userId) {
+  if (!confirm('Are you sure you want to delete this user? This cannot be undone.')) return;
+  const r = await fetch('/api/users/' + userId, {method:'DELETE'});
+  if (r.ok) { location.reload(); }
+  else { const d = await r.json().catch(()=>({})); alert(d.detail || 'Failed to delete user'); }
+}
 async function revokeInvite(invId) {
   await fetch('/admin/invitations/' + invId + '/revoke', {method:'POST'});
   location.reload();
@@ -134,8 +140,8 @@ function editUser(userId) {
 
   // Actions: Edit → Save + Cancel
   actionsTd.innerHTML =
-    '<button onclick="saveUser('+userId+')" class="ubtn" style="border-color:#22c55e;color:#4ade80">Save</button>'
-    + ' <button onclick="location.reload()" class="ubtn" style="border-color:#374151;color:#8892a4">Cancel</button>';
+    '<button onclick="saveUser('+userId+')" class="ubtn" style="border-color:var(--success);color:var(--success)">Save</button>'
+    + ' <button onclick="location.reload()" class="ubtn" style="border-color:var(--border);color:var(--text-secondary)">Cancel</button>';
 
   document.getElementById('edit-name-'+userId).focus();
 }

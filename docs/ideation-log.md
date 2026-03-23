@@ -710,7 +710,8 @@ could have been precise from the start.
 
 - **Date captured:** 2026-03-14
 - **Origin:** "Future of Software Engineering" retreat article — knowledge graphs and semantic layers as grounding for domain-aware agents
-- **Status:** `raw`
+- **Status:** `promoted`
+- **Promoted to:** #350 (`/domain` skill — Signal K and NMEA 2000 reference as agent grounding layer)
 - **Related:** `nmea2000.py` (PGN dataclasses), `polar.py`, `sk_reader.py`, `races.py`, CLAUDE.md
 
 **Description:**
@@ -759,6 +760,9 @@ bloating CLAUDE.md, and makes it referenceable from issues, specs, and discussio
   encouraging — sailing instrumentation is a much smaller domain. Could potentially
   auto-generate the initial draft from the existing dataclasses in `nmea2000.py` and
   Signal K path mappings in `sk_reader.py`.
+- *2026-03-18:* Promoted to #350 as part of the skill improvement initiative (#355).
+  Part of a 6-issue series informed by Thariq's skill categories article and the
+  Improving Skill Creator blog post.
 
 ---
 
@@ -812,7 +816,8 @@ which modules demand extra rigor and which can move fast with standard checks.
 
 - **Date captured:** 2026-03-14
 - **Origin:** "Future of Software Engineering" retreat article — cognitive debt (gap between system complexity and human understanding), continuous comprehension, "agent subconscious"
-- **Status:** `raw`
+- **Status:** `promoted` (components 1–3)
+- **Promoted to:** #352 (`/architecture` skill — codebase comprehension and complexity tracking). Component 4 (decision archaeology in memory) remains a habit change, not a skill.
 - **Related:** CLAUDE.md, memory system (`.claude/projects/`), IDX-015 (domain ontology)
 
 **Description:**
@@ -867,6 +872,10 @@ mental model needed to be an effective middle-loop supervisor.
   immediately. The `/architecture` skill is higher effort but would be valuable before
   major features or after returning from a break. Complexity hotspot detection could
   be a simple addition to `/pr-checklist` — flag if any touched file exceeds 200 lines.
+- *2026-03-18:* Components 1–3 (architecture snapshot, delta briefing, complexity
+  hotspots) promoted to #352 as part of the skill improvement initiative (#355).
+  Component 4 (decision archaeology in memory) is a habit change, not a skill —
+  remains as guidance in this entry.
 
 ---
 
@@ -1151,3 +1160,759 @@ the fact.
   The more ambitious layers (dependency behavioral diffing, runtime connection
   monitoring, machine-readable policy) are valuable but higher effort. IDX-016's
   risk tiers provide the natural mapping for graduated contributor trust.
+
+---
+
+## IDX-021: Live audio keyword detection on Hailo NPU (AI HAT+ 2)
+
+- **Date captured:** 2026-03-17
+- **Origin:** Discussion about integrating a newly purchased Raspberry Pi AI HAT+ 2
+- **Status:** `raw`
+- **Related:** `src/helmlog/transcribe.py` (existing post-hoc keyword scanning), `src/helmlog/triggers.py`, `src/helmlog/audio.py`, IDX-011 (another hardware integration idea)
+
+**Description:**
+Run a lightweight keyword-spotting model on the Raspberry Pi AI HAT+ 2's
+Hailo-8L NPU (13 TOPS) during active recording sessions. Instead of waiting
+for full Whisper transcription after a session ends, the NPU listens to the
+live audio stream and detects trigger words in real-time with near-zero CPU
+overhead. Detected keywords fire `boat_settings` actions immediately — auto-mark
+a race leg, create a timestamped note, trigger the Insta360 camera, etc.
+
+The AI HAT+ 2 connects via the Pi 5's PCIe FPC ribbon connector, so it
+coexists cleanly with the existing MCP2515 CAN HAT on SPI — no hardware
+conflicts, no GPIO contention.
+
+This builds on the existing trigger keyword scanning in `transcribe.py`
+(`_run_trigger_scan()`), which currently runs post-hoc after Whisper
+transcription completes. The live path would use a much smaller, purpose-built
+keyword-spotting model (not full Whisper) optimized for the Hailo NPU's
+int8/int4 inference pipeline.
+
+**Possible keyword-spotting approaches:**
+- **Google's speech_commands / keyword spotting models** — tiny CNNs designed
+  for wake-word detection, easily compiled to HEF via Hailo Model Zoo
+- **Whisper tiny/base on Hailo** — if the Hailo can run Whisper at real-time
+  speed, skip the separate keyword model and do continuous transcription
+- **Custom fine-tuned model** — train on sailing-specific vocabulary (mark,
+  tack, gybe, protest, starboard) for higher accuracy in wind/engine noise
+
+**Architecture sketch:**
+1. `audio.py` feeds raw PCM chunks to both the WAV writer (existing) and a
+   new `hailo_kws.py` module (hardware-isolated, only imported by `main.py`)
+2. `hailo_kws.py` runs inference on each audio chunk via `hailort` Python
+   bindings, emits keyword events
+3. Keyword events feed into the existing `triggers.py` framework, which
+   already handles event → action mapping
+4. Post-session Whisper transcription still runs for full transcript — the
+   live path is complementary, not a replacement
+
+**Open questions:**
+- Which keyword-spotting model gives the best accuracy-vs-latency tradeoff
+  on the Hailo-8L? Need to benchmark with real sailing audio (wind noise,
+  engine noise, crew shouting)
+- How to handle the audio pipeline split — does `sounddevice` support
+  multiple callbacks, or do we need a ring buffer shared between the WAV
+  writer and the NPU feeder?
+- Should the live keywords be stored separately from post-hoc transcript
+  keywords, or reconciled after transcription completes?
+- What's the false positive tolerance? A spurious "mark" call creating a
+  waypoint is annoying but recoverable; a spurious "protest" trigger could
+  be more disruptive
+- Hailo SDK maturity on Pi OS — is `hailort` stable enough for always-on
+  inference during multi-hour sailing sessions?
+- Power draw implications — the AI HAT+ adds ~5W; is the Pi's USB-C PD
+  supply sufficient with CAN HAT + AI HAT + USB audio + USB camera?
+
+**Notes:**
+- *2026-03-17:* Initial capture. The AI HAT+ 2 uses PCIe (FPC ribbon), the
+  CAN HAT uses SPI — confirmed no hardware conflict. First step is to install
+  the HAT, get `hailortcli fw-control identify` working, and benchmark a
+  simple keyword-spotting model. The existing `TRANSCRIBE_URL` remote-offload
+  pattern in `transcribe.py` is a good architectural precedent for
+  "prefer accelerator, fall back gracefully."
+
+---
+
+## IDX-022: Capture B&G calibration values as boat settings + calibration analysis
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about improving instrument calibration workflow
+- **Status:** `promoted`
+- **Related:** IDX-005 (tuning auto-population), IDX-011 (write-back to B&G), `boat_settings` infrastructure, `sk_reader.py`, `polar.py`, #337
+
+**Description:**
+Capture all B&G instrument calibration values (wind offset, boatspeed factor,
+compass deviation, mast height, keel offset, etc.) as boat settings in HelmLog.
+These values are currently set on the B&G MFD and live only on the instrument
+network — if they change, there's no record of what they were or when they
+changed.
+
+The bigger vision: once calibration values are captured over time alongside
+sailing data, build an analysis package that evaluates calibration quality and
+helps narrow in on better values. For example:
+
+- **Wind:** Compare AWA from instruments against AWA derived from GPS COG/SOG +
+  drift model. Flag systematic offsets that suggest the wind calibration is off.
+- **Boatspeed:** Compare BSP against GPS SOG in known-current conditions (or
+  cross-reference with tidal data from `external.py`). Detect paddle-wheel
+  fouling or miscalibrated speed factor.
+- **Compass:** Compare heading against GPS COG during straight-line sailing.
+  Build a deviation table and compare against the B&G compass calibration.
+- **Cross-validation:** Use polar data to detect when multiple calibrations are
+  off in ways that partially cancel out (e.g., wind angle offset + boatspeed
+  factor error producing "correct-looking" polar performance).
+
+**Data entry approach:**
+Manual transcription from B&G instrument setup pages into the Boat Setup panel
+in HelmLog. No need to read calibration values from the network — the user
+copies them from the MFD setup screens. This is practical because calibration
+values change infrequently (a few times per season at most).
+
+**Open questions:**
+- What's the full list of B&G calibration fields to capture? At minimum: wind
+  angle offset, wind speed factor, boatspeed factor, compass deviation/offset,
+  mast height, keel offset, waterline offset. Need to inventory the actual B&G
+  setup pages.
+- What does the analysis UI look like? Per-session calibration report? Trend
+  charts showing calibration drift over time?
+- How much sailing data is needed to make statistically meaningful calibration
+  recommendations? A single race? A season?
+- Should recommendations be advisory only, or could HelmLog eventually write
+  corrected calibration values back to the network (ties into IDX-011)?
+
+**Notes:**
+- *2026-03-17:* Initial capture. Manual transcription from B&G setup pages into
+  the existing boat settings UI — no Signal K / PGN reverse-engineering needed.
+  Calibration values change infrequently so manual entry is practical. The
+  analysis package is a larger effort that depends on having enough captured data
+  to work with. IDX-005 (tuning auto-population) is complementary — that's about
+  physical setup (shroud tensions), this is about electronic instrument
+  calibration.
+- *2026-03-17:* Promoted to #337. Scope: add `instrument_calibration` category
+  to `boat_settings.py` with 16 B&G calibration parameters (speed, compass,
+  wind, depth, temp, heel/trim, leeway, rudder, mast height). H5000 advanced
+  correction tables (TWA/TWS matrices, speed/heel table) deferred to follow-up.
+
+---
+
+## IDX-023: Plugin marketplace monetization — charge models, licensing, and ethos fit
+
+- **Date captured:** 2026-03-17
+- **Origin:** Conversation about plugin infrastructure for analysis and visualization
+- **Status:** `raw`
+- **Related:** IDX-002 (scalable plugin distribution), IDX-004 (custom JS visualization plugins), IDX-020 (supply-chain hardening), `docs/data-licensing.md`
+
+**Description:**
+As the plugin infrastructure for analysis and visualization takes shape, there's
+a potential opportunity for third-party monetization — letting plugin authors
+charge for their work. This could range from individual sailors selling niche
+analysis tools to professional coaching outfits packaging visualization suites.
+
+The idea is explicitly tentative. There's a real tension with HelmLog's ethos:
+the project is built on boat-owns-its-data, open co-op federation, and
+community trust. Introducing money into the plugin ecosystem could erode that —
+or it could sustain it by rewarding contributors who build genuinely valuable
+tools.
+
+**Dimensions to explore:**
+
+- **Charge models:** Free/open-source only? Freemium (basic free, advanced paid)?
+  One-time purchase? Subscription? Pay-what-you-want / tip jar? Per-boat vs
+  per-co-op licensing?
+- **Distribution:** Central marketplace (HelmLog hosts it)? Decentralized
+  (plugin authors host their own, HelmLog indexes)? Git-based with optional
+  payment gates?
+- **Licensing:** Must paid plugins be open-source with a commercial license
+  (dual-license model)? Can they be closed-source? What license governs the
+  plugin API itself?
+- **Revenue sharing:** Does HelmLog take a cut? If so, what funds does that
+  support (infrastructure, development, community)?
+- **Data-licensing interaction:** Paid plugins that process co-op data — does
+  this create a "selling access to other boats' data" problem? The
+  data-licensing policy's view-only and no-bulk-export rules would need to
+  extend into the plugin sandbox.
+- **Trust and review:** IDX-020's supply-chain concerns are amplified when money
+  is involved. A paid plugin has stronger incentives to phone home, fingerprint
+  users, or exfiltrate data. Review/audit requirements would need to scale.
+- **Community dynamics:** Does a paid tier create a two-class ecosystem (free
+  hobbyist plugins vs polished paid ones)? Does it discourage open contribution?
+
+**Ethos questions (the hard ones):**
+
+- Is "boat owns its data" compatible with "plugin author charges for analysis
+  of that data"? The boat still owns the data, but the *insight* is behind a
+  paywall.
+- Does monetization attract the wrong kind of contributor — someone optimizing
+  for revenue rather than sailing value?
+- Could a tip-jar / patronage model capture the upside (rewarding good work)
+  without the downsides (paywalls, perverse incentives)?
+- Is the sailing community small enough that a marketplace would never reach
+  critical mass anyway, making the complexity not worth it?
+
+**Open questions:**
+- What do other open-source projects with plugin ecosystems do? (Grafana,
+  Home Assistant, WordPress — each has a different model.)
+- Would co-op moderators need a say in which paid plugins are allowed in their
+  co-op's data context?
+- How does this interact with the protest firewall and gambling prohibition —
+  could a paid plugin be used to circumvent those policies?
+
+**Notes:**
+- *2026-03-17:* Initial capture. Explicitly flagged as uncertain — the idea may
+  not survive contact with HelmLog's values. Recording it now so we can revisit
+  when the plugin infrastructure is further along and we have a better sense of
+  what the community actually wants. The ethos questions matter more than the
+  technical ones here.
+
+---
+
+## IDX-024: On-device transcript and thread summarization via AI HAT+ 2
+
+- **Date captured:** 2026-03-19
+- **Origin:** Conversation about using the Raspberry Pi AI HAT+ 2 (Hailo-8, 26 TOPS) for summarizing transcripts and co-op discussion threads
+- **Status:** `raw`
+- **Related:** IDX-021 (live keyword detection on Hailo), IDX-013 (co-op discussion threads), `src/helmlog/transcribe.py`, `src/helmlog/audio.py`, AI HAT+ 2 hardware
+
+**Description:**
+Summarize post-session audio transcripts and (eventually) co-op discussion
+threads, either on-device or via API. The AI HAT+ 2's Hailo-8 NPU (26 TOPS)
+can accelerate encoder-style models but is not well-suited for autoregressive
+LLM token generation — so the summarization path depends on connectivity and
+quality requirements.
+
+**Three approaches, in order of likely value:**
+
+1. **Hybrid (recommended starting point):** Use the Hailo NPU to accelerate
+   faster-whisper's encoder (the transcription step that precedes summarization),
+   then send the transcript text to the **Claude API** (Haiku for cost, Sonnet
+   for quality) for summarization when connectivity is available (post-sail,
+   via Tailscale). Results cached in SQLite alongside the transcript. This gives
+   the best summary quality by far — small on-device LLMs struggle with the
+   nuance of sailing tactical discussion.
+
+2. **Offline fallback (small on-device LLM on CPU):** For summarization without
+   connectivity, run a quantized LLM on the Pi 5's ARM cores via `llama.cpp`:
+   - **Qwen2.5-1.5B (Q4, ~1 GB)** — best quality-to-size ratio at this scale
+   - **Phi-3.5-mini (3.8B, Q4, ~2.3 GB)** — better quality, fits in 8GB Pi 5
+     with ~3-4 GB free after helmlog + faster-whisper
+   - **Gemma 2 2B (Q4, ~1.5 GB)** — decent instruction following
+   - **BART-large-CNN (~0.5 GB)** — purpose-built summarizer, much faster,
+     but extractive only (good for "key moments" extraction, not narrative summary)
+   The Hailo NPU doesn't help here — these models run on CPU. Quality will be
+   noticeably worse than API-based summarization, especially for domain-specific
+   sailing vocabulary and tactical nuance.
+
+3. **Task-specific model on Hailo (future):** If Hailo's model zoo expands to
+   support small encoder-decoder summarization models (BART, T5), these could
+   run efficiently on the NPU. Currently the Hailo ecosystem is vision-heavy
+   and this path isn't practical.
+
+**What to summarize:**
+
+- **Session transcripts:** After Whisper transcription completes, generate a
+  summary of the crew conversation — key decisions, tactical calls, wind shift
+  observations, maneuver discussions. Store alongside the full transcript in
+  SQLite. Display on the session detail page.
+- **Co-op discussion threads (future, depends on IDX-013):** When threads
+  accumulate replies, generate a thread summary — key points, unresolved
+  questions, action items. Useful for catching up on a discussion you missed.
+- **Multi-session digest:** Summarize patterns across multiple sessions —
+  "over the last 5 races, crew consistently discussed difficulty with leeward
+  mark approaches" — requires aggregating transcripts.
+
+**Key design questions:**
+- **When to summarize?** Immediately after transcription? On-demand when the
+  user views the session? Batch overnight?
+- **Summary length/format?** Bullet points? Narrative paragraph? Structured
+  (key decisions, wind observations, crew discussion topics)?
+- **Hailo for whisper acceleration:** The Hailo-8 can accelerate the Whisper
+  encoder via HailoRT — this would speed up the transcription step that
+  precedes summarization. Worth benchmarking vs CPU-only faster-whisper.
+- **Cost management for API path:** Haiku is ~$0.25/MTok input — a typical
+  session transcript might be 2-5K tokens, so ~$0.001 per summary. Negligible
+  per session but worth tracking.
+- **Privacy:** Transcripts contain crew conversation (PII). API summarization
+  sends this to Anthropic's servers. The data-licensing policy requires that
+  PII handling respects deletion rights. Need to ensure API calls don't result
+  in data retention beyond the response. Anthropic's API data policy (no
+  training on API data) helps here.
+
+**Connection to IDX-021:**
+IDX-021 proposes live keyword detection on the Hailo during recording. This
+idea is complementary — IDX-021 handles real-time triggers, this handles
+post-session understanding. Both benefit from Hailo-accelerated Whisper
+(faster transcription = faster time-to-summary and time-to-keywords).
+
+**Notes:**
+- *2026-03-19:* Initial capture. The hybrid approach (Hailo-accelerated Whisper
+  + Claude API summarization) is the clear starting point — it uses the Hailo
+  where it's strong (encoder acceleration) and the API where it's strong
+  (language understanding). On-device LLM fallback is a nice-to-have for
+  offline use but the quality gap is significant for domain-specific content.
+  First step: benchmark faster-whisper on Hailo vs CPU to see if the
+  acceleration is worth the integration effort.
+
+---
+
+## IDX-025: Deployment annotations on the Pi Health Grafana dashboard
+
+- **Date captured:** 2026-03-19
+- **Origin:** Conversation about correlating performance regressions with deployments
+- **Status:** `raw`
+- **Related:** `src/helmlog/deploy.py`, `src/helmlog/influx.py`, `src/helmlog/monitor.py`, Grafana Pi Health dashboard
+
+**Description:**
+Add annotations to the Pi Health Grafana dashboard that mark when deployments
+happened. Each annotation should include metadata about the deployment:
+
+- **Trigger type:** explicit (manual `helmlog deploy` or web UI button) vs
+  evergreen (automatic deploy via the scheduled check in `deploy.py`)
+- **Who initiated it:** the user who triggered the deploy (from auth context
+  or SSH user), or "evergreen" for automatic deploys
+- **Branch:** the branch that was deployed (e.g., `main`, `stage`, `live`)
+- **Version/commit:** the git SHA and any tag at the deployed commit
+- **Previous version:** what was running before the deploy (for easy diff)
+- **Deploy result:** success/failure, duration, whether uv sync ran,
+  whether the service restarted
+
+The goal: when the health dashboard shows a CPU spike, memory increase, or
+latency change, you can immediately see whether it correlates with a
+deployment — and if so, exactly which version introduced the change. No more
+"wait, when did we last deploy?" followed by SSH + git log.
+
+**Implementation approach:**
+The existing `influx.py` module already writes points to InfluxDB (session
+notes, historical tracks). A new `write_deploy_annotation()` function would
+write a point to a `deployments` measurement with tags for trigger type,
+branch, user, and fields for commit SHA, previous SHA, duration, and result.
+Grafana can query this measurement as an annotation source on any dashboard
+panel.
+
+The call site would be in `deploy.py`'s `execute_deploy()` — after a
+successful (or failed) deploy, write the annotation with all available
+metadata. The deploy result dict already contains most of this information.
+
+**Grafana annotation display:**
+- Vertical line on time-series panels at the deployment timestamp
+- Hover tooltip shows: trigger type, branch, commit, who, duration, result
+- Color-coded: green for success, red for failure
+- Filterable by branch or trigger type
+
+**Key design questions:**
+- Should failed deploys also be annotated? Probably yes — a failed deploy
+  that partially ran (e.g., git pull succeeded but uv sync failed) could
+  still affect system behavior
+- How to capture the "who" for evergreen deploys? The deploy runs as the
+  helmlog service user — tag as "evergreen/automatic" rather than a person
+- Should the annotation include a link to the git diff between old and new
+  commits? Grafana annotations support URLs — a GitHub compare link
+  (`/compare/old_sha...new_sha`) would be very useful
+- Should we also annotate service restarts that aren't deploys (e.g.,
+  `systemctl restart helmlog` for config changes)?
+
+**Notes:**
+- *2026-03-19:* Initial capture. The infrastructure is already in place —
+  `influx.py` has the InfluxDB client pattern, `deploy.py` has the deploy
+  result data, and the Grafana dashboard exists. This is mostly wiring:
+  capture deploy metadata → write InfluxDB point → configure Grafana
+  annotation query. The GitHub compare link in the annotation tooltip is
+  the high-value detail — one click from "something changed" to "here's
+  what changed."
+
+---
+
+## IDX-026: Vision-based sail settings capture for post-race analysis
+
+- **Date captured:** 2026-03-22
+- **Origin:** Phase four data entry planning — exploring ways to capture sail configuration automatically
+- **Status:** `raw`
+- **Related:** `cameras.py`, `insta360.py`, `storage.py`, `boat_settings.py`, IDX-022 (B&G calibration values)
+
+**Description:**
+Use computer vision to detect and record sail settings from camera imagery
+during sailing sessions. The Insta360 X4 (or a dedicated camera) captures
+the physical state of the sails — trim, draft, twist, cunningham tension,
+outhaul, vang, backstay, jib lead position, etc. — and a vision model
+classifies or measures these settings, storing them as time-series data
+alongside instrument readings.
+
+This fills a major gap in sailing data analysis: instrument systems record
+wind, speed, and heading, but the *sail configuration* that produced those
+numbers is lost unless someone manually logs it. By capturing sail settings
+automatically via vision, every tack, gust response, and mode change has
+both the "what happened" (instruments) and the "what we were doing" (sail
+trim) — enabling much richer post-race debrief and polar analysis.
+
+**Potential approaches:**
+1. **On-device inference (Hailo AI HAT+):** Run a sail-state classification
+   model on the NPU. Low latency, no connectivity needed, but requires a
+   custom-trained model and the Hailo ecosystem is still maturing for
+   custom models.
+2. **Post-session batch processing:** After a session, run vision analysis
+   on captured video/stills. Can use larger, more capable models (cloud or
+   local). Latency doesn't matter since it's for debrief, not real-time.
+3. **Periodic snapshot + cloud API:** Take a photo every N seconds, send to
+   a vision API (Claude, etc.) for classification. Simple but requires
+   connectivity and has cost implications over long sessions.
+
+**What to detect:**
+- Mainsail: reef state, cunningham, outhaul, vang, traveler position
+- Jib/genoa: lead position, sheet tension, halyard tension
+- Spinnaker: pole height/angle, sheet/guy trim, halyard
+- General: heel angle from horizon (cross-check with instruments),
+  sail shape (draft depth, draft position, twist)
+
+**Key design questions:**
+- Which camera angle gives the best view of sail settings? The Insta360's
+  360° field is an advantage but distortion correction adds complexity.
+  A dedicated mast-mounted or boom-mounted camera might give cleaner input.
+- How to label training data? Sail settings are continuous, not discrete —
+  do we classify into buckets (light/medium/heavy trim) or try to measure
+  actual values? Buckets are easier to train and probably sufficient for
+  debrief.
+- How to store the data? Extend `boat_settings` with sail-state columns,
+  or create a new `sail_settings` table with foreign key to sessions?
+- Integration with polar analysis: once sail settings are captured, the
+  polar builder could segment performance by sail configuration — "your
+  VMG in 12 kts TWS is X with the outhaul eased vs Y with it tight."
+- Privacy: sail settings are competitive information. Should these be
+  excluded from co-op sharing by default, or included as part of the
+  "view-only" co-op data?
+
+**Notes:**
+- *2026-03-22:* Initial capture. This is a "phase four" data entry concept —
+  phases one through three presumably cover instrument data, manual entries,
+  and audio/transcript capture. Vision-based sail settings would be a
+  significant step toward fully automated sailing data collection. The
+  Insta360 integration (`cameras.py`) and AI HAT+ (IDX-021) provide
+  infrastructure building blocks, but the vision model itself is the hard
+  part — no off-the-shelf model exists for sail trim classification.
+  Training data collection could start now by capturing labeled stills
+  during sessions.
+
+---
+
+## IDX-027: Race cards with yacht club burgee and crew snapshot
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about making the race list more visually rich and informative
+- **Status:** `raw`
+- **Related:** `web.py`, `races.py`, `storage.py`, `templates/history.html`, `templates/session.html`, IDX-013 (co-op threads with crew visibility)
+
+**Description:**
+Each race in the history/session list should display as a visual "card"
+featuring two key elements: (1) a thumbnail of the yacht club burgee for
+the club hosting the race, and (2) a snapshot of the crew that was aboard.
+
+**Burgee thumbnails:** Yacht clubs have distinctive burgee flags that are
+instantly recognizable to sailors. Showing the burgee next to a race
+immediately communicates *where* a race happened without reading text.
+This requires a burgee image source — options include:
+- A curated local library of burgee images (SVG or PNG) bundled with
+  HelmLog, keyed by club name or a standardized club identifier
+- User-uploaded burgee images when configuring a race/regatta
+- A community-maintained burgee registry that HelmLog can pull from
+- Scraping from yacht club websites (fragile, IP concerns)
+
+**Crew snapshot:** Show who was on the boat for each race — names and
+positions (helm, tactician, trimmer, bow, etc.). This makes the history
+browsable by *who you sailed with*, not just when and where. Combined
+with audio transcripts (already captured), you can revisit the crew
+conversations from a specific race with a specific crew.
+
+**Key design questions:**
+- Where does the burgee image come from? A local curated set is most
+  reliable but requires maintenance. User upload is simplest but
+  means every user re-uploads the same burgees.
+- How are yacht clubs identified? Need a consistent identifier —
+  club name strings are fragile (abbreviations, typos). Could use
+  a canonical club registry or let users define their clubs.
+- How is crew captured per race? Currently there's no per-session
+  crew roster. Options: manual entry in the web UI before/after a
+  race, voice recognition from audio to identify speakers, or a
+  simple crew check-in feature.
+- Storage: burgee images in `static/` or `data/`? Crew roster as a
+  new table or JSON column on sessions?
+- Co-op implications: if crew names are shared across co-op, they
+  become PII subject to data-licensing rules. Crew positions alone
+  may be sufficient for co-op views.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This would significantly improve the
+  visual experience of browsing race history. The burgee concept is
+  especially compelling — sailors immediately recognize club burgees
+  and it adds a sense of place and community to the data. Crew
+  snapshots connect to several other ideas (IDX-013 crew visibility,
+  audio transcription with diarization). The main prerequisite is a
+  per-session crew management feature, which doesn't exist yet.
+
+---
+
+## IDX-028: Boat owner headshots in co-op peer views
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about visual identity — making other boats in the co-op feel like people, not just data
+- **Status:** `raw`
+- **Related:** `federation.py`, `peer_api.py`, `peer_client.py`, `web.py`, IDX-027 (race cards with burgee/crew), IDX-013 (co-op threads with crew visibility), IDX-018 (anti-parasocial design)
+
+**Description:**
+When viewing other boats in the co-op — peer list, session comparisons,
+track overlays, discussion threads — show a headshot of the boat's owner.
+This puts a face to the data and makes the co-op feel like a community of
+people rather than an anonymous fleet of boat names and sail numbers.
+
+Currently, boats in the co-op are identified by boat name and Ed25519
+fingerprint. Adding an owner headshot (and optionally name) makes the
+experience more personal and builds trust — you're sharing your data with
+Dave on *Aria*, not with `fingerprint:a3b7c9...`.
+
+**How it could work:**
+- Owner uploads a headshot during `helmlog identity init` or via the
+  admin settings page
+- The headshot is included in the boat card (the identity bundle shared
+  during co-op join/invite)
+- Peer boats cache the headshot locally after receiving the boat card
+- The image is displayed as a small avatar wherever that boat appears:
+  co-op peer list, session list, track comparison views, thread posts
+
+**Key design questions:**
+- **Image size/format:** Boat cards are exchanged over Tailscale between
+  Pis. Keep headshots small — a 128x128 JPEG or WebP thumbnail. Resize
+  on upload.
+- **Boat card format:** Currently the boat card contains Ed25519 public
+  key, boat name, and metadata. Adding a base64-encoded image increases
+  card size but keeps it self-contained. Alternatively, serve the image
+  via the peer API and let peers fetch it.
+- **Updates:** What happens when the owner changes their photo? Need a
+  card versioning or update mechanism so peers get the new image.
+- **Privacy / PII:** A headshot is biometric-adjacent PII under the data
+  licensing policy. The owner consents by uploading, but co-op peers
+  cache it — does deletion/anonymization need to propagate? If the
+  owner leaves the co-op, peers should purge the cached headshot.
+- **Multi-owner boats:** Some boats have co-owners or the "owner" rotates
+  (club boats, charter boats). May need to support multiple faces or
+  use a boat logo as fallback.
+- **Fallback:** Boats without a headshot should show a generated avatar
+  (initials, or a deterministic pattern from the fingerprint) rather
+  than a blank placeholder.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This pairs naturally with IDX-027 (burgee
+  + crew for your own races) — together they create a visually rich,
+  people-first experience. The PII angle needs careful design: headshots
+  cached on peer boats must be deletable when someone leaves the co-op.
+  The anti-parasocial principles from IDX-018 apply here too — showing
+  faces builds genuine connection but shouldn't create social pressure
+  or surveillance dynamics.
+
+---
+
+## IDX-029: Owner/admin data deletion — sessions, races, debriefs, practices, synthesized data
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about data management capabilities; user noted this could be promoted to an actionable issue
+- **Status:** `raw`
+- **Related:** Data licensing policy (`docs/data-licensing.md`), `storage.py`, `web.py`, `transcribe.py`, `audio.py`
+
+**Description:**
+Boat owners and admins currently have no way to delete sessions, races, debriefs,
+practice sessions, or synthesized data through the UI or CLI. As data accumulates
+on the Pi's limited storage, and as users refine their workflow, they need the
+ability to clean up unwanted records. This is also a data-licensing requirement —
+the policy states that the boat owns its data and has deletion rights over PII
+(audio, transcripts, diarized content).
+
+**Key design questions:**
+- **Soft delete vs hard purge:** Soft delete (mark as deleted, hide from UI) is
+  safer and allows undo, but doesn't reclaim disk space until a separate purge
+  step. Hard delete is simpler but irreversible.
+- **Cascade behavior:** Deleting a session should cascade to its instrument data,
+  audio recordings, transcripts, and any synthesized data derived from it. Need
+  to define the full dependency graph.
+- **Co-op implications:** If session data has been shared with co-op peers, does
+  deletion send a retraction to peers? The data-licensing policy may require
+  notifying peers to purge cached data.
+- **Audit trail:** Should deletions be logged for compliance? The data-licensing
+  policy requires audit logging for co-op data access — deletion should likely
+  be logged too.
+- **Authorization:** Owner can delete anything on their boat. Admin role (if
+  distinct from owner) may need scoped permissions. Crew members should not
+  be able to delete.
+- **Disk reclamation:** Audio WAV files and video metadata can be large. Deletion
+  should remove files from `data/` as well as database rows.
+
+**Notes:**
+- *2026-03-22:* Initial capture. This is close to actionable — the scope is clear
+  and effort is estimable. The main blocker is resolving the design questions above,
+  particularly cascade behavior and co-op retraction. Could be promoted to a GitHub
+  issue once those are settled.
+
+---
+
+## IDX-030: DIY rudder angle sensor + Signal K integration for rudder angle logging
+
+- **Date captured:** 2026-03-22
+- **Origin:** Conversation about what exists around rudder angle — calibration offset is captured (#337) but no actual rudder angle data logging yet
+- **Status:** `raw`
+- **Related:** #343 (B&G PGN survey), #337 (calibration values), IDX-022 (calibration analysis), IDX-011 (write-back to B&G), `sk_reader.py`, `boat_settings.py`
+
+**Description:**
+Two parts to this idea: (1) log rudder angle data in HelmLog, and (2) build a
+DIY rudder angle sensor instead of buying the B&G rudder transducer (which runs
+several hundred dollars).
+
+**Part 1 — HelmLog rudder angle logging:**
+Subscribe to `steering.rudderAngle` in `sk_reader.py` and store it as a
+time-series channel alongside existing instrument data. The `rudder_angle_offset`
+calibration parameter already exists in `boat_settings.py` (from #337). Once the
+data is flowing, rudder angle becomes available for export, session replay, and
+performance analysis (e.g., correlating rudder movement with VMG, detecting
+over-steering, comparing tack technique).
+
+This is partially blocked on #343 (PGN survey) — if Signal K is already decoding
+PGN 127245 (NMEA 2000 standard rudder angle) from the B&G network, HelmLog just
+subscribes. If the B&G system doesn't broadcast rudder angle (no transducer
+installed), Part 2 provides the data source.
+
+**Part 2 — DIY rudder angle sensor:**
+Build a low-cost rudder angle sensor using off-the-shelf components and publish
+the reading to Signal K, so HelmLog (and any other Signal K consumer) can use it
+without buying B&G's proprietary transducer.
+
+Candidate hardware approaches:
+- **Rotary encoder / potentiometer on the rudder post:** Mount a continuous-turn
+  potentiometer or absolute rotary encoder (e.g., AS5600 magnetic encoder, ~$3)
+  on the rudder post or quadrant. Direct mechanical coupling gives reliable angle
+  measurement. Needs a bracket or coupling to attach to the post.
+- **Hall effect sensor + magnet:** Mount a magnet on the rudder post and a
+  hall-effect angle sensor nearby. Non-contact, no wear. The AS5600 is actually
+  a hall-effect sensor with I2C output — cheap and readily available.
+- **IMU on the rudder blade:** Mount a small IMU (e.g., BNO055) on the rudder
+  blade itself. Measures absolute orientation. More complex but doesn't need
+  mechanical coupling to the post.
+
+Candidate microcontrollers:
+- **ESP32** — WiFi built in, can POST Signal K deltas directly over HTTP or
+  WebSocket. Lots of Arduino/MicroPython examples for AS5600 + ESP32. Low power,
+  can run off a small USB supply. This is probably the simplest path.
+- **Raspberry Pi Pico W** — similar WiFi capability, MicroPython or C SDK.
+  Slightly more I/O flexibility than ESP32.
+- **Pi Zero 2W** — overkill for this but could run a full Signal K plugin
+  if more processing is needed.
+
+Signal K integration:
+- The sensor publishes deltas to Signal K Server's HTTP PUT API or WebSocket
+  delta channel. Signal K path: `steering.rudderAngle` (radians, standard SK
+  units). The sensor is just another data source to Signal K — no HelmLog code
+  changes needed beyond the subscription in Part 1.
+- Signal K's `signalk-to-nmea2000` plugin can optionally re-broadcast the
+  rudder angle as PGN 127245 onto the NMEA 2000 bus, making it available on
+  B&G displays too (connects to IDX-011's write-back concept).
+
+**Open questions:**
+- What's the best mounting approach for the rudder post on this specific boat?
+  Need to inspect the quadrant/tiller arrangement below decks.
+- Waterproofing and power — the sensor will be in the lazarette or near the
+  rudder post. USB power from the Pi? Battery with charging?
+- Calibration — the AS5600 gives absolute angle, but mounting offset needs to
+  be zeroed. Could use the existing `rudder_angle_offset` in boat_settings.
+- Sampling rate — how fast does rudder angle need to be sampled for useful
+  analysis? 5 Hz? 10 Hz? B&G typically sends PGN 127245 at 10 Hz.
+
+**Notes:**
+- *2026-03-22:* Initial capture. The AS5600 + ESP32 path looks like the sweet
+  spot — under $10 in parts, well-documented, WiFi-native. The HelmLog side
+  (Part 1) is straightforward once Signal K has the data. The mechanical
+  mounting is the main unknown — need to look at the boat's rudder post
+  arrangement to design a bracket.
+
+---
+
+## IDX-031: Pluggable AI provider abstraction for all AI workloads
+
+- **Date captured:** 2026-03-23
+- **Origin:** Conversation about configuring multiple AI providers for offloading transcription, diarization, video/still analysis, thread summarization, and future AI workloads
+- **Status:** `raw`
+- **Related:** IDX-024 (on-device transcript summarization via Hailo + Claude API), IDX-021 (live keyword detection on Hailo NPU), `src/helmlog/transcribe.py` (existing `TRANSCRIBE_URL` remote-offload pattern)
+
+**Description:**
+HelmLog has a growing number of AI-powered workloads — transcription
+(faster-whisper), diarization (pyannote), and planned features like thread
+summarization (IDX-024), video/still analysis (IDX-026), and live keyword
+detection (IDX-021). Today these are tightly coupled to specific
+implementations (faster-whisper on-device, pyannote on-device). The idea is a
+**pluggable provider abstraction** that lets any AI workload route to any
+configured backend, with the user able to configure multiple providers and
+priority/fallback chains.
+
+**Candidate providers:**
+- **Self-hosted** — a Mac at home running Whisper, llama.cpp, or other models
+  over the local network or Tailscale. Zero marginal cost, full privacy, but
+  requires hardware and setup.
+- **Anthropic (Claude API)** — strong for summarization, analysis, reasoning.
+  Already discussed in IDX-024 for transcript summaries.
+- **OpenAI** — Whisper API for transcription, GPT for summarization/analysis,
+  vision models for still/video frame analysis.
+- **Google (Gemini)** — long-context models useful for analyzing full session
+  transcripts or multi-image analysis. Competitive pricing.
+- **Perplexity** — search-augmented generation, potentially useful for
+  contextualizing weather/racing conditions against external knowledge.
+- **On-device (Hailo NPU / Pi CPU)** — lowest latency, no connectivity
+  required, but limited model capability. Already the default for
+  transcription.
+
+**Workloads that would use the abstraction:**
+1. **Transcription** — `transcribe.py` already has `TRANSCRIBE_URL` for remote
+   offload. This is the existing precedent for the pattern.
+2. **Diarization** — currently pyannote on-device. Could offload to a more
+   capable model remotely.
+3. **Video/still analysis** — analyzing sail trim photos, start-line video,
+   mark roundings. Requires vision-capable models (GPT-4o, Claude, Gemini).
+4. **Thread/transcript summarization** — IDX-024's use case. Route to Claude,
+   GPT, Gemini, or a local LLM depending on connectivity and preference.
+5. **Race debrief generation** — synthesizing instrument data + transcript +
+   video into a structured debrief narrative.
+6. **Future workloads** — anything AI-powered that gets added later
+   automatically benefits from the provider abstraction.
+
+**Design sketch:**
+- A provider registry configured via environment variables or a config file.
+  Each provider has: name, type (api/self-hosted/on-device), endpoint,
+  credentials, supported capabilities (transcription, vision, text-gen, etc.),
+  cost tier, and priority.
+- Each AI workload declares what capability it needs (e.g., "transcription",
+  "vision", "text-generation"). The abstraction resolves the best available
+  provider based on: user priority preferences, connectivity status,
+  capability match, and cost constraints.
+- Fallback chains: if the preferred provider is unreachable (e.g., no internet
+  on the water), fall back to the next provider (e.g., on-device). The Pi is
+  often offline during racing — graceful degradation is essential.
+- Credential management: API keys stored in `.env` or a secrets file,
+  per-provider. Never committed to git.
+- Cost tracking: log API usage per provider per workload so the user can see
+  what they're spending. Store in SQLite alongside the workload results.
+
+**Open questions:**
+- How granular should provider configuration be? Per-workload overrides
+  (e.g., "use OpenAI Whisper for transcription but Claude for summaries")
+  vs. a single priority list?
+- Should the abstraction handle batching/queueing? E.g., queue up
+  transcription jobs while offshore, process them when back on WiFi.
+- How to handle provider-specific features? E.g., Gemini's long context
+  window, Claude's structured output, OpenAI's function calling. Lowest
+  common denominator vs. provider-specific extensions?
+- Self-hosted discovery: how does the Pi find a Mac running a local model
+  server? Tailscale + mDNS? Explicit config?
+- Data licensing implications: sending crew audio/transcripts to external
+  APIs requires consent per the data-licensing policy. How does this
+  interact with the per-person consent model for PII?
+
+**Notes:**
+- *2026-03-23:* Initial capture. The `TRANSCRIBE_URL` pattern in
+  `transcribe.py` is already a minimal version of this — a single remote
+  endpoint for one workload. This idea generalizes it to N providers × M
+  workloads with fallback chains. IDX-024 would become one consumer of this
+  abstraction rather than its own bespoke provider selection. The PII/consent
+  question is the trickiest design constraint — the data-licensing policy
+  is clear that audio and transcripts are PII, so routing them to external
+  APIs needs explicit user/crew consent.

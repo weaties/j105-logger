@@ -1,12 +1,14 @@
 # HelmLog
 
-Open-source sailing data platform — instrument logging, race debrief, fleet performance,
-and peer-to-peer data sharing between boats in a co-op.
+Open-source sailing data platform — instrument logging, race debrief, performance
+analysis, and peer-to-peer data sharing between boats in a co-op.
 
-Runs on a Raspberry Pi with a CAN bus HAT connected to the B&G instrument network.
-Signal K Server decodes the NMEA 2000 bus and feeds both InfluxDB → Grafana
+Runs on a Raspberry Pi connected to a B&G instrument network via Signal K Server.
+Signal K decodes the NMEA 2000 bus and feeds both InfluxDB → Grafana
 (real-time dashboards) and HelmLog (SQLite → CSV/GPX/JSON for regatta analysis tools).
 Boats in a co-op share instrument data directly over Tailscale — no cloud, no subscription.
+A pluggable analysis framework provides post-session insights like polar performance,
+VMG analysis, and maneuver detection.
 
 Two Signal K plugins are required:
 - **signalk-to-influxdb2** — forwards all SK data to InfluxDB for Grafana dashboards
@@ -51,19 +53,21 @@ grafana-server.service (independent, starts at boot)
 3. [Race marking](#race-marking)
 4. [Performance analysis](#performance-analysis)
 5. [Sail tracking](#sail-tracking)
-6. [Linking YouTube videos](#linking-youtube-videos) (automated Insta360 pipeline + manual)
-7. [External data — weather and tides](#external-data--weather-and-tides)
-8. [Recording audio commentary](#recording-audio-commentary)
-9. [Audio transcription](#audio-transcription)
-10. [Email notifications](#email-notifications)
-11. [Timezone configuration](#timezone-configuration)
-12. [System health monitoring](#system-health-monitoring)
-13. [Documentation](#documentation)
-14. [Mac development](#mac-development)
-15. [Fresh SD card setup](#fresh-sd-card-setup)
-16. [Updating / deploying](#updating--deploying)
-17. [Configuration](#configuration)
-18. [Troubleshooting](#troubleshooting)
+6. [Federation and co-ops](#federation-and-co-ops)
+7. [Linking YouTube videos](#linking-youtube-videos) (automated Insta360 pipeline + manual)
+8. [External data — weather and tides](#external-data--weather-and-tides)
+9. [Recording audio commentary](#recording-audio-commentary)
+10. [Audio transcription](#audio-transcription)
+11. [Email notifications](#email-notifications)
+12. [Color themes](#color-themes)
+13. [Timezone configuration](#timezone-configuration)
+14. [System health monitoring](#system-health-monitoring)
+15. [Documentation](#documentation)
+16. [Mac development](#mac-development)
+17. [Fresh SD card setup](#fresh-sd-card-setup)
+18. [Updating / deploying](#updating--deploying)
+19. [Configuration](#configuration)
+20. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -81,7 +85,8 @@ The home page is your race-day cockpit. From here you can:
 - **Set the event name** — auto-fills on Monday (BallardCup) and Wednesday (CYC);
   type your own on other days
 - **Record crew** — assign sailors to positions (Helm, Main, Pit, Bow, Tac, Guest)
-  with autocomplete from recent names
+  with autocomplete from recent names and two-tier defaults (boat defaults + event
+  overrides)
 - **Take notes** — add text notes, capture current instrument settings, or upload
   photos/videos mid-race
 - **Monitor instruments** — live readout of BSP, TWS, TWA, HDG, COG, SOG, AWS, AWA
@@ -102,22 +107,37 @@ The history page shows all recorded sessions with search, filtering by type
 
 Click any session to open its dedicated detail page with:
 
-- **Track** — full GPS route on an interactive map
+- **Track** — full GPS route on an interactive map with maneuver markers
 - **Video** — embedded YouTube player synced to instrument timestamps
-- **Crew & sails** — who was on board and what sails were up
+- **Crew & sails** — who was on board and what sails were up (with point-of-sail
+  classification)
 - **Notes** — text, settings snapshots, and photos captured during the session
+- **Comments** — threaded discussion with @mention notifications and
+  resolve/unresolve workflow
 - **Transcript** — audio transcription with speaker labels (if diarisation is enabled)
+- **Tuning extraction** — sail trim and rig settings mentioned in transcripts are
+  automatically highlighted for review
+- **Analysis** — pluggable post-session analysis (polar performance, VMG by sail,
+  maneuver detection) with results cached and invalidated when data changes
 - **Exports** — CSV, GPX, JSON download with optional GPS precision reduction
+
+### Notifications
+
+The **Attention** page (`/attention`) shows @mention notifications from comment
+threads. When someone mentions you in a session discussion, you see it here.
 
 ### Admin pages
 
 Admins have access to additional pages under `/admin`:
 
-- **Users** — manage accounts, generate magic-link invites, view active sessions
+- **Users** — manage accounts, generate invites, view active sessions
 - **Boats** — register boats with sail number, name, and class
 - **Cameras** — control Insta360 cameras, start/stop recording
 - **Event rules** — configure day-of-week auto-naming
 - **Settings** — adjust configuration without SSH
+- **Deployment** — view deploy status, promote between branches (requires
+  developer flag)
+- **Federation** — initialize boat identity, create/manage co-ops, invite boats
 - **Audit log** — full trail of every user action
 
 ### Exports
@@ -258,21 +278,27 @@ buttons. Tapping either downloads that race's data directly to the phone.
 
 ### Security and access
 
-The web app uses **magic-link authentication**. Before anyone can log in, an admin
-must create user accounts from the Pi's command line:
+The web app supports three authentication methods:
+
+- **Password** — set during invite-based registration
+- **Magic link** — emailed login link (requires SMTP configuration)
+- **OAuth** — Google, Apple, and GitHub sign-in (optional; configure via
+  `OAUTH_*` environment variables)
+
+Before anyone can log in, an admin must create the first user account:
 
 ```bash
 # Create an admin account (first time — run from the Pi)
 helmlog add-user --email you@example.com --name "Your Name" --role admin
 
-# Create crew accounts (viewer role — can mark races, can't manage users)
-helmlog add-user --email crew@example.com --name "Crew Member" --role viewer
+# Or set ADMIN_EMAIL in .env to auto-create on first startup
 ```
 
 Roles: `admin` (full access + user management), `crew` (race ops), `viewer` (read-only).
 
-Once users exist, the admin can generate invite links from the **Admin** page
-(`/admin`) so crew can log in on their own devices without needing SSH access.
+Once the admin exists, they can generate invite links from the **Admin → Users**
+page so crew can register on their own devices. Invited users set a password
+during registration. Password reset is available via email (forgot-password flow).
 
 To bypass auth entirely on a trusted LAN (e.g. local development), set
 `AUTH_DISABLED=true` in `.env` and restart the service.
@@ -285,34 +311,87 @@ The **Session detail page** (`/session/{id}`, linked from History) provides
 post-race performance tools:
 
 - **Maneuver detection** — tacks and gybes are automatically identified from
-  1 Hz heading data using rate-of-turn thresholds. Detected maneuvers are
-  marked on the track map and listed with timestamps so you can review each
-  tack/gybe in context with video and instruments.
+  1 Hz heading data using rate-of-turn thresholds. Mark roundings are
+  classified separately. Detected maneuvers are marked on the track map and
+  listed with timestamps so you can review each tack/gybe in context with
+  video and instruments.
 - **Polar performance overlay** — a polar diagram plots actual boatspeed
   against the J/105 target polar for each true wind angle observed during the
   session. Points above the polar curve indicate the boat was over-performing;
   points below highlight areas to improve.
+- **Sail VMG analysis** — upwind and downwind VMG comparison across five wind
+  bands, broken out by sail selection. Helps identify which sails perform best
+  in which conditions.
+- **Analysis plugin framework** — post-session analysis is pluggable. Plugins
+  are discovered dynamically, and results are cached in SQLite with data-hash
+  invalidation so they recompute only when underlying data changes. Current
+  plugins: `polar_baseline`, `sail_vmg`.
 
-Both features work on real and synthesized sessions with no configuration.
+All features work on real and synthesized sessions with no configuration.
 
 ---
 
 ## Sail tracking
 
-The **Boats** page (`http://<pi-hostname>:3002` → Boats tab) maintains a sail inventory
-for the boat. Each sail has a type, name, and optional notes.
+The **Sails** page (`/sails`) maintains a sail inventory for the boat. Each sail
+has a type, name, point-of-sail classification (upwind / reaching / downwind),
+and optional notes. Sails can be marked as defaults for their point-of-sail so
+they auto-populate when recording sails for a session.
 
 ### Managing the sail inventory
 
-Open the Boats page and use the **Add Sail** form to record each sail you own
-(main, jib, spinnaker, etc.). Sails appear in a list and can be deleted when
-retired.
+Open the Sails page and use the **Add Sail** form to record each sail you own
+(main, jib, spinnaker, etc.). Set defaults per point-of-sail so the most common
+combination is pre-selected on race day. Sails can be retired (soft-deleted) when
+no longer in use.
 
 ### Recording sails per race
 
 On the **History** page, each completed race card has a **Sails** panel. Select
 the main and jib (and kite if used) from dropdown menus populated from your sail
-inventory. Selections are saved immediately and appear in the race summary.
+inventory. Default sails are pre-selected. Selections are saved immediately and
+appear in the race summary. The session detail page also shows tack and gybe
+counts per sail.
+
+---
+
+## Federation and co-ops
+
+Boats can form **co-ops** — peer-to-peer data-sharing groups that let fleet mates
+compare race tracks, benchmark performance, and run debriefs together. All data
+stays on each boat's Pi; co-op members query each other directly over Tailscale.
+
+### Key concepts
+
+- **Identity** — each boat has an Ed25519 keypair. All inter-boat requests are
+  cryptographically signed with nonce replay protection.
+- **Co-op** — a group of boats that agree to share session data. Governed by a
+  signed charter with configurable policies.
+- **Session sharing** — per-session, per-co-op. You choose what to share after
+  each race. Optional embargo support for delayed visibility.
+- **Session matching** — when multiple co-op boats share sessions from the same
+  time and place, they're automatically paired by proximity so you can overlay
+  tracks from the same race.
+- **Coach access** — per-boat, time-limited grants. Coaches see instrument data
+  and benchmarks but not audio, notes, crew, or sails.
+- **Data ownership** — your data stays on your Pi. You can unshare, leave, export,
+  or delete at any time.
+
+### Setup
+
+Identity creation, co-op management, and boat invitations are all available from
+the **Federation** admin page (`/admin/federation`) or the CLI:
+
+```bash
+helmlog identity init --sail-number 69 --boat-name "Javelina"
+helmlog co-op create --name "Puget Sound J/105"
+helmlog co-op invite ./fleet-mate-boat.json
+helmlog co-op status
+```
+
+See [`docs/guide-federation.md`](docs/guide-federation.md) for the full walkthrough,
+[`docs/guide-sailors.md`](docs/guide-sailors.md) for a plain-language explanation,
+and [`docs/federation-design.md`](docs/federation-design.md) for the protocol spec.
 
 ---
 
@@ -713,6 +792,22 @@ service. Login links will continue to be printed to the terminal as before.
 
 ---
 
+## Color themes
+
+Six color schemes are available, each validated for WCAG contrast accessibility:
+
+- **Ocean** (default) — blue tones
+- **Slate** — neutral grays
+- **Sunset** — warm oranges
+- **Forest** — greens
+- **Sunlight** — high-contrast light theme optimized for outdoor/cockpit use
+- **Night** — dark theme for low-light conditions
+
+Set the theme from the **Profile** page or via the admin **Settings** page.
+The active theme is stored per-user and applied via CSS custom properties.
+
+---
+
 ## Timezone configuration
 
 By default all timestamps in the web UI display in UTC. Set the `TIMEZONE`
@@ -763,6 +858,7 @@ The `docs/` directory contains guides, policies, and technical specs:
 | [How the Co-op Works](docs/guide-sailors.md) | Sailors | What's shared, what's private, how to join/leave |
 | [Coach Access Guide](docs/guide-coaches.md) | Coaches | What coaches can see, how access works, rules |
 | [Fleet Champion's Guide](docs/guide-champions.md) | Fleet organizers | Adoption playbook — setup, pitching, troubleshooting |
+| [Federation Setup Guide](docs/guide-federation.md) | Boat owners | Identity, co-ops, session sharing, CLI reference |
 | [Fleet Quickstart](docs/fleet-quickstart.md) | Anyone | One-page printable dock handout |
 | [Co-op Charter Template](docs/co-op-charter-template.md) | Co-op admins | Fillable template for co-op governance |
 
@@ -772,7 +868,9 @@ The `docs/` directory contains guides, policies, and technical specs:
 |---|---|
 | [Data Licensing Policy](docs/data-licensing.md) | Data ownership, sharing rules, privacy, governance |
 | [Federation Protocol Design](docs/federation-design.md) | Peer-to-peer protocol — identity, membership, API, caching, security |
-| [Database Schema](docs/database-schema.md) | SQLite schema reference |
+| [Database Schema](docs/database-schema.md) | SQLite schema reference (v47) |
+| [PGN Notes](docs/pgn-notes.md) | NMEA 2000 PGN decoding reference |
+| [Gaia GPS API](docs/gaigps-api.md) | Reverse-engineered Gaia GPS API for track import |
 
 ### Setup and operations
 
@@ -782,8 +880,11 @@ The `docs/` directory contains guides, policies, and technical specs:
 | [Camera Setup](docs/camera-setup.md) | Insta360 X4 configuration |
 | [Video Pipeline](docs/video-pipeline.md) | Automated Insta360 → YouTube → HelmLog pipeline |
 | [Transcription Offload](docs/transcription-offload.md) | Remote Whisper worker on a Mac |
-| [HTTPS Deployment](docs/https-deployment.md) | TLS setup for the web interface |
+| [HTTPS Deployment](docs/https-deployment.md) | TLS setup (Tailscale Funnel, Caddy, Cloudflare Tunnel) |
 | [Backup](docs/backup.md) | Pi backup strategy |
+| [Testing Guide](docs/testing-guide.md) | Test conventions, fixtures, and coverage |
+| [Grafana Annotations](docs/grafana-annotations.md) | Race event annotations in Grafana dashboards |
+| [Grafana Race Track](docs/grafana-race-track.md) | GPS track geomap panel with speed coloring |
 
 ---
 
@@ -821,7 +922,7 @@ LOG_LEVEL=DEBUG
 uv run pytest
 
 # Run with coverage
-uv run pytest --cov=src/logger
+uv run pytest --cov=src/helmlog
 
 # Lint + type check before pushing
 uv run ruff check . && uv run ruff format --check . && uv run mypy src/
@@ -1060,7 +1161,12 @@ helmlog status
 
 ## Updating / deploying
 
-### Current: manual deploy
+HelmLog uses a three-branch promotion model: `main` → `stage` → `live`. PRs
+merge to `main`; the `promote.yml` GitHub Actions workflow gates promotion to
+`stage` (requires a new RELEASES.md entry). `stage` → `live` is a fast-forward
+of the same commit.
+
+### Manual deploy
 
 After a PR merges to `main`, SSH into the Pi and run:
 
@@ -1070,12 +1176,19 @@ cd ~/helmlog
 ./scripts/deploy.sh
 ```
 
-This pulls `main`, syncs Python dependencies, provisions Grafana, and restarts
-the `helmlog` service. Service
-status is printed at the end for a quick sanity check.
+This pulls the configured branch, syncs Python dependencies, provisions Grafana,
+and restarts the `helmlog` service. Service status is printed at the end for a
+quick sanity check.
 
 All `sudo` commands in `deploy.sh` are in the scoped `/etc/sudoers.d/helmlog-allowed`
 file (configured by `setup.sh`), so no password prompt is needed during a normal deploy.
+
+### Evergreen (auto-deploy)
+
+Set `DEPLOY_MODE=evergreen` in `.env` to enable automatic deploys. The service
+polls the configured branch (`DEPLOY_BRANCH`, default `main`) every 5 minutes
+(configurable via `DEPLOY_POLL_INTERVAL`) and auto-deploys when new commits are
+detected. Deployment status is visible on the admin **Deployment** page.
 
 ### Full update (new deps, systemd service file changes, or Signal K updates)
 
@@ -1133,6 +1246,23 @@ GRAFANA_DASHBOARD_UID=helmlog-sailing
 # AUTH_DISABLED=true          # bypass auth entirely — local/LAN dev only
 AUTH_SESSION_TTL_DAYS=90      # session cookie lifetime in days
 # ADMIN_EMAIL=you@example.com # if set, this user is auto-created as admin on first startup
+# OAuth providers (optional — enable any combination)
+# OAUTH_GOOGLE_CLIENT_ID=     # Google OAuth client ID
+# OAUTH_GOOGLE_CLIENT_SECRET= # Google OAuth client secret
+# OAUTH_APPLE_CLIENT_ID=      # Apple Sign-In service ID
+# OAUTH_APPLE_TEAM_ID=        # Apple developer team ID
+# OAUTH_APPLE_KEY_ID=         # Apple private key ID
+# OAUTH_GITHUB_CLIENT_ID=     # GitHub OAuth app client ID
+# OAUTH_GITHUB_CLIENT_SECRET= # GitHub OAuth app client secret
+# Cameras
+# CAMERAS=main:192.168.42.1   # name:ip pairs for Insta360 cameras
+# CAMERA_START_TIMEOUT=10     # seconds to wait for camera to start recording
+# Deployment
+# DEPLOY_MODE=explicit         # explicit (manual) or evergreen (auto-deploy)
+# DEPLOY_BRANCH=main           # branch to track in evergreen mode
+# DEPLOY_POLL_INTERVAL=300     # seconds between deploy checks
+# System health monitoring
+# MONITOR_INTERVAL_S=2         # health check frequency in seconds
 # InfluxDB — required only for system health metrics; omit if not using InfluxDB
 # INFLUX_URL=http://localhost:8086
 # INFLUX_TOKEN=<token from ~/influx-token.txt>

@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DASHBOARD_SRC="$SCRIPT_DIR/grafana/sailing-data.json"
 PI_HEALTH_SRC="$SCRIPT_DIR/grafana/pi-health.json"
 SERVICE_LOGS_SRC="$SCRIPT_DIR/grafana/service-logs.json"
+NET_BW_SRC="$SCRIPT_DIR/grafana/network-bandwidth.json"
 PROVISION_SRC="$SCRIPT_DIR/grafana/dashboards.yaml"
 DATASOURCE_SRC="$SCRIPT_DIR/grafana/datasources.yaml"
 
@@ -19,15 +20,16 @@ PROVISION_DEST="/etc/grafana/provisioning/dashboards/helmlog.yaml"
 DATASOURCE_DEST="/etc/grafana/provisioning/datasources/helmlog.yaml"
 
 echo "==> Copying dashboard JSONs"
-sudo rsync --mkpath "$DASHBOARD_SRC" "$DASHBOARD_DEST_DIR/sailing-data.json"
-sudo rsync "$PI_HEALTH_SRC" "$DASHBOARD_DEST_DIR/pi-health.json"
-sudo rsync "$SERVICE_LOGS_SRC" "$DASHBOARD_DEST_DIR/service-logs.json"
+sudo rsync --mkpath --chown=root:grafana --chmod=0640 "$DASHBOARD_SRC" "$DASHBOARD_DEST_DIR/sailing-data.json"
+sudo rsync --chown=root:grafana --chmod=0640 "$PI_HEALTH_SRC" "$DASHBOARD_DEST_DIR/pi-health.json"
+sudo rsync --chown=root:grafana --chmod=0640 "$SERVICE_LOGS_SRC" "$DASHBOARD_DEST_DIR/service-logs.json"
+sudo rsync --chown=root:grafana --chmod=0640 "$NET_BW_SRC" "$DASHBOARD_DEST_DIR/network-bandwidth.json"
 
 echo "==> Copying dashboard provisioning config"
-sudo rsync "$PROVISION_SRC" "$PROVISION_DEST"
+sudo rsync --chown=root:grafana --chmod=0640 "$PROVISION_SRC" "$PROVISION_DEST"
 
 echo "==> Copying datasource provisioning config"
-sudo rsync "$DATASOURCE_SRC" "$DATASOURCE_DEST"
+sudo rsync --chown=root:grafana --chmod=0640 "$DATASOURCE_SRC" "$DATASOURCE_DEST"
 
 # Ensure the InfluxDB datasource has the real token (not the placeholder)
 INFLUX_TOKEN_FILE="$HOME/influx-token.txt"
@@ -38,7 +40,7 @@ if [[ -f "$INFLUX_TOKEN_FILE" ]] && [[ -f "$INFLUX_DS" ]]; then
         echo "==> Updating InfluxDB datasource token from $INFLUX_TOKEN_FILE"
         TMPDS="$(mktemp)"
         sed "s/REPLACE_WITH_INFLUX_TOKEN/${INFLUX_TOKEN}/" "$INFLUX_DS" > "$TMPDS"
-        sudo rsync "$TMPDS" "$INFLUX_DS"
+        sudo rsync --chown=root:grafana --chmod=0640 "$TMPDS" "$INFLUX_DS"
         rm -f "$TMPDS"
     fi
 fi
@@ -51,3 +53,4 @@ echo "Done."
 echo "  Sailing data:  http://$(hostname):3001/d/helmlog-sailing/sailing-data"
 echo "  Pi health:     http://$(hostname):3001/d/pi-health/pi-health"
 echo "  Service logs:  http://$(hostname):3001/d/service-logs/service-logs"
+echo "  Network BW:    http://$(hostname):3001/d/network-bandwidth/network-bandwidth"

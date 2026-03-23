@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Use test-driven development when implementing new features or fixing bugs
+description: Use test-driven development when implementing new features or fixing bugs. TRIGGER when writing or modifying Python source code in src/helmlog/ — new functionality, bug fixes, or refactors that change behavior. DO NOT trigger for documentation, config, templates, CSS/JS, skill definitions, or changes that don't affect runtime behavior.
 ---
 
 # Test-Driven Development (Red-Green-Refactor)

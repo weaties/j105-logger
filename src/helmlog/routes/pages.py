@@ -1,0 +1,226 @@
+"""Route handlers for pages."""
+
+from __future__ import annotations
+
+import asyncio
+import os
+from pathlib import Path
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+
+from helmlog.auth import require_auth
+from helmlog.routes._helpers import audit, get_storage, templates, tpl_ctx
+
+router = APIRouter()
+
+
+@router.get("/healthz", include_in_schema=False)
+async def healthz(request: Request) -> JSONResponse:
+    get_storage(request)
+    return JSONResponse({"status": "ok"})
+
+
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def index(request: Request) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(
+        request,
+        "home.html",
+        tpl_ctx(
+            request,
+            "/",
+            grafana_port=request.app.state.race_config.grafana_port,
+            grafana_uid=request.app.state.race_config.grafana_uid,
+            sk_port=request.app.state.race_config.sk_port,
+        ),
+    )
+
+
+@router.get("/history", response_class=HTMLResponse, include_in_schema=False)
+async def history_page(request: Request) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(
+        request,
+        "history.html",
+        tpl_ctx(
+            request,
+            "/history",
+            grafana_port=request.app.state.race_config.grafana_port,
+            grafana_uid=request.app.state.race_config.grafana_uid,
+        ),
+    )
+
+
+@router.get("/session/{session_id}", response_class=HTMLResponse, include_in_schema=False)
+async def session_detail_page(request: Request, session_id: int) -> Response:
+    storage = get_storage(request)
+    cur = await storage._conn().execute("SELECT name FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    session_name = row["name"] if row else f"Session {session_id}"
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    user_role = user.get("role", "viewer") if user else "viewer"
+    return templates.TemplateResponse(
+        request,
+        "session.html",
+        tpl_ctx(
+            request,
+            "/history",
+            session_id=session_id,
+            session_name=session_name,
+            grafana_port=request.app.state.race_config.grafana_port,
+            grafana_uid=request.app.state.race_config.grafana_uid,
+            user_role=user_role,
+        ),
+    )
+
+
+@router.get("/sails", response_class=HTMLResponse, include_in_schema=False)
+async def sails_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(request, "sails.html", tpl_ctx(request, "/sails"))
+
+
+@router.get("/profile", response_class=HTMLResponse, include_in_schema=False)
+async def profile_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> Response:
+    storage = get_storage(request)
+    import time
+
+    from helmlog.themes import PRESET_ORDER, PRESETS
+
+    user_id = _user.get("id") or 0
+    role = _user.get("role", "viewer")
+    role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
+    consents = await storage.get_crew_consents(user_id) if user_id else []
+    bio_consent = any(c["consent_type"] == "biometric" and c["granted"] for c in consents)
+    preset_list = [{"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS]
+    custom_list = await storage.list_color_schemes()
+    boat_default = await storage.get_setting("color_scheme_default") or ""
+    current_scheme = _user.get("color_scheme") or ""
+    return templates.TemplateResponse(
+        request,
+        "profile.html",
+        tpl_ctx(
+            request,
+            "/profile",
+            name=_user.get("name") or _user.get("email") or "Unknown",
+            email=_user.get("email") or "",
+            role=role,
+            role_color=role_colors.get(role, "#8892a4"),
+            avatar_url=f"/avatars/{user_id}.jpg?v={int(time.time())}" if user_id else "",
+            weight_lbs=_user.get("weight_lbs"),
+            bio_consent=bio_consent,
+            user_id=user_id,
+            preset_schemes=preset_list,
+            custom_schemes=custom_list,
+            boat_default=boat_default,
+            current_scheme=current_scheme,
+        ),
+    )
+
+
+@router.post("/profile/avatar", status_code=200, include_in_schema=False)
+async def upload_avatar(
+    request: Request,
+    file: UploadFile,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    storage = get_storage(request)
+    user_id = _user.get("id")
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Cannot set avatar for mock user")
+
+    # Validate content type
+    ct = (file.content_type or "").lower()
+    if ct not in ("image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"):
+        raise HTTPException(status_code=422, detail="Unsupported image type")
+
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=422, detail="File too large (max 10 MB)")
+
+    avatar_dir = Path(os.environ.get("AVATAR_DIR", "data/avatars"))
+    await asyncio.to_thread(avatar_dir.mkdir, parents=True, exist_ok=True)
+    dest = avatar_dir / f"{user_id}.jpg"
+
+    try:
+        import io
+
+        from PIL import Image  # noqa: PLC0415
+
+        opened = Image.open(io.BytesIO(data))
+        rgb = opened.convert("RGB")
+        # Centre-crop to square
+        w, h = rgb.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        cropped = rgb.crop((left, top, left + side, top + side))
+        resized = cropped.resize((256, 256), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="JPEG", quality=85)
+        await asyncio.to_thread(dest.write_bytes, buf.getvalue())
+    except ImportError:
+        # Pillow not installed — save raw bytes as fallback
+        await asyncio.to_thread(dest.write_bytes, data)
+
+    rel_path = f"{user_id}.jpg"
+    await storage.set_avatar_path(user_id, rel_path)
+    await audit(request, "avatar.upload", user=_user)
+    return JSONResponse({"avatar_path": rel_path})
+
+
+@router.get("/avatars/{user_id}.jpg", include_in_schema=False)
+async def serve_avatar(request: Request, user_id: int) -> Response:
+    storage = get_storage(request)
+    avatar_dir = Path(os.environ.get("AVATAR_DIR", "data/avatars"))
+    path = avatar_dir / f"{user_id}.jpg"
+    if path.exists():
+        mtime = int(path.stat().st_mtime)
+        return FileResponse(
+            path,
+            media_type="image/jpeg",
+            headers={"Cache-Control": "public, max-age=60", "ETag": f'"{user_id}-{mtime}"'},
+        )
+    # Generate initials SVG fallback
+    user = await storage.get_user_by_id(user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    name = user.get("name") or user.get("email") or "?"
+    parts = name.split()
+    initials = (parts[0][0] + (parts[1][0] if len(parts) > 1 else "")).upper()
+    role = user.get("role", "viewer")
+    colors = {"admin": "#2563eb", "crew": "#059669", "viewer": "#6b7280"}
+    bg = colors.get(role, "#6b7280")
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256">'
+        f'<rect width="256" height="256" rx="128" fill="{bg}"/>'
+        f'<text x="128" y="128" text-anchor="middle" dy=".35em"'
+        f' font-family="system-ui,sans-serif" font-size="96" font-weight="700"'
+        f' fill="white">{initials}</text></svg>'
+    )
+    return Response(
+        content=svg,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@router.get("/attention", response_class=HTMLResponse)
+async def attention_page(
+    request: Request,
+    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> HTMLResponse:
+    """Notification dashboard page."""
+    get_storage(request)
+    return templates.TemplateResponse(
+        "attention.html",
+        tpl_ctx(request, "/attention"),
+    )
