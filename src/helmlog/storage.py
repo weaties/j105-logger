@@ -17,6 +17,7 @@ import aiosqlite
 from loguru import logger
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
 
     from helmlog.audio import AudioSession
@@ -1179,12 +1180,14 @@ class Storage:
     def __init__(self, config: StorageConfig) -> None:
         self._config = config
         self._db: aiosqlite.Connection | None = None
+        self._read_db: aiosqlite.Connection | None = None
         self._pending: int = 0
         self._last_flush: float = 0.0
         self._session_active: bool = False
         self._live: dict[str, float | None] = dict.fromkeys(_LIVE_KEYS)
         self._live_tw_ref: int | None = None
         self._live_tw_angle_raw: float | None = None
+        self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
 
     @property
     def session_active(self) -> bool:
@@ -1227,6 +1230,12 @@ class Storage:
                 self._live_tw_ref = record.reference
                 self._live_tw_angle_raw = record.wind_angle_deg
                 self._recompute_true_wind()
+        if self._on_live_update is not None:
+            self._on_live_update(dict(self._live))
+
+    def set_live_callback(self, cb: Callable[[dict[str, float | None]], None]) -> None:
+        """Register a callback invoked on every live instrument update."""
+        self._on_live_update = cb
 
     def live_instruments(self) -> dict[str, float | None]:
         """Return a snapshot of the current in-memory instrument cache."""
@@ -1242,6 +1251,7 @@ class Storage:
         self._db = await aiosqlite.connect(db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA foreign_keys = ON")
+        await self._db.execute("PRAGMA journal_mode = WAL")
         if is_new and os.path.exists(db_path):
             # Python sqlite3 creates files with 0644 regardless of umask.
             # Add group-write so both the helmlog service (helmlog:weaties)
@@ -1251,11 +1261,26 @@ class Storage:
         self._last_flush = time.monotonic()
         logger.info("Storage connected: {}", self._config.db_path)
         await self.migrate()
+        # Open a separate read-only connection for web queries so the write
+        # path (instrument data at 1 Hz) never blocks page loads.  :memory:
+        # databases are per-connection, so skip the read connection there.
+        if db_path != ":memory:":
+            try:
+                self._read_db = await aiosqlite.connect(f"file:{db_path}?mode=ro", uri=True)
+                self._read_db.row_factory = aiosqlite.Row
+                await self._read_db.execute("PRAGMA foreign_keys = ON")
+            except Exception:
+                logger.warning("Failed to open read connection; falling back to single connection")
+                self._read_db = None
         current = await self.get_current_race()
         self._session_active = current is not None
 
     async def close(self) -> None:
-        """Flush any buffered writes and close the database connection."""
+        """Flush any buffered writes and close the database connections."""
+        if self._read_db is not None:
+            await self._read_db.close()
+            self._read_db = None
+            logger.debug("Read connection closed")
         if self._db is not None:
             await self._flush()
             await self._db.close()
@@ -1266,6 +1291,12 @@ class Storage:
         if self._db is None:
             raise RuntimeError("Storage is not connected; call connect() first")
         return self._db
+
+    def _read_conn(self) -> aiosqlite.Connection:
+        """Return the read connection, falling back to the write connection."""
+        if self._read_db is not None:
+            return self._read_db
+        return self._conn()
 
     # ------------------------------------------------------------------
     # Migrations
@@ -1648,7 +1679,7 @@ class Storage:
         if table not in _ALLOWED_TABLES:
             raise ValueError(f"Unknown table: {table!r}")
 
-        db = self._conn()
+        db = self._read_conn()
         params: list[Any] = [_ts(start), _ts(end)]
         sql = f"SELECT * FROM {table} WHERE ts >= ? AND ts <= ?"  # noqa: S608
         if race_id is not None and table != "environmental":
@@ -1670,7 +1701,7 @@ class Storage:
             "winds",
             "environmental",
         ]
-        db = self._conn()
+        db = self._read_conn()
         result: dict[str, dict[str, Any]] = {}
         for table in _TABLES:
             cur = await db.execute(f"SELECT COUNT(*), MAX(ts) FROM {table}")  # noqa: S608
@@ -1712,7 +1743,7 @@ class Storage:
         """Return all stored VideoSessions ordered by sync_utc."""
         from datetime import datetime as _datetime
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT url, video_id, title, duration_s, sync_utc, sync_offset_s"
             " FROM video_sessions ORDER BY sync_utc"
@@ -1760,7 +1791,7 @@ class Storage:
         end: datetime,
     ) -> list[dict[str, Any]]:
         """Return all weather rows in [start, end] ordered by ts."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT * FROM weather WHERE ts >= ? AND ts <= ? ORDER BY ts",
             (_ts(start), _ts(end)),
@@ -1798,7 +1829,7 @@ class Storage:
         end: datetime,
     ) -> list[dict[str, Any]]:
         """Return all tide rows in [start, end] ordered by ts."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT * FROM tides WHERE ts >= ? AND ts <= ? ORDER BY ts",
             (_ts(start), _ts(end)),
@@ -1808,7 +1839,7 @@ class Storage:
 
     async def latest_position(self) -> dict[str, Any] | None:
         """Return the most recent row from the positions table, or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute("SELECT * FROM positions ORDER BY ts DESC LIMIT 1")
         row = await cur.fetchone()
         return dict(row) if row else None
@@ -1823,7 +1854,7 @@ class Storage:
         if any(v is not None for v in self._live.values()):
             return self.live_instruments()
 
-        conn = self._conn()
+        conn = self._read_conn()
 
         async def _q(table: str, cols: str, where: str = "") -> Any:  # noqa: ANN401
             cur = await conn.execute(
@@ -1925,7 +1956,7 @@ class Storage:
 
     async def get_audio_session_row(self, session_id: int) -> dict[str, Any] | None:
         """Return a single audio_sessions row as a dict, or None if not found."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
             " race_id, session_type, name"
             " FROM audio_sessions WHERE id = ?",
@@ -1940,7 +1971,7 @@ class Storage:
 
         from helmlog.audio import AudioSession as _AudioSession
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels"
             " FROM audio_sessions ORDER BY start_utc DESC"
@@ -2050,7 +2081,7 @@ class Storage:
 
     async def get_scheduled_start(self) -> dict[str, str] | None:
         """Return the pending scheduled start row, or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, scheduled_start_utc, event, session_type, created_at"
             " FROM scheduled_starts LIMIT 1"
@@ -2078,7 +2109,7 @@ class Storage:
 
     async def has_source_id(self, source: str, source_id: str) -> bool:
         """Check if a race with this source/source_id already exists (dedup)."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT 1 FROM races WHERE source = ? AND source_id = ?",
             (source, source_id),
@@ -2231,7 +2262,7 @@ class Storage:
 
         from helmlog.races import Race as _Race
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races WHERE id = ?",
@@ -2257,7 +2288,7 @@ class Storage:
 
         from helmlog.races import Race as _Race
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
@@ -2282,7 +2313,7 @@ class Storage:
 
         from helmlog.races import Race as _Race
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races WHERE date = ? ORDER BY start_utc ASC",
@@ -2309,7 +2340,7 @@ class Storage:
 
         from helmlog.races import Race as _Race
 
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
             " FROM races"
@@ -2334,7 +2365,7 @@ class Storage:
 
     async def count_sessions_for_date(self, date_str: str, session_type: str) -> int:
         """Return the count of sessions of the given type for a UTC date string."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT COUNT(*) FROM races WHERE date = ? AND session_type = ?",
             (date_str, session_type),
@@ -2360,7 +2391,7 @@ class Storage:
         *session_type* may be ``"race"``, ``"practice"``, ``"debrief"``, or
         ``None`` for all types.
         """
-        db = self._conn()
+        db = self._read_conn()
 
         include_races = session_type in (None, "race", "practice", "synthesized")
         include_debriefs = session_type in (None, "debrief")
@@ -2517,7 +2548,7 @@ class Storage:
 
     async def get_daily_event(self, date_str: str) -> str | None:
         """Look up a stored custom event name for the given UTC date."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute("SELECT event_name FROM daily_events WHERE date = ?", (date_str,))
         row = await cur.fetchone()
         return row["event_name"] if row else None
@@ -2539,13 +2570,13 @@ class Storage:
 
     async def list_event_rules(self) -> list[dict[str, Any]]:
         """Return all day-of-week event rules, ordered by weekday."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute("SELECT weekday, event_name FROM event_rules ORDER BY weekday")
         return [dict(row) for row in await cur.fetchall()]
 
     async def get_event_rule(self, weekday: int) -> str | None:
         """Return the event name for a weekday (0=Mon … 6=Sun), or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute("SELECT event_name FROM event_rules WHERE weekday = ?", (weekday,))
         row = await cur.fetchone()
         return row["event_name"] if row else None
@@ -2573,7 +2604,7 @@ class Storage:
 
     async def get_crew_positions(self) -> list[CrewPosition]:
         """Return configured crew positions ordered by display_order."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, name, display_order, created_at FROM crew_positions ORDER BY display_order"
         )
         rows: list[CrewPosition] = [dict(r) for r in await cur.fetchall()]  # type: ignore[misc]
@@ -2666,7 +2697,7 @@ class Storage:
 
         Results include joined position name and user name/email.
         """
-        db = self._conn()
+        db = self._read_conn()
         params: tuple[()] | tuple[int]
         if race_id is None:
             where, params = "cd.race_id IS NULL", ()
@@ -2928,7 +2959,7 @@ class Storage:
 
     async def list_race_results(self, race_id: int) -> list[dict[str, Any]]:
         """Return results for *race_id* ordered by place."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT rr.id, rr.race_id, rr.place, rr.boat_id,"
             " b.sail_number, b.name AS boat_name, b.class AS boat_class,"
@@ -3072,7 +3103,7 @@ class Storage:
         of all keys across all sessions.  Used to populate the typeahead datalist
         on the settings note entry form.
         """
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT body FROM session_notes WHERE note_type = 'settings' AND body IS NOT NULL"
         )
@@ -3136,7 +3167,7 @@ class Storage:
 
     async def list_race_videos(self, race_id: int) -> list[dict[str, Any]]:
         """Return all videos linked to a race, ordered by created_at ASC."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, race_id, youtube_url, video_id, title, label,"
             " sync_utc, sync_offset_s, duration_s, created_at"
@@ -3249,7 +3280,7 @@ class Storage:
 
     async def list_camera_sessions(self, session_id: int) -> list[dict[str, Any]]:
         """Return all camera sessions for a race, ordered by camera_name."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, session_id, camera_name, camera_ip,"
             " recording_started_utc, recording_stopped_utc,"
@@ -3267,7 +3298,7 @@ class Storage:
         Used by ``sync-videos`` CLI to find recordings not yet linked to
         a YouTube video.
         """
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT cs.id, cs.session_id, cs.camera_name, cs.camera_ip,"
             " cs.recording_started_utc, cs.recording_stopped_utc,"
@@ -3290,7 +3321,7 @@ class Storage:
 
     async def list_cameras(self) -> list[dict[str, Any]]:
         """Return all configured cameras, ordered by name."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, ip, model, wifi_ssid, wifi_password FROM cameras ORDER BY name ASC"
         )
@@ -3440,7 +3471,7 @@ class Storage:
         By default only active sails are returned.  Pass *include_inactive=True*
         to include retired sails.
         """
-        db = self._conn()
+        db = self._read_conn()
         where = "" if include_inactive else "WHERE active = 1"
         cur = await db.execute(
             "SELECT id, type, name, notes, active, point_of_sail"
@@ -3569,7 +3600,7 @@ class Storage:
         containing the full sail row dict or ``None`` if not set.
         Falls back to empty if no rows exist.
         """
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT sc.main_id, sc.jib_id, sc.spinnaker_id"
             " FROM sail_changes sc"
@@ -3608,7 +3639,7 @@ class Storage:
 
     async def get_sail_change_history(self, race_id: int) -> list[dict[str, Any]]:
         """Return all sail changes for *race_id* ordered by ts ASC, with resolved sail names."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT sc.id, sc.ts, sc.main_id, sc.jib_id, sc.spinnaker_id"
             " FROM sail_changes sc"
@@ -3648,7 +3679,7 @@ class Storage:
         Returns a dict with keys ``main``, ``jib``, ``spinnaker``, each
         containing the full sail row dict or ``None`` if not set.
         """
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT s.id, s.type, s.name, s.notes, s.active, s.point_of_sail"
             " FROM sail_defaults sd"
@@ -3725,7 +3756,7 @@ class Storage:
         maneuver's timestamp is determined by the latest ``sail_changes``
         row with ``ts <= maneuver.ts``.
         """
-        db = self._conn()
+        db = self._read_conn()
         sails = await self.list_sails(include_inactive=True)
         for sail in sails:
             sid = sail["id"]
@@ -3771,7 +3802,7 @@ class Storage:
         counts, and wind summary (avg TWS, min/max TWS).
         Uses ``sail_changes`` instead of legacy ``race_sails``.
         """
-        db = self._conn()
+        db = self._read_conn()
         # Get the sail's point_of_sail for filtering
         cur = await db.execute("SELECT point_of_sail FROM sails WHERE id = ?", (sail_id,))
         sail_row = await cur.fetchone()
@@ -3879,7 +3910,7 @@ class Storage:
 
     async def get_transcript(self, audio_session_id: int) -> dict[str, Any] | None:
         """Return the transcript row for *audio_session_id*, or None if not found."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, audio_session_id, status, text, error_msg, model,"
             " created_utc, updated_utc, segments_json"
             " FROM transcripts WHERE audio_session_id = ?",
@@ -3894,7 +3925,7 @@ class Storage:
 
     async def get_polar_point(self, tws_bin: int, twa_bin: int) -> dict[str, Any] | None:
         """Return the polar_baseline row for *(tws_bin, twa_bin)*, or None."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT tws_bin, twa_bin, mean_bsp, p90_bsp, session_count, sample_count"
             " FROM polar_baseline WHERE tws_bin = ? AND twa_bin = ?",
             (tws_bin, twa_bin),
@@ -3956,7 +3987,7 @@ class Storage:
 
     async def get_session_maneuvers(self, session_id: int) -> list[dict[str, Any]]:
         """Return all stored maneuvers for a session, ordered by timestamp."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, session_id, type, ts, end_ts, duration_sec, loss_kts,"
             " vmg_loss_kts, tws_bin, twa_bin, details"
             " FROM maneuvers WHERE session_id = ? ORDER BY ts",
@@ -4003,7 +4034,7 @@ class Storage:
 
     async def get_synth_wind_params(self, session_id: int) -> dict[str, Any] | None:
         """Return wind field parameters for a synthesized session, or None."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT * FROM synth_wind_params WHERE session_id = ?",
             (session_id,),
         )
@@ -4025,7 +4056,7 @@ class Storage:
 
     async def get_synth_course_marks(self, session_id: int) -> list[dict[str, Any]]:
         """Return course marks for a synthesized session."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT mark_key, mark_name, lat, lon"
             " FROM synth_course_marks WHERE session_id = ? ORDER BY mark_key",
             (session_id,),
@@ -4060,7 +4091,7 @@ class Storage:
     )
 
     async def get_user_by_id(self, user_id: int) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             f"SELECT {self._USER_COLS} FROM users WHERE id = ?",
             (user_id,),
         )
@@ -4068,7 +4099,7 @@ class Storage:
         return dict(row) if row else None
 
     async def get_user_by_email(self, email: str) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             f"SELECT {self._USER_COLS} FROM users WHERE email = ?",
             (email.lower().strip(),),
         )
@@ -4109,7 +4140,7 @@ class Storage:
         await db.commit()
 
     async def list_users(self) -> list[dict[str, Any]]:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, email, name, role, created_at, last_seen, is_developer,"
             " weight_lbs"
             " FROM users WHERE email NOT LIKE 'deleted_%@redacted'"
@@ -4158,7 +4189,7 @@ class Storage:
         return cur.lastrowid
 
     async def get_invitation(self, token: str) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, token, email, role, name, is_developer, invited_by,"
             " created_at, expires_at, accepted_at, revoked_at"
             " FROM invitations WHERE token = ?",
@@ -4193,7 +4224,7 @@ class Storage:
         from datetime import datetime as _datetime
 
         now = _datetime.now(UTC).isoformat()
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, token, email, role, name, is_developer, invited_by,"
             " created_at, expires_at"
             " FROM invitations"
@@ -4232,7 +4263,7 @@ class Storage:
         return cur.lastrowid
 
     async def get_credential(self, user_id: int, provider: str) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, user_id, provider, provider_uid, password_hash, created_at"
             " FROM user_credentials WHERE user_id = ? AND provider = ?",
             (user_id, provider),
@@ -4243,7 +4274,7 @@ class Storage:
     async def get_credential_by_provider_uid(
         self, provider: str, provider_uid: str
     ) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, user_id, provider, provider_uid, password_hash, created_at"
             " FROM user_credentials WHERE provider = ? AND provider_uid = ?",
             (provider, provider_uid),
@@ -4273,7 +4304,7 @@ class Storage:
         await db.commit()
 
     async def get_password_reset_token(self, token: str) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, token, user_id, expires_at, used_at"
             " FROM password_reset_tokens WHERE token = ?",
             (token,),
@@ -4329,7 +4360,7 @@ class Storage:
         await db.commit()
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT session_id, user_id, created_at, expires_at, ip, user_agent"
             " FROM auth_sessions WHERE session_id = ?",
             (session_id,),
@@ -4344,13 +4375,13 @@ class Storage:
 
     async def list_auth_sessions(self, user_id: int | None = None) -> list[dict[str, Any]]:
         if user_id is not None:
-            cur = await self._conn().execute(
+            cur = await self._read_conn().execute(
                 "SELECT session_id, user_id, created_at, expires_at, ip, user_agent"
                 " FROM auth_sessions WHERE user_id = ? ORDER BY created_at DESC",
                 (user_id,),
             )
         else:
-            cur = await self._conn().execute(
+            cur = await self._read_conn().execute(
                 "SELECT s.session_id, s.user_id, s.created_at, s.expires_at, s.ip, s.user_agent,"
                 " u.email, u.name, u.role"
                 " FROM auth_sessions s JOIN users u ON s.user_id = u.id"
@@ -4397,7 +4428,7 @@ class Storage:
 
     async def list_audit_log(self, *, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         """Return recent audit log entries, newest first."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT a.id, a.ts, a.action, a.detail, a.ip_address, a.user_agent,"
             " a.user_id, u.name AS user_name, u.email AS user_email"
             " FROM audit_log a LEFT JOIN users u ON a.user_id = u.id"
@@ -4428,7 +4459,7 @@ class Storage:
 
     async def get_tag_by_name(self, name: str) -> dict[str, Any] | None:
         """Fetch a tag by name (case-insensitive)."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, name, color, created_at FROM tags WHERE name = ?",
             (name.strip().lower(),),
         )
@@ -4437,7 +4468,7 @@ class Storage:
 
     async def list_tags(self) -> list[dict[str, Any]]:
         """Return all tags with usage counts."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT t.id, t.name, t.color, t.created_at,"
             " (SELECT COUNT(*) FROM session_tags st WHERE st.tag_id = t.id) AS session_count,"
             " (SELECT COUNT(*) FROM note_tags nt WHERE nt.tag_id = t.id) AS note_count"
@@ -4466,7 +4497,7 @@ class Storage:
 
     async def get_session_tags(self, session_id: int) -> list[dict[str, Any]]:
         """Return tags for a session."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT t.id, t.name, t.color FROM tags t"
             " JOIN session_tags st ON t.id = st.tag_id"
             " WHERE st.session_id = ? ORDER BY t.name",
@@ -4494,7 +4525,7 @@ class Storage:
 
     async def get_note_tags(self, note_id: int) -> list[dict[str, Any]]:
         """Return tags for a note."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT t.id, t.name, t.color FROM tags t"
             " JOIN note_tags nt ON t.id = nt.tag_id"
             " WHERE nt.note_id = ? ORDER BY t.name",
@@ -4553,7 +4584,9 @@ class Storage:
 
     async def get_avatar_path(self, user_id: int) -> str | None:
         """Return the avatar_path for a user, or None."""
-        cur = await self._conn().execute("SELECT avatar_path FROM users WHERE id = ?", (user_id,))
+        cur = await self._read_conn().execute(
+            "SELECT avatar_path FROM users WHERE id = ?", (user_id,)
+        )
         row = await cur.fetchone()
         return row["avatar_path"] if row else None
 
@@ -4563,7 +4596,9 @@ class Storage:
 
     async def get_setting(self, key: str) -> str | None:
         """Return the stored value for *key*, or None if not set."""
-        cur = await self._conn().execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+        cur = await self._read_conn().execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        )
         row = await cur.fetchone()
         return str(row["value"]) if row else None
 
@@ -4591,7 +4626,7 @@ class Storage:
 
     async def list_settings(self) -> list[dict[str, str]]:
         """Return all stored settings as a list of dicts."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT key, value, updated_at FROM app_settings ORDER BY key"
         )
         rows = await cur.fetchall()
@@ -4645,7 +4680,7 @@ class Storage:
 
     async def get_color_scheme(self, scheme_id: int) -> dict[str, Any] | None:
         """Return a custom color scheme row by id, or None."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, name, bg, text_color, accent, created_by, created_at"
             " FROM color_schemes WHERE id = ?",
             (scheme_id,),
@@ -4655,7 +4690,7 @@ class Storage:
 
     async def list_color_schemes(self) -> list[dict[str, Any]]:
         """Return all custom color schemes ordered by name."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, name, bg, text_color, accent, created_by, created_at"
             " FROM color_schemes ORDER BY name"
         )
@@ -4676,7 +4711,7 @@ class Storage:
 
     async def list_wlan_profiles(self) -> list[dict[str, Any]]:
         """Return all saved WLAN profiles, ordered by name."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, ssid, password, is_default, created_at"
             " FROM wlan_profiles ORDER BY name ASC"
@@ -4686,7 +4721,7 @@ class Storage:
 
     async def get_wlan_profile(self, profile_id: int) -> dict[str, Any] | None:
         """Return a single WLAN profile by id, or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, name, ssid, password, is_default, created_at"
             " FROM wlan_profiles WHERE id = ?",
@@ -4959,7 +4994,7 @@ class Storage:
 
     async def get_crew_consents(self, user_id: int | None) -> list[CrewConsent]:
         """Return all consent records for a user."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT cc.id, cc.user_id, cc.consent_type, cc.granted,"
             "       cc.granted_at, cc.revoked_at, u.name AS user_name"
             " FROM crew_consents cc"
@@ -4972,7 +5007,7 @@ class Storage:
 
     async def list_crew_consents(self) -> list[CrewConsent]:
         """Return all consent records."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT cc.id, cc.user_id, cc.consent_type, cc.granted,"
             "       cc.granted_at, cc.revoked_at, u.name AS user_name"
             " FROM crew_consents cc"
@@ -5024,7 +5059,7 @@ class Storage:
 
     async def list_deployments(self, limit: int = 20) -> list[dict[str, Any]]:
         """Return recent deployment log entries, newest first."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT d.*, u.email AS user_email"
             " FROM deployment_log d"
@@ -5036,7 +5071,7 @@ class Storage:
 
     async def last_deployment(self) -> dict[str, Any] | None:
         """Return the most recent successful deployment, or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT d.*, u.email AS user_email"
             " FROM deployment_log d"
@@ -5079,7 +5114,7 @@ class Storage:
 
     async def get_boat_identity(self) -> dict[str, Any] | None:
         """Return this boat's identity row, or None."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT pub_key, fingerprint, sail_number, boat_name, created_at"
             " FROM boat_identity WHERE id = 1"
         )
@@ -5120,7 +5155,7 @@ class Storage:
 
     async def list_co_op_memberships(self) -> list[dict[str, Any]]:
         """Return all co-op memberships for this boat."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, co_op_id, co_op_name, co_op_pub, membership_json,"
             " role, joined_at, status"
             " FROM co_op_memberships ORDER BY joined_at"
@@ -5129,7 +5164,7 @@ class Storage:
 
     async def get_co_op_membership(self, co_op_id: str) -> dict[str, Any] | None:
         """Return a specific co-op membership, or None."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, co_op_id, co_op_name, co_op_pub, membership_json,"
             " role, joined_at, status"
             " FROM co_op_memberships WHERE co_op_id = ?",
@@ -5178,7 +5213,7 @@ class Storage:
 
     async def get_session_sharing(self, session_id: int) -> list[dict[str, Any]]:
         """Return all co-op sharing records for a session."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT ss.session_id, ss.co_op_id, ss.shared_at, ss.shared_by,"
             " ss.embargo_until, ss.event_name, cm.co_op_name"
             " FROM session_sharing ss"
@@ -5190,7 +5225,7 @@ class Storage:
 
     async def is_session_shared(self, session_id: int, co_op_id: str) -> bool:
         """Check if a session is shared with a specific co-op."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT 1 FROM session_sharing WHERE session_id = ? AND co_op_id = ?",
             (session_id, co_op_id),
         )
@@ -5240,7 +5275,7 @@ class Storage:
 
     async def list_co_op_peers(self, co_op_id: str) -> list[dict[str, Any]]:
         """Return all known peers for a co-op."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, co_op_id, boat_pub, fingerprint, sail_number,"
             " boat_name, tailscale_ip, last_seen, membership_json"
             " FROM co_op_peers WHERE co_op_id = ? ORDER BY boat_name",
@@ -5254,7 +5289,7 @@ class Storage:
         fingerprint: str,
     ) -> dict[str, Any] | None:
         """Return a specific peer by co-op and fingerprint."""
-        cur = await self._conn().execute(
+        cur = await self._read_conn().execute(
             "SELECT id, co_op_id, boat_pub, fingerprint, sail_number,"
             " boat_name, tailscale_ip, last_seen, membership_json"
             " FROM co_op_peers WHERE co_op_id = ? AND fingerprint = ?",
@@ -5362,7 +5397,7 @@ class Storage:
 
     async def list_boat_settings(self, race_id: int | None) -> list[dict[str, Any]]:
         """Return all boat settings for a race, ordered by timestamp."""
-        db = self._conn()
+        db = self._read_conn()
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:
@@ -5380,7 +5415,7 @@ class Storage:
 
         Uses a window function to pick the most recent entry per parameter.
         """
-        db = self._conn()
+        db = self._read_conn()
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:
@@ -5614,7 +5649,7 @@ class Storage:
 
     async def get_comment(self, comment_id: int) -> dict[str, Any] | None:
         """Return a single comment row."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, thread_id, author, body, created_at, edited_at FROM comments WHERE id = ?",
             (comment_id,),
@@ -5703,7 +5738,7 @@ class Storage:
 
     async def get_analysis_cache(self, session_id: int, plugin_name: str) -> dict[str, Any] | None:
         """Return the cached analysis result or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT plugin_version, data_hash, result_json, created_at"
             " FROM analysis_cache WHERE session_id = ? AND plugin_name = ?",
@@ -5811,7 +5846,7 @@ class Storage:
 
     async def get_viz_preference(self, scope: str, scope_id: str | None) -> dict[str, Any] | None:
         """Return the visualization preference row for a scope, or None."""
-        db = self._conn()
+        db = self._read_conn()
         if scope_id is None:
             cur = await db.execute(
                 "SELECT scope, scope_id, plugin_names, updated_at"
@@ -5845,7 +5880,7 @@ class Storage:
 
     async def get_viz_selection(self, user_id: int, session_id: int) -> dict[str, Any] | None:
         """Return the visualization selection for a user+session, or None."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT user_id, session_id, plugin_names, updated_at"
             " FROM visualization_selections WHERE user_id = ? AND session_id = ?",
@@ -5993,7 +6028,7 @@ class Storage:
 
     async def get_notification_count(self, user_id: int) -> dict[str, int]:
         """Return unread and mention counts."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT"
             " SUM(CASE WHEN read = 0 AND dismissed = 0 THEN 1 ELSE 0 END) AS unread,"
@@ -6039,7 +6074,7 @@ class Storage:
 
     async def get_notification_preferences(self, user_id: int) -> list[dict[str, Any]]:
         """Return all notification preferences for a user."""
-        db = self._conn()
+        db = self._read_conn()
         cur = await db.execute(
             "SELECT id, user_id, scope, type, channel, enabled, frequency, updated_at"
             " FROM notification_preferences WHERE user_id = ?",
@@ -6107,7 +6142,7 @@ class Storage:
         """Resolve display names to user IDs for @mention resolution."""
         if not names:
             return {}
-        db = self._conn()
+        db = self._read_conn()
         placeholders = ",".join("?" * len(names))
         cur = await db.execute(
             f"SELECT id, name FROM users WHERE name IN ({placeholders})",
