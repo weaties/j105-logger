@@ -6,14 +6,14 @@ Major web architecture refactor, metered bandwidth management, admin networking
 tools, and continued analysis and visualization work.
 
 ### Web architecture overhaul
-- **Route module split** (#405) — decomposed monolithic `web.py` into 24
+- **Route module split** ([#405](https://github.com/weaties/helmlog/pull/405)) — decomposed monolithic `web.py` into 24
   domain-specific route modules for maintainability
-- **WebSocket live push** (#405) — real-time instrument data streaming to the
+- **WebSocket live push** ([#405](https://github.com/weaties/helmlog/pull/405)) — real-time instrument data streaming to the
   browser via WebSocket
-- **WAL mode + connection split** (#405) — SQLite write-ahead logging with
+- **WAL mode + connection split** ([#405](https://github.com/weaties/helmlog/pull/405)) — SQLite write-ahead logging with
   separate read/write connections for improved concurrency
 
-### Metered bandwidth management (#403)
+### Metered bandwidth management ([#403](https://github.com/weaties/helmlog/issues/403))
 - **Metered-connection mode** — detects cellular/marina networks and enforces
   bandwidth budgets with configurable daily limits
 - **InfluxDB bandwidth attribution** — per-path network tagging so dashboard
@@ -21,61 +21,61 @@ tools, and continued analysis and visualization work.
 - **Grafana dashboard** — pre-built panels for bandwidth monitoring and alerting
 
 ### Admin networking & remote access
-- **Network management page** (#256) — WLAN profile switching, interface status,
+- **Network management page** ([#256](https://github.com/weaties/helmlog/issues/256)) — WLAN profile switching, interface status,
   and bandwidth monitoring from the admin UI
-- **Tailscale, Cloudflare & DNS** (#256) — Tailscale status, Cloudflare routing,
+- **Tailscale, Cloudflare & DNS** ([#256](https://github.com/weaties/helmlog/issues/256)) — Tailscale status, Cloudflare routing,
   and DNS configuration on the network page
-- **Cloudflare Tunnel wizard** (#378) — interactive setup for remote access
+- **Cloudflare Tunnel wizard** ([#378](https://github.com/weaties/helmlog/pull/378)) — interactive setup for remote access
   without port forwarding
 - **Config persistence** — InfluxDB and camera config saved to
   `~/.helmlog/config.env` to survive deploys
-- **User deletion** (#381) — Delete button on the admin users page
+- **User deletion** ([#381](https://github.com/weaties/helmlog/pull/381)) — Delete button on the admin users page
 
 ### Calibration & boat settings
-- **Instrument calibration category** (#337) — new `instrument_calibration`
+- **Instrument calibration category** ([#337](https://github.com/weaties/helmlog/issues/337)) — new `instrument_calibration`
   settings category for compass offset, speed factor, etc.
-- **Negative value input** (#407) — ± toggle button for mobile numeric inputs
+- **Negative value input** ([#407](https://github.com/weaties/helmlog/pull/407)) — ± toggle button for mobile numeric inputs
   (e.g., compass deviation)
-- **Session settings fix** (#385) — boat setup values now correctly reflected
+- **Session settings fix** ([#385](https://github.com/weaties/helmlog/issues/385)) — boat setup values now correctly reflected
   during and after active sessions
 
 ### Analysis & visualization
-- **Analysis framework Phase 2** (#285) — co-op plugin promotion, A/B
+- **Analysis framework Phase 2** ([#285](https://github.com/weaties/helmlog/issues/285)) — co-op plugin promotion, A/B
   comparison workflow, and version staleness tracking
-- **Analysis catalog UI** (#412) — admin page for plugin management, co-op
+- **Analysis catalog UI** ([#412](https://github.com/weaties/helmlog/issues/412)) — admin page for plugin management, co-op
   catalog with state badges and moderator actions, session-page staleness
   indicator with re-run button, and A/B comparison side-by-side view
-- **Visualization framework Phase 1** (#286) — pluggable chart rendering
+- **Visualization framework Phase 1** ([#286](https://github.com/weaties/helmlog/issues/286)) — pluggable chart rendering
   for session data with extensible plugin API
-- **Session deletion** (#409) — delete sessions from the UI with an
+- **Session deletion** ([#409](https://github.com/weaties/helmlog/issues/409)) — delete sessions from the UI with an
   active-session safety guard
 
 ### Auth & profile
-- **Change password** (#340) — `PATCH /api/me/password` endpoint with full
+- **Change password** ([#340](https://github.com/weaties/helmlog/issues/340)) — `PATCH /api/me/password` endpoint with full
   validation chain (credential check, current password verification, length,
   confirmation match) and audit logging. Profile page conditionally renders
   the form only for password-credential users
 
 ### Signal K fixes
-- **Self-vessel UUID resolution** (#388) — Signal K deltas no longer rejected
+- **Self-vessel UUID resolution** ([#388](https://github.com/weaties/helmlog/pull/388)) — Signal K deltas no longer rejected
   due to mismatched vessel identity
-- **Admin API access** (#384) — use `type=admin` in Signal K security.json for
+- **Admin API access** ([#384](https://github.com/weaties/helmlog/issues/384)) — use `type=admin` in Signal K security.json for
   proper admin-level access
 
 ### Theming & UX
 - **CSS variable migration** — remaining hardcoded hex colors replaced with CSS
   custom properties across all templates, JS, and Python
-- **In-app issue reporting** (#369) — bug report and feature request links
+- **In-app issue reporting** ([#369](https://github.com/weaties/helmlog/issues/369)) — bug report and feature request links
   directly from the app
 
 ### Documentation & developer experience
 - **Crew race-day guide** — quick reference for crew operating HelmLog during
   races (start/stop sessions, mark events, troubleshooting)
-- **AI contributor guardrails** (#392) — improved onboarding docs and CI checks
+- **AI contributor guardrails** ([#392](https://github.com/weaties/helmlog/pull/392)) — improved onboarding docs and CI checks
   for AI-assisted contributions
-- **Semantic layer** (#390) — machine-readable domain knowledge module with
+- **Semantic layer** ([#390](https://github.com/weaties/helmlog/pull/390)) — machine-readable domain knowledge module with
   decision tables, state diagrams, and EARS specs
-- **Documentation refresh** (#172, #236) — roadmap, README, CONTRIBUTING.md,
+- **Documentation refresh** ([#172](https://github.com/weaties/helmlog/issues/172), [#236](https://github.com/weaties/helmlog/pull/236)) — roadmap, README, CONTRIBUTING.md,
   and guides updated to match current codebase
 
 ### Infrastructure

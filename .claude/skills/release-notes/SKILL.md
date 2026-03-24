@@ -65,7 +65,12 @@ Optional 1–2 sentence summary of the release.
 
 Rules:
 - Use today's date (YYYY-MM-DD format)
-- Bold feature names, reference issue/PR numbers as `(#NNN)`
+- Bold feature names, reference issue/PR numbers as clickable Markdown links:
+  `([#NNN](https://github.com/weaties/helmlog/issues/NNN))` for issues,
+  `([#NNN](https://github.com/weaties/helmlog/pull/NNN))` for PRs.
+  Use `gh pr view NNN --json state -q .state 2>/dev/null` to determine whether
+  a number is a PR or issue — if the command succeeds it's a PR, otherwise use
+  the issues URL.
 - One bullet per logical change — merge related commits into a single bullet
 - Use sub-bullets only when a change needs a brief clarification
 - Do NOT mention ideation log updates anywhere in the entry
