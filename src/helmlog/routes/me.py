@@ -79,9 +79,6 @@ async def api_change_password(
     if not verify_password(body.current_password, cred["password_hash"]):
         raise HTTPException(status_code=403, detail="Current password is incorrect")
 
-    if len(body.new_password) < 12:
-        raise HTTPException(status_code=422, detail="New password must be at least 12 characters")
-
     if body.new_password != body.confirm_password:
         raise HTTPException(status_code=422, detail="Passwords do not match")
 

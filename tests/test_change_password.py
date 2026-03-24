@@ -135,29 +135,6 @@ async def test_change_password_wrong_current(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# T4: New password too short
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_change_password_too_short(storage: Storage) -> None:
-    """PATCH /api/me/password with short new password returns 422."""
-    _, session_id = await _create_password_user(storage)
-
-    async with _client(storage, session_id) as client:
-        resp = await client.patch(
-            "/api/me/password",
-            json={
-                "current_password": OLD_PASSWORD,
-                "new_password": "short",
-                "confirm_password": "short",
-            },
-        )
-    assert resp.status_code == 422
-    assert "12 characters" in resp.json()["detail"].lower()
-
-
-# ---------------------------------------------------------------------------
 # T5: Confirm mismatch
 # ---------------------------------------------------------------------------
 
