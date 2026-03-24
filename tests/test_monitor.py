@@ -201,21 +201,13 @@ class TestPerInterfaceBandwidth:
         write_api = MagicMock()
         client = MagicMock()
 
-        # First _collect_and_write sees t=100, second sees t=102 (2s delta).
-        # Use a list with pop so extra calls safely return the last value.
-        monotonic_seq = [100.0, 100.0, 102.0, 102.0]
-        monotonic_idx = [0]
-
-        def _monotonic() -> float:
-            val = monotonic_seq[min(monotonic_idx[0], len(monotonic_seq) - 1)]
-            monotonic_idx[0] += 1
-            return val
+        monotonic_values = iter([100.0, 100.0, 102.0, 102.0])
 
         with (
             patch.dict("sys.modules", {"psutil": psutil_mock}),
             patch("helmlog.influx._client", return_value=(client, write_api)),
             patch.dict("sys.modules", {"influxdb_client": MagicMock(Point=point_cls)}),
-            patch("time.monotonic", side_effect=_monotonic),
+            patch("time.monotonic", side_effect=lambda: next(monotonic_values)),
         ):
             import helmlog.monitor as mod
 
