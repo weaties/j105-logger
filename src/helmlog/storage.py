@@ -126,7 +126,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 50
+_CURRENT_VERSION: int = 51
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1130,6 +1130,27 @@ _MIGRATIONS: dict[int, str] = {
             is_default  INTEGER NOT NULL DEFAULT 0,
             created_at  TEXT NOT NULL
         );
+    """,
+    51: """
+        -- Phase 2: analysis catalog and version staleness tracking (#285)
+        ALTER TABLE analysis_cache ADD COLUMN stale_reason TEXT;
+
+        CREATE TABLE IF NOT EXISTS analysis_catalog (
+            plugin_name TEXT NOT NULL,
+            co_op_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'proposed',
+            proposing_boat TEXT,
+            version TEXT,
+            author TEXT,
+            changelog TEXT,
+            proposed_at TEXT NOT NULL,
+            resolved_at TEXT,
+            reject_reason TEXT,
+            data_license_gate_passed INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (plugin_name, co_op_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_analysis_catalog_co_op
+            ON analysis_catalog(co_op_id, state);
     """,
 }
 
@@ -5740,7 +5761,7 @@ class Storage:
         """Return the cached analysis result or None."""
         db = self._read_conn()
         cur = await db.execute(
-            "SELECT plugin_version, data_hash, result_json, created_at"
+            "SELECT plugin_version, data_hash, result_json, created_at, stale_reason"
             " FROM analysis_cache WHERE session_id = ? AND plugin_name = ?",
             (session_id, plugin_name),
         )
@@ -5769,7 +5790,8 @@ class Storage:
             "   plugin_version = excluded.plugin_version,"
             "   data_hash = excluded.data_hash,"
             "   result_json = excluded.result_json,"
-            "   created_at = excluded.created_at",
+            "   created_at = excluded.created_at,"
+            "   stale_reason = NULL",  # fresh result clears staleness (#285)
             (session_id, plugin_name, plugin_version, data_hash, result_json, now),
         )
         await db.commit()
@@ -5839,6 +5861,107 @@ class Storage:
             if pref is not None:
                 return pref["model_name"]  # type: ignore[no-any-return]
         return None
+
+    # ------------------------------------------------------------------
+    # Analysis catalog (#285)
+    # ------------------------------------------------------------------
+
+    async def get_catalog_entry(self, plugin_name: str, co_op_id: str) -> dict[str, Any] | None:
+        """Return the catalog entry for (plugin_name, co_op_id), or None."""
+        cur = await self._conn().execute(
+            "SELECT plugin_name, co_op_id, state, proposing_boat, version, author,"
+            " changelog, proposed_at, resolved_at, reject_reason, data_license_gate_passed"
+            " FROM analysis_catalog WHERE plugin_name = ? AND co_op_id = ?",
+            (plugin_name, co_op_id),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def upsert_catalog_entry(
+        self,
+        plugin_name: str,
+        co_op_id: str,
+        state: str,
+        proposing_boat: str | None,
+        version: str | None,
+        author: str | None,
+        changelog: str | None,
+        proposed_at: str | None,
+        resolved_at: str | None,
+        reject_reason: str | None,
+        data_license_gate_passed: int,
+    ) -> None:
+        """Insert or replace a catalog entry."""
+        from datetime import UTC  # noqa: PLC0415
+        from datetime import datetime as _datetime  # noqa: PLC0415
+
+        now = proposed_at or _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO analysis_catalog"
+            " (plugin_name, co_op_id, state, proposing_boat, version, author,"
+            "  changelog, proposed_at, resolved_at, reject_reason, data_license_gate_passed)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(plugin_name, co_op_id) DO UPDATE SET"
+            "   state = excluded.state,"
+            "   proposing_boat = excluded.proposing_boat,"
+            "   version = excluded.version,"
+            "   author = excluded.author,"
+            "   changelog = excluded.changelog,"
+            "   proposed_at = excluded.proposed_at,"
+            "   resolved_at = excluded.resolved_at,"
+            "   reject_reason = excluded.reject_reason,"
+            "   data_license_gate_passed = excluded.data_license_gate_passed",
+            (
+                plugin_name,
+                co_op_id,
+                state,
+                proposing_boat,
+                version,
+                author,
+                changelog,
+                now,
+                resolved_at,
+                reject_reason,
+                data_license_gate_passed,
+            ),
+        )
+        await db.commit()
+
+    async def list_catalog_entries(self, co_op_id: str) -> list[dict[str, Any]]:
+        """Return all catalog entries for a co-op, ordered by state then name."""
+        cur = await self._conn().execute(
+            "SELECT plugin_name, co_op_id, state, proposing_boat, version, author,"
+            " changelog, proposed_at, resolved_at, reject_reason, data_license_gate_passed"
+            " FROM analysis_catalog WHERE co_op_id = ?"
+            " ORDER BY state, plugin_name",
+            (co_op_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def clear_co_op_default(self, co_op_id: str) -> None:
+        """Revert any co_op_default plugin in this co-op back to co_op_active."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE analysis_catalog SET state = 'co_op_active'"
+            " WHERE co_op_id = ? AND state = 'co_op_default'",
+            (co_op_id,),
+        )
+        await db.commit()
+
+    async def mark_plugin_cache_stale(self, plugin_name: str, current_version: str) -> int:
+        """Mark analysis_cache rows for *plugin_name* stale where version != current_version.
+
+        Returns the number of rows updated.
+        """
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE analysis_cache SET stale_reason = 'version_change'"
+            " WHERE plugin_name = ? AND plugin_version != ? AND stale_reason IS NULL",
+            (plugin_name, current_version),
+        )
+        await db.commit()
+        return cur.rowcount or 0
 
     # ------------------------------------------------------------------
     # Visualization preferences (#286)

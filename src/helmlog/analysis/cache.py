@@ -35,13 +35,27 @@ class AnalysisCache:
         *,
         data_hash: str | None = None,
     ) -> dict[str, Any] | None:
-        """Return cached result or None if miss/stale."""
+        """Return cached result or None if miss/stale.
+
+        Returns None if:
+        - No row exists
+        - ``data_hash`` is provided and doesn't match (data changed)
+        - ``stale_reason`` is set (plugin version changed)
+        """
         row = await self._storage.get_analysis_cache(session_id, plugin_name)
         if row is None:
             return None
         if data_hash is not None and row["data_hash"] != data_hash:
             logger.debug(
                 "Cache stale for session={} plugin={} (hash mismatch)", session_id, plugin_name
+            )
+            return None
+        if row.get("stale_reason") is not None:
+            logger.debug(
+                "Cache stale for session={} plugin={} ({})",
+                session_id,
+                plugin_name,
+                row["stale_reason"],
             )
             return None
         try:
