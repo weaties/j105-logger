@@ -276,6 +276,12 @@ class CrewEntry(BaseModel):
     gear_weight: float | None = None
 
 
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
 class WeightUpdate(BaseModel):
     weight_lbs: float | None = None
 

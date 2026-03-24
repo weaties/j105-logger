@@ -73,6 +73,18 @@ h1{font-size:1.3rem;font-weight:700;color:var(--accent);margin-bottom:12px}
     </div>
   </div>
 
+  {% if has_password %}
+  <div class="p-field">
+    <label class="p-field-label">Change Password</label>
+    <input type="password" id="current-password" class="p-input" placeholder="Current password" style="margin-bottom:8px"/>
+    <input type="password" id="new-password" class="p-input" placeholder="New password" style="margin-bottom:8px"/>
+    <input type="password" id="confirm-password" class="p-input" placeholder="Confirm new password" style="margin-bottom:8px"/>
+    <div class="p-row">
+      <button type="button" class="p-btn" onclick="changePassword()">Change Password</button>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="p-field">
     <label class="p-field-label" for="scheme-select">Color Scheme</label>
     <p class="p-note">Optimized for phone screens in bright sunlight. Overrides the boat default.</p>
@@ -196,6 +208,19 @@ async function saveScheme() {
 async function resetScheme() {
   await fetch('/api/me/color-scheme', {method:'DELETE'});
   window.location.reload();
+}
+
+async function changePassword() {
+  const cur = document.getElementById('current-password');
+  const np = document.getElementById('new-password');
+  const cp = document.getElementById('confirm-password');
+  if (!cur || !np || !cp) return;
+  const r = await fetch('/api/me/password', {
+    method:'PATCH', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({current_password: cur.value, new_password: np.value, confirm_password: cp.value})
+  });
+  if (r.ok) { alert('Password changed successfully.'); cur.value=''; np.value=''; cp.value=''; }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Failed to change password'); }
 }
 
 // Show preview for current selection on load

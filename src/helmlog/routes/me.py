@@ -10,8 +10,8 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
-from helmlog.auth import require_auth
-from helmlog.routes._helpers import WeightUpdate, audit, get_storage
+from helmlog.auth import hash_password, require_auth, verify_password
+from helmlog.routes._helpers import PasswordChange, WeightUpdate, audit, get_storage
 
 router = APIRouter()
 
@@ -60,6 +60,31 @@ async def api_update_my_weight(
                 detail="Biometric consent required before storing weight data",
             )
     await storage.update_user_weight(_user["id"], weight)
+
+
+@router.patch("/api/me/password", status_code=204)
+async def api_change_password(
+    request: Request,
+    body: PasswordChange,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> None:
+    """Change the current user's password."""
+    storage = get_storage(request)
+    user_id = _user["id"]
+
+    cred = await storage.get_credential(user_id, "password")
+    if cred is None:
+        raise HTTPException(status_code=422, detail="No password credential")
+
+    if not verify_password(body.current_password, cred["password_hash"]):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+
+    if body.new_password != body.confirm_password:
+        raise HTTPException(status_code=422, detail="Passwords do not match")
+
+    new_hash = hash_password(body.new_password)
+    await storage.update_password_hash(user_id, new_hash)
+    await audit(request, "password.change", user=_user)
 
 
 @router.patch("/api/me/name", status_code=204)

@@ -100,6 +100,8 @@ async def profile_page(
     role_colors = {"admin": "#f59e0b", "crew": "#34d399", "viewer": "#60a5fa"}
     consents = await storage.get_crew_consents(user_id) if user_id else []
     bio_consent = any(c["consent_type"] == "biometric" and c["granted"] for c in consents)
+    pw_cred = await storage.get_credential(user_id, "password") if user_id else None
+    has_password = pw_cred is not None
     preset_list = [{"id": pid, "name": PRESETS[pid].name} for pid in PRESET_ORDER if pid in PRESETS]
     custom_list = await storage.list_color_schemes()
     boat_default = await storage.get_setting("color_scheme_default") or ""
@@ -122,6 +124,7 @@ async def profile_page(
             custom_schemes=custom_list,
             boat_default=boat_default,
             current_scheme=current_scheme,
+            has_password=has_password,
         ),
     )
 
