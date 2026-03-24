@@ -158,6 +158,16 @@ Cases where the two versions differ on specific eval criteria:
 | case-name-1 | "Must flag PII exposure" | FAIL | PASS |
 ```
 
+### 5.5 Statistical Confidence
+
+For comparisons with 5+ cases, report confidence:
+
+- **5-7 cases:** "Low confidence — results may not generalize. Consider adding more eval cases."
+- **8-12 cases:** "Medium confidence — directional signal is reliable."
+- **13+ cases:** "High confidence — results are statistically meaningful."
+
+Also flag if any dimension shows high variance (scores range from 1 to 5 across cases for the same version) — this suggests the skill is inconsistent and the change may be masking a deeper issue.
+
 ### 6. Log results
 
 Append a summary to `.claude/skills/<skill-name>/evals/compare-log.md`:

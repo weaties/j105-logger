@@ -117,6 +117,39 @@ Guidelines:
 - Include fail-safe requirements (what happens when inputs are missing or
   stale)
 
+### 4.5 Generate test skeletons
+
+After generating the spec, produce a list of test case names derived from the spec:
+
+**From decision tables:** One test per row:
+```python
+# Generated from spec — one test per decision table row
+async def test_<feature>_<role>_<state>_<expected_outcome>(storage):
+    """Row N: <input description> → <expected output>"""
+    ...
+```
+
+**From state diagrams:** One test per transition + one test per invalid transition:
+```python
+async def test_<entity>_<from_state>_to_<to_state>(storage):
+    """Transition: <trigger> from <from> to <to>"""
+    ...
+
+async def test_<entity>_cannot_<invalid_transition>(storage):
+    """Guard: <from> cannot go to <to> because <reason>"""
+    ...
+```
+
+**From EARS requirements:** One test per requirement:
+```python
+async def test_<requirement_id>_<condition>(storage):
+    """EARS: WHEN <condition> THE SYSTEM SHALL <action>"""
+    ...
+```
+
+Include these test skeletons in the issue comment, below the spec. These become
+the starting point for TDD.
+
 ### 5. Post the spec as an issue comment
 
 ```bash

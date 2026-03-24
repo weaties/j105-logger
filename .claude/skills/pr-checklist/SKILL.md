@@ -5,9 +5,26 @@ description: Run pre-PR verification checks before creating a pull request. TRIG
 
 # Pre-PR Checklist
 
+**Execute each check below and report results in a live scorecard.** Do not just
+list the checks — run them. After all checks complete, produce a summary
+scorecard (see Scorecard section at the end).
+
 Run these checks before creating or pushing to a pull request.
 
 ## 0. Mark the issue in-progress
+
+**Auto-detect the issue number** before proceeding:
+
+1. Parse from branch name — e.g., `feature/123-my-feature` → `#123`, `fix/456-bug` → `#456`
+   ```bash
+   git branch --show-current | grep -oP '(\d+)' | head -1
+   ```
+2. If not found in branch name, scan recent commit messages:
+   ```bash
+   git log main..HEAD --oneline | grep -oP '#\d+' | head -1
+   ```
+3. If found, use it automatically for all subsequent steps. If not found, note:
+   "No issue number detected — link manually if applicable" and continue.
 
 If working on a GitHub issue, apply the `in-progress` label and comment with the branch name and agent identity:
 
@@ -72,6 +89,21 @@ All tests must pass. If new functionality was added, there must be corresponding
 
 **Skip for Low tier:** Tests are optional if the PR only touches templates,
 CSS, JS, docs, or config — but run them if available.
+
+## 3.5 Coverage delta
+
+Run tests with coverage and check for uncovered new code:
+
+```bash
+uv run pytest --cov=helmlog --cov-report=term-missing
+```
+
+Compare against baseline coverage. Identify new/changed lines (from `git diff main...HEAD`)
+that are not covered by tests. For **Critical** and **High** tier PRs, require >90% coverage
+of new lines. For **Standard** tier, flag uncovered new code as a warning but do not block.
+
+If coverage data is unavailable (e.g., `pytest-cov` not installed), note "Coverage check
+skipped" and continue.
 
 ## 4. Lint check
 
@@ -216,10 +248,44 @@ git push -u origin <branch>
 
 ## 15. Create PR
 
-PR must target `main`. Include a summary, test plan, and `Closes #<issue>`.
-```bash
-gh pr create --title "..." --body "..."
+PR must target `main`. **Auto-generate the PR body** from the checklist results:
+
+1. Analyze all commits on the branch:
+   ```bash
+   git log main..HEAD --oneline
+   ```
+2. Summarize what changed into bullet points.
+3. Build the PR body using the standard format below, filling in values from
+   the checks already executed:
+
 ```
+## Summary
+- <bullet summarizing each logical change>
+
+## Risk tier
+<tier> — triggered by <files>
+
+## Test plan
+- [x] Unit tests pass (<N> tests)
+- [x] Coverage delta checked (<coverage>% of new lines)
+- [x] Lint + format + types clean
+- [x/n/a] Integration tests (<N> passed, or n/a)
+- [x/n/a] Data license review
+
+Closes #<N>
+
+Generated with [Claude Code](https://claude.ai/code)
+```
+
+4. Create the PR:
+```bash
+gh pr create --title "..." --body "$(cat <<'EOF'
+<generated body>
+EOF
+)"
+```
+
+If no issue number was detected, omit the `Closes` line.
 
 ## Quick Reference — Tier Checklist Summary
 
@@ -232,5 +298,36 @@ gh pr create --title "..." --body "..."
 | `/data-license` | Required | If data/PII | No | No |
 | Spec review | Required | No | No | No |
 | Complexity check | Required | Required | Required | No |
+| Coverage delta   | >90% new | >90% new | Flag gaps | Optional |
 | Issue linking    | Required | Required | Required | Optional |
 
+## Scorecard
+
+After executing all checks, produce a summary:
+
+```
+## PR Readiness: <branch-name>
+Risk tier: <tier>
+
+| # | Check | Result | Notes |
+|---|---|---|---|
+| 0 | Issue in-progress | PASS/SKIP | #<N> labeled |
+| 1 | Feature branch | PASS/FAIL | <branch> |
+| 2 | Risk tier | <tier> | <files triggering tier> |
+| 3 | Tests | PASS/FAIL | <N> passed, <N> failed |
+| 3.5 | Coverage delta | PASS/WARN/SKIP | <X>% new lines covered |
+| 4 | Lint | PASS/FAIL | <N> issues |
+| 5 | Format | PASS/FAIL | |
+| 6 | Type check | PASS/FAIL/SKIP | <N> errors (excl. pre-existing) |
+| 7 | Integration tests | PASS/FAIL/SKIP | <N> passed |
+| 8 | Data license | PASS/FAIL/SKIP | |
+| 9 | Spec review | PASS/FAIL/SKIP | |
+| 10 | Dependencies | PASS/SKIP | |
+| 11 | Docs updated | PASS/SKIP | |
+| 12 | Complexity | PASS/WARN | <files over threshold> |
+| 13 | Issue linking | PASS/SKIP | Closes #<N> |
+
+**Result: READY / NOT READY** (<N>/<M> checks passed)
+```
+
+If NOT READY, list the blocking failures and suggest fixes.

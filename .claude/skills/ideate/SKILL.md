@@ -24,6 +24,21 @@ Scan existing entries for ideas that:
 
 Report any related ideas found before adding the new entry.
 
+### 2.5 Cluster Analysis
+
+Group the new idea with existing ideas by theme. If 3+ ideas cluster around the same theme, note this:
+
+> **Cluster detected:** IDX-012, IDX-018, IDX-024, and this new idea all relate to "performance analytics." Consider whether these should be consolidated into a single epic-level GitHub issue.
+
+Also check if any existing idea has been `raw` for more than 60 days:
+
+```bash
+# Check for stale ideas (captured > 60 days ago, still raw)
+grep -B2 "Status.*raw" docs/ideation-log.md | grep "Date captured" | ...
+```
+
+If stale ideas exist, mention them: "3 ideas have been raw for >60 days — consider promoting or archiving them."
+
 ## 3. Assess Maturity
 
 Before adding, evaluate whether the idea is actually mature enough to skip

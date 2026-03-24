@@ -98,6 +98,28 @@ docker compose -f tests/integration/docker-compose.yml up --build --abort-on-con
 when you want to validate against the Pi-matching arm64 architecture without
 deploying to actual Pis.
 
+## Auto-Layer Selection
+
+When triggered without explicit layer choice, auto-detect based on changed files:
+
+```bash
+git diff --name-only main...HEAD
+```
+
+| Changed files | Auto-selected layer | Rationale |
+|---|---|---|
+| Only `tests/integration/` | Layer 1 | Test-only changes, fast validation |
+| `federation.py`, `peer_api.py`, `peer_client.py`, `peer_auth.py` | Layer 1, suggest Layer 2 before merge | Core federation code needs both |
+| `storage.py` (migration changes) + federation files | Layer 1 + Layer 2 | Schema changes need real DB validation |
+| Docker/compose files | Layer 3 | Infrastructure changes need container validation |
+| Only non-federation code | Skip | Not applicable — report "No federation changes detected" |
+
+After running Layer 1, report which test categories are relevant to the changes:
+- Auth changes → highlight `test_auth_e2e.py` results
+- Embargo changes → highlight `test_embargo_e2e.py` results
+- Data sharing changes → highlight `test_data_license_e2e.py` results
+- Co-op lifecycle changes → highlight `test_federation_e2e.py` results
+
 ## Adding New Integration Tests
 
 1. Add tests to the appropriate file in `tests/integration/`

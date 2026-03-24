@@ -5,26 +5,20 @@ description: Codebase comprehension and complexity tracking — module map, data
 
 # Architecture — Codebase Comprehension
 
-Produce a concise, scannable system overview. Two modes:
+Two modes:
 
-- **Full snapshot** (no arguments): Complete system overview — module map, data
-  flow, complexity hotspots, risk tier overlay. Use after returning from a break.
-- **Delta briefing** (`$ARGUMENTS`): What changed since a date, commit, or tag.
-  Shows structural changes, new/removed modules, complexity shifts, and affected
-  data flow paths.
+- **Full snapshot** (no arguments): Module map, health scores, data flow,
+  dependency graph, complexity hotspots, test coverage, risk overlay, debt score.
+- **Delta briefing** (`$ARGUMENTS`): What changed since a date/commit/tag —
+  risk surface change, test delta, structural shifts, recommendations.
 
 ---
 
 ## 1. Determine mode
 
-If `$ARGUMENTS` is empty → **full snapshot**.
-
-Otherwise parse `$ARGUMENTS` as one of:
-- A date (`2026-03-01`, `last week`, `yesterday`)
-- A commit SHA or short SHA
-- A git tag (`stage/2026-03-15`)
-
-Resolve to a commit ref for `git log` and `git diff`. If ambiguous, ask.
+If `$ARGUMENTS` is empty → **full snapshot**. Otherwise parse as a date
+(`2026-03-01`, `last week`), commit SHA, or git tag (`stage/2026-03-15`).
+Resolve to a commit ref. If ambiguous, ask.
 
 ---
 
@@ -32,62 +26,94 @@ Resolve to a commit ref for `git log` and `git diff`. If ambiguous, ask.
 
 ### Full snapshot
 
-List every `.py` module under `src/helmlog/` with:
-
 ```bash
 wc -l src/helmlog/*.py | sort -rn
 ```
 
-For each module, provide:
-- **Responsibility** (one line — derive from docstring, class names, or function names)
-- **Key dependencies** (imports from other helmlog modules)
-- **Risk tier** (from the Risk Tiers table in CLAUDE.md; "Unclassified" if missing)
-
-Format as a table. Group by risk tier (Critical → High → Standard → Low → Unclassified).
+For each module: **Responsibility** (one line), **Key deps** (helmlog imports),
+**Risk tier** (from CLAUDE.md). Table grouped by tier (Critical → High →
+Standard → Low → Unclassified).
 
 ### Delta briefing
 
-Show only modules that were added, removed, or structurally changed (new
-classes, new public functions, significant line count changes) since the
-reference commit:
+Show only added/removed/structurally changed modules since `<ref>`:
 
 ```bash
 git diff --stat <ref>...HEAD -- src/helmlog/
 git log --oneline <ref>...HEAD -- src/helmlog/
 ```
 
-Flag any module that crossed the 200-line threshold in either direction.
+Flag any module that crossed the 200-line threshold.
 
 ---
 
-## 3. Data flow
+## 2.5 Module Health Scores
+
+Two signals per module:
+
+**Size grade:** A (<100), B (100-200), C (200-300), D (300-500), F (500+)
+
+**Churn grade** (30-day commits): A (0-2), B (3-5), C (6-10), D (11-20), F (20+)
+
+```bash
+git log --since="30 days ago" --format="" --name-only -- src/helmlog/*.py | sort | uniq -c | sort -rn
+```
+
+**Tier adjustment:** Critical modules get one grade harsher on both signals.
+**Overall** = worst of (adjusted size, adjusted churn).
+
+Only show modules at **C or worse** — healthy modules omitted:
+
+```
+| Module | Lines | Size | Churn (30d) | Churn | Tier | Health |
+|---|---|---|---|---|---|---|
+| storage.py | 5923 | F | 8 | C | Critical | F |
+```
+
+If all A/B: "All modules healthy — no scores at C or worse."
+
+---
+
+## 3. Data flow & dependency graph
 
 ### Full snapshot
 
-Trace the primary data flow paths through the codebase. Derive these from
-actual imports, not from memory. Check the current import graph:
+Derive from actual imports:
 
 ```bash
 grep -rn "^from helmlog\.\|^import helmlog\." src/helmlog/*.py
 ```
 
-Produce a concise ASCII diagram showing:
-1. **Instrument ingest:** Signal K / CAN → decoded records → storage
-2. **Read paths:** storage → web, export, polar, maneuver detection
-3. **External data:** weather, tides → storage
-4. **Federation:** peer_client ↔ peer_api, federation, peer_auth
-5. **Audio pipeline:** audio → transcribe → storage → web
+Produce ASCII diagram: (1) instrument ingest, (2) read paths, (3) external
+data, (4) federation, (5) audio pipeline.
+
+**Most-depended-on** (top 10 — changes here have biggest blast radius):
+
+```bash
+grep -rn "from helmlog\." src/helmlog/*.py | sed 's/.*from helmlog\.\([a-z_]*\).*/\1/' | sort | uniq -c | sort -rn | head -10
+```
+
+```
+| Module | Imported by N | Tier |
+```
+
+**Most-dependent** (top 5 — most affected by changes elsewhere):
+
+```bash
+for f in src/helmlog/*.py; do m=$(basename "$f" .py); n=$(grep -c "from helmlog\." "$f" 2>/dev/null || echo 0); echo "$n $m"; done | sort -rn | head -5
+```
+
+```
+| Module | Imports N | Tier |
+```
 
 ### Delta briefing
 
-Show only data flow paths that were affected by changes since the reference.
-Highlight new connections and removed connections.
+Show only affected data flow paths. Highlight new/removed connections.
 
 ---
 
 ## 4. Complexity hotspots
-
-Identify modules and functions that may need attention.
 
 ### Module size
 
@@ -95,48 +121,49 @@ Identify modules and functions that may need attention.
 wc -l src/helmlog/*.py | sort -rn
 ```
 
-Flag any module exceeding 200 lines (the project convention from CLAUDE.md).
-For modules well over 200 lines, note how far over they are:
-
 | Severity | Threshold | Action |
 |---|---|---|
-| **Watch** | 200-300 lines | Note — may be fine if cohesive |
-| **Warning** | 300-500 lines | Recommend reviewing for split opportunities |
+| **Watch** | 200-300 lines | May be fine if cohesive |
+| **Warning** | 300-500 lines | Review for split opportunities |
 | **Alert** | 500+ lines | Strongly recommend splitting |
 
 ### Function complexity
 
-For modules at Warning or Alert level, identify functions with high branching
-complexity:
+For Warning/Alert modules, find high-branching and long (50+ line) functions:
 
 ```bash
 grep -c "if \|elif \|for \|while \|except \|case " src/helmlog/<module>.py
-```
-
-Also scan for long functions (rough heuristic — functions spanning many lines):
-
-```bash
 grep -n "^    def \|^    async def " src/helmlog/<module>.py
 ```
 
-Flag functions that appear to span more than 50 lines (estimate from line
-number gaps between consecutive `def` lines).
-
-### Change clustering (delta mode only)
-
-For delta briefings, identify files with disproportionate churn:
+### Change clustering (delta only)
 
 ```bash
 git log --format="" --name-only <ref>...HEAD -- src/helmlog/ | sort | uniq -c | sort -rn
 ```
 
-Files appearing in many commits may be complexity magnets.
+---
+
+## 4.5 Test Coverage
+
+```bash
+uv run pytest --cov=helmlog --cov-report=term-missing --no-header -q 2>/dev/null | tail -20
+```
+
+**Flag any Critical/High tier module below 80%:**
+
+```
+| Module | Coverage | Tier | Status |
+|---|---|---|---|
+| federation.py | 45% | Critical | RISK — below 80% |
+```
+
+Only table Critical/High modules. Note overall project % for Standard/Low.
+If `pytest --cov` fails, skip with a note.
 
 ---
 
 ## 5. Risk tier overlay
-
-Cross-reference hotspots with the Risk Tiers table from CLAUDE.md:
 
 | Tier | Modules |
 |---|---|
@@ -145,59 +172,53 @@ Cross-reference hotspots with the Risk Tiers table from CLAUDE.md:
 | **Standard** | `web.py`, `polar.py`, `external.py`, `races.py`, `triggers.py`, `maneuver_detector.py`, `race_classifier.py`, `courses.py` |
 | **Low** | Templates, CSS, JS, docs, config, scripts |
 
-**Escalation rule:** A complexity hotspot in a Critical or High tier module is
-more urgent than one in a Standard module. Call these out explicitly:
-
-> **web.py** (Standard, 6868 lines, Alert) — massively exceeds convention but
-> has E501 suppression; splitting would require route-group extraction.
->
-> **storage.py** (Critical when migrations touched, 5923 lines, Alert) — schema
-> migrations + query methods in one file; migration extraction would reduce risk.
+**Escalation rule:** Hotspot + Critical/High tier = call out explicitly with
+specific split recommendations.
 
 ---
 
 ## 6. Output format
 
-Structure the output as a briefing, not a dump. Use headers, tables, and short
-prose. Target length:
-
-- **Full snapshot:** 80-150 lines of output
-- **Delta briefing:** 30-80 lines of output
+Target: **Full snapshot** 80-150 lines, **Delta** 30-80 lines.
 
 ### Full snapshot structure
 
 ```
-## Module Map
-<table grouped by risk tier>
-
-## Data Flow
-<ASCII diagram>
-
-## Complexity Hotspots
-<table: module, lines, severity, tier, notes>
-
-## Recommendations
-<2-5 bullet points: most actionable observations>
+## Module Map — <table grouped by risk tier>
+## Module Health Scores — <C or worse only>
+## Data Flow — <ASCII diagram + dependency tables>
+## Complexity Hotspots — <module, lines, severity, tier>
+## Test Coverage — <Critical/High table + overall %>
+## Recommendations — <2-5 bullets>
+### Architectural Debt Score
 ```
+
+**Architectural Debt Score** — single summary combining: modules at Warning/Alert
+size + Critical/High modules with health C or worse + coverage gaps (Critical/High
+below 80%). Express as:
+
+`Arch debt: N hotspots (X Critical, Y High) — Z coverage gaps`
+
+If clean: `Arch debt: clean`
 
 ### Delta briefing structure
 
 ```
-## Changes Since <ref> (<date>)
-<N commits, M files changed>
-
-## Structural Changes
-<new/removed modules, significant growth/shrinkage>
-
-## Affected Data Flow
-<which paths changed>
-
-## Complexity Shifts
-<modules that crossed thresholds or had high churn>
-
-## Recommendations
-<2-5 bullet points>
+## Changes Since <ref> — <N commits, M files>
+## Risk Surface Change — <new Critical/High code?>
+## Test Delta — <test lines added vs source lines added>
+## Structural Changes — <new/removed, growth/shrinkage>
+## Affected Data Flow — <changed paths>
+## Complexity Shifts — <threshold crossings, high churn>
+## Recommendations + Architectural Debt Score
 ```
+
+**Risk Surface Change:** Flag new files, functions, or significant growth in
+Critical/High modules.
+
+**Test Delta:** Compute from `git diff --stat <ref>...HEAD` for `tests/` vs
+`src/helmlog/`. Flag if ratio < 0.5 (less than one test line per two source
+lines). Acceptable: 0.5+. Strong: 1.0+.
 
 ---
 

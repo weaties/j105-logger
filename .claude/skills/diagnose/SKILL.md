@@ -12,6 +12,7 @@ ad-hoc debugging.
 ## Usage
 
 - `/diagnose` — run all subsystem checks
+- `/diagnose quick` — fast health pulse (~10 seconds): system health, service status, database freshness only. Skips CAN message counting, audio recording test, Signal K delta counting, and peer pings.
 - `/diagnose system` — system health only
 - `/diagnose services` — systemd services only
 - `/diagnose can` — CAN bus only
@@ -22,6 +23,8 @@ ad-hoc debugging.
 - `/diagnose aihat` — AI HAT (Hailo) only
 
 The argument is available as `$ARGUMENTS`. If empty, run all subsystems.
+If `$ARGUMENTS` is `quick`, run only System Health, Services (status only, no
+journal deep-dive), and Database (freshness check only, no integrity scan).
 
 ## Output Format
 
@@ -35,6 +38,114 @@ For each check, report a status line:
 
 After all checks, print a summary: total checks, pass/warn/fail counts, and
 the most likely root cause if any failures were found.
+
+Every FAIL and WARN **must** include a copy-paste remediation command and a
+verification command so the user can fix and confirm without thinking:
+
+```
+[FAIL] CAN Bus — interface down (operstate=stopped)
+       → Fix: sudo ip link set can0 up type can bitrate 250000
+       → Verify: ip link show can0 | grep "state UP"
+
+[WARN] Disk space — 83% used on /
+       → Fix: sudo journalctl --vacuum-size=100M && sudo apt clean
+       → Verify: df -h / | awk 'NR==2 {print $5}'
+```
+
+Never output a FAIL or WARN without both a `→ Fix:` and `→ Verify:` line.
+
+## Health Score
+
+After running all checks, compute and display a numeric health score.
+
+**Per-subsystem scoring:**
+
+| Status | Score |
+|---|---|
+| OK | 100 |
+| WARN | 50 |
+| FAIL | 0 |
+| SKIP | excluded from average |
+
+If a subsystem has multiple checks, use the **lowest** status for that
+subsystem's score (e.g., 2 OK + 1 WARN = 50).
+
+**Weights:**
+
+| Subsystem | Weight |
+|---|---|
+| Services | 2× |
+| Database | 2× |
+| System Health | 1× |
+| CAN Bus | 1× |
+| Signal K | 1× |
+| Audio | 1× |
+| Network | 1× |
+| AI HAT | 1× |
+
+**Calculation:** `score = sum(subsystem_score × weight) / sum(weights)` for
+non-SKIP subsystems only.
+
+**Display:**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Overall Health: 85/100 (GOOD)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+**Thresholds:**
+
+| Score | Rating |
+|---|---|
+| 90–100 | EXCELLENT |
+| 70–89 | GOOD |
+| 50–69 | DEGRADED |
+| 0–49 | CRITICAL |
+
+Always display the health score at the end of the summary, even in quick mode.
+
+## Trend Detection
+
+After subsystem checks and before the health score, check for recurring issues
+that indicate systemic problems rather than one-off failures.
+
+```bash
+# Check if helmlog has restarted recently (sign of crashes)
+sudo journalctl -u helmlog --since "24 hours ago" --no-pager | grep -c "Started HelmLog"
+
+# Check for repeated CAN errors in last hour
+sudo journalctl -u helmlog --since "1 hour ago" --no-pager | grep -c "CAN.*error\|can0.*error"
+
+# Check for OOM kills
+sudo journalctl --since "24 hours ago" --no-pager | grep -c "Out of memory\|oom-kill"
+
+# Check for repeated SD card I/O errors
+sudo dmesg | grep -c "I/O error\|read-only"
+```
+
+**Reporting thresholds:**
+
+| Check | WARN | FAIL |
+|---|---|---|
+| Service restarts in 24h | 3–5 | >5 ("crash loop") |
+| CAN errors in 1h | 10–50 | >50 ("bus instability") |
+| OOM kills in 24h | 1 | >1 ("memory pressure") |
+| SD I/O errors | 1 | >5 ("card degradation") |
+
+Example output:
+
+```
+── Trend Detection ──────────────────────
+[WARN] Service restarted 4 times in 24h — possible instability
+       → Fix: sudo journalctl -u helmlog --since "24 hours ago" | grep -B5 "Failed\|Error" | tail -30
+       → Verify: sudo journalctl -u helmlog --since "1 hour ago" | grep -c "Started HelmLog"
+[OK]   No CAN error spikes in the last hour
+[OK]   No OOM kills in 24h
+[OK]   No SD card I/O errors in dmesg
+```
+
+If `$ARGUMENTS` is `quick`, skip trend detection.
 
 ## Diagnostic Sequence
 
@@ -177,7 +288,7 @@ rm -f /tmp/helmlog-audio-test.wav
 **Dependency:** None — can always check.
 
 ```bash
-# SQLite integrity check
+# SQLite integrity check (skip in quick mode)
 sqlite3 data/logger.db "PRAGMA integrity_check;" 2>&1
 # Must return "ok"
 
@@ -191,6 +302,35 @@ sqlite3 data/logger.db "SELECT MAX(ts) FROM headings;" 2>&1
 # Database file size
 ls -lh data/logger.db
 ```
+
+#### Data Pipeline Freshness
+
+Check freshness across all instrument tables to detect partial pipeline failures:
+
+```bash
+# Check data freshness across all tables
+sqlite3 data/logger.db "SELECT 'headings' as tbl, MAX(ts) as latest FROM headings UNION ALL SELECT 'speeds', MAX(ts) FROM speeds UNION ALL SELECT 'winds', MAX(ts) FROM winds UNION ALL SELECT 'positions', MAX(ts) FROM positions;"
+```
+
+**Interpretation:**
+
+| Condition | Status | Meaning |
+|---|---|---|
+| All tables have data within 5 minutes of now | OK | Pipeline healthy |
+| All tables stale (>5 min old) | WARN | Instruments may be off, or service paused — check if this is expected |
+| Some tables fresh, some stale (>5 min gap between newest and oldest) | FAIL | Partial pipeline failure — one sensor path is broken |
+| Any table has NULL (no data at all) | WARN | Table has never received data — may be expected for unused sensors |
+
+Example output:
+
+```
+[OK]   Data freshness — all tables within 2s of each other (latest: 12s ago)
+[FAIL] Data freshness — positions stale (last: 8 min ago), but headings fresh (2s ago)
+       → Fix: Check GPS antenna connection and Signal K GPS source plugin
+       → Verify: sqlite3 data/logger.db "SELECT MAX(ts) FROM positions;"
+```
+
+Always run freshness checks, including in quick mode (it is fast).
 
 **Known failure patterns:**
 

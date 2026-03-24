@@ -324,6 +324,31 @@ Signal K Server                  CAN Bus (legacy)
 Both data paths produce identical `PGNRecord` dataclasses. Downstream code is
 data-source agnostic.
 
+---
+
+## 7. Context-Aware Injection
+
+When this skill auto-triggers, do NOT dump the entire reference. Instead, inject only the relevant subsections based on the file being edited:
+
+| File being edited | Sections to inject |
+|---|---|
+| `sk_reader.py` | §2 Signal K Path Reference, §1 Wind Reference Codes |
+| `can_reader.py` | §3 NMEA 2000 PGN Reference, §1 Instrument Relationships |
+| `nmea2000.py` | §3 NMEA 2000 PGN Reference |
+| `polar.py` | §1 Derived Quantities + Wind Relationships, §4 Polar Performance + VMG |
+| `boat_settings.py` | §5 Calibration Parameters |
+| `synthesize.py` | §1 Derived Quantities, §4 J/105 Reference Polars |
+| `maneuver_detector.py` | §4 Maneuver Classification |
+| `export.py` | §6 Export Column Mapping, §2 Signal K paths (for column names) |
+
+### Common Pitfalls (always show these when auto-triggered)
+
+- **BSP vs SOG:** Polars use BSP (through water), never SOG (over ground)
+- **TWA is derived:** AWA is measured, TWA is computed. Never treat TWA as a sensor input.
+- **Wind reference 4:** B&G emits TWD (north-referenced). Must subtract heading to get TWA.
+- **Units from Signal K:** Always radians and m/s. Convert at decode time, not downstream.
+- **AIS blocked:** PGNs 129038-129810 are never ingested (data licensing policy #208).
+
 ### Storage Tables
 
 | Table | Key Columns | From PGN |

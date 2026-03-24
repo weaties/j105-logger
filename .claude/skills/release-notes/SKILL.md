@@ -47,6 +47,18 @@ Group changes into logical themes (e.g., "Performance analysis", "Synthesizer
 improvements", "Deploy & infrastructure", "Bug fixes"). Use your judgment — aim
 for 2–5 groups. A single-commit release can have just one group.
 
+**Auto-categorize by commit prefix:**
+- Commits starting with `feat:` → Features
+- Commits starting with `fix:` → Bug Fixes
+- Commits starting with `refactor:` → Internal improvements (group with features unless significant)
+- Commits starting with `test:` → Testing improvements
+- Commits starting with `docs:` → Documentation (omit from release notes unless user-facing)
+- Commits starting with `ci:` or `chore:` → Infrastructure (group together)
+
+Use these prefixes as a starting point for grouping, but override with your
+judgment when a commit is miscategorized or when multiple prefixes belong in the
+same logical theme.
+
 ## 4. Draft the RELEASES.md Entry
 
 Read `RELEASES.md` to match the existing format. Draft a new entry following
@@ -74,6 +86,37 @@ Rules:
 - One bullet per logical change — merge related commits into a single bullet
 - Use sub-bullets only when a change needs a brief clarification
 - Do NOT mention ideation log updates anywhere in the entry
+
+### Impact
+
+After drafting the entry, append a `### Impact` section with metrics generated
+from the commit range:
+
+```bash
+# Risk tiers from changed files
+git diff --name-only "$LAST_TAG"..HEAD -- src/helmlog/
+
+# Test delta
+git diff "$LAST_TAG"..HEAD -- tests/ | grep -c "^+.*def test_"
+git diff "$LAST_TAG"..HEAD -- tests/ | grep -c "^-.*def test_"
+
+# File counts
+git diff --stat "$LAST_TAG"..HEAD -- src/helmlog/ | tail -1
+git diff --stat "$LAST_TAG"..HEAD -- tests/ | tail -1
+```
+
+Map each changed source file to its risk tier (from the Risk Tiers table in
+CLAUDE.md) and include a summary like:
+
+```markdown
+### Impact
+- **Risk tiers touched:** Critical (storage.py), Standard (web.py, polar.py)
+- **Test delta:** +47 tests added, 0 removed
+- **Files changed:** 12 source files, 8 test files
+```
+
+This gives reviewers a quick sense of the release's blast radius and test
+coverage change.
 
 ## 5. Insert into RELEASES.md
 

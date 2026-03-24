@@ -89,6 +89,29 @@ When running all cases for a skill, also report:
 - **Consistency notes:** any cases where the result seems borderline or
   model-dependent (flag these for potential flakiness)
 
+### 5. Regression Detection
+
+After running evals, check if previous results exist in the eval log:
+
+```bash
+cat .claude/skills/<skill-name>/evals/eval-log.md 2>/dev/null
+```
+
+If previous results exist, compare:
+- **Pass rate delta:** "Pass rate: 85% → 71% (REGRESSION)" or "Pass rate: 71% → 85% (IMPROVEMENT)"
+- **New failures:** List any cases that previously passed but now fail
+- **New passes:** List any cases that previously failed but now pass
+
+Always append results to `.claude/skills/<skill-name>/evals/eval-log.md`:
+
+```markdown
+### <date>
+Pass rate: <N>% | Criteria hit rate: <N>% | Cases: <N>/<M> passed
+Regressions: <list or "none">
+```
+
+This creates a historical record for tracking skill quality over time.
+
 ## Test Case Format
 
 Cases live in `<skill-dir>/evals/cases.yaml`:
