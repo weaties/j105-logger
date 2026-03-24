@@ -9,10 +9,10 @@ _For when the usual operator isn't aboard. No technical knowledge needed._
 ### 1. Power up the Pi
 
 The Raspberry Pi lives at the nav station. It should already be powered on
-(it runs off the boat's 12V). Check that the small green LED is blinking —
+(it runs off the canbus power). Check that the small green LED is blinking —
 that means it's running.
 
-If it's off, plug in the USB-C power cable. Give it about 60 seconds to boot.
+If it's off, Make sure the instruments are on. Give it about 60 seconds to boot.
 
 ### 2. Plug in the microphone
 
@@ -39,14 +39,12 @@ button in the app.
 timelapse). The Pi will start/stop recording automatically when you start/stop
 races in the app.
 
-### 4. Connect to Big Air WiFi (for internet at the dock)
+### 4. Connect to Big Air WiFi (for internet at the dock) 
 
 The Pi can sync data and fetch weather/tides when it has internet access.
 
 **From your phone:**
-1. Connect your phone to the **Big Air** WiFi network at the club.
-2. Make sure your phone's **Tailscale** app is running (the VPN toggle should
-   be on). This is how your phone talks to the Pi.
+1. Connect your phone to the **Big Air** WiFi on the boat (PWD: "graymanathena" ).
 
 **The Pi itself** gets internet through its own connection — either the boat's
 network or a phone hotspot. If the Pi needs internet and isn't connected, you
@@ -55,8 +53,7 @@ automatically when connectivity is available — no rush.
 
 ### 5. Open HelmLog on your phone
 
-1. Open your browser and go to the **HelmLog bookmark** (or type the Pi's
-   address — ask the crew if you don't have it bookmarked).
+1. Open your browser and go to https://corvo105.helmlog.org
 2. You should see the home page with instrument numbers updating.
 3. If instruments show grey numbers, Signal K may need a moment — wait 30
    seconds and refresh.
@@ -92,17 +89,12 @@ sail number and tap to add them in finishing order.
 Tap **⛵ Sails ▶** on the race card, pick Main / Jib / Spinnaker from the
 dropdowns, tap **Save Sails**.
 
-### Share with the co-op (optional)
-Tap **Share** on any race card to let other boats in the fleet see your track
-data. Only instrument data is shared — audio, notes, and crew stay private.
-
 ---
 
 ## Packing up
 
 1. **Camera** — hold the power button to turn it off. Stow it in its case.
-2. **Mic transmitter** — press the power button to turn it off. Stow with
-   the USB receiver.
+2. **Mics** — Plug them into usb-c
 3. **Pi** — leave it plugged in (it's fine to run 24/7). If you need to
    shut it down, don't just yank the power — ask someone to do a clean
    shutdown from the terminal.
