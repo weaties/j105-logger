@@ -45,6 +45,16 @@
 .btn-unresolve{background:none;border:1px solid var(--text-secondary);color:var(--text-secondary);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
 .discussion-marker{background:none!important;border:none!important}
 .mention{color:var(--accent);font-weight:600;text-decoration:none}
+.stale-banner{background:var(--warning);color:var(--bg-primary);padding:6px 10px;border-radius:6px;font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px}
+.stale-banner button{background:var(--bg-primary);color:var(--warning);border:none;border-radius:4px;padding:4px 10px;font-size:.78rem;cursor:pointer;white-space:nowrap}
+.ab-panel{background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px}
+.ab-panel h3{font-size:.85rem;font-weight:600;color:var(--accent);margin:0 0 6px}
+.ab-panel .metric{display:flex;justify-content:space-between;font-size:.8rem;padding:2px 0}
+.ab-panel .insight{font-size:.78rem;padding:3px 0;border-top:1px solid var(--border);margin-top:4px}
+.insight-warning{color:var(--warning)}
+.insight-critical{color:var(--danger)}
+.ab-selector{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.ab-selector label{font-size:.78rem;color:var(--text-secondary);display:flex;align-items:center;gap:3px}
 </style>
 {% endblock %}
 
@@ -111,6 +121,14 @@
 <div class="card" id="videos-card" style="display:none">
   <div class="section-title" onclick="toggleSection('videos')">Videos <span id="videos-toggle">&#9660;</span></div>
   <div class="section-body" id="videos-body"></div>
+</div>
+
+<div class="card" id="analysis-card" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('analysis')">Analysis <span id="analysis-toggle">&#9660;</span></div>
+    <button onclick="showAbCompare()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.72rem;padding:2px 0">A/B Compare</button>
+  </div>
+  <div class="section-body" id="analysis-body" style="margin-top:6px"></div>
 </div>
 
 <div class="card" id="results-card" style="display:none">

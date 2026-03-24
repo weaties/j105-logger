@@ -392,3 +392,16 @@ async def admin_federation_page(
         "admin/federation.html",
         tpl_ctx(request, "/admin/federation"),
     )
+
+
+@router.get("/admin/analysis", response_class=HTMLResponse, include_in_schema=False)
+async def admin_analysis_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(
+        request,
+        "admin/analysis.html",
+        tpl_ctx(request, "/admin/analysis"),
+    )
