@@ -1,12 +1,96 @@
 # Release Notes
 
+## Sprint 5 — Web Architecture, Networking & Bandwidth, Calibration (2026-03-24)
+
+Major web architecture refactor, metered bandwidth management, admin networking
+tools, and continued analysis and visualization work.
+
+### Web architecture overhaul
+- **Route module split** ([#405](https://github.com/weaties/helmlog/pull/405)) — decomposed monolithic `web.py` into 24
+  domain-specific route modules for maintainability
+- **WebSocket live push** ([#405](https://github.com/weaties/helmlog/pull/405)) — real-time instrument data streaming to the
+  browser via WebSocket
+- **WAL mode + connection split** ([#405](https://github.com/weaties/helmlog/pull/405)) — SQLite write-ahead logging with
+  separate read/write connections for improved concurrency
+
+### Metered bandwidth management ([#403](https://github.com/weaties/helmlog/issues/403))
+- **Metered-connection mode** — detects cellular/marina networks and enforces
+  bandwidth budgets with configurable daily limits
+- **InfluxDB bandwidth attribution** — per-path network tagging so dashboard
+  panels show exactly where bandwidth is spent
+- **Grafana dashboard** — pre-built panels for bandwidth monitoring and alerting
+
+### Admin networking & remote access
+- **Network management page** ([#256](https://github.com/weaties/helmlog/issues/256)) — WLAN profile switching, interface status,
+  and bandwidth monitoring from the admin UI
+- **Tailscale, Cloudflare & DNS** ([#256](https://github.com/weaties/helmlog/issues/256)) — Tailscale status, Cloudflare routing,
+  and DNS configuration on the network page
+- **Cloudflare Tunnel wizard** ([#378](https://github.com/weaties/helmlog/pull/378)) — interactive setup for remote access
+  without port forwarding
+- **Config persistence** — InfluxDB and camera config saved to
+  `~/.helmlog/config.env` to survive deploys
+- **User deletion** ([#381](https://github.com/weaties/helmlog/pull/381)) — Delete button on the admin users page
+
+### Calibration & boat settings
+- **Instrument calibration category** ([#337](https://github.com/weaties/helmlog/issues/337)) — new `instrument_calibration`
+  settings category for compass offset, speed factor, etc.
+- **Negative value input** ([#407](https://github.com/weaties/helmlog/pull/407)) — ± toggle button for mobile numeric inputs
+  (e.g., compass deviation)
+- **Session settings fix** ([#385](https://github.com/weaties/helmlog/issues/385)) — boat setup values now correctly reflected
+  during and after active sessions
+
+### Analysis & visualization
+- **Analysis framework Phase 2** ([#285](https://github.com/weaties/helmlog/issues/285)) — co-op plugin promotion, A/B
+  comparison workflow, and version staleness tracking
+- **Analysis catalog UI** ([#412](https://github.com/weaties/helmlog/issues/412)) — admin page for plugin management, co-op
+  catalog with state badges and moderator actions, session-page staleness
+  indicator with re-run button, and A/B comparison side-by-side view
+- **Visualization framework Phase 1** ([#286](https://github.com/weaties/helmlog/issues/286)) — pluggable chart rendering
+  for session data with extensible plugin API
+- **Session deletion** ([#409](https://github.com/weaties/helmlog/issues/409)) — delete sessions from the UI with an
+  active-session safety guard
+
+### Auth & profile
+- **Change password** ([#340](https://github.com/weaties/helmlog/issues/340)) — `PATCH /api/me/password` endpoint with full
+  validation chain (credential check, current password verification, length,
+  confirmation match) and audit logging. Profile page conditionally renders
+  the form only for password-credential users
+
+### Signal K fixes
+- **Self-vessel UUID resolution** ([#388](https://github.com/weaties/helmlog/pull/388)) — Signal K deltas no longer rejected
+  due to mismatched vessel identity
+- **Admin API access** ([#384](https://github.com/weaties/helmlog/issues/384)) — use `type=admin` in Signal K security.json for
+  proper admin-level access
+
+### Theming & UX
+- **CSS variable migration** — remaining hardcoded hex colors replaced with CSS
+  custom properties across all templates, JS, and Python
+- **In-app issue reporting** ([#369](https://github.com/weaties/helmlog/issues/369)) — bug report and feature request links
+  directly from the app
+
+### Documentation & developer experience
+- **Crew race-day guide** — quick reference for crew operating HelmLog during
+  races (start/stop sessions, mark events, troubleshooting)
+- **AI contributor guardrails** ([#392](https://github.com/weaties/helmlog/pull/392)) — improved onboarding docs and CI checks
+  for AI-assisted contributions
+- **Semantic layer** ([#390](https://github.com/weaties/helmlog/pull/390)) — machine-readable domain knowledge module with
+  decision tables, state diagrams, and EARS specs
+- **Documentation refresh** ([#172](https://github.com/weaties/helmlog/issues/172), [#236](https://github.com/weaties/helmlog/pull/236)) — roadmap, README, CONTRIBUTING.md,
+  and guides updated to match current codebase
+
+### Infrastructure
+- **CI dependency bumps** — actions/checkout v4→v6, actions/github-script v7→v8
+- **WAL gitignore** — SQLite WAL files excluded to prevent dirty-version false
+  positives on Pi deploys
+- **Idempotent migrations** — `ALTER TABLE ADD COLUMN` made safe to re-run
+
 ## Sprint 4 — Analysis, Session Matching, Tuning Extraction & Skill Tooling (2026-03-18)
 
 Sprint 4 adds a pluggable analysis framework, co-op session matching,
 transcript-based tuning extraction, customizable color schemes, and
 expanded developer skill tooling.
 
-### Pluggable analysis framework (#283, #309, #321)
+### Pluggable analysis framework ([#283](https://github.com/weaties/helmlog/issues/283), [#309](https://github.com/weaties/helmlog/issues/309), [#321](https://github.com/weaties/helmlog/issues/321))
 
 Extensible plugin system for post-session analysis:
 
@@ -15,11 +99,11 @@ Extensible plugin system for post-session analysis:
   (platform → co-op → boat → user)
 - **Polar baseline plugin** — wraps existing polar analysis as the first
   built-in plugin
-- **Sail VMG comparison** (#309) — pure upwind/downwind VMG functions across 5
+- **Sail VMG comparison** ([#309](https://github.com/weaties/helmlog/issues/309)) — pure upwind/downwind VMG functions across 5
   wind bands, cross-session `/api/sails/performance` endpoint, and performance
   table on the sails page
 
-### Co-op session matching (#281, #324)
+### Co-op session matching ([#281](https://github.com/weaties/helmlog/issues/281), [#324](https://github.com/weaties/helmlog/issues/324))
 
 Proximity-based pairing of co-op sessions across boats:
 
@@ -32,7 +116,7 @@ Proximity-based pairing of co-op sessions across boats:
 - **Scalability** — parallel fan-out for 20-boat co-ops, proposal dedup,
   centroid caching (schema v45)
 
-### Boat tuning extraction from transcripts (#276, #325)
+### Boat tuning extraction from transcripts ([#276](https://github.com/weaties/helmlog/issues/276), [#325](https://github.com/weaties/helmlog/issues/325))
 
 Regex-based extraction of tuning parameters from audio transcripts:
 
@@ -47,7 +131,7 @@ Regex-based extraction of tuning parameters from audio transcripts:
 - **Privacy** — all extraction data is boat-private, never shared with co-op
 - Schema v44 adds `extraction_runs` and `extraction_items` tables; 7 API endpoints
 
-### Customizable color schemes (#347, #358)
+### Customizable color schemes ([#347](https://github.com/weaties/helmlog/issues/347), [#358](https://github.com/weaties/helmlog/issues/358))
 
 Sunlight-optimized theming system:
 
@@ -57,7 +141,7 @@ Sunlight-optimized theming system:
 - **Full compliance** — ~150+ hardcoded hex colors replaced with CSS custom
   properties across all templates, JS, CSS, and Python
 
-### Threaded comments Phase 2 — notifications (#284, #321)
+### Threaded comments Phase 2 — notifications ([#284](https://github.com/weaties/helmlog/issues/284), [#321](https://github.com/weaties/helmlog/issues/321))
 
 - **@mention autocomplete** — dropdown in comment textareas with arrow key
   navigation, multi-word name support
@@ -67,7 +151,7 @@ Sunlight-optimized theming system:
   notifications
 - Schema v43 for notification storage
 
-### Sail management overhaul (#306, #307, #308, #318)
+### Sail management overhaul ([#306](https://github.com/weaties/helmlog/issues/306), [#307](https://github.com/weaties/helmlog/issues/307), [#308](https://github.com/weaties/helmlog/issues/308), [#318](https://github.com/weaties/helmlog/issues/318))
 
 - **Point-of-sail field** — upwind/downwind/both classification per sail
   (schema v39)
@@ -76,7 +160,7 @@ Sunlight-optimized theming system:
 - **Sail management page** — `/sails` with inventory, accumulated tack/gybe
   counts, per-session history with wind summaries
 
-### Auto-start recording (#345, #346)
+### Auto-start recording ([#345](https://github.com/weaties/helmlog/issues/345), [#346](https://github.com/weaties/helmlog/issues/346))
 
 - Schedule a future race start time via the home page UI
 - Background task fires `start_race()` at the scheduled time with 1 s polling
@@ -85,25 +169,25 @@ Sunlight-optimized theming system:
 
 ### Developer experience & infrastructure
 
-- **Risk tiers** (#320) — 4-tier classification (Critical/High/Standard/Low)
+- **Risk tiers** ([#320](https://github.com/weaties/helmlog/issues/320)) — 4-tier classification (Critical/High/Standard/Low)
   with tier-aware `/pr-checklist` and `/spec` skill for structured specs
-- **Skill evaluation framework** (#349, #357) — test cases for measuring skill
+- **Skill evaluation framework** ([#349](https://github.com/weaties/helmlog/issues/349), [#357](https://github.com/weaties/helmlog/issues/357)) — test cases for measuring skill
   quality and detecting regressions
-- **/skill-compare** (#354, #367) — blind A/B comparison of two skill versions
+- **/skill-compare** ([#354](https://github.com/weaties/helmlog/issues/354), [#367](https://github.com/weaties/helmlog/issues/367)) — blind A/B comparison of two skill versions
   with correctness, completeness, conciseness, and actionability scoring
-- **Skill trigger optimization** (#353, #364) — audited descriptions for all 13
+- **Skill trigger optimization** ([#353](https://github.com/weaties/helmlog/issues/353), [#364](https://github.com/weaties/helmlog/issues/364)) — audited descriptions for all 13
   skills with explicit trigger/anti-trigger guidance and 33-case test suite
-- **/architecture skill** (#352, #363) — codebase comprehension with module map,
+- **/architecture skill** ([#352](https://github.com/weaties/helmlog/issues/352), [#363](https://github.com/weaties/helmlog/issues/363)) — codebase comprehension with module map,
   data flow, and complexity hotspots
-- **/diagnose skill** (#351, #360) — systematic Pi troubleshooting runbook
-- **/domain skill** (#350, #359) — Signal K paths, NMEA 2000 PGNs, and sailing
+- **/diagnose skill** ([#351](https://github.com/weaties/helmlog/issues/351), [#360](https://github.com/weaties/helmlog/issues/360)) — systematic Pi troubleshooting runbook
+- **/domain skill** ([#350](https://github.com/weaties/helmlog/issues/350), [#359](https://github.com/weaties/helmlog/issues/359)) — Signal K paths, NMEA 2000 PGNs, and sailing
   instrument reference
-- **Pi test harness** (#334, #335, #336) — Mac-orchestrated cross-Pi federation
+- **Pi test harness** ([#334](https://github.com/weaties/helmlog/issues/334), [#335](https://github.com/weaties/helmlog/issues/335), [#336](https://github.com/weaties/helmlog/issues/336)) — Mac-orchestrated cross-Pi federation
   testing over Tailscale with UI smoke tests
-- **Claude Code Review** (#330) — GitHub Actions workflow for automated PR review
+- **Claude Code Review** ([#330](https://github.com/weaties/helmlog/issues/330)) — GitHub Actions workflow for automated PR review
 - **CI updates** — actions/checkout v6, astral-sh/setup-uv v7
-- **Pi fixes** — sudoers exact-match fix (#361), data dir ownership (#362),
-  Grafana provisioning permissions (#361)
+- **Pi fixes** — sudoers exact-match fix ([#361](https://github.com/weaties/helmlog/issues/361)), data dir ownership ([#362](https://github.com/weaties/helmlog/issues/362)),
+  Grafana provisioning permissions ([#361](https://github.com/weaties/helmlog/issues/361))
 
 ---
 
@@ -112,7 +196,7 @@ Sunlight-optimized theming system:
 Sprint 3 adds multi-method authentication, boat tuning capture, and
 collaborative race discussion.
 
-### Authentication overhaul — invitation + password + OAuth (#268, #272, #279, #280)
+### Authentication overhaul — invitation + password + OAuth ([#268](https://github.com/weaties/helmlog/issues/268), [#272](https://github.com/weaties/helmlog/issues/272), [#279](https://github.com/weaties/helmlog/issues/279), [#280](https://github.com/weaties/helmlog/issues/280))
 
 Replace the single-use magic-link flow with a proper auth system:
 
@@ -122,10 +206,10 @@ Replace the single-use magic-link flow with a proper auth system:
 - **OAuth login** — Google, Apple, and GitHub identity providers via Authlib
 - **Session middleware** — secure cookie-based sessions replace per-request
   token lookup
-- **Developer role** (#271) — orthogonal `is_developer` flag gates access to
+- **Developer role** ([#271](https://github.com/weaties/helmlog/issues/271)) — orthogonal `is_developer` flag gates access to
   the synthesizer and non-standard branch selection in the deploy UI
 
-### Boat tuning settings (#274, #275, #297, #298)
+### Boat tuning settings ([#274](https://github.com/weaties/helmlog/issues/274), [#275](https://github.com/weaties/helmlog/issues/275), [#297](https://github.com/weaties/helmlog/issues/297), [#298](https://github.com/weaties/helmlog/issues/298))
 
 Structured capture and playback of boat tuning parameters:
 
@@ -140,7 +224,7 @@ Structured capture and playback of boat tuning parameters:
 - **Synthesizer integration** — synthesized sessions now generate realistic
   J/105 tuning data (rig tensions, sail controls, wind-responsive adjustments)
 
-### Threaded comments Phase 1 (#304)
+### Threaded comments Phase 1 ([#304](https://github.com/weaties/helmlog/issues/304))
 
 Collaborative race discussion anchored to sessions:
 
@@ -158,14 +242,14 @@ Collaborative race discussion anchored to sessions:
 
 ### Developer experience & infrastructure
 
-- **Promote gate** (#302, #303) — `promote.yml` GitHub Actions workflow gates
+- **Promote gate** ([#302](https://github.com/weaties/helmlog/issues/302), [#303](https://github.com/weaties/helmlog/issues/303)) — `promote.yml` GitHub Actions workflow gates
   `main → stage` promotion on a new RELEASES.md heading; ideation-only commits
   are exempt
 - **/release-notes skill** — drafts a RELEASES.md entry from commits since
   the last stage promotion
-- **/ideate skill** (#289) — capture half-baked ideas into `docs/ideation-log.md`
+- **/ideate skill** ([#289](https://github.com/weaties/helmlog/issues/289)) — capture half-baked ideas into `docs/ideation-log.md`
   with structured metadata
-- **Bootstrap fixes** (#291, #292, #294) — admin login URL printed correctly,
+- **Bootstrap fixes** ([#291](https://github.com/weaties/helmlog/issues/291), [#292](https://github.com/weaties/helmlog/issues/292), [#294](https://github.com/weaties/helmlog/issues/294)) — admin login URL printed correctly,
   `sudo` added to data dir removal in `reset-pi.sh`
 
 ---
@@ -176,37 +260,37 @@ Sprint 2 (March 10–24) is feature-complete.
 
 ### Performance analysis
 
-- **Maneuver detection** (#232) — automatic tack and gybe detection from 1 Hz
+- **Maneuver detection** ([#232](https://github.com/weaties/helmlog/issues/232)) — automatic tack and gybe detection from 1 Hz
   heading data, surfaced on the session detail page
-- **Polar performance visualization** (#233) — polar diagram overlay on the
+- **Polar performance visualization** ([#233](https://github.com/weaties/helmlog/issues/233)) — polar diagram overlay on the
   session detail page showing boat performance against the J/105 target polar
 
 ### Synthesizer improvements
 
-- **Spatially varying wind model** (#248) — wind direction and pressure
+- **Spatially varying wind model** ([#248](https://github.com/weaties/helmlog/issues/248)) — wind direction and pressure
   gradients across the course area instead of a single uniform wind field
-- **Tack on headers with realistic randomization** (#247) — synthesized boats
+- **Tack on headers with realistic randomization** ([#247](https://github.com/weaties/helmlog/issues/247)) — synthesized boats
   now tack when lifted, with heading noise and timing jitter for realistic
   tracks
-- **Wind model sharing between co-op members** (#246) — co-op boats in a
+- **Wind model sharing between co-op members** ([#246](https://github.com/weaties/helmlog/issues/246)) — co-op boats in a
   synthesized session share the same wind field and start time so their tracks
   are physically consistent
-- **Fix: leg-derived marks for wind field visualization** (#264) — wind field
+- **Fix: leg-derived marks for wind field visualization** ([#264](https://github.com/weaties/helmlog/issues/264)) — wind field
   overlay now uses the actual mark positions from leg geometry instead of the
   original placed marks
 
 ### Deploy & infrastructure
 
-- **Promotion history and branch comparison** (#258) — deploy admin page shows
+- **Promotion history and branch comparison** ([#258](https://github.com/weaties/helmlog/issues/258)) — deploy admin page shows
   a commit-level diff between the current branch and the promotion target
-- **Fix: create loki/promtail groups before chown** (#261) — setup.sh no longer
+- **Fix: create loki/promtail groups before chown** ([#261](https://github.com/weaties/helmlog/issues/261)) — setup.sh no longer
   fails on a fresh Pi when the loki/promtail system groups don't exist yet
 
 ---
 
 ## Promoted to live and stage from main, 2026-03-10
 
-### Synthesize race sessions with interactive Leaflet map (#245, #252)
+### Synthesize race sessions with interactive Leaflet map ([#245](https://github.com/weaties/helmlog/issues/245), [#252](https://github.com/weaties/helmlog/issues/252))
 
 Generate synthetic J/105 sailing sessions for testing and demo purposes:
 
@@ -220,7 +304,7 @@ Generate synthetic J/105 sailing sessions for testing and demo purposes:
   catches peninsula/island clips even when both endpoints are in water
 - Synthesized session type with amber badge in UI, filterable on history page
 
-### Federation phase 1 — identity, co-op data model, session sharing (#224)
+### Federation phase 1 — identity, co-op data model, session sharing ([#224](https://github.com/weaties/helmlog/issues/224))
 
 Boat-to-boat federation with cryptographic identity:
 
@@ -232,7 +316,7 @@ Boat-to-boat federation with cryptographic identity:
 - **Peer API** — inter-boat HTTP endpoints with request signing and verification
 - 32 integration tests covering co-op lifecycle, auth, embargo, and data licensing
 
-### Deployment management and promotion workflow (#222, #223)
+### Deployment management and promotion workflow ([#222](https://github.com/weaties/helmlog/issues/222), [#223](https://github.com/weaties/helmlog/issues/223))
 
 Structured release process with stage/live branches:
 
@@ -242,7 +326,7 @@ Structured release process with stage/live branches:
 - **Promotion workflow** — `main` → `stage` → `live` branch promotion with
   safety checks
 
-### Data policy compliance — privacy, auth, and deletion controls (#194–#211, #215)
+### Data policy compliance — privacy, auth, and deletion controls ([#194](https://github.com/weaties/helmlog/issues/194)–[#211](https://github.com/weaties/helmlog/issues/211), [#215](https://github.com/weaties/helmlog/issues/215))
 
 Comprehensive data licensing policy enforcement:
 
@@ -252,37 +336,37 @@ Comprehensive data licensing policy enforcement:
 - **Audit logging** — all data access and sharing events are logged
 - **Private session isolation** — unshared sessions are invisible to co-op peers
 
-### Configurable Pi health monitor interval (#249, #250)
+### Configurable Pi health monitor interval ([#249](https://github.com/weaties/helmlog/issues/249), [#250](https://github.com/weaties/helmlog/issues/250))
 
 - Default collection interval changed from 60 s to 2 s for smoother dashboards
 - Non-blocking CPU measurement via `psutil.cpu_percent(interval=None)`
 - `MONITOR_INTERVAL_S` env var and admin settings page for runtime tuning
 
-### Mobile navigation overhaul (#230, #231)
+### Mobile navigation overhaul ([#230](https://github.com/weaties/helmlog/issues/230), [#231](https://github.com/weaties/helmlog/issues/231))
 
 - **Hamburger menu** replaces tab navigation for better mobile usability
 
 ### Infrastructure and developer experience
 
-- **GitHub Actions CI** — tests, lint, and type checking on every PR (#219)
-- **Docker dev container** — Claude Code development environment (#229)
+- **GitHub Actions CI** — tests, lint, and type checking on every PR ([#219](https://github.com/weaties/helmlog/issues/219))
+- **Docker dev container** — Claude Code development environment ([#229](https://github.com/weaties/helmlog/issues/229))
 - **Community contribution infrastructure** — CONTRIBUTING.md, issue templates,
-  PR template (#174, #218)
-- **Fan speed** added to Pi Health Grafana dashboard with shared crosshairs (#225)
-- **Hostname in footer** — version info now includes the Pi hostname (#175, #221)
-- **reset-pi.sh** — restore a Pi to pre-setup state for reimaging (#242)
+  PR template ([#174](https://github.com/weaties/helmlog/issues/174), [#218](https://github.com/weaties/helmlog/issues/218))
+- **Fan speed** added to Pi Health Grafana dashboard with shared crosshairs ([#225](https://github.com/weaties/helmlog/issues/225))
+- **Hostname in footer** — version info now includes the Pi hostname ([#175](https://github.com/weaties/helmlog/issues/175), [#221](https://github.com/weaties/helmlog/issues/221))
+- **reset-pi.sh** — restore a Pi to pre-setup state for reimaging ([#242](https://github.com/weaties/helmlog/issues/242))
 - **Git ownership fix** — prevent `.git/` conflicts between helmlog service and
-  deploy user (#239, #240)
-- **Bootstrap add-user fix** — run as correct user to avoid read-only DB (#244)
+  deploy user ([#239](https://github.com/weaties/helmlog/issues/239), [#240](https://github.com/weaties/helmlog/issues/240))
+- **Bootstrap add-user fix** — run as correct user to avoid read-only DB ([#244](https://github.com/weaties/helmlog/issues/244))
 - **Documentation** — approachability guides, fleet quickstart, operator updates,
-  federation protocol gaps (#216, #217, #220)
-- **CLAUDE.md** — added `uv sync` dependency guidance (#251)
+  federation protocol gaps ([#216](https://github.com/weaties/helmlog/issues/216), [#217](https://github.com/weaties/helmlog/issues/217), [#220](https://github.com/weaties/helmlog/issues/220))
+- **CLAUDE.md** — added `uv sync` dependency guidance ([#251](https://github.com/weaties/helmlog/issues/251))
 
 ---
 
 ## 2026-03-08
 
-### Embedded YouTube player with track sync (#183, #185)
+### Embedded YouTube player with track sync ([#183](https://github.com/weaties/helmlog/issues/183), [#185](https://github.com/weaties/helmlog/issues/185))
 
 Session replay now includes synchronized video:
 
@@ -291,7 +375,7 @@ Session replay now includes synchronized video:
   jumps to that moment; video playback updates the track marker position
 - Deep-link support via `?t=<seconds>` for sharing specific race moments
 
-### Session detail page with track map (#178, #180)
+### Session detail page with track map ([#178](https://github.com/weaties/helmlog/issues/178), [#180](https://github.com/weaties/helmlog/issues/180))
 
 Dedicated session view at `/session/{id}`:
 
@@ -300,7 +384,7 @@ Dedicated session view at `/session/{id}`:
 - All session metadata (crew, results, notes, transcripts, sails, exports)
   consolidated into a single page replacing the history accordion cards
 
-### Simplified home page (#170, #171)
+### Simplified home page ([#170](https://github.com/weaties/helmlog/issues/170), [#171](https://github.com/weaties/helmlog/issues/171))
 
 Home page redesigned for race-day focus:
 
@@ -312,7 +396,7 @@ Home page redesigned for race-day focus:
   static files (`base.html`, `home.html`, `history.html`, `base.css`,
   `shared.js`, `home.js`, `history.js`)
 
-### Gaia GPS backfill (#101, #176)
+### Gaia GPS backfill ([#101](https://github.com/weaties/helmlog/issues/101), [#176](https://github.com/weaties/helmlog/issues/176))
 
 Import historical race data from Gaia GPS exports:
 
@@ -321,21 +405,21 @@ Import historical race data from Gaia GPS exports:
 - **SQLite import** — backfill position, heading, and speed data
 - **InfluxDB migration** — push historical data to Grafana dashboards
 
-### Insta360 X4 video pipeline (#155, #161)
+### Insta360 X4 video pipeline ([#155](https://github.com/weaties/helmlog/issues/155), [#161](https://github.com/weaties/helmlog/issues/161))
 
 End-to-end automated video workflow:
 
 - **Camera control** — start/stop recording via OSC HTTP API, tied to race
-  start/stop events (#98, #147)
+  start/stop events ([#98](https://github.com/weaties/helmlog/issues/98), [#147](https://github.com/weaties/helmlog/issues/147))
 - **Camera admin UI** — add/configure cameras, WiFi credentials, status
-  monitoring from the web interface (#147)
+  monitoring from the web interface ([#147](https://github.com/weaties/helmlog/issues/147))
 - **Stitch & upload** — Docker-based stitcher with ffmpeg fallback; discovers
   both `.insv` (360°) and `.mp4` (single-lens) recordings
 - **Auto-link** — uploaded videos automatically associated with race sessions
   by time overlap
 - WiFi SSID/password fields on camera config for direct camera network access
 
-### Remote transcription offload (#121, #146)
+### Remote transcription offload ([#121](https://github.com/weaties/helmlog/issues/121), [#146](https://github.com/weaties/helmlog/issues/146))
 
 Offload Whisper transcription from the Pi to a faster machine:
 
@@ -346,7 +430,7 @@ Offload Whisper transcription from the Pi to a faster machine:
 - Transparent fallback to local Pi transcription if remote worker is
   unreachable
 
-### Nginx reverse proxy (#137, #167)
+### Nginx reverse proxy ([#137](https://github.com/weaties/helmlog/issues/137), [#167](https://github.com/weaties/helmlog/issues/167))
 
 Single-port access to all services on the Pi:
 
@@ -355,20 +439,20 @@ Single-port access to all services on the Pi:
 - Eliminates the need to remember multiple port numbers
 - Signal K admin UI moved to `/sk/` to avoid conflict with `/admin/`
 
-### Configurable event naming rules (#154, #159)
+### Configurable event naming rules ([#154](https://github.com/weaties/helmlog/issues/154), [#159](https://github.com/weaties/helmlog/issues/159))
 
 Day-of-week event names are now admin-configurable:
 
 - Admin UI at `/admin/events` for creating and managing event rules
 - Custom event names (set via web UI) take precedence over weekday defaults
-- Error message shown when starting a race without a daily event set (#153)
+- Error message shown when starting a race without a daily event set ([#153](https://github.com/weaties/helmlog/issues/153))
 
-### Self-service login (#148, #152)
+### Self-service login ([#148](https://github.com/weaties/helmlog/issues/148), [#152](https://github.com/weaties/helmlog/issues/152))
 
 Existing users can request a new magic link from the login page without
 needing an admin to generate an invite token.
 
-### Configurable Pi host references (#151)
+### Configurable Pi host references ([#151](https://github.com/weaties/helmlog/issues/151))
 
 Removed hardcoded `corvopi` / `weaties` references from scripts and docs.
 All Pi-specific values now come from environment variables or are
@@ -376,17 +460,17 @@ auto-detected.
 
 ### Infrastructure fixes
 
-- **Loki + Promtail** for centralized log management (#139, #142), with
-  loopback-only config fix (#162)
+- **Loki + Promtail** for centralized log management ([#139](https://github.com/weaties/helmlog/issues/139), [#142](https://github.com/weaties/helmlog/issues/142)), with
+  loopback-only config fix ([#162](https://github.com/weaties/helmlog/issues/162))
 - **Setup.sh fixes** — bcrypt module, data/ permissions, uv Python
-  traversal, tmux, locale (#140, #141, #144)
-- **Signal K** — fix CORS origins crash on fresh install (#143)
+  traversal, tmux, locale ([#140](https://github.com/weaties/helmlog/issues/140), [#141](https://github.com/weaties/helmlog/issues/141), [#144](https://github.com/weaties/helmlog/issues/144))
+- **Signal K** — fix CORS origins crash on fresh install ([#143](https://github.com/weaties/helmlog/issues/143))
 - **Grafana** — bind to 0.0.0.0 for Tailscale access, auto-populate
   InfluxDB vars in `.env`, anonymous access with None role for login page
 - **Race Track query optimization** — downsample before union, 65x faster
-- **Database schema documentation** at `docs/database-schema.md` (#156, #157)
+- **Database schema documentation** at `docs/database-schema.md` ([#156](https://github.com/weaties/helmlog/issues/156), [#157](https://github.com/weaties/helmlog/issues/157))
 
-### Shared navigation, version footer, timezone support (#129, #130)
+### Shared navigation, version footer, timezone support ([#129](https://github.com/weaties/helmlog/issues/129), [#130](https://github.com/weaties/helmlog/issues/130))
 
 Consistent navigation and timezone-aware timestamps across all pages:
 
@@ -400,7 +484,7 @@ Consistent navigation and timezone-aware timestamps across all pages:
   history, audit, and admin pages
 - 12 new tests (425 total passing)
 
-### Audit log, tags, triggers, headshots, admin nav (#93, #94, #99, #100, #123)
+### Audit log, tags, triggers, headshots, admin nav ([#93](https://github.com/weaties/helmlog/issues/93), [#94](https://github.com/weaties/helmlog/issues/94), [#99](https://github.com/weaties/helmlog/issues/99), [#100](https://github.com/weaties/helmlog/issues/100), [#123](https://github.com/weaties/helmlog/issues/123))
 
 Major feature batch adding traceability, organization, and user personalization:
 
@@ -416,7 +500,7 @@ Major feature batch adding traceability, organization, and user personalization:
   nav bar (visible to admins only via `/api/me` role check)
 - 25 new tests (413 total passing)
 
-### Speaker diarisation on Pi 5 (#120)
+### Speaker diarisation on Pi 5 ([#120](https://github.com/weaties/helmlog/issues/120))
 
 Pyannote speaker diarisation now works on the Pi 5 (aarch64):
 
@@ -427,7 +511,7 @@ Pyannote speaker diarisation now works on the Pi 5 (aarch64):
 - Set `HOME` env var in systemd unit so `faster-whisper` can cache models
   under the `helmlog` service account
 
-### Security hardening (#117, #118)
+### Security hardening ([#117](https://github.com/weaties/helmlog/issues/117), [#118](https://github.com/weaties/helmlog/issues/118))
 
 Comprehensive security hardening of the Pi deployment, baked into `setup.sh`
 so all future SD card builds inherit the same posture:
@@ -442,7 +526,7 @@ so all future SD card builds inherit the same posture:
 - SSH safety guard added after lockout incident — `setup.sh` now validates
   that at least one SSH access method remains before tightening config
 
-### Race event naming fix (#122)
+### Race event naming fix ([#122](https://github.com/weaties/helmlog/issues/122))
 
 Custom event names (saved via the web UI) now take precedence over the
 weekday defaults (BallardCup on Monday, CYC on Wednesday). Previously,
@@ -457,7 +541,7 @@ Added security audit report and penetration test statement of work
 
 ## 2026-03-01
 
-### Audio transcription (#42, PR #63)
+### Audio transcription ([#42](https://github.com/weaties/helmlog/issues/42), PR [#63](https://github.com/weaties/helmlog/issues/63))
 
 Completed recordings can now be transcribed to text directly from the History
 page. Transcription runs on the Pi via
@@ -470,7 +554,7 @@ required.
 - Model is configurable via `WHISPER_MODEL` env var (default: `base`)
 - Speaker diarisation deferred — pyannote.audio is too heavy for Pi CPU
 
-### System health monitoring (#39, PR #62)
+### System health monitoring ([#39](https://github.com/weaties/helmlog/issues/39), PR [#62](https://github.com/weaties/helmlog/issues/62))
 
 The logger now watches the Pi's vitals automatically.
 
@@ -480,7 +564,7 @@ The logger now watches the Pi's vitals automatically.
   appears when disk > 85 % or CPU temp > 75 °C
 - `GET /api/system-health` endpoint available for external monitoring
 
-### Audio playback and download (#21, PR #61)
+### Audio playback and download ([#21](https://github.com/weaties/helmlog/issues/21), PR [#61](https://github.com/weaties/helmlog/issues/61))
 
 WAV recordings can now be played or downloaded directly from the web UI
 without needing to SSH into the Pi.
@@ -489,7 +573,7 @@ without needing to SSH into the Pi.
 - `GET /api/audio/{id}/stream` — browser-range-request compatible streaming
 - `GET /api/audio/{id}/download` — downloads the WAV with `Content-Disposition: attachment`
 
-### Photo caching (#44, PR #61)
+### Photo caching ([#44](https://github.com/weaties/helmlog/issues/44), PR [#61](https://github.com/weaties/helmlog/issues/61))
 
 Photo notes no longer reload on every page refresh, which was noticeably slow
 over the boat's Wi-Fi hotspot.
@@ -502,31 +586,31 @@ over the boat's Wi-Fi hotspot.
 
 ## 2026-02-27
 
-### Sail tracking (#57, PR #60)
+### Sail tracking ([#57](https://github.com/weaties/helmlog/issues/57), PR [#60](https://github.com/weaties/helmlog/issues/60))
 
 - Sail inventory management on the Boats page (add / delete sails by type and name)
 - Per-race sail selection on History race cards (main, jib, kite)
 - Sail choices stored in `race_sails` table (schema v14)
 
-### Guest crew position, WAV player on home page, debrief audio (#38, #49, #31, PR #59)
+### Guest crew position, WAV player on home page, debrief audio ([#38](https://github.com/weaties/helmlog/issues/38), [#49](https://github.com/weaties/helmlog/issues/49), [#31](https://github.com/weaties/helmlog/issues/31), PR [#59](https://github.com/weaties/helmlog/issues/59))
 
 - Crew member positions include a **Guest** option
 - The home page shows a live audio player when a recording is in progress
 - Debrief sessions can be added with a named crew list
 
-### YouTube video linking with Grafana deep links (#22, PR #51 / #58)
+### YouTube video linking with Grafana deep links ([#22](https://github.com/weaties/helmlog/issues/22), PR [#51](https://github.com/weaties/helmlog/issues/51) / [#58](https://github.com/weaties/helmlog/issues/58))
 
 - Link any YouTube video to instrument data via a UTC/offset sync point
 - Every CSV export row gets a `video_url` deep-link (`?t=<seconds>`)
 - Grafana annotation popups link directly to the matching video timestamp
 - History page **Add Video** form with optional sync calibration
 
-### Grafana annotations endpoint (#52, PR #54)
+### Grafana annotations endpoint ([#52](https://github.com/weaties/helmlog/issues/52), PR [#54](https://github.com/weaties/helmlog/issues/54))
 
 - `POST /api/grafana/annotations` — creates Grafana annotations from race/practice events
 - Enables click-through from Grafana time-series panels to race timestamps
 
-### Git version in web UI footer (#55, PR #56)
+### Git version in web UI footer ([#55](https://github.com/weaties/helmlog/issues/55), PR [#56](https://github.com/weaties/helmlog/issues/56))
 
 - Branch name and short commit SHA shown in the footer of every web page
 - Makes it easy to confirm which version is running on the Pi
