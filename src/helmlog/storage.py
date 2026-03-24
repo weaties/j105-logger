@@ -1380,7 +1380,15 @@ class Storage:
             # one via db.execute() so they share a transaction with the version
             # record insert.  This keeps DDL + version tracking atomic.
             for stmt in _split_migration_sql(_MIGRATIONS[version]):
-                await db.execute(stmt)
+                upper = stmt.lstrip().upper()
+                is_alter_add = upper.startswith("ALTER TABLE") and "ADD COLUMN" in upper
+                if is_alter_add:
+                    try:  # noqa: SIM105
+                        await db.execute(stmt)
+                    except Exception:  # noqa: BLE001
+                        pass  # Column already exists — partial prior migration
+                else:
+                    await db.execute(stmt)
             await db.execute(
                 "INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (version,)
             )

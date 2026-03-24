@@ -43,6 +43,7 @@ async function init() {
     loadBoatSettings();
     loadNotes();
     if (_session.end_utc) loadPolar();
+    loadAnalysis();
   }
   if (_session.has_audio && _session.audio_session_id) {
     loadTranscript();
@@ -1210,6 +1211,159 @@ function renderExports() {
     html += '<a class="btn-export" href="/api/audio/' + s.audio_session_id + '/download">&#8595; WAV</a>';
   }
   body.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+// Analysis — staleness indicator + A/B comparison (#412)
+// ---------------------------------------------------------------------------
+
+let _analysisResult = null;
+
+async function loadAnalysis() {
+  try {
+    const r = await fetch('/api/analysis/results/' + SESSION_ID);
+    if (!r.ok) return;
+    _analysisResult = await r.json();
+
+    const card = document.getElementById('analysis-card');
+    card.style.display = '';
+    renderAnalysisResult(_analysisResult, document.getElementById('analysis-body'));
+  } catch (e) { /* non-fatal */ }
+}
+
+function renderAnalysisResult(result, container) {
+  let html = '';
+  // Staleness banner
+  if (result.stale_reason) {
+    html += '<div class="stale-banner">'
+      + '<span>Analysis outdated: ' + esc(result.stale_reason.replace(/_/g, ' ')) + '</span>'
+      + '<button onclick="rerunAnalysis()">Re-run analysis</button>'
+      + '</div>';
+  }
+  // Label
+  const label = result.plugin_name
+    ? esc(result.plugin_name) + (result.plugin_version ? ' v' + esc(result.plugin_version) : '')
+    : '';
+  if (label) {
+    html += '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:6px">' + label + '</div>';
+  }
+  // Metrics
+  const metrics = result.metrics || [];
+  if (metrics.length) {
+    for (const m of metrics) {
+      html += '<div class="metric">'
+        + '<span>' + esc(m.label || m.name) + '</span>'
+        + '<span><strong>' + esc(String(m.value)) + '</strong>'
+        + (m.unit ? ' <span style="color:var(--text-secondary)">' + esc(m.unit) + '</span>' : '')
+        + '</span></div>';
+    }
+  }
+  // Insights
+  const insights = result.insights || [];
+  if (insights.length) {
+    for (const i of insights) {
+      const cls = i.severity === 'critical' ? 'insight-critical'
+        : i.severity === 'warning' ? 'insight-warning' : '';
+      html += '<div class="insight ' + cls + '">' + esc(i.message) + '</div>';
+    }
+  }
+  if (!metrics.length && !insights.length) {
+    html += '<div style="font-size:.82rem;color:var(--text-secondary)">No analysis data available</div>';
+  }
+  container.innerHTML = html;
+}
+
+async function rerunAnalysis() {
+  const body = document.getElementById('analysis-body');
+  body.innerHTML = '<div style="font-size:.82rem;color:var(--text-secondary)">Running analysis\u2026</div>';
+  try {
+    const r = await fetch('/api/analysis/run/' + SESSION_ID, {method: 'POST'});
+    if (!r.ok) { body.innerHTML = '<div style="color:var(--danger);font-size:.82rem">Re-run failed</div>'; return; }
+    _analysisResult = await r.json();
+    renderAnalysisResult(_analysisResult, body);
+  } catch (e) {
+    body.innerHTML = '<div style="color:var(--danger);font-size:.82rem">Re-run failed: ' + esc(e.message) + '</div>';
+  }
+}
+
+// A/B Comparison
+let _abMode = false;
+
+async function showAbCompare() {
+  const body = document.getElementById('analysis-body');
+  if (_abMode) { _abMode = false; await loadAnalysis(); return; }
+  _abMode = true;
+
+  // Fetch available models
+  let plugins;
+  try {
+    const r = await fetch('/api/analysis/models');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    plugins = await r.json();
+  } catch (e) { body.innerHTML = '<div style="color:var(--danger);font-size:.82rem">Failed to load models</div>'; return; }
+
+  if (plugins.length < 2) {
+    body.innerHTML = '<div style="font-size:.82rem;color:var(--text-secondary)">At least 2 plugins are needed for A/B comparison</div>';
+    return;
+  }
+
+  let html = '<div class="ab-selector">';
+  for (const p of plugins) {
+    html += '<label><input type="checkbox" value="' + esc(p.name) + '" checked> ' + esc(p.display_name) + '</label>';
+  }
+  html += '<button onclick="runAbCompare()" style="background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;padding:5px 12px;font-size:.78rem;cursor:pointer">Compare</button>';
+  html += '</div><div id="ab-panels"></div>';
+  body.innerHTML = html;
+}
+
+async function runAbCompare() {
+  const checks = document.querySelectorAll('#analysis-body .ab-selector input[type=checkbox]:checked');
+  const models = Array.from(checks).map(c => c.value);
+  if (models.length < 2) { alert('Select at least 2 models'); return; }
+  if (models.length > 5) { alert('Select at most 5 models'); return; }
+
+  const panels = document.getElementById('ab-panels');
+  panels.innerHTML = '<div style="font-size:.82rem;color:var(--text-secondary)">Running comparison\u2026</div>';
+
+  try {
+    const r = await fetch('/api/analysis/ab-compare/' + SESSION_ID, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({models: models})
+    });
+    if (!r.ok) { const d = await r.json().catch(() => ({})); panels.innerHTML = '<div style="color:var(--danger);font-size:.82rem">' + esc(d.detail || 'Comparison failed') + '</div>'; return; }
+    const data = await r.json();
+
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">';
+    for (const p of data.panels) {
+      html += '<div class="ab-panel">';
+      if (p.error) {
+        html += '<h3>' + esc(p.plugin_name) + '</h3>';
+        html += '<div style="color:var(--danger);font-size:.82rem">' + esc(p.error) + '</div>';
+      } else {
+        html += '<h3>' + esc(p.label || p.plugin_name) + '</h3>';
+        if (p.stale_reason) {
+          html += '<div style="font-size:.72rem;color:var(--warning);margin-bottom:4px">Stale: ' + esc(p.stale_reason.replace(/_/g, ' ')) + '</div>';
+        }
+        const metrics = p.metrics || [];
+        for (const m of metrics) {
+          html += '<div class="metric"><span>' + esc(m.label || m.name) + '</span>'
+            + '<span><strong>' + esc(String(m.value)) + '</strong>'
+            + (m.unit ? ' ' + esc(m.unit) : '') + '</span></div>';
+        }
+        const insights = p.insights || [];
+        for (const i of insights) {
+          const cls = i.severity === 'critical' ? 'insight-critical'
+            : i.severity === 'warning' ? 'insight-warning' : '';
+          html += '<div class="insight ' + cls + '">' + esc(i.message) + '</div>';
+        }
+      }
+      html += '</div>';
+    }
+    html += '</div>';
+    panels.innerHTML = html;
+  } catch (e) {
+    panels.innerHTML = '<div style="color:var(--danger);font-size:.82rem">Error: ' + esc(e.message) + '</div>';
+  }
 }
 
 // ---------------------------------------------------------------------------

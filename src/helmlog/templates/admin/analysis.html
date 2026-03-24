@@ -1,0 +1,325 @@
+{% extends "base.html" %}
+{% block title %}Analysis Catalog — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+h1{font-size:1.3rem;font-weight:700;color:var(--accent)}
+h2{font-size:1rem;font-weight:600;color:var(--accent);margin:0 0 10px}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+.field{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;
+padding:9px 12px;color:var(--text-primary);font-size:.9rem;width:100%;box-sizing:border-box}
+select.field{appearance:auto}
+textarea.field{min-height:60px;font-family:inherit;resize:vertical}
+.btn-add{padding:9px 16px;border:none;border-radius:6px;background:var(--accent-strong);
+color:var(--bg-primary);font-weight:700;cursor:pointer;font-size:.9rem}
+.btn-add:disabled{opacity:.5;cursor:not-allowed}
+.btn-sm{padding:8px 12px;border:1px solid var(--border);border-radius:4px;
+background:var(--bg-input);font-size:.78rem;cursor:pointer;min-height:36px}
+.btn-approve{color:var(--success);border-color:var(--success)}
+.btn-reject{color:var(--danger);border-color:var(--danger)}
+.btn-default{color:var(--accent);border-color:var(--accent-strong)}
+.btn-deprecate{color:var(--warning);border-color:var(--warning)}
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;
+padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.empty{color:var(--text-secondary);text-align:center;padding:20px 0}
+.badge{display:inline-block;font-size:.7rem;text-transform:uppercase;letter-spacing:.06em;
+padding:2px 7px;border-radius:3px}
+.badge-proposed{background:var(--border);color:var(--accent)}
+.badge-active{background:var(--bg-secondary);color:var(--success)}
+.badge-default{background:var(--success);color:var(--bg-primary)}
+.badge-rejected{background:var(--bg-secondary);color:var(--danger)}
+.badge-deprecated{background:var(--bg-secondary);color:var(--text-secondary)}
+.badge-local{background:var(--bg-secondary);color:var(--text-secondary)}
+.status{margin-top:12px;padding:8px;border-radius:6px;font-size:.85rem;display:none}
+.status.ok{display:block;background:var(--bg-secondary);color:var(--success);border:1px solid var(--success)}
+.status.err{display:block;background:var(--bg-secondary);color:var(--danger);border:1px solid var(--danger)}
+.form-grid{display:grid;grid-template-columns:1fr;gap:8px;margin-bottom:10px}
+.reject-reason{margin-top:6px;display:none}
+</style>
+{% endblock %}
+{% block content %}
+<h1 style="margin-bottom:12px">Analysis Catalog</h1>
+
+<!-- Local plugins -->
+<div class="card">
+  <div class="label">Installed Plugins</div>
+  <div id="plugins-section">Loading...</div>
+</div>
+
+<!-- Preference -->
+<div class="card">
+  <div class="label">Default Analysis Model</div>
+  <div id="preference-section">Loading...</div>
+</div>
+
+<!-- Co-op catalog -->
+<div class="card" id="catalog-card" style="display:none">
+  <div class="label">Co-op Catalog</div>
+  <div id="catalog-section">Loading...</div>
+</div>
+
+<!-- Propose plugin -->
+<div class="card" id="propose-card" style="display:none">
+  <div class="label">Propose Plugin to Co-op</div>
+  <div class="form-grid">
+    <select id="propose-coop" class="field"></select>
+    <select id="propose-plugin" class="field"></select>
+  </div>
+  <button class="btn-add" onclick="proposePlugin()">Propose</button>
+  <div id="propose-status" class="status"></div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+let PLUGINS = [];
+let COOPS = [];
+let IS_MODERATOR = {};
+
+function stateBadge(state) {
+  const cls = {
+    boat_local: 'badge-local', proposed: 'badge-proposed',
+    co_op_active: 'badge-active', co_op_default: 'badge-default',
+    rejected: 'badge-rejected', deprecated: 'badge-deprecated'
+  }[state] || 'badge-local';
+  const label = state.replace(/_/g, ' ');
+  return '<span class="badge ' + cls + '">' + esc(label) + '</span>';
+}
+
+/* ──────────────── Plugins ──────────────── */
+async function loadPlugins() {
+  const el = document.getElementById('plugins-section');
+  try {
+    const r = await fetch('/api/analysis/models');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    PLUGINS = await r.json();
+    if (!PLUGINS.length) {
+      el.innerHTML = '<div class="empty">No analysis plugins installed</div>';
+      return;
+    }
+    let html = '<div class="table-wrap"><table><thead><tr>'
+      + '<th>Name</th><th>Version</th><th>Description</th>'
+      + '</tr></thead><tbody>';
+    for (const p of PLUGINS) {
+      html += '<tr>'
+        + '<td><strong>' + esc(p.display_name) + '</strong><br>'
+        + '<span style="color:var(--text-secondary);font-size:.75rem">' + esc(p.name) + '</span></td>'
+        + '<td>' + esc(p.version) + '</td>'
+        + '<td style="max-width:300px">' + esc(p.description) + '</td>'
+        + '</tr>';
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty" style="color:var(--danger)">Failed to load plugins: ' + esc(e.message) + '</div>';
+  }
+}
+
+/* ──────────────── Preference ──────────────── */
+async function loadPreference() {
+  const el = document.getElementById('preference-section');
+  try {
+    const r = await fetch('/api/analysis/preferences');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    const current = data.model_name || '(platform default)';
+
+    let html = '<div style="font-size:.85rem;margin-bottom:8px">Current: <strong>' + esc(current) + '</strong></div>';
+    if (PLUGINS.length) {
+      html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+      html += '<select id="pref-model" class="field" style="width:auto;flex:1">';
+      for (const p of PLUGINS) {
+        const sel = p.name === data.model_name ? ' selected' : '';
+        html += '<option value="' + esc(p.name) + '"' + sel + '>' + esc(p.display_name) + '</option>';
+      }
+      html += '</select>';
+      html += '<select id="pref-scope" class="field" style="width:auto">';
+      html += '<option value="user">User</option>';
+      html += '<option value="boat">Boat</option>';
+      html += '<option value="co_op">Co-op</option>';
+      html += '<option value="platform">Platform</option>';
+      html += '</select>';
+      html += '<button class="btn-add" style="padding:8px 14px;font-size:.82rem" onclick="setPreference()">Set</button>';
+      html += '</div>';
+    }
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div class="empty" style="color:var(--danger)">Failed: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function setPreference() {
+  const model = document.getElementById('pref-model').value;
+  const scope = document.getElementById('pref-scope').value;
+  const r = await fetch('/api/analysis/preferences', {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({scope: scope, model_name: model})
+  });
+  if (r.ok) {
+    await loadPreference();
+  } else {
+    const d = await r.json().catch(() => ({}));
+    alert(d.detail || 'Failed to set preference');
+  }
+}
+
+/* ──────────────── Co-op Catalog ──────────────── */
+async function loadCatalog() {
+  try {
+    const cr = await fetch('/api/federation/co-ops');
+    if (!cr.ok) return;
+    const cd = await cr.json();
+    COOPS = cd.co_ops || [];
+    if (!COOPS.length) return;
+
+    IS_MODERATOR = {};
+    for (const c of COOPS) {
+      if (c.role === 'admin') IS_MODERATOR[c.co_op_id] = true;
+    }
+
+    const card = document.getElementById('catalog-card');
+    card.style.display = '';
+    const el = document.getElementById('catalog-section');
+    let html = '';
+
+    for (const c of COOPS) {
+      html += '<h2>' + esc(c.co_op_name) + '</h2>';
+      const er = await fetch('/api/analysis/catalog?co_op_id=' + encodeURIComponent(c.co_op_id));
+      if (!er.ok) {
+        html += '<div class="empty">Failed to load catalog</div>';
+        continue;
+      }
+      const entries = await er.json();
+      if (!entries.length) {
+        html += '<div class="empty">No plugins in this co-op catalog yet</div>';
+        continue;
+      }
+      html += '<div class="table-wrap"><table><thead><tr>'
+        + '<th>Plugin</th><th>Version</th><th>State</th><th>Author</th><th>Actions</th>'
+        + '</tr></thead><tbody>';
+      for (const e of entries) {
+        html += '<tr>'
+          + '<td><strong>' + esc(e.plugin_name) + '</strong>'
+          + (e.changelog ? '<br><span style="color:var(--text-secondary);font-size:.72rem">' + esc(e.changelog) + '</span>' : '')
+          + '</td>'
+          + '<td>' + esc(e.version || '') + '</td>'
+          + '<td>' + stateBadge(e.state)
+          + (e.reject_reason ? '<br><span style="color:var(--danger);font-size:.72rem">' + esc(e.reject_reason) + '</span>' : '')
+          + '</td>'
+          + '<td style="font-size:.8rem">' + esc(e.author || '') + '</td>'
+          + '<td style="white-space:nowrap">' + catalogActions(e, c.co_op_id) + '</td>'
+          + '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+    el.innerHTML = html;
+    updateProposeForm();
+  } catch (e) {
+    document.getElementById('catalog-section').innerHTML =
+      '<div class="empty" style="color:var(--danger)">Error: ' + esc(e.message) + '</div>';
+  }
+}
+
+function catalogActions(entry, coopId) {
+  const s = entry.state;
+  const isMod = IS_MODERATOR[coopId];
+  let btns = '';
+  if (s === 'proposed' && isMod) {
+    btns += '<button class="btn-sm btn-approve" onclick="approvePlugin(\'' + esc(entry.plugin_name) + '\',\'' + esc(coopId) + '\')">Approve</button> ';
+    btns += '<button class="btn-sm btn-reject" onclick="rejectPlugin(\'' + esc(entry.plugin_name) + '\',\'' + esc(coopId) + '\')">Reject</button>';
+  }
+  if (s === 'co_op_active' && isMod) {
+    btns += '<button class="btn-sm btn-default" onclick="setDefault(\'' + esc(entry.plugin_name) + '\',\'' + esc(coopId) + '\')">Set Default</button> ';
+    btns += '<button class="btn-sm btn-deprecate" onclick="deprecatePlugin(\'' + esc(entry.plugin_name) + '\',\'' + esc(coopId) + '\')">Deprecate</button>';
+  }
+  if (s === 'co_op_default' && isMod) {
+    btns += '<button class="btn-sm btn-deprecate" onclick="deprecatePlugin(\'' + esc(entry.plugin_name) + '\',\'' + esc(coopId) + '\')">Deprecate</button>';
+  }
+  if (s === 'rejected') {
+    btns += '<span style="font-size:.75rem;color:var(--text-secondary)">Can re-propose</span>';
+  }
+  if (s === 'deprecated') {
+    btns += '<span style="font-size:.75rem;color:var(--text-secondary)">Retired</span>';
+  }
+  return btns || '\u2014';
+}
+
+/* ──────────────── Catalog actions ──────────────── */
+async function approvePlugin(name, coopId) {
+  const r = await fetch('/api/analysis/catalog/' + encodeURIComponent(name) + '/approve', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({co_op_id: coopId, result_sample: {}})
+  });
+  if (r.ok) { await loadCatalog(); }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Approve failed'); }
+}
+
+async function rejectPlugin(name, coopId) {
+  const reason = prompt('Rejection reason (required):');
+  if (!reason) return;
+  const r = await fetch('/api/analysis/catalog/' + encodeURIComponent(name) + '/reject', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({co_op_id: coopId, reason: reason})
+  });
+  if (r.ok) { await loadCatalog(); }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Reject failed'); }
+}
+
+async function setDefault(name, coopId) {
+  const r = await fetch('/api/analysis/catalog/' + encodeURIComponent(name) + '/set-default', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({co_op_id: coopId})
+  });
+  if (r.ok) { await loadCatalog(); }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Set default failed'); }
+}
+
+async function deprecatePlugin(name, coopId) {
+  if (!confirm('Deprecate ' + name + '? This retires it from the co-op.')) return;
+  const r = await fetch('/api/analysis/catalog/' + encodeURIComponent(name) + '/deprecate', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({co_op_id: coopId})
+  });
+  if (r.ok) { await loadCatalog(); }
+  else { const d = await r.json().catch(() => ({})); alert(d.detail || 'Deprecate failed'); }
+}
+
+/* ──────────────── Propose ──────────────── */
+function updateProposeForm() {
+  const adminCoops = COOPS.filter(c => c.role === 'admin');
+  const card = document.getElementById('propose-card');
+  if (!adminCoops.length || !PLUGINS.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  document.getElementById('propose-coop').innerHTML = adminCoops.map(c =>
+    '<option value="' + esc(c.co_op_id) + '">' + esc(c.co_op_name) + '</option>'
+  ).join('');
+  document.getElementById('propose-plugin').innerHTML = PLUGINS.map(p =>
+    '<option value="' + esc(p.name) + '">' + esc(p.display_name) + ' (' + esc(p.version) + ')</option>'
+  ).join('');
+}
+
+async function proposePlugin() {
+  const coopId = document.getElementById('propose-coop').value;
+  const pluginName = document.getElementById('propose-plugin').value;
+  const st = document.getElementById('propose-status');
+  if (!coopId || !pluginName) { st.textContent = 'Select co-op and plugin'; st.className = 'status err'; return; }
+  const r = await fetch('/api/analysis/catalog/propose', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({co_op_id: coopId, plugin_name: pluginName})
+  });
+  if (r.ok) {
+    st.textContent = 'Plugin proposed!'; st.className = 'status ok';
+    setTimeout(() => { st.className = 'status'; loadCatalog(); }, 800);
+  } else {
+    const d = await r.json().catch(() => ({}));
+    st.textContent = d.detail || 'Propose failed'; st.className = 'status err';
+  }
+}
+
+/* ──────────────── Init ──────────────── */
+loadPlugins().then(loadPreference).then(loadCatalog).catch(e => console.error('Analysis init:', e));
+</script>
+{% endblock %}
