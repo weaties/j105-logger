@@ -1696,7 +1696,10 @@ class Storage:
 
     async def _write_rudder(self, r: RudderRecord) -> None:
         now = time.monotonic()
-        hz = self._config.rudder_storage_hz
+        try:
+            hz = float(os.environ.get("RUDDER_STORAGE_HZ", "2"))
+        except ValueError:
+            hz = 2.0
         if hz > 0 and (now - self._last_rudder_write) < (1.0 / hz):
             return
         self._last_rudder_write = now
