@@ -8,8 +8,9 @@ import json
 import math
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from helmlog.nmea2000 import (
@@ -25,6 +26,7 @@ from helmlog.sk_reader import SK_SOURCE_ADDR, SKReader, SKReaderConfig, process_
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -32,6 +34,7 @@ if TYPE_CHECKING:
 
 _TS = "2025-08-10T14:05:30.000Z"
 _TS_DT = datetime(2025, 8, 10, 14, 5, 30, tzinfo=UTC)
+_FAKE_REQUEST = httpx.Request("GET", "http://test")
 
 
 def _delta(path: str, value: object, ts: str = _TS) -> str:
@@ -463,3 +466,222 @@ class TestSKReaderReconnect:
                 await task
 
         assert connect_calls[0] >= 2
+
+
+# ---------------------------------------------------------------------------
+# TestSKReaderConfigAuth — auth fields on SKReaderConfig
+# ---------------------------------------------------------------------------
+
+
+class TestSKReaderConfigAuth:
+    """Auth-related fields on SKReaderConfig."""
+
+    def test_token_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SK_TOKEN", "abc123")
+        cfg = SKReaderConfig()
+        assert cfg.token == "abc123"
+
+    def test_username_password_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("SK_USERNAME", "admin")
+        monkeypatch.setenv("SK_PASSWORD", "secret")
+        cfg = SKReaderConfig()
+        assert cfg.username == "admin"
+        assert cfg.password == "secret"
+
+    def test_defaults_none_when_no_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("SK_TOKEN", raising=False)
+        monkeypatch.delenv("SK_USERNAME", raising=False)
+        monkeypatch.delenv("SK_PASSWORD", raising=False)
+        cfg = SKReaderConfig()
+        assert cfg.token is None
+        assert cfg.username is None
+        assert cfg.password is None
+
+
+# ---------------------------------------------------------------------------
+# TestTokenResolution — _resolve_token waterfall
+# ---------------------------------------------------------------------------
+
+
+class TestTokenResolution:
+    """Token resolution waterfall: explicit token → login → password file → None."""
+
+    async def test_uses_explicit_token(self) -> None:
+        """SK_TOKEN takes priority — no HTTP call made."""
+        reader = SKReader(SKReaderConfig(token="pre-existing"))
+        token = await reader._resolve_token()
+        assert token == "pre-existing"
+
+    async def test_login_with_username_password(self) -> None:
+        """Auto-login via SK REST API when credentials provided."""
+        cfg = SKReaderConfig(username="admin", password="secret")
+        reader = SKReader(cfg)
+
+        async def mock_post(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            return httpx.Response(200, json={"token": "jwt-from-login"}, request=_FAKE_REQUEST)
+
+        with patch.object(httpx.AsyncClient, "post", mock_post):
+            token = await reader._resolve_token()
+        assert token == "jwt-from-login"
+
+    async def test_login_fallback_to_password_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reads ~/.signalk-admin-pass.txt when no env vars set."""
+        pass_file = tmp_path / ".signalk-admin-pass.txt"
+        pass_file.write_text("file-password\n")
+        monkeypatch.setattr("helmlog.sk_reader.Path.home", staticmethod(lambda: tmp_path))
+
+        cfg = SKReaderConfig()
+        reader = SKReader(cfg)
+
+        async def mock_post(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            return httpx.Response(200, json={"token": "jwt-from-file"}, request=_FAKE_REQUEST)
+
+        with patch.object(httpx.AsyncClient, "post", mock_post):
+            token = await reader._resolve_token()
+        assert token == "jwt-from-file"
+
+    async def test_no_credentials_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No token, no creds, no file — returns None."""
+        monkeypatch.setattr("helmlog.sk_reader.Path.home", staticmethod(lambda: tmp_path))
+        cfg = SKReaderConfig()
+        reader = SKReader(cfg)
+        token = await reader._resolve_token()
+        assert token is None
+
+    async def test_login_failure_returns_none(self) -> None:
+        """Bad credentials log a warning and return None."""
+        cfg = SKReaderConfig(username="admin", password="wrong")
+        reader = SKReader(cfg)
+
+        async def mock_post(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            return httpx.Response(401, text="Unauthorized", request=_FAKE_REQUEST)
+
+        with patch.object(httpx.AsyncClient, "post", mock_post):
+            token = await reader._resolve_token()
+        assert token is None
+
+    async def test_password_file_missing_returns_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing password file is not an error — returns None."""
+        monkeypatch.setattr("helmlog.sk_reader.Path.home", staticmethod(lambda: tmp_path))
+        cfg = SKReaderConfig()
+        reader = SKReader(cfg)
+        token = await reader._resolve_token()
+        assert token is None
+
+
+# ---------------------------------------------------------------------------
+# TestAuthPlumbing — token passed to HTTP and WebSocket connections
+# ---------------------------------------------------------------------------
+
+
+class TestAuthPlumbing:
+    """Token is plumbed to HTTP headers and WebSocket URI."""
+
+    async def test_resolve_self_context_sends_bearer_header(self) -> None:
+        """HTTP GET /api/self includes Authorization header when token is set."""
+        reader = SKReader(SKReaderConfig(token="my-jwt"))
+        reader._token = "my-jwt"
+        captured_headers: dict[str, str] = {}
+
+        async def mock_get(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            headers = kwargs.get("headers", {})
+            assert isinstance(headers, dict)
+            captured_headers.update(headers)
+            return httpx.Response(200, json="vessels.self")
+
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            await reader._resolve_self_context()
+
+        assert captured_headers.get("Authorization") == "Bearer my-jwt"
+
+    async def test_resolve_self_context_no_header_when_no_token(self) -> None:
+        """No auth header sent when token is None."""
+        reader = SKReader(SKReaderConfig())
+        reader._token = None
+        captured_headers: dict[str, str] = {}
+
+        async def mock_get(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            headers = kwargs.get("headers", {})
+            assert isinstance(headers, dict)
+            captured_headers.update(headers)
+            return httpx.Response(200, json="vessels.self")
+
+        with patch.object(httpx.AsyncClient, "get", mock_get):
+            await reader._resolve_self_context()
+
+        assert "Authorization" not in captured_headers
+
+    async def test_websocket_uri_includes_token_param(self) -> None:
+        """WS URI has &token=<jwt> when authenticated."""
+        reader = SKReader(SKReaderConfig())
+        reader._token = "ws-jwt"
+
+        captured_uris: list[str] = []
+
+        class FakeWS:
+            def __init__(self, uri: str) -> None:
+                captured_uris.append(uri)
+
+            async def __aenter__(self) -> FakeWS:
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                pass
+
+            def __aiter__(self) -> AsyncGenerator[str, None]:
+                return self._gen()
+
+            async def _gen(self) -> AsyncGenerator[str, None]:
+                yield _delta("navigation.headingTrue", 1.0)
+
+        with (
+            patch("helmlog.sk_reader._ws_connect", lambda uri, **kw: FakeWS(uri)),
+            patch.object(SKReader, "_resolve_self_context", AsyncMock(return_value=None)),
+            patch.object(SKReader, "_resolve_token", AsyncMock(return_value="ws-jwt")),
+        ):
+            async for _ in reader:
+                break
+
+        assert len(captured_uris) >= 1
+        assert "&token=ws-jwt" in captured_uris[0]
+
+    async def test_websocket_uri_no_token_when_none(self) -> None:
+        """WS URI is unchanged when no token."""
+        reader = SKReader(SKReaderConfig())
+        reader._token = None
+
+        captured_uris: list[str] = []
+
+        class FakeWS:
+            def __init__(self, uri: str) -> None:
+                captured_uris.append(uri)
+
+            async def __aenter__(self) -> FakeWS:
+                return self
+
+            async def __aexit__(self, *_: object) -> None:
+                pass
+
+            def __aiter__(self) -> AsyncGenerator[str, None]:
+                return self._gen()
+
+            async def _gen(self) -> AsyncGenerator[str, None]:
+                yield _delta("navigation.headingTrue", 1.0)
+
+        with (
+            patch("helmlog.sk_reader._ws_connect", lambda uri, **kw: FakeWS(uri)),
+            patch.object(SKReader, "_resolve_self_context", AsyncMock(return_value=None)),
+            patch.object(SKReader, "_resolve_token", AsyncMock(return_value=None)),
+        ):
+            async for _ in reader:
+                break
+
+        assert len(captured_uris) >= 1
+        assert "token=" not in captured_uris[0]
+        assert captured_uris[0].endswith("subscribe=all")
