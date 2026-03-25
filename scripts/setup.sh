@@ -540,12 +540,16 @@ if [[ ! -f "$SK_SECURITY_FILE" ]]; then
 
     # Hash via Signal K's own bcryptjs to ensure compatibility.
     # Signal K uses the field name 'username' (not 'userId') for login matching.
+    # secretKey is required for JWT signing (device tokens, access requests).
+    # Without it, device approval fails with "secretOrPrivateKey must have a value".
     node -e "
+const crypto = require('crypto');
 const bcrypt = require('/usr/lib/node_modules/signalk-server/node_modules/bcryptjs');
 const hash = bcrypt.hashSync(process.env.SK_ADMIN_PASS, 12);
 const data = {
   allowedCorsOrigins: '',
   immutableConfig: false,
+  secretKey: crypto.randomBytes(32).toString('hex'),
   acls: [],
   users: [
     { username: 'admin', type: 'admin', password: hash, roles: ['admin'] }
