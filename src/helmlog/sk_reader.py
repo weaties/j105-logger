@@ -12,6 +12,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -49,11 +50,15 @@ class SKReaderConfig:
     """Configuration for the Signal K WebSocket reader.
 
     Values fall back to environment variables SK_HOST / SK_PORT if not set.
+    Auth waterfall: SK_TOKEN → SK_USERNAME/SK_PASSWORD → ~/.signalk-admin-pass.txt.
     """
 
     host: str = field(default_factory=lambda: os.environ.get("SK_HOST", "localhost"))
     port: int = field(default_factory=lambda: int(os.environ.get("SK_PORT", "3000")))
     reconnect_delay_s: float = 5.0
+    token: str | None = field(default_factory=lambda: os.environ.get("SK_TOKEN"))
+    username: str | None = field(default_factory=lambda: os.environ.get("SK_USERNAME"))
+    password: str | None = field(default_factory=lambda: os.environ.get("SK_PASSWORD"))
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +264,58 @@ class SKReader:
         self._config = config
         self._buf: dict[str, float] = {}
         self._self_context: str | None = None
+        self._token: str | None = None
 
     def __aiter__(self) -> AsyncIterator[PGNRecord]:
         return self._stream()
+
+    async def _resolve_token(self) -> str | None:
+        """Resolve a Signal K auth token using the waterfall:
+
+        1. Explicit token from config (SK_TOKEN env var)
+        2. Login with username/password (SK_USERNAME / SK_PASSWORD env vars)
+        3. Read password from ~/.signalk-admin-pass.txt (written by setup.sh)
+        4. None (unauthenticated — works only if SK security is disabled)
+        """
+        import httpx
+
+        config = self._config
+
+        # 1. Explicit token
+        if config.token:
+            self._token = config.token
+            logger.info("SK: using explicit auth token")
+            return self._token
+
+        # 2. Credentials from config/env, or 3. fall back to password file
+        username = config.username
+        password = config.password
+        if not username or not password:
+            pass_file = Path.home() / ".signalk-admin-pass.txt"
+            try:
+                password = pass_file.read_text().strip()
+                username = "admin"
+                logger.debug("SK: read password from {}", pass_file)
+            except FileNotFoundError:
+                logger.debug("SK: no password file at {}", pass_file)
+                return None
+
+        # Login via SK REST API
+        url = f"http://{config.host}:{config.port}/signalk/v1/auth/login"
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    url, json={"username": username, "password": password}, timeout=5.0
+                )
+                resp.raise_for_status()
+                self._token = resp.json().get("token")
+                if self._token:
+                    logger.info("SK: authenticated as {!r}", username)
+                    return self._token
+                logger.warning("SK: login response missing token field")
+        except Exception as exc:
+            logger.warning("SK: auth login failed: {}", exc)
+        return None
 
     async def _resolve_self_context(self) -> str | None:
         """Fetch the self-vessel context from the Signal K REST API."""
@@ -269,9 +323,12 @@ class SKReader:
 
         config = self._config
         url = f"http://{config.host}:{config.port}/signalk/v1/api/self"
+        headers: dict[str, str] = {}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
         try:
             async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=5.0)
+                resp = await client.get(url, timeout=5.0, headers=headers)
                 resp.raise_for_status()
                 # Response is a JSON string like "vessels.urn:mrn:signalk:uuid:..."
                 ctx = resp.json()
@@ -284,14 +341,18 @@ class SKReader:
 
     async def _stream(self) -> AsyncGenerator[PGNRecord, None]:
         config = self._config
-        uri = f"ws://{config.host}:{config.port}/signalk/v1/stream?subscribe=all"
+        base_uri = f"ws://{config.host}:{config.port}/signalk/v1/stream?subscribe=all"
         delay = 1.0
         while True:
             try:
+                # Resolve auth token if not yet obtained
+                if self._token is None:
+                    await self._resolve_token()
                 # Resolve self-vessel context on first connect or if not yet known
                 if self._self_context is None:
                     self._self_context = await self._resolve_self_context()
-                logger.info("SK: connecting to {}", uri)
+                uri = f"{base_uri}&token={self._token}" if self._token else base_uri
+                logger.info("SK: connecting to {}", base_uri)
                 async with _ws_connect(uri) as ws:
                     delay = 1.0
                     logger.info("SK: connected")
