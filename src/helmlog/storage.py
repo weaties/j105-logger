@@ -31,6 +31,7 @@ from helmlog.nmea2000 import (
     HeadingRecord,
     PGNRecord,
     PositionRecord,
+    RudderRecord,
     SpeedRecord,
     WindRecord,
 )
@@ -46,6 +47,9 @@ class StorageConfig:
     """Configuration for the SQLite storage backend."""
 
     db_path: str = field(default_factory=lambda: os.environ.get("DB_PATH", "data/logger.db"))
+    rudder_storage_hz: float = field(
+        default_factory=lambda: float(os.environ.get("RUDDER_STORAGE_HZ", "2"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +112,7 @@ _LIVE_KEYS = (
     "twd_deg",
     "aws_kts",
     "awa_deg",
+    "rudder_deg",
 )
 
 _MARK_REFERENCES: frozenset[str] = frozenset(
@@ -126,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 51
+_CURRENT_VERSION: int = 52
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1152,6 +1157,16 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_analysis_catalog_co_op
             ON analysis_catalog(co_op_id, state);
     """,
+    52: """
+        -- Rudder angle table (#419)
+        CREATE TABLE IF NOT EXISTS rudder_angles (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts              TEXT    NOT NULL,
+            source_addr     INTEGER NOT NULL,
+            rudder_angle_deg REAL   NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_rudder_angles_ts ON rudder_angles(ts);
+    """,
 }
 
 
@@ -1209,6 +1224,7 @@ class Storage:
         self._live_tw_ref: int | None = None
         self._live_tw_angle_raw: float | None = None
         self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
+        self._last_rudder_write: float = 0.0
 
     @property
     def session_active(self) -> bool:
@@ -1251,6 +1267,8 @@ class Storage:
                 self._live_tw_ref = record.reference
                 self._live_tw_angle_raw = record.wind_angle_deg
                 self._recompute_true_wind()
+            case RudderRecord():
+                self._live["rudder_deg"] = round(record.rudder_angle_deg, 1)
         if self._on_live_update is not None:
             self._on_live_update(dict(self._live))
 
@@ -1597,6 +1615,8 @@ class Storage:
                 await self._write_wind(record)
             case EnvironmentalRecord():
                 await self._write_environmental(record)
+            case RudderRecord():
+                await self._write_rudder(record)
         self._pending += 1
         await self._auto_flush()
 
@@ -1672,6 +1692,21 @@ class Storage:
         await db.execute(
             "INSERT INTO environmental (ts, source_addr, water_temp_c) VALUES (?, ?, ?)",
             (_ts(r.timestamp), r.source_addr, r.water_temp_c),
+        )
+
+    async def _write_rudder(self, r: RudderRecord) -> None:
+        now = time.monotonic()
+        try:
+            hz = float(os.environ.get("RUDDER_STORAGE_HZ", "2"))
+        except ValueError:
+            hz = 2.0
+        if hz > 0 and (now - self._last_rudder_write) < (1.0 / hz):
+            return
+        self._last_rudder_write = now
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO rudder_angles (ts, source_addr, rudder_angle_deg) VALUES (?, ?, ?)",
+            (_ts(r.timestamp), r.source_addr, r.rudder_angle_deg),
         )
 
     # ------------------------------------------------------------------
@@ -1898,6 +1933,7 @@ class Storage:
             "winds", "wind_speed_kts, wind_angle_deg, reference", "WHERE reference IN (0, 4)"
         )
         aw = await _q("winds", "wind_speed_kts, wind_angle_deg", "WHERE reference=2")
+        rdr = await _q("rudder_angles", "rudder_angle_deg")
 
         heading = hdg["heading_deg"] if hdg else None
         twa: float | None = None
@@ -1926,6 +1962,7 @@ class Storage:
             "twd_deg": twd,
             "aws_kts": round(aw["wind_speed_kts"], 1) if aw else None,
             "awa_deg": round(aw["wind_angle_deg"], 1) if aw else None,
+            "rudder_deg": round(rdr["rudder_angle_deg"], 1) if rdr else None,
         }
 
     # ------------------------------------------------------------------

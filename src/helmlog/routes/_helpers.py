@@ -255,6 +255,13 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
         default="",
         help_text="WLAN profile ID to revert to after a race ends (used with auto-switch).",
     ),
+    SettingDef(
+        key="RUDDER_STORAGE_HZ",
+        label="Rudder angle storage rate (Hz)",
+        input_type="number",
+        default="2",
+        help_text="How often to store rudder angle readings (Hz). ESP32 publishes at 10 Hz; default stores at 2 Hz. Live display always shows latest value.",
+    ),
 )
 
 SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}

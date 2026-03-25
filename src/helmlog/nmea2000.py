@@ -33,6 +33,7 @@ PGN_POSITION_RAPID: Final[int] = 129025
 PGN_COG_SOG_RAPID: Final[int] = 129026
 PGN_WIND_DATA: Final[int] = 130306
 PGN_ENVIRONMENTAL: Final[int] = 130310
+PGN_RUDDER_ANGLE: Final[int] = 127245
 
 SUPPORTED_PGNS: Final[frozenset[int]] = frozenset(
     {
@@ -43,6 +44,7 @@ SUPPORTED_PGNS: Final[frozenset[int]] = frozenset(
         PGN_COG_SOG_RAPID,
         PGN_WIND_DATA,
         PGN_ENVIRONMENTAL,
+        PGN_RUDDER_ANGLE,
     }
 )
 
@@ -156,6 +158,16 @@ class EnvironmentalRecord:
     water_temp_c: float  # Celsius (converted from Kelvin)
 
 
+@dataclass(frozen=True)
+class RudderRecord:
+    """PGN 127245 — Rudder Angle."""
+
+    pgn: int
+    source_addr: int
+    timestamp: datetime
+    rudder_angle_deg: float  # degrees (positive = starboard)
+
+
 # Union type for all PGN record types
 PGNRecord = (
     HeadingRecord
@@ -165,6 +177,7 @@ PGNRecord = (
     | COGSOGRecord
     | WindRecord
     | EnvironmentalRecord
+    | RudderRecord
 )
 
 # ---------------------------------------------------------------------------

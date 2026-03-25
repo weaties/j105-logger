@@ -22,6 +22,7 @@ from helmlog.nmea2000 import (
     PGN_COG_SOG_RAPID,
     PGN_ENVIRONMENTAL,
     PGN_POSITION_RAPID,
+    PGN_RUDDER_ANGLE,
     PGN_SPEED_THROUGH_WATER,
     PGN_VESSEL_HEADING,
     PGN_WATER_DEPTH,
@@ -32,6 +33,7 @@ from helmlog.nmea2000 import (
     HeadingRecord,
     PGNRecord,
     PositionRecord,
+    RudderRecord,
     SpeedRecord,
     WindRecord,
 )
@@ -80,6 +82,10 @@ def _mk_depth(v: float, ts: datetime) -> DepthRecord:
 
 def _mk_env(v: float, ts: datetime) -> EnvironmentalRecord:
     return EnvironmentalRecord(PGN_ENVIRONMENTAL, SK_SOURCE_ADDR, ts, v - _KELVIN_OFFSET)
+
+
+def _mk_rudder(v: float, ts: datetime) -> RudderRecord:
+    return RudderRecord(PGN_RUDDER_ANGLE, SK_SOURCE_ADDR, ts, v * _RAD_TO_DEG)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +142,7 @@ _SIMPLE: dict[str, Callable[[float, datetime], PGNRecord]] = {
     "navigation.speedThroughWater": _mk_speed,
     "environment.depth.belowKeel": _mk_depth,
     "environment.water.temperature": _mk_env,
+    "steering.rudderAngle": _mk_rudder,
 }
 
 _PAIR: dict[str, Callable[[dict[str, float], datetime], PGNRecord | None]] = {

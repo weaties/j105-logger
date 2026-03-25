@@ -19,6 +19,7 @@ from helmlog.nmea2000 import (
     EnvironmentalRecord,
     HeadingRecord,
     PositionRecord,
+    RudderRecord,
     SpeedRecord,
     WindRecord,
 )
@@ -101,6 +102,17 @@ class TestPathConversions:
         rec = records[0]
         assert isinstance(rec, EnvironmentalRecord)
         assert abs(rec.water_temp_c - 20.0) < 1e-6
+
+    def test_rudder_angle_rad_to_deg(self) -> None:
+        buf: dict[str, float] = {}
+        # 0.1745 rad ≈ 10° starboard
+        records = process_delta(_delta("steering.rudderAngle", 0.1745), buf)
+        assert len(records) == 1
+        rec = records[0]
+        assert isinstance(rec, RudderRecord)
+        assert abs(rec.rudder_angle_deg - 10.0) < 0.1
+        assert rec.source_addr == SK_SOURCE_ADDR
+        assert rec.timestamp == _TS_DT
 
     def test_true_wind_ref_zero(self) -> None:
         buf: dict[str, float] = {}
