@@ -47,6 +47,9 @@ class StorageConfig:
     """Configuration for the SQLite storage backend."""
 
     db_path: str = field(default_factory=lambda: os.environ.get("DB_PATH", "data/logger.db"))
+    rudder_storage_hz: float = field(
+        default_factory=lambda: float(os.environ.get("RUDDER_STORAGE_HZ", "2"))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1221,6 +1224,7 @@ class Storage:
         self._live_tw_ref: int | None = None
         self._live_tw_angle_raw: float | None = None
         self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
+        self._last_rudder_write: float = 0.0
 
     @property
     def session_active(self) -> bool:
@@ -1691,6 +1695,11 @@ class Storage:
         )
 
     async def _write_rudder(self, r: RudderRecord) -> None:
+        now = time.monotonic()
+        hz = self._config.rudder_storage_hz
+        if hz > 0 and (now - self._last_rudder_write) < (1.0 / hz):
+            return
+        self._last_rudder_write = now
         db = self._conn()
         await db.execute(
             "INSERT INTO rudder_angles (ts, source_addr, rudder_angle_deg) VALUES (?, ?, ?)",
