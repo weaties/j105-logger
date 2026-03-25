@@ -199,6 +199,7 @@ function renderInstrumentData(d) {
   set('iv-tws', d.tws_kts, 1);
   set('iv-twa', d.twa_deg, 0);
   set('iv-twd', d.twd_deg, 0);
+  set('iv-rdr', d.rudder_deg, 1);
   if (Object.values(d).some(v => v != null)) {
     lastInstrumentDataMs = Date.now();
   }
