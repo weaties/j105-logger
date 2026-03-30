@@ -1920,3 +1920,223 @@ priority/fallback chains.
   question is the trickiest design constraint — the data-licensing policy
   is clear that audio and transcripts are PII, so routing them to external
   APIs needs explicit user/crew consent.
+
+---
+
+## IDX-032: Automatic sea state recording via ESP32 accelerometer
+
+- **Date captured:** 2026-03-30
+- **Origin:** Planning conversation about automatically recording sea state instead of relying on manual crew entries
+- **Status:** `raw`
+- **Related:** IDX-012 (GRIB forecasts), IDX-030 (DIY rudder sensor), IDX-005 (tuning guide from wind range), IDX-026 (vision-based sail settings), `boat_settings.py` (manual `swell_height`, `swell_period`, `chop` fields), `external.py`, `polar.py`
+
+**Description:**
+Use an ESP32 with a 6-axis IMU (e.g., ICM-42688-P or LSM6DSO32) mounted
+rigidly near the hull centerline to measure wave height, period, and boat
+motion — then transmit summaries to the Pi over WiFi for storage and analysis.
+
+The crew currently logs sea state manually via `boat_settings.py` fields
+(`swell_height`, `swell_period`, `chop`), but this is infrequent, subjective,
+and often forgotten. Automatic measurement gives continuous, objective data
+that can feed into polar performance analysis and post-race debrief.
+
+**Architecture — ESP32 as dedicated wave sensor:**
+
+```
+ESP32 + IMU (hull-mounted)          Raspberry Pi (HelmLog)
+├─ 50 Hz accel sampling             ├─ POST /api/sea-state endpoint
+├─ 60 s buffer (3000 samples)       ├─ sea_state table in SQLite
+├─ High-pass filter → double        ├─ Merge with Open-Meteo marine
+│  integrate → displacement          │  forecast for cross-validation
+├─ FFT → wave energy spectrum        ├─ Display on home + session pages
+├─ Extract Hs, Tp, heave RMS,       └─ Feed into polar/analysis
+│  roll RMS, pitch RMS
+└─ POST summary JSON every 30 s
+```
+
+**Why ESP32 over Pi for the IMU:**
+- Deterministic sampling via FreeRTOS timer (no Linux scheduler jitter)
+- ~50 mA power draw vs. Pi's ~3 W — can battery-power or sleep between bursts
+- Tiny form factor for optimal hull mounting location
+- Failure isolation — if the ESP32 crashes, HelmLog keeps running
+
+**Summary JSON payload:**
+
+```json
+{
+  "sensor_id": "esp32-hull-01",
+  "ts": "2026-03-30T14:22:00Z",
+  "wave_height_m": 0.8,
+  "wave_period_s": 5.2,
+  "heave_rms_m": 0.3,
+  "roll_deg_rms": 4.1,
+  "pitch_deg_rms": 2.8,
+  "confidence": 0.85,
+  "sample_count": 3000,
+  "battery_v": 3.92
+}
+```
+
+**Layered data sources (no single source is sufficient):**
+
+| Layer | Source | What it gives | When it's best |
+|-------|--------|---------------|----------------|
+| 1 | Open-Meteo marine API | Background swell + wave forecast | Always available, baseline |
+| 2 | NOAA buoy observations | Ground-truth from offshore buoys | Coastal US waters |
+| 3 | ESP32 IMU | Local Hs, Tp, heel/pitch variance | Real-time, on-the-boat |
+| 4 | Crew override | Manual swell/chop (existing) | Trumps all when entered |
+
+Open-Meteo already supports marine wave parameters (`significant_wave_height`,
+`wave_period`, `wave_direction`, `swell_wave_height`, `swell_wave_period`,
+`swell_wave_direction`) but `external.py` doesn't request them yet — that's
+the lowest-effort first step regardless of the ESP32 work.
+
+**Data model sketch:**
+
+```sql
+CREATE TABLE sea_state (
+  ts TEXT NOT NULL,
+  source TEXT NOT NULL,  -- 'esp32' | 'open-meteo' | 'noaa-buoy' | 'crew'
+  sensor_id TEXT,
+  wave_height_m REAL,
+  wave_period_s REAL,
+  wave_dir_deg REAL,
+  swell_height_m REAL,
+  swell_period_s REAL,
+  swell_dir_deg REAL,
+  heave_rms_m REAL,
+  roll_deg_rms REAL,
+  pitch_deg_rms REAL,
+  confidence REAL,
+  sample_count INTEGER
+);
+```
+
+**Direction estimation:**
+A 6-axis IMU (accel + gyro, no magnetometer) gives wave height and period
+but not direction. Options: (a) add a magnetometer (MMC5603 or LIS3MDL) for
+9-axis with cross-spectral direction estimation, (b) infer from wind direction
+in Signal K (swell ~aligns with wind, chop is downwind), or (c) skip direction
+initially — height and period are most useful for performance analysis.
+
+**Hardware available:** Raspberry Pi, multiple ESP32s, ESP32-CAMs. The
+ESP32-CAMs could serve a secondary role in visual wave estimation (horizon
+tracking for roll angle and dominant period) but the IMU path is simpler
+and more reliable as the primary sensor.
+
+**Open questions:**
+- WiFi connectivity: is the ESP32 on the boat's existing WiFi network, or
+  does it need its own AP / direct connection to the Pi?
+- Power: USB from a 12 V→5 V converter, or battery with sleep cycles?
+- Mounting: hull centerline below deck is ideal; mast base is acceptable
+  but noisier from rigging vibration
+- ESP32 firmware: live in this repo (`firmware/`) or a separate repo?
+- Direction: worth adding a magnetometer now, or start with Hs + Tp only?
+
+**Notes:**
+- *2026-03-30:* Initial capture. The simplest first step is extending
+  `external.py` to request Open-Meteo marine wave parameters — zero hardware,
+  immediate value for debrief context. The ESP32 sensor is the high-value
+  second step that gives real-time local measurements. IDX-030 (DIY rudder
+  sensor) follows the same ESP32-to-Pi pattern and could share firmware
+  infrastructure.
+
+---
+
+## IDX-033: Gear-switching analysis — detecting crew adaptation to changing conditions
+
+- **Date captured:** 2026-03-30
+- **Origin:** Planning conversation about sea state recording; desire to know whether crew is "switching gears" when conditions change
+- **Status:** `raw`
+- **Related:** IDX-032 (sea state recording), IDX-005 (tuning guide from wind range), IDX-026 (vision-based sail settings), IDX-011 (write derived data back to B&G), `polar.py`, `race_classifier.py`, `triggers.py`
+
+**Description:**
+An analysis package that detects whether the crew is adapting their sailing
+technique — "switching gears" — in response to changing sea state, wind, or
+other conditions. In racing, failing to adapt mode (pointing vs. footing,
+flat vs. powered-up, smooth vs. aggressive helming) when conditions shift is
+one of the biggest performance leaks, and it's invisible in traditional
+post-race analysis.
+
+**What "gear switching" means in sailing:**
+Sailors talk about "gears" as distinct modes of operation tuned to conditions:
+
+| Gear | Conditions | Characteristics |
+|------|-----------|-----------------|
+| Light/smooth | < 8 kts TWS, flat water | Point high, minimal helm movement, crew weight forward |
+| Medium/powered | 8-14 kts, moderate chop | Target speed, crew hiking, moderate helm activity |
+| Heavy/survival | 15+ kts, steep chop | Foot for speed, depower (vang, backstay, traveler), aggressive crew movement |
+| Swell mode | Any TWS + large swell | Pump-like heel/trim rhythm, speed-build on wave faces |
+
+**Detection signals (all available or planned in HelmLog):**
+
+| Signal | Source | What it reveals |
+|--------|--------|-----------------|
+| Helm activity (rudder angle variance) | `rudder` table | Aggressive vs. smooth steering |
+| Heel angle variance | ESP32 IMU (IDX-032) | Powered up vs. depowered |
+| Speed-through-water stability | `speeds` table | Mode change shows as BSP variance shift |
+| TWA target changes | `winds` + `cogsog` | Pointing vs. footing shows in TWA histogram |
+| Polar performance ratio | `polar.py` | Drop in % target BSP after condition change |
+| Tack/gybe frequency | derived from `headings` | Tactical response to shifts |
+| Sea state transition | `sea_state` table (IDX-032) | The trigger event itself |
+
+**Analysis approach:**
+
+1. **Condition change detection** — identify when sea state, TWS, or TWD
+   shifts beyond a threshold (e.g., Hs changes by > 0.3 m, TWS by > 3 kts).
+   Use the `sea_state` and `winds` tables with a sliding window.
+
+2. **Response window** — define a window (e.g., 2-5 minutes) after a detected
+   condition change. This is the period where the crew should be adapting.
+
+3. **Behavior change metrics** — compare the statistical signature of sailing
+   parameters (rudder variance, heel variance, BSP/polar%, TWA distribution)
+   in the pre-change window vs. the post-change window.
+
+4. **Gear-switch score** — quantify how much the crew's behavior changed
+   relative to how much conditions changed. High score = responsive crew.
+   Low score = "sailing the old breeze."
+
+5. **Debrief output** — timeline visualization showing condition changes as
+   vertical bands, with gear-switch scores overlaid. Highlight "missed shifts"
+   where conditions changed significantly but sailing parameters didn't adapt.
+
+**Example debrief insight:**
+> "At 14:22, sea state increased from 0.5 m to 1.1 m Hs over 4 minutes.
+> Wind remained 12 kts. Crew did not adapt — rudder variance stayed low
+> (smooth-water style), BSP dropped 8% below polar target. Comparable
+> boats in the co-op who adapted showed only 3% polar drop. Suggested
+> response: increase helm activity, foot 5° lower, power up with vang."
+
+**Co-op dimension:**
+If multiple boats in a co-op share session data, gear-switching analysis
+becomes comparative — "Boat A adapted in 90 seconds, Boat B took 5 minutes,
+Boat C never adapted." This is powerful coaching data. Subject to the
+data-licensing policy (co-op data is view-only, no bulk export).
+
+**Dependencies:**
+- Sea state recording (IDX-032) — the primary trigger signal
+- Rudder angle logging (#337 / IDX-030) — key behavior metric
+- Polar performance baselines (`polar.py`) — for target BSP comparison
+- Optionally: vision-based sail settings (IDX-026) — physical gear evidence
+
+**Open questions:**
+- What thresholds define a "condition change" worth analyzing? Should these
+  be configurable per boat class / crew experience level?
+- How to handle gradual shifts vs. sudden changes (squall vs. building sea)?
+- Should the analysis run in real-time (live "you should be switching gears"
+  alert, possibly via IDX-011 to the B&G display) or post-race only?
+- How to avoid false positives — tactical maneuvers (tack, gybe, mark
+  rounding) look like behavior changes but aren't gear switches
+- What's the minimum data set needed? Can we do a useful version with just
+  wind + BSP + rudder, before the ESP32 sea state sensor exists?
+
+**Notes:**
+- *2026-03-30:* Initial capture. This is the "so what" that makes sea state
+  recording valuable beyond just logging a number. Without analysis, sea
+  state data sits in a table. With gear-switching detection, it becomes
+  actionable coaching feedback. The minimum viable version could work with
+  just wind shifts (already captured) + BSP + rudder angle — sea state from
+  the ESP32 makes it richer but isn't strictly required to start. Could
+  prototype the analysis on existing session data by using TWS/TWD changes
+  as the trigger instead of sea state.
