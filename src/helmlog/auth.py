@@ -7,6 +7,11 @@ Invitation + flexible authentication flow (#268):
   4. Subsequent logins use email+password or OAuth provider.
   5. ``require_auth`` validates the session cookie and attaches the user.
 
+Device API key auth (#423):
+  Headless devices (ESP32-CAM, IoT sensors) authenticate via
+  ``Authorization: Bearer <key>``.  Keys are stored hashed (SHA-256) in the
+  ``devices`` table.  Each device has a fixed role and optional scope.
+
 Auth can be disabled entirely (e.g. in tests) by setting the env var
 ``AUTH_DISABLED=true``.  In that mode every request is treated as an admin.
 """
@@ -14,6 +19,8 @@ Auth can be disabled entirely (e.g. in tests) by setting the env var
 from __future__ import annotations
 
 import contextlib
+import fnmatch
+import hashlib
 import os
 import secrets
 from collections.abc import Callable
@@ -119,7 +126,10 @@ def require_auth(min_role: str = "viewer") -> Callable[..., Any]:
         request: Request,
         session: Annotated[str | None, Cookie()] = None,
     ) -> dict[str, Any]:
-        user = await _resolve_user(request, session)
+        # Check if the auth middleware already resolved a user (e.g. device bearer token)
+        user: dict[str, Any] | None = getattr(request.state, "user", None)
+        if user is None:
+            user = await _resolve_user(request, session)
         if user is None:
             # Redirect browsers to /login; return 401 for API clients
             accept = request.headers.get("accept", "")
@@ -152,7 +162,9 @@ async def require_developer(
     not the role rank.  Use as an additional ``Depends()`` on routes that
     need developer access.
     """
-    user = await _resolve_user(request, session)
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    if user is None:
+        user = await _resolve_user(request, session)
     if user is None:
         accept = request.headers.get("accept", "")
         if "text/html" in accept:
@@ -218,3 +230,73 @@ def verify_password(password: str, password_hash: str) -> bool:
         return ph.verify(password_hash, password)
     except VerificationError:
         return False
+
+
+# ---------------------------------------------------------------------------
+# Device API key helpers (#423)
+# ---------------------------------------------------------------------------
+
+
+def hash_api_key(key: str) -> str:
+    """Return the SHA-256 hex digest of a plaintext API key."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+async def resolve_device(request: Request) -> dict[str, Any] | None:
+    """Check for ``Authorization: Bearer <key>`` and return a device dict.
+
+    Returns a user-shaped dict (with ``id``, ``role``, ``name``, etc.) so the
+    rest of the auth stack can treat devices like users.  Returns None if no
+    bearer token or the token is invalid/revoked.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.lower().startswith("bearer "):
+        return None
+
+    token = auth_header[7:]  # strip "Bearer "
+    key_hash = hash_api_key(token)
+    storage: Storage = _get_storage(request)
+    device = await storage.get_device_by_key_hash(key_hash)
+    if device is None:
+        return None
+
+    # Fire-and-forget last_used update
+    with contextlib.suppress(Exception):
+        await storage.update_device_last_used(device["id"])
+
+    return {
+        "id": None,
+        "email": f"device:{device['name']}",
+        "name": device["name"],
+        "role": device["role"],
+        "is_developer": 0,
+        "is_active": 1,
+        "device_id": device["id"],
+        "device_scope": device["scope"],
+    }
+
+
+def check_device_scope(scope: str | None, method: str, path: str) -> bool:
+    """Return True if the request method+path is allowed by the device scope.
+
+    *scope* is a comma-separated list of ``METHOD /path/pattern`` entries.
+    Patterns support ``*`` wildcards (matched per path segment via fnmatch).
+    If *scope* is None, all paths are allowed.
+    """
+    if scope is None:
+        return True
+
+    for entry in scope.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        parts = entry.split(None, 1)
+        if len(parts) != 2:  # noqa: PLR2004
+            continue
+        allowed_method, allowed_path = parts
+        if allowed_method.upper() != method.upper():
+            continue
+        if fnmatch.fnmatch(path, allowed_path):
+            return True
+
+    return False
