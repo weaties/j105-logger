@@ -342,6 +342,35 @@ async def api_camera_preview(
 
 
 # ---------------------------------------------------------------------------
+# Camera settings proxy
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/aruco/cameras/{name}/settings")
+async def api_camera_settings(
+    request: Request,
+    name: str,
+    _user: dict[str, Any] = Depends(require_auth()),  # noqa: B008
+) -> JSONResponse:
+    """Proxy the ESP32-CAM's /settings endpoint to show sensor metadata."""
+    storage = get_storage(request)
+    camera = await storage.get_aruco_camera_by_name(name)
+    if not camera:
+        raise HTTPException(404, f"Camera '{name}' not found")
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"http://{camera['ip']}/settings")
+            if resp.status_code != 200:
+                raise HTTPException(502, "Camera returned an error")
+            return JSONResponse(resp.json())
+    except httpx.HTTPError:
+        raise HTTPException(502, "Camera unreachable")  # noqa: B904
+
+
+# ---------------------------------------------------------------------------
 # Measurements
 # ---------------------------------------------------------------------------
 
