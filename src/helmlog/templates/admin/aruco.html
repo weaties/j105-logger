@@ -201,19 +201,27 @@ async function addCamera(){
 }
 async function delCamera(id){if(!confirm('Delete this camera and all its controls/measurements?'))return;await fetch(`/api/aruco/cameras/${id}`,{method:'DELETE'});loadCameras()}
 
-// --- Controls ---
+// --- Controls (unified /api/controls) ---
 async function loadControls(){
-  const r=await fetch('/api/aruco/controls');
+  const r=await fetch('/api/controls');
   if(!r.ok){document.getElementById('ctrl-list').textContent='Failed to load';return}
-  _controls=await r.json();
-  // Also refresh camera select
+  const data=await r.json();
+  _controls=[];
+  for(const cat of data.categories)for(const c of cat.controls)_controls.push(c);
+  // Refresh camera select
   if(!_cameras.length)await loadCameras();
   const sel=document.getElementById('cc-cam');
   sel.innerHTML=_cameras.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
   if(!_controls.length){document.getElementById('ctrl-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No controls configured</div>';return}
-  let h='<table><tr><th>Name</th><th>Camera</th><th>Marker A</th><th>Marker B</th><th>Tolerance (mm)</th><th>Actions</th></tr>';
+  let h='<table><tr><th>Name</th><th>Category</th><th>Camera</th><th>Markers</th><th>Trigger Words</th><th>Actions</th></tr>';
   for(const c of _controls){
-    h+=`<tr><td>${esc(c.name)}</td><td>${esc(c.camera_name||'')}</td><td>${c.marker_id_a}</td><td>${c.marker_id_b}</td><td>${c.tolerance_mm!==null?c.tolerance_mm:'(global)'}</td>`;
+    const a=c.aruco;
+    const camInfo=a?`${esc(a.camera_name||'')}`:'-';
+    const markers=a?`${a.marker_id_a} / ${a.marker_id_b}`:'-';
+    const tw=c.trigger_words.map(t=>esc(t.phrase)).join(', ')||'-';
+    h+=`<tr><td>${esc(c.label)}<div style="font-size:.7rem;color:var(--text-muted)">${esc(c.name)}</div></td>`;
+    h+=`<td style="font-size:.78rem">${esc(c.category)}</td><td>${camInfo}</td><td>${markers}</td>`;
+    h+=`<td style="font-size:.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis">${tw}</td>`;
     h+=`<td><button class="btn-sm btn-del" onclick="delControl(${c.id})">Delete</button></td></tr>`;
   }
   h+='</table>';
@@ -223,32 +231,45 @@ function showAddControl(){document.getElementById('add-ctrl-form').style.display
 function hideAddControl(){document.getElementById('add-ctrl-form').style.display='none';document.getElementById('cc-err').textContent=''}
 async function addControl(){
   const name=document.getElementById('cc-name').value.trim();
-  const camera_id=parseInt(document.getElementById('cc-cam').value);
-  const a=parseInt(document.getElementById('cc-a').value);
-  const b=parseInt(document.getElementById('cc-b').value);
-  if(!name||isNaN(camera_id)||isNaN(a)||isNaN(b)){document.getElementById('cc-err').textContent='All fields required';return}
-  const body={name,camera_id,marker_id_a:a,marker_id_b:b};
-  const tol=document.getElementById('cc-tol').value.trim();
-  if(tol)body.tolerance_mm=parseFloat(tol);
-  const r=await fetch('/api/aruco/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!name){document.getElementById('cc-err').textContent='Name required';return}
+  // Create the control
+  const label=name.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
+  const body={name:name.toLowerCase().replace(/\s+/g,'_'),label,unit:'cm',category:'sail_controls'};
+  const r=await fetch('/api/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok){const d=await r.json();document.getElementById('cc-err').textContent=d.detail||'Failed';return}
+  const ctrl_id=r.json?((await r.json()).id):null;
+  // Optionally attach ArUco markers
+  const cam_id=document.getElementById('cc-cam').value;
+  const a=document.getElementById('cc-a').value;
+  const b=document.getElementById('cc-b').value;
+  if(cam_id&&a&&b&&ctrl_id){
+    const abody={camera_id:parseInt(cam_id),marker_id_a:parseInt(a),marker_id_b:parseInt(b)};
+    const tol=document.getElementById('cc-tol').value.trim();
+    if(tol)abody.tolerance_mm=parseFloat(tol);
+    await fetch(`/api/controls/${ctrl_id}/aruco`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(abody)});
+  }
   hideAddControl();loadControls();
 }
-async function delControl(id){if(!confirm('Delete this control and its measurements?'))return;await fetch(`/api/aruco/controls/${id}`,{method:'DELETE'});loadControls()}
+async function delControl(id){if(!confirm('Delete this control?'))return;await fetch(`/api/controls/${id}`,{method:'DELETE'});loadControls()}
 
-// --- Trigger Words ---
+// --- Trigger Words (unified /api/controls/{id}/trigger-words) ---
 async function loadTriggers(){
-  const r=await fetch('/api/aruco/trigger-words');
+  // Load all controls with their trigger words
+  const r=await fetch('/api/controls');
   if(!r.ok){document.getElementById('tw-list').textContent='Failed to load';return}
-  const words=await r.json();
-  // Refresh control select
-  if(!_controls.length){const cr=await fetch('/api/aruco/controls');if(cr.ok)_controls=await cr.json()}
+  const data=await r.json();
+  _controls=[];
+  const allTw=[];
+  for(const cat of data.categories)for(const c of cat.controls){
+    _controls.push(c);
+    for(const tw of c.trigger_words)allTw.push({...tw,control_name:c.name,control_label:c.label,control_id:c.id});
+  }
   const sel=document.getElementById('tw-ctrl');
-  sel.innerHTML=_controls.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  if(!words.length){document.getElementById('tw-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No trigger words configured</div>';return}
+  sel.innerHTML=_controls.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('');
+  if(!allTw.length){document.getElementById('tw-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No trigger words configured</div>';return}
   let h='<table><tr><th>Phrase</th><th>Control</th><th>Actions</th></tr>';
-  for(const w of words){
-    h+=`<tr><td>${esc(w.phrase)}</td><td>${esc(w.control_name||'')}</td>`;
+  for(const w of allTw){
+    h+=`<tr><td>${esc(w.phrase)}</td><td>${esc(w.control_label)}</td>`;
     h+=`<td><button class="btn-sm btn-del" onclick="delTrigger(${w.id})">Delete</button></td></tr>`;
   }
   h+='</table>';
@@ -260,11 +281,11 @@ async function addTrigger(){
   const phrase=document.getElementById('tw-phrase').value.trim();
   const control_id=parseInt(document.getElementById('tw-ctrl').value);
   if(!phrase||isNaN(control_id)){document.getElementById('tw-err').textContent='Phrase and control required';return}
-  const r=await fetch('/api/aruco/trigger-words',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phrase,control_id})});
+  const r=await fetch(`/api/controls/${control_id}/trigger-words`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phrase})});
   if(!r.ok){const d=await r.json();document.getElementById('tw-err').textContent=d.detail||'Failed';return}
   hideAddTrigger();loadTriggers();
 }
-async function delTrigger(id){if(!confirm('Delete this trigger word?'))return;await fetch(`/api/aruco/trigger-words/${id}`,{method:'DELETE'});loadTriggers()}
+async function delTrigger(id){if(!confirm('Delete this trigger word?'))return;await fetch(`/api/controls/trigger-words/${id}`,{method:'DELETE'});loadTriggers()}
 
 // --- Settings ---
 async function loadSettings(){

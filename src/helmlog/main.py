@@ -303,9 +303,9 @@ async def _aruco_poll_loop(storage: object) -> None:
                         except (json.JSONDecodeError, KeyError):
                             pass
 
-                    # Get controls for this camera
-                    controls = await storage.list_aruco_controls()
-                    cam_controls = [c for c in controls if c["camera_id"] == cam_id]
+                    # Get controls with ArUco config for this camera (unified)
+                    all_aruco = await storage.controls_with_aruco()
+                    cam_controls = [c for c in all_aruco if c["camera_id"] == cam_id]
                     if not cam_controls:
                         continue
                     pairs = [(c["marker_id_a"], c["marker_id_b"]) for c in cam_controls]
@@ -313,34 +313,44 @@ async def _aruco_poll_loop(storage: object) -> None:
 
                     result = detect_and_measure(img, pairs, camera["marker_size_mm"], calibration)
 
-                    # Record measurements exceeding tolerance
+                    # Record measurements to boat_settings with source="camera"
                     current_race = await storage.get_current_race()
-                    session_id = current_race.id if current_race else None
+                    race_id = current_race.id if current_race else None
+                    now = datetime.now(UTC).isoformat()
 
                     for dist in result.distances:
                         ctrl = control_map.get((dist.marker_id_a, dist.marker_id_b))
                         if not ctrl:
                             continue
 
-                        tolerance = await storage.get_aruco_tolerance_mm(ctrl["id"])
-                        latest = await storage.get_latest_aruco_measurement(ctrl["id"])
+                        tolerance = await storage.get_aruco_tolerance_mm()
+                        if ctrl.get("tolerance_mm") is not None:
+                            tolerance = float(ctrl["tolerance_mm"])
 
+                        latest = await storage.get_latest_camera_reading(ctrl["name"])
                         if latest is not None:
-                            delta_mm = abs(dist.distance_cm * 10 - latest["distance_cm"] * 10)
+                            delta_mm = abs(dist.distance_cm * 10 - float(latest["value"]) * 10)
                             if delta_mm <= tolerance:
                                 continue
 
-                        image_path = None
                         if camera["retain_images"]:
-                            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+                            ts_str = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
                             img_dir = os.path.join("data", "aruco", camera["name"])
                             os.makedirs(img_dir, exist_ok=True)
-                            image_path = os.path.join(img_dir, f"{ts}.jpg")
-                            with open(image_path, "wb") as f:
+                            img_path = os.path.join(img_dir, f"{ts_str}.jpg")
+                            with open(img_path, "wb") as f:
                                 f.write(image_bytes)
 
-                        await storage.add_aruco_measurement(
-                            ctrl["id"], dist.distance_cm, image_path, session_id
+                        await storage.create_boat_settings(
+                            race_id,
+                            [
+                                {
+                                    "ts": now,
+                                    "parameter": ctrl["name"],
+                                    "value": str(dist.distance_cm),
+                                }
+                            ],
+                            source="camera",
                         )
 
                     if result.distances:

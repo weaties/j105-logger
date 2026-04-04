@@ -141,46 +141,79 @@ _WHISPER_ALIASES: dict[str, list[str]] = {
 }
 
 
-def _build_patterns() -> None:
-    """Build regex patterns from canonical parameter definitions."""
-    from helmlog.boat_settings import PARAMETERS
+def _build_patterns(controls: list[dict[str, Any]] | None = None) -> None:
+    """Build regex patterns from controls (DB-backed or fallback to PARAMETERS).
 
+    When *controls* is provided (from ``storage.list_controls()``), each control's
+    trigger words are used as aliases. Otherwise falls back to the hardcoded
+    ``PARAMETERS`` tuple and ``_WHISPER_ALIASES`` for backward compatibility.
+    """
     if _LABEL_PATTERNS:
         return  # already built
 
-    for p in PARAMETERS:
-        if p.input_type == "preset":
-            continue  # presets have text values, not numeric
-
-        # Map label (lowercase) to canonical name
-        label_lower = p.label.lower()
-        _LABEL_TO_NAME[label_lower] = p.name
-        # Also map underscore form
-        _LABEL_TO_NAME[p.name] = p.name
-
-        # Collect all alternate forms for this parameter
-        alternates = [re.escape(label_lower), re.escape(p.name)]
-        for alias in _WHISPER_ALIASES.get(p.name, []):
-            alternates.append(re.escape(alias.lower()))
-
-        # Build pattern: any alternate form, optional filler words, then a number
-        # (either digits or a number word like "five", "twenty one")
-        alts_joined = "|".join(alternates)
-        number_re = rf"(\d+(?:\.\d+)?|{_NUMBER_WORD_RE})"
-        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}{number_re}"
-        _LABEL_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), p.name))
+    if controls is not None:
+        _build_patterns_from_controls(controls)
+    else:
+        _build_patterns_from_hardcoded()
 
     # Sort longest pattern text first so "jib sheet tension port" matches before "jib"
     _LABEL_PATTERNS.sort(key=lambda x: len(x[1]), reverse=True)
 
 
-def regex_extract(segments: list[dict[str, Any]]) -> list[ExtractionItem]:
+def _build_patterns_from_controls(controls: list[dict[str, Any]]) -> None:
+    """Build patterns from DB-backed controls with trigger words."""
+    for ctrl in controls:
+        if ctrl.get("input_type") == "preset":
+            continue
+
+        name = ctrl["name"]
+        label_lower = ctrl["label"].lower()
+        _LABEL_TO_NAME[label_lower] = name
+        _LABEL_TO_NAME[name] = name
+
+        alternates = [re.escape(label_lower), re.escape(name)]
+        for tw in ctrl.get("trigger_words", []):
+            alternates.append(re.escape(tw["phrase"].lower()))
+
+        alts_joined = "|".join(alternates)
+        number_re = rf"(\d+(?:\.\d+)?|{_NUMBER_WORD_RE})"
+        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}{number_re}"
+        _LABEL_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), name))
+
+
+def _build_patterns_from_hardcoded() -> None:
+    """Fallback: build patterns from hardcoded PARAMETERS + _WHISPER_ALIASES."""
+    from helmlog.boat_settings import PARAMETERS
+
+    for p in PARAMETERS:
+        if p.input_type == "preset":
+            continue
+
+        label_lower = p.label.lower()
+        _LABEL_TO_NAME[label_lower] = p.name
+        _LABEL_TO_NAME[p.name] = p.name
+
+        alternates = [re.escape(label_lower), re.escape(p.name)]
+        for alias in _WHISPER_ALIASES.get(p.name, []):
+            alternates.append(re.escape(alias.lower()))
+
+        alts_joined = "|".join(alternates)
+        number_re = rf"(\d+(?:\.\d+)?|{_NUMBER_WORD_RE})"
+        pattern_str = rf"(?:{alts_joined}){_FILLER_RE}{number_re}"
+        _LABEL_PATTERNS.append((re.compile(pattern_str, re.IGNORECASE), p.name))
+
+
+def regex_extract(
+    segments: list[dict[str, Any]],
+    controls: list[dict[str, Any]] | None = None,
+) -> list[ExtractionItem]:
     """Extract tuning parameters from transcript segments using regex.
 
     Looks for ``<canonical_control_name> <number>`` patterns (case-insensitive).
+    When *controls* is provided (from DB), uses their trigger words as aliases.
     Returns a list of ExtractionItem with binary confidence (1.0).
     """
-    _build_patterns()
+    _build_patterns(controls)
 
     items: list[ExtractionItem] = []
     for seg in segments:
@@ -308,9 +341,12 @@ async def run_extraction(
     else:
         segments = []
 
+    # Load controls from DB for pattern building (trigger words as aliases)
+    controls = await storage.list_controls()
+
     # Run extraction based on method
     if method == "regex":
-        items = regex_extract(segments)
+        items = regex_extract(segments, controls)
     else:
         logger.warning("Unknown extraction method: {}", method)
         items = []

@@ -183,76 +183,14 @@ async def api_delete_profile(
 
 
 @router.get("/api/aruco/controls")
-async def api_list_controls(
+async def api_list_aruco_controls(
     request: Request,
     _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
-    """List all ArUco controls."""
+    """List controls that have ArUco marker config."""
     storage = get_storage(request)
-    controls = await storage.list_aruco_controls()
+    controls = await storage.controls_with_aruco()
     return JSONResponse(controls)
-
-
-@router.post("/api/aruco/controls")
-async def api_add_control(
-    request: Request,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """Add a new control (marker pair → boat control mapping)."""
-    storage = get_storage(request)
-    body = await request.json()
-    name = body.get("name", "").strip()
-    camera_id = body.get("camera_id")
-    marker_id_a = body.get("marker_id_a")
-    marker_id_b = body.get("marker_id_b")
-    if not name or camera_id is None or marker_id_a is None or marker_id_b is None:
-        raise HTTPException(400, "name, camera_id, marker_id_a, and marker_id_b are required")
-    control_id = await storage.add_aruco_control(
-        name,
-        int(camera_id),
-        int(marker_id_a),
-        int(marker_id_b),
-        tolerance_mm=body.get("tolerance_mm"),
-    )
-    await audit(request, "aruco_control_add", f"name={name}", _user)
-    return JSONResponse({"id": control_id}, status_code=201)
-
-
-@router.put("/api/aruco/controls/{control_id}")
-async def api_update_control(
-    request: Request,
-    control_id: int,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """Update a control."""
-    storage = get_storage(request)
-    body = await request.json()
-    ok = await storage.update_aruco_control(
-        control_id,
-        name=body.get("name"),
-        marker_id_a=body.get("marker_id_a"),
-        marker_id_b=body.get("marker_id_b"),
-        tolerance_mm=body.get("tolerance_mm", ...),
-    )
-    if not ok:
-        raise HTTPException(404, "Control not found")
-    await audit(request, "aruco_control_update", f"id={control_id}", _user)
-    return JSONResponse({"ok": True})
-
-
-@router.delete("/api/aruco/controls/{control_id}")
-async def api_delete_control(
-    request: Request,
-    control_id: int,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """Delete a control."""
-    storage = get_storage(request)
-    ok = await storage.delete_aruco_control(control_id)
-    if not ok:
-        raise HTTPException(404, "Control not found")
-    await audit(request, "aruco_control_delete", f"id={control_id}", _user)
-    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------
@@ -301,17 +239,20 @@ async def api_ingest_image(
         except (json.JSONDecodeError, KeyError):
             pass
 
-    # Get control pairs for this camera
-    controls = await storage.list_aruco_controls()
-    camera_controls = [c for c in controls if c["camera_id"] == camera["id"]]
+    # Get controls with ArUco config for this camera (unified controls table)
+    all_aruco = await storage.controls_with_aruco()
+    camera_controls = [c for c in all_aruco if c["camera_id"] == camera["id"]]
     pairs = [(c["marker_id_a"], c["marker_id_b"]) for c in camera_controls]
     control_map = {(c["marker_id_a"], c["marker_id_b"]): c for c in camera_controls}
 
     result = detect_and_measure(img, pairs, camera["marker_size_mm"], calibration)
 
-    # Record measurements where distance changed beyond tolerance
+    # Record measurements to boat_settings with source="camera"
+    from datetime import UTC, datetime
+
     current_race = await storage.get_current_race()
-    session_id = current_race.id if current_race else None
+    race_id = current_race.id if current_race else None
+    now = datetime.now(UTC).isoformat()
     recorded = 0
 
     for dist in result.distances:
@@ -319,28 +260,35 @@ async def api_ingest_image(
         if not ctrl:
             continue
 
-        tolerance = await storage.get_aruco_tolerance_mm(ctrl["id"])
-        latest = await storage.get_latest_aruco_measurement(ctrl["id"])
+        # Check tolerance (global default from aruco_settings, overridable per control)
+        tolerance = await storage.get_aruco_tolerance_mm()
+        if ctrl.get("tolerance_mm") is not None:
+            tolerance = float(ctrl["tolerance_mm"])
 
+        # Check against latest camera reading in boat_settings
+        latest = await storage.get_latest_camera_reading(ctrl["name"])
         if latest is not None:
-            delta_mm = abs(dist.distance_cm * 10 - latest["distance_cm"] * 10)
+            delta_mm = abs(dist.distance_cm * 10 - float(latest["value"]) * 10)
             if delta_mm <= tolerance:
                 continue
 
         # Save image if retention is enabled
-        image_path = None
         if camera["retain_images"]:
             import os
-            from datetime import UTC, datetime
 
-            ts = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+            ts_str = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
             img_dir = os.path.join("data", "aruco", name)
             os.makedirs(img_dir, exist_ok=True)
-            image_path = os.path.join(img_dir, f"{ts}.jpg")
-            with open(image_path, "wb") as f:
+            img_path = os.path.join(img_dir, f"{ts_str}.jpg")
+            with open(img_path, "wb") as f:
                 f.write(image_bytes)
 
-        await storage.add_aruco_measurement(ctrl["id"], dist.distance_cm, image_path, session_id)
+        # Write to boat_settings timeline
+        await storage.create_boat_settings(
+            race_id,
+            [{"ts": now, "parameter": ctrl["name"], "value": str(dist.distance_cm)}],
+            source="camera",
+        )
         recorded += 1
 
     return JSONResponse(
@@ -398,33 +346,19 @@ async def api_camera_preview(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/api/aruco/controls/{control_id}/measurements")
-async def api_list_measurements(
-    request: Request,
-    control_id: int,
-    limit: int = 100,
-    _user: dict[str, Any] = Depends(require_auth()),  # noqa: B008
-) -> JSONResponse:
-    """Return recent measurements for a control."""
-    storage = get_storage(request)
-    measurements = await storage.list_aruco_measurements(control_id, limit)
-    return JSONResponse(measurements)
-
-
 @router.get("/api/aruco/controls/latest")
-async def api_latest_measurements(
+async def api_latest_camera_readings(
     request: Request,
     _user: dict[str, Any] = Depends(require_auth()),  # noqa: B008
 ) -> JSONResponse:
-    """Return the latest measurement for every control (for setup panel)."""
+    """Return the latest camera measurement for controls with ArUco config."""
     storage = get_storage(request)
-    controls = await storage.list_aruco_controls()
+    aruco_controls = await storage.controls_with_aruco()
     result: list[dict[str, Any]] = []
-    for ctrl in controls:
-        latest = await storage.get_latest_aruco_measurement(ctrl["id"])
+    for ctrl in aruco_controls:
+        latest = await storage.get_latest_camera_reading(ctrl["name"])
         result.append(
             {
-                "control_id": ctrl["id"],
                 "control_name": ctrl["name"],
                 "camera_name": ctrl.get("camera_name", ""),
                 "marker_id_a": ctrl["marker_id_a"],
@@ -567,53 +501,8 @@ async def api_reset_calibration(
     await audit(request, "aruco_calibration_reset", f"camera={camera['name']}", _user)
     return JSONResponse({"status": "uncalibrated"})
 
-
-# ---------------------------------------------------------------------------
-# Trigger words
-# ---------------------------------------------------------------------------
-
-
-@router.get("/api/aruco/trigger-words")
-async def api_list_trigger_words(
-    request: Request,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """List all trigger word → control mappings."""
-    storage = get_storage(request)
-    words = await storage.list_aruco_trigger_words()
-    return JSONResponse(words)
-
-
-@router.post("/api/aruco/trigger-words")
-async def api_add_trigger_word(
-    request: Request,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """Add a trigger word mapping."""
-    storage = get_storage(request)
-    body = await request.json()
-    phrase = body.get("phrase", "").strip().lower()
-    control_id = body.get("control_id")
-    if not phrase or control_id is None:
-        raise HTTPException(400, "phrase and control_id are required")
-    trigger_id = await storage.add_aruco_trigger_word(phrase, int(control_id))
-    await audit(request, "aruco_trigger_add", f"phrase={phrase}", _user)
-    return JSONResponse({"id": trigger_id}, status_code=201)
-
-
-@router.delete("/api/aruco/trigger-words/{trigger_id}")
-async def api_delete_trigger_word(
-    request: Request,
-    trigger_id: int,
-    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
-) -> JSONResponse:
-    """Delete a trigger word mapping."""
-    storage = get_storage(request)
-    ok = await storage.delete_aruco_trigger_word(trigger_id)
-    if not ok:
-        raise HTTPException(404, "Trigger word not found")
-    await audit(request, "aruco_trigger_delete", f"id={trigger_id}", _user)
-    return JSONResponse({"ok": True})
+    # Trigger words and controls are now managed via the unified /api/controls endpoints.
+    # See routes/controls.py.
 
 
 # ---------------------------------------------------------------------------
