@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% block title %}Devices — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+.badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
+.badge-active{background:var(--bg-secondary);color:var(--success)}
+.badge-revoked{background:var(--border);color:var(--text-secondary)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-rotate{color:var(--warning);border-color:var(--warning)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+#add-err{color:var(--danger);font-size:.8rem;margin-top:4px}
+.key-display{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:8px 12px;font-family:monospace;font-size:.8rem;word-break:break-all;margin:8px 0}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+</style>
+{% endblock %}
+{% block content %}
+<h1>Devices</h1>
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">Registered Devices</div>
+<button class="btn-sm btn-add" onclick="showAddForm()">+ Add Device</button>
+</div>
+<div id="dev-table">Loading...</div>
+<div id="add-form" style="display:none">
+<div class="form-row">
+<input id="add-name" placeholder="Device name (e.g. mast-cam-1)" maxlength="50"/>
+<select id="add-role"><option value="crew">crew</option><option value="viewer">viewer</option></select>
+<input id="add-scope" placeholder="Scope (optional)" style="flex:1"/>
+<button class="btn-sm btn-add" onclick="addDevice()">Create</button>
+<button class="btn-sm" onclick="hideAddForm()">Cancel</button>
+</div>
+<div id="add-err"></div>
+</div>
+</div>
+
+<dialog id="key-dlg">
+<h3 style="margin:0 0 8px">API Key Created</h3>
+<p style="font-size:.85rem;color:var(--text-secondary)">Copy this key now. It will not be shown again.</p>
+<div class="key-display" id="key-value"></div>
+<p style="font-size:.8rem;color:var(--text-secondary)">Use as: <code>Authorization: Bearer &lt;key&gt;</code></p>
+<div style="display:flex;gap:8px;margin-top:12px;justify-content:flex-end">
+<button class="btn-sm" onclick="copyKey()">Copy</button>
+<button class="btn-sm" onclick="document.getElementById('key-dlg').close()">Close</button>
+</div>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>
+function showAddForm(){document.getElementById('add-form').style.display='';document.getElementById('add-name').focus()}
+function hideAddForm(){document.getElementById('add-form').style.display='none';document.getElementById('add-err').textContent='';document.getElementById('add-name').value='';document.getElementById('add-scope').value=''}
+function showKey(key){document.getElementById('key-value').textContent=key;document.getElementById('key-dlg').showModal()}
+function copyKey(){navigator.clipboard.writeText(document.getElementById('key-value').textContent)}
+async function addDevice(){
+  const name=document.getElementById('add-name').value.trim();
+  const role=document.getElementById('add-role').value;
+  const scope=document.getElementById('add-scope').value.trim();
+  if(!name){document.getElementById('add-err').textContent='Name is required';return}
+  const fd=new FormData();fd.set('name',name);fd.set('role',role);if(scope)fd.set('scope',scope);
+  const r=await fetch('/admin/devices',{method:'POST',body:fd});
+  if(!r.ok){const d=await r.json();document.getElementById('add-err').textContent=d.detail||'Failed';return}
+  const d=await r.json();
+  hideAddForm();showKey(d.api_key);loadDevices();
+}
+async function rotateKey(id){
+  if(!confirm('Rotate this device key? The old key will stop working immediately.'))return;
+  const r=await fetch('/admin/devices/'+id+'/rotate',{method:'POST'});
+  if(!r.ok){alert('Failed to rotate key');return}
+  const d=await r.json();showKey(d.api_key);loadDevices();
+}
+async function revokeDevice(id,name){
+  if(!confirm('Revoke device "'+name+'"? It will no longer be able to authenticate.'))return;
+  const r=await fetch('/admin/devices/'+id,{method:'DELETE'});
+  if(!r.ok){alert('Failed to revoke');return}
+  loadDevices();
+}
+async function loadDevices(){
+  document.getElementById('dev-table').textContent='Loading\u2026';
+  const r=await fetch('/api/devices');
+  if(!r.ok){document.getElementById('dev-table').textContent='Failed to load';return}
+  const devs=await r.json();
+  if(!devs.length){document.getElementById('dev-table').innerHTML='<p style="color:var(--text-secondary)">No devices registered. Click <b>+ Add Device</b> to create an API key for a headless device.</p>';return}
+  let h='<table><thead><tr><th>Name</th><th>Role</th><th>Scope</th><th>Status</th><th>Last Used</th><th>Actions</th></tr></thead><tbody>';
+  for(const d of devs){
+    const badge=d.is_active?'<span class="badge badge-active">active</span>':'<span class="badge badge-revoked">revoked</span>';
+    const lastUsed=d.last_used?new Date(d.last_used).toLocaleString():'\u2014';
+    const scope=d.scope||'<span style="color:var(--text-muted)">unrestricted</span>';
+    const actions=d.is_active?`<button class="btn-sm btn-rotate" onclick="rotateKey(${d.id})">Rotate</button> <button class="btn-sm btn-del" onclick="revokeDevice(${d.id},'${d.name.replace(/'/g,"\\'")}')">Revoke</button>`:'';
+    h+=`<tr><td>${d.name}</td><td>${d.role}</td><td style="font-size:.8rem">${scope}</td><td>${badge}</td><td>${lastUsed}</td><td style="display:flex;gap:4px">${actions}</td></tr>`;
+  }
+  h+='</tbody></table>';
+  document.getElementById('dev-table').innerHTML=h;
+}
+loadDevices();
+</script>
+{% endblock %}

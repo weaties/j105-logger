@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 53
+_CURRENT_VERSION: int = 54
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1168,6 +1168,20 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_rudder_angles_ts ON rudder_angles(ts);
     """,
     53: """
+        -- Device API keys for headless IoT devices (#423)
+        CREATE TABLE IF NOT EXISTS devices (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            key_hash    TEXT NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'crew',
+            scope       TEXT,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            last_used   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_devices_key_hash ON devices(key_hash);
+    """,
+    54: """
         -- ArUco marker tracking (#425)
         CREATE TABLE IF NOT EXISTS aruco_cameras (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -4559,6 +4573,88 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Device API keys (#423)
+    # ------------------------------------------------------------------
+
+    async def create_device(
+        self,
+        name: str,
+        key_hash: str,
+        role: str,
+        scope: str | None = None,
+    ) -> int:
+        """Insert a new device and return its id.
+
+        *role* must be ``crew`` or ``viewer`` — devices cannot have admin role.
+        *key_hash* is the SHA-256 hex digest of the plaintext bearer token.
+        """
+        if role == "admin":
+            raise ValueError("Devices cannot be assigned the admin role")
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO devices (name, key_hash, role, scope, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, key_hash, role, scope, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    _DEVICE_COLS = "id, name, key_hash, role, scope, is_active, created_at, last_used"
+
+    async def get_device(self, device_id: int) -> dict[str, Any] | None:
+        """Return a device by id, or None."""
+        cur = await self._read_conn().execute(
+            f"SELECT {self._DEVICE_COLS} FROM devices WHERE id = ?",
+            (device_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_device_by_key_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """Return an active device matching the key hash, or None."""
+        cur = await self._read_conn().execute(
+            f"SELECT {self._DEVICE_COLS} FROM devices WHERE key_hash = ? AND is_active = 1",
+            (key_hash,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_devices(self) -> list[dict[str, Any]]:
+        """Return all devices ordered by creation time."""
+        cur = await self._read_conn().execute(
+            "SELECT id, name, role, scope, is_active, created_at, last_used"
+            " FROM devices ORDER BY created_at"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def revoke_device(self, device_id: int) -> None:
+        """Deactivate a device (soft-delete)."""
+        db = self._conn()
+        await db.execute("UPDATE devices SET is_active = 0 WHERE id = ?", (device_id,))
+        await db.commit()
+
+    async def rotate_device_key(self, device_id: int, new_key_hash: str) -> None:
+        """Replace a device's key hash."""
+        db = self._conn()
+        await db.execute("UPDATE devices SET key_hash = ? WHERE id = ?", (new_key_hash, device_id))
+        await db.commit()
+
+    async def update_device_last_used(self, device_id: int) -> None:
+        """Update the last_used timestamp to now."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute("UPDATE devices SET last_used = ? WHERE id = ?", (now, device_id))
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Tags (#99)
