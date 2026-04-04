@@ -181,6 +181,7 @@ def create_app(
     from helmlog.routes import (
         admin,
         analysis,
+        aruco,
         audio,
         auth,
         boat_settings,
@@ -219,6 +220,7 @@ def create_app(
         sails,
         audio,
         cameras,
+        aruco,
         network,
         notes,
         videos,

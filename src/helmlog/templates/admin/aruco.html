@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}ArUco Markers — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+.badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
+.badge-cal{background:var(--bg-secondary);color:var(--success)}
+.badge-uncal{background:var(--border);color:var(--text-secondary)}
+.badge-fail{background:var(--bg-secondary);color:var(--danger)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-edit{color:var(--warning);border-color:var(--warning)}
+.btn-refresh{color:var(--accent);border-color:var(--accent-strong)}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+.err{color:var(--danger);font-size:.8rem;margin-top:4px}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:460px;width:90%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog .form-row{flex-direction:column;align-items:stretch}
+dialog .form-row input,dialog .form-row select{width:100%}
+dialog .form-row label{font-size:.75rem;color:var(--text-secondary);margin-bottom:2px}
+dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.tab-bar{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0}
+.tab-bar button{padding:8px 16px;border:none;background:none;color:var(--text-secondary);font-size:.85rem;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab-bar button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.setting-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.setting-row label{font-size:.85rem;min-width:180px}
+.setting-row input{width:100px}
+</style>
+{% endblock %}
+{% block content %}
+<h1>ArUco Marker Tracking</h1>
+
+<div class="tab-bar">
+<button class="active" onclick="showTab('cameras')">Cameras</button>
+<button onclick="showTab('controls')">Controls</button>
+<button onclick="showTab('triggers')">Trigger Words</button>
+<button onclick="showTab('settings')">Settings</button>
+</div>
+
+<!-- Cameras Tab -->
+<div class="tab-content active" id="tab-cameras">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">ESP32-CAM Cameras</div>
+<div style="display:flex;gap:6px">
+<button class="btn-sm btn-refresh" onclick="loadCameras()">&#x21bb; Refresh</button>
+<button class="btn-sm btn-add" onclick="showAddCamera()">+ Add Camera</button>
+</div>
+</div>
+<div id="cam-list">Loading...</div>
+<div id="add-cam-form" style="display:none">
+<div class="form-row">
+<input id="ac-name" placeholder="Name (e.g. shrouds)" maxlength="50"/>
+<input id="ac-ip" placeholder="IP address" maxlength="45"/>
+<input id="ac-size" placeholder="Marker size (mm)" value="50" style="width:120px"/>
+<input id="ac-interval" placeholder="Interval (s)" value="60" style="width:100px"/>
+<label style="font-size:.8rem"><input type="checkbox" id="ac-retain"/> Retain images</label>
+<button class="btn-sm btn-add" onclick="addCamera()">Save</button>
+<button class="btn-sm" onclick="hideAddCamera()">Cancel</button>
+</div>
+<div class="err" id="ac-err"></div>
+</div>
+</div>
+</div>
+
+<!-- Controls Tab -->
+<div class="tab-content" id="tab-controls">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">Marker Pair Controls</div>
+<button class="btn-sm btn-add" onclick="showAddControl()">+ Add Control</button>
+</div>
+<div id="ctrl-list">Loading...</div>
+<div id="add-ctrl-form" style="display:none">
+<div class="form-row">
+<input id="cc-name" placeholder="Control name" maxlength="100"/>
+<select id="cc-cam"></select>
+<input id="cc-a" placeholder="Marker A" style="width:80px" type="number" min="0" max="49"/>
+<input id="cc-b" placeholder="Marker B" style="width:80px" type="number" min="0" max="49"/>
+<input id="cc-tol" placeholder="Tolerance (mm)" style="width:120px"/>
+<button class="btn-sm btn-add" onclick="addControl()">Save</button>
+<button class="btn-sm" onclick="hideAddControl()">Cancel</button>
+</div>
+<div class="err" id="cc-err"></div>
+</div>
+</div>
+</div>
+
+<!-- Trigger Words Tab -->
+<div class="tab-content" id="tab-triggers">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">Transcript Trigger Words</div>
+<button class="btn-sm btn-add" onclick="showAddTrigger()">+ Add Trigger</button>
+</div>
+<div id="tw-list">Loading...</div>
+<div id="add-tw-form" style="display:none">
+<div class="form-row">
+<input id="tw-phrase" placeholder="Trigger phrase" maxlength="100"/>
+<select id="tw-ctrl"></select>
+<button class="btn-sm btn-add" onclick="addTrigger()">Save</button>
+<button class="btn-sm" onclick="hideAddTrigger()">Cancel</button>
+</div>
+<div class="err" id="tw-err"></div>
+</div>
+</div>
+</div>
+
+<!-- Settings Tab -->
+<div class="tab-content" id="tab-settings">
+<div class="card">
+<div class="label">Global Settings</div>
+<div class="setting-row">
+<label>Default tolerance (mm)</label>
+<input id="set-tol" type="number" step="0.1" min="0"/>
+<button class="btn-sm btn-edit" onclick="saveSettings()">Save</button>
+</div>
+<div class="err" id="set-err"></div>
+<div id="set-ok" style="color:var(--success);font-size:.8rem;display:none">Saved</div>
+</div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+let _cameras=[];
+let _controls=[];
+
+function showTab(name){
+  document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+  if(name==='cameras')loadCameras();
+  if(name==='controls')loadControls();
+  if(name==='triggers')loadTriggers();
+  if(name==='settings')loadSettings();
+}
+
+// --- Cameras ---
+async function loadCameras(){
+  const r=await fetch('/api/aruco/cameras');
+  if(!r.ok){document.getElementById('cam-list').textContent='Failed to load';return}
+  _cameras=await r.json();
+  if(!_cameras.length){document.getElementById('cam-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No cameras configured</div>';return}
+  let h='<table><tr><th>Name</th><th>IP</th><th>Marker (mm)</th><th>Interval (s)</th><th>Calibration</th><th>Actions</th></tr>';
+  for(const c of _cameras){
+    const st=c.calibration_state;
+    const badge=st==='calibrated'?'<span class="badge badge-cal">Calibrated</span>':
+      st==='calibration_failed'?'<span class="badge badge-fail">Failed</span>':
+      '<span class="badge badge-uncal">Uncalibrated</span>';
+    h+=`<tr><td>${esc(c.name)}</td><td>${esc(c.ip)}</td><td>${c.marker_size_mm}</td><td>${c.capture_interval_s}</td><td>${badge}</td>`;
+    h+=`<td><button class="btn-sm btn-del" onclick="delCamera(${c.id})">Delete</button></td></tr>`;
+  }
+  h+='</table>';
+  document.getElementById('cam-list').innerHTML=h;
+}
+function showAddCamera(){document.getElementById('add-cam-form').style.display='';document.getElementById('ac-name').focus()}
+function hideAddCamera(){document.getElementById('add-cam-form').style.display='none';document.getElementById('ac-err').textContent=''}
+async function addCamera(){
+  const name=document.getElementById('ac-name').value.trim();
+  const ip=document.getElementById('ac-ip').value.trim();
+  if(!name||!ip){document.getElementById('ac-err').textContent='Name and IP required';return}
+  const body={name,ip,marker_size_mm:parseFloat(document.getElementById('ac-size').value)||50,capture_interval_s:parseInt(document.getElementById('ac-interval').value)||60,retain_images:document.getElementById('ac-retain').checked};
+  const r=await fetch('/api/aruco/cameras',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const d=await r.json();document.getElementById('ac-err').textContent=d.detail||'Failed';return}
+  hideAddCamera();loadCameras();
+}
+async function delCamera(id){if(!confirm('Delete this camera and all its controls/measurements?'))return;await fetch(`/api/aruco/cameras/${id}`,{method:'DELETE'});loadCameras()}
+
+// --- Controls ---
+async function loadControls(){
+  const r=await fetch('/api/aruco/controls');
+  if(!r.ok){document.getElementById('ctrl-list').textContent='Failed to load';return}
+  _controls=await r.json();
+  // Also refresh camera select
+  if(!_cameras.length)await loadCameras();
+  const sel=document.getElementById('cc-cam');
+  sel.innerHTML=_cameras.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if(!_controls.length){document.getElementById('ctrl-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No controls configured</div>';return}
+  let h='<table><tr><th>Name</th><th>Camera</th><th>Marker A</th><th>Marker B</th><th>Tolerance (mm)</th><th>Actions</th></tr>';
+  for(const c of _controls){
+    h+=`<tr><td>${esc(c.name)}</td><td>${esc(c.camera_name||'')}</td><td>${c.marker_id_a}</td><td>${c.marker_id_b}</td><td>${c.tolerance_mm!==null?c.tolerance_mm:'(global)'}</td>`;
+    h+=`<td><button class="btn-sm btn-del" onclick="delControl(${c.id})">Delete</button></td></tr>`;
+  }
+  h+='</table>';
+  document.getElementById('ctrl-list').innerHTML=h;
+}
+function showAddControl(){document.getElementById('add-ctrl-form').style.display='';document.getElementById('cc-name').focus()}
+function hideAddControl(){document.getElementById('add-ctrl-form').style.display='none';document.getElementById('cc-err').textContent=''}
+async function addControl(){
+  const name=document.getElementById('cc-name').value.trim();
+  const camera_id=parseInt(document.getElementById('cc-cam').value);
+  const a=parseInt(document.getElementById('cc-a').value);
+  const b=parseInt(document.getElementById('cc-b').value);
+  if(!name||isNaN(camera_id)||isNaN(a)||isNaN(b)){document.getElementById('cc-err').textContent='All fields required';return}
+  const body={name,camera_id,marker_id_a:a,marker_id_b:b};
+  const tol=document.getElementById('cc-tol').value.trim();
+  if(tol)body.tolerance_mm=parseFloat(tol);
+  const r=await fetch('/api/aruco/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const d=await r.json();document.getElementById('cc-err').textContent=d.detail||'Failed';return}
+  hideAddControl();loadControls();
+}
+async function delControl(id){if(!confirm('Delete this control and its measurements?'))return;await fetch(`/api/aruco/controls/${id}`,{method:'DELETE'});loadControls()}
+
+// --- Trigger Words ---
+async function loadTriggers(){
+  const r=await fetch('/api/aruco/trigger-words');
+  if(!r.ok){document.getElementById('tw-list').textContent='Failed to load';return}
+  const words=await r.json();
+  // Refresh control select
+  if(!_controls.length){const cr=await fetch('/api/aruco/controls');if(cr.ok)_controls=await cr.json()}
+  const sel=document.getElementById('tw-ctrl');
+  sel.innerHTML=_controls.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  if(!words.length){document.getElementById('tw-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No trigger words configured</div>';return}
+  let h='<table><tr><th>Phrase</th><th>Control</th><th>Actions</th></tr>';
+  for(const w of words){
+    h+=`<tr><td>${esc(w.phrase)}</td><td>${esc(w.control_name||'')}</td>`;
+    h+=`<td><button class="btn-sm btn-del" onclick="delTrigger(${w.id})">Delete</button></td></tr>`;
+  }
+  h+='</table>';
+  document.getElementById('tw-list').innerHTML=h;
+}
+function showAddTrigger(){document.getElementById('add-tw-form').style.display='';document.getElementById('tw-phrase').focus()}
+function hideAddTrigger(){document.getElementById('add-tw-form').style.display='none';document.getElementById('tw-err').textContent=''}
+async function addTrigger(){
+  const phrase=document.getElementById('tw-phrase').value.trim();
+  const control_id=parseInt(document.getElementById('tw-ctrl').value);
+  if(!phrase||isNaN(control_id)){document.getElementById('tw-err').textContent='Phrase and control required';return}
+  const r=await fetch('/api/aruco/trigger-words',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phrase,control_id})});
+  if(!r.ok){const d=await r.json();document.getElementById('tw-err').textContent=d.detail||'Failed';return}
+  hideAddTrigger();loadTriggers();
+}
+async function delTrigger(id){if(!confirm('Delete this trigger word?'))return;await fetch(`/api/aruco/trigger-words/${id}`,{method:'DELETE'});loadTriggers()}
+
+// --- Settings ---
+async function loadSettings(){
+  const r=await fetch('/api/aruco/settings');
+  if(!r.ok)return;
+  const s=await r.json();
+  document.getElementById('set-tol').value=s.tolerance_mm_default;
+}
+async function saveSettings(){
+  const tol=parseFloat(document.getElementById('set-tol').value);
+  if(isNaN(tol)||tol<0){document.getElementById('set-err').textContent='Invalid tolerance';return}
+  const r=await fetch('/api/aruco/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({tolerance_mm_default:tol})});
+  if(!r.ok){document.getElementById('set-err').textContent='Failed to save';return}
+  document.getElementById('set-err').textContent='';
+  const ok=document.getElementById('set-ok');ok.style.display='';setTimeout(()=>ok.style.display='none',2000);
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+// Init
+loadCameras();
+</script>
+{% endblock %}
