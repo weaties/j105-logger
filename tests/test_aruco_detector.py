@@ -308,3 +308,40 @@ def test_decode_jpeg_invalid() -> None:
     """decode_jpeg should raise ValueError on invalid data."""
     with pytest.raises(ValueError, match="Failed to decode"):
         decode_jpeg(b"not a jpeg")
+
+
+# ---------------------------------------------------------------------------
+# create_thumbnail
+# ---------------------------------------------------------------------------
+
+
+def test_create_thumbnail_shrinks_large_image() -> None:
+    """create_thumbnail should downscale a large image."""
+    from helmlog.aruco_detector import create_thumbnail
+
+    img = np.zeros((1200, 1600, 3), dtype=np.uint8)
+    _, buf = cv2.imencode(".jpg", img)
+    thumb = create_thumbnail(buf.tobytes(), max_width=320)
+    # Decode the thumbnail to verify it was resized
+    result = decode_jpeg(thumb)
+    assert result.shape[1] == 320  # width
+    assert result.shape[0] == 240  # height (proportional)
+
+
+def test_create_thumbnail_preserves_small_image() -> None:
+    """create_thumbnail should return original bytes if image is already small."""
+    from helmlog.aruco_detector import create_thumbnail
+
+    img = np.zeros((100, 200, 3), dtype=np.uint8)
+    _, buf = cv2.imencode(".jpg", img)
+    original = buf.tobytes()
+    thumb = create_thumbnail(original, max_width=320)
+    assert thumb == original
+
+
+def test_create_thumbnail_invalid_data() -> None:
+    """create_thumbnail should return original bytes on invalid data."""
+    from helmlog.aruco_detector import create_thumbnail
+
+    bad = b"not a jpeg"
+    assert create_thumbnail(bad) == bad

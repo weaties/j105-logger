@@ -329,6 +329,45 @@ async def test_admin_aruco_page(client: httpx.AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Preview API
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_preview_with_cached_thumbnail(client: httpx.AsyncClient, storage: Storage) -> None:
+    """Preview endpoint should return cached thumbnail if available."""
+    await storage.add_aruco_camera("prev_cam", "1.1.1.1")
+    # Simulate the polling loop caching a thumbnail
+    import cv2
+    import numpy as np
+
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    _, buf = cv2.imencode(".jpg", img)
+    storage._aruco_thumbnails = {"prev_cam": buf.tobytes()}  # type: ignore[attr-defined]
+
+    resp = await client.get("/api/aruco/cameras/prev_cam/preview")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "image/jpeg"
+    assert len(resp.content) > 0
+
+
+@pytest.mark.asyncio
+async def test_preview_camera_not_found(client: httpx.AsyncClient) -> None:
+    resp = await client.get("/api/aruco/cameras/nonexistent/preview")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_preview_fallback_camera_unreachable(
+    client: httpx.AsyncClient, storage: Storage
+) -> None:
+    """Preview should return 502 when camera has no cached thumbnail and is unreachable."""
+    await storage.add_aruco_camera("offline_cam", "192.0.2.1")  # non-routable IP
+    resp = await client.get("/api/aruco/cameras/offline_cam/preview")
+    assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
 # Calibration API
 # ---------------------------------------------------------------------------
 

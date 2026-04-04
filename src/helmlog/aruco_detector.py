@@ -361,3 +361,22 @@ def decode_jpeg(data: bytes) -> np.ndarray:
         msg = "Failed to decode image"
         raise ValueError(msg)
     return image
+
+
+def create_thumbnail(jpeg_data: bytes, max_width: int = 320) -> bytes:
+    """Create a smaller JPEG thumbnail from full-size JPEG bytes.
+
+    Returns the original bytes if decoding fails or image is already small.
+    """
+    arr = np.frombuffer(jpeg_data, dtype=np.uint8)
+    image = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if image is None:
+        return jpeg_data
+    h, w = image.shape[:2]
+    if w <= max_width:
+        return jpeg_data
+    scale = max_width / w
+    new_h = int(h * scale)
+    thumb = cv2.resize(image, (max_width, new_h), interpolation=cv2.INTER_AREA)
+    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return buf.tobytes()

@@ -353,6 +353,47 @@ async def api_ingest_image(
 
 
 # ---------------------------------------------------------------------------
+# Live preview
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/aruco/cameras/{name}/preview")
+async def api_camera_preview(
+    request: Request,
+    name: str,
+) -> Response:
+    """Return a thumbnail JPEG for a camera.
+
+    First checks if the polling loop has a cached thumbnail. Falls back
+    to fetching directly from the ESP32-CAM's /capture endpoint.
+    """
+    storage = get_storage(request)
+    camera = await storage.get_aruco_camera_by_name(name)
+    if not camera:
+        raise HTTPException(404, f"Camera '{name}' not found")
+
+    # Check for cached thumbnail from the polling loop
+    thumbnails: dict[str, bytes] = getattr(storage, "_aruco_thumbnails", {})
+    if name in thumbnails:
+        return Response(content=thumbnails[name], media_type="image/jpeg")
+
+    # Fall back to direct fetch from the camera
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"http://{camera['ip']}/capture")
+            if resp.status_code != 200:
+                raise HTTPException(502, "Camera returned an error")
+            from helmlog.aruco_detector import create_thumbnail
+
+            thumb = create_thumbnail(resp.content)
+            return Response(content=thumb, media_type="image/jpeg")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Camera unreachable")  # noqa: B904
+
+
+# ---------------------------------------------------------------------------
 # Measurements
 # ---------------------------------------------------------------------------
 

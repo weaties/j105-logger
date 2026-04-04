@@ -34,6 +34,13 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 .setting-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
 .setting-row label{font-size:.85rem;min-width:180px}
 .setting-row input{width:100px}
+.cam-card{display:flex;gap:16px;align-items:flex-start;padding:12px;border-bottom:1px solid var(--border)}
+.cam-card:last-child{border-bottom:none}
+.cam-thumb{width:160px;min-width:160px;height:120px;border-radius:8px;background:var(--bg-primary);object-fit:cover;cursor:pointer}
+.cam-thumb-placeholder{width:160px;min-width:160px;height:120px;border-radius:8px;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:.75rem}
+.cam-info{flex:1;font-size:.85rem}
+.cam-info .cam-name{font-weight:600;font-size:1rem;margin-bottom:4px}
+.cam-info .cam-detail{color:var(--text-secondary);margin-bottom:2px}
 </style>
 {% endblock %}
 {% block content %}
@@ -147,22 +154,39 @@ function showTab(name){
 }
 
 // --- Cameras ---
+let _previewTimer=null;
 async function loadCameras(){
   const r=await fetch('/api/aruco/cameras');
   if(!r.ok){document.getElementById('cam-list').textContent='Failed to load';return}
   _cameras=await r.json();
   if(!_cameras.length){document.getElementById('cam-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No cameras configured</div>';return}
-  let h='<table><tr><th>Name</th><th>IP</th><th>Marker (mm)</th><th>Interval (s)</th><th>Calibration</th><th>Actions</th></tr>';
+  let h='';
   for(const c of _cameras){
     const st=c.calibration_state;
     const badge=st==='calibrated'?'<span class="badge badge-cal">Calibrated</span>':
       st==='calibration_failed'?'<span class="badge badge-fail">Failed</span>':
       '<span class="badge badge-uncal">Uncalibrated</span>';
-    h+=`<tr><td>${esc(c.name)}</td><td>${esc(c.ip)}</td><td>${c.marker_size_mm}</td><td>${c.capture_interval_s}</td><td>${badge}</td>`;
-    h+=`<td><button class="btn-sm btn-del" onclick="delCamera(${c.id})">Delete</button></td></tr>`;
+    const thumbUrl=`/api/aruco/cameras/${encodeURIComponent(c.name)}/preview?t=${Date.now()}`;
+    h+=`<div class="cam-card">`;
+    h+=`<img class="cam-thumb" id="thumb-${esc(c.name)}" src="${thumbUrl}" alt="Preview" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" onclick="window.open('/api/aruco/cameras/${encodeURIComponent(c.name)}/preview','_blank')"/>`;
+    h+=`<div class="cam-thumb-placeholder" style="display:none">No preview</div>`;
+    h+=`<div class="cam-info">`;
+    h+=`<div class="cam-name">${esc(c.name)}</div>`;
+    h+=`<div class="cam-detail">IP: ${esc(c.ip)} &middot; Marker: ${c.marker_size_mm}mm &middot; Interval: ${c.capture_interval_s}s</div>`;
+    h+=`<div class="cam-detail">${badge}</div>`;
+    h+=`<div style="margin-top:8px"><button class="btn-sm btn-del" onclick="delCamera(${c.id})">Delete</button></div>`;
+    h+=`</div></div>`;
   }
-  h+='</table>';
   document.getElementById('cam-list').innerHTML=h;
+  // Refresh thumbnails periodically
+  if(_previewTimer)clearInterval(_previewTimer);
+  _previewTimer=setInterval(refreshThumbnails,10000);
+}
+function refreshThumbnails(){
+  for(const c of _cameras){
+    const img=document.getElementById('thumb-'+c.name);
+    if(img)img.src=`/api/aruco/cameras/${encodeURIComponent(c.name)}/preview?t=${Date.now()}`;
+  }
 }
 function showAddCamera(){document.getElementById('add-cam-form').style.display='';document.getElementById('ac-name').focus()}
 function hideAddCamera(){document.getElementById('add-cam-form').style.display='none';document.getElementById('ac-err').textContent=''}
