@@ -7085,7 +7085,7 @@ class Storage:
         if marker_id_b is not None:
             sets.append("marker_id_b = ?")
             params.append(marker_id_b)
-        if tolerance_mm is not ...:
+        if tolerance_mm is not ...:  # type: ignore[comparison-overlap]
             sets.append("tolerance_mm = ?")
             params.append(tolerance_mm)
         if not sets:

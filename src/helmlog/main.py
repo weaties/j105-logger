@@ -316,7 +316,7 @@ async def _aruco_poll_loop(storage: object) -> None:
                     # Record measurements to boat_settings with source="camera"
                     current_race = await storage.get_current_race()
                     race_id = current_race.id if current_race else None
-                    now = datetime.now(UTC).isoformat()
+                    ts_iso = datetime.now(UTC).isoformat()
 
                     for dist in result.distances:
                         ctrl = control_map.get((dist.marker_id_a, dist.marker_id_b))
@@ -345,7 +345,7 @@ async def _aruco_poll_loop(storage: object) -> None:
                             race_id,
                             [
                                 {
-                                    "ts": now,
+                                    "ts": ts_iso,
                                     "parameter": ctrl["name"],
                                     "value": str(dist.distance_cm),
                                 }
