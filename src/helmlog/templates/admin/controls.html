@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block title %}Controls — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-edit{color:var(--warning);border-color:var(--warning)}
+.btn-save{color:var(--success);border-color:var(--success)}
+.err{color:var(--danger);font-size:.8rem;margin-top:4px}
+.ctrl-item{border:1px solid var(--border);border-radius:8px;margin-bottom:8px;overflow:hidden}
+.ctrl-header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;cursor:pointer;gap:8px}
+.ctrl-header:hover{background:var(--bg-primary)}
+.ctrl-name{font-weight:600;font-size:.9rem}
+.ctrl-meta{font-size:.75rem;color:var(--text-secondary);display:flex;gap:12px;align-items:center}
+.ctrl-badges{display:flex;gap:4px}
+.badge{padding:2px 7px;border-radius:4px;font-size:.7rem;font-weight:600}
+.badge-cam{background:var(--bg-primary);color:var(--accent)}
+.badge-tw{background:var(--bg-primary);color:var(--warning)}
+.badge-cat{background:var(--bg-primary);color:var(--text-secondary)}
+.ctrl-body{display:none;padding:12px 14px;border-top:1px solid var(--border);background:var(--bg-primary)}
+.ctrl-body.open{display:block}
+.field-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.field-row label{font-size:.75rem;color:var(--text-secondary);min-width:80px}
+.field-row input,.field-row select{padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.83rem}
+.field-row input{flex:1;max-width:200px}
+.section-label{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin:12px 0 6px;font-weight:600}
+.tw-list{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px}
+.tw-chip{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:12px;font-size:.78rem}
+.tw-chip button{background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;padding:0 2px}
+.add-form{display:none;padding:12px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;margin-bottom:12px}
+.add-form.show{display:block}
+.add-form .field-row input,.add-form .field-row select{max-width:none;flex:1}
+.cat-group{margin-bottom:16px}
+.cat-heading{font-size:.8rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);margin-bottom:8px;font-weight:600;padding-left:4px}
+</style>
+{% endblock %}
+{% block content %}
+<h1>Boat Controls</h1>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+<div style="font-size:.85rem;color:var(--text-secondary)">Configure boat controls, ArUco markers, and transcript trigger words</div>
+<button class="btn-sm btn-add" onclick="toggleAddForm()">+ New Control</button>
+</div>
+
+<div class="add-form" id="add-form">
+<div class="field-row">
+<label>Name</label><input id="new-name" placeholder="e.g. port_upper_shroud" maxlength="100"/>
+</div>
+<div class="field-row">
+<label>Label</label><input id="new-label" placeholder="e.g. Port Upper Shroud" maxlength="100"/>
+</div>
+<div class="field-row">
+<label>Unit</label><input id="new-unit" placeholder="e.g. cm, in, Loos" value="in" maxlength="20" style="max-width:100px"/>
+<label>Category</label>
+<select id="new-cat">
+<option value="sail_controls">Sail Controls</option>
+<option value="deck_hardware">Deck Hardware</option>
+<option value="rig">Rig</option>
+<option value="crew">Crew</option>
+<option value="conditions">Conditions</option>
+<option value="instrument_calibration">Instrument Calibration</option>
+</select>
+</div>
+<div style="display:flex;gap:6px;margin-top:8px">
+<button class="btn-sm btn-save" onclick="createControl()">Create</button>
+<button class="btn-sm" onclick="toggleAddForm()">Cancel</button>
+</div>
+<div class="err" id="add-err"></div>
+</div>
+
+<div id="controls-list">Loading...</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+let _controls=[];
+let _cameras=[];
+
+function toggleAddForm(){
+  const f=document.getElementById('add-form');
+  f.classList.toggle('show');
+  if(f.classList.contains('show'))document.getElementById('new-name').focus();
+}
+
+async function createControl(){
+  const name=document.getElementById('new-name').value.trim();
+  const label=document.getElementById('new-label').value.trim();
+  const unit=document.getElementById('new-unit').value.trim();
+  const cat=document.getElementById('new-cat').value;
+  if(!name||!label){document.getElementById('add-err').textContent='Name and label required';return}
+  const r=await fetch('/api/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,label,unit,category:cat,sort_order:99})});
+  if(!r.ok){const d=await r.json();document.getElementById('add-err').textContent=d.detail||'Failed';return}
+  document.getElementById('add-err').textContent='';
+  document.getElementById('new-name').value='';
+  document.getElementById('new-label').value='';
+  toggleAddForm();
+  loadControls();
+}
+
+async function loadControls(){
+  const[cr,camr]=await Promise.all([fetch('/api/controls'),fetch('/api/aruco/cameras')]);
+  if(!cr.ok){document.getElementById('controls-list').textContent='Failed to load';return}
+  const data=await cr.json();
+  if(camr.ok)_cameras=await camr.json();
+  _controls=[];
+
+  let html='';
+  for(const cat of data.categories){
+    html+=`<div class="cat-group"><div class="cat-heading">${esc(cat.label)}</div>`;
+    for(const c of cat.controls){
+      _controls.push(c);
+      const a=c.aruco;
+      const twCount=c.trigger_words.length;
+      let badges='';
+      if(a)badges+=`<span class="badge badge-cam">&#x1f4f7; ${esc(a.camera_name)} (${a.marker_id_a}/${a.marker_id_b})</span>`;
+      if(twCount)badges+=`<span class="badge badge-tw">${twCount} trigger${twCount>1?'s':''}</span>`;
+      html+=`<div class="ctrl-item" id="ctrl-${c.id}">`;
+      html+=`<div class="ctrl-header" onclick="toggleCtrl(${c.id})">`;
+      html+=`<div><span class="ctrl-name">${esc(c.label)}</span> <span style="font-size:.75rem;color:var(--text-muted)">${esc(c.name)}</span></div>`;
+      html+=`<div class="ctrl-meta"><span class="ctrl-badges">${badges}</span>`;
+      html+=`<span style="font-size:.78rem">${esc(c.unit||'')}</span></div>`;
+      html+=`</div>`;
+      html+=`<div class="ctrl-body" id="body-${c.id}">`;
+      html+=renderControlBody(c);
+      html+=`</div></div>`;
+    }
+    html+=`</div>`;
+  }
+  if(!_controls.length)html='<div style="color:var(--text-secondary);font-size:.85rem">No controls configured</div>';
+  document.getElementById('controls-list').innerHTML=html;
+}
+
+function renderControlBody(c){
+  const cats=[['sail_controls','Sail Controls'],['deck_hardware','Deck Hardware'],['rig','Rig'],['crew','Crew'],['conditions','Conditions'],['instrument_calibration','Instrument Calibration']];
+  let h='';
+
+  // Editable fields
+  h+=`<div class="field-row"><label>Label</label><input id="ed-label-${c.id}" value="${esc(c.label)}"/></div>`;
+  h+=`<div class="field-row"><label>Unit</label><input id="ed-unit-${c.id}" value="${esc(c.unit||'')}" style="max-width:80px"/>`;
+  h+=`<label>Category</label><select id="ed-cat-${c.id}">`;
+  for(const[val,lbl]of cats)h+=`<option value="${val}"${c.category===val?' selected':''}>${lbl}</option>`;
+  h+=`</select></div>`;
+  h+=`<div style="display:flex;gap:6px;margin-bottom:12px"><button class="btn-sm btn-save" onclick="saveControl(${c.id})">Save Changes</button>`;
+  h+=`<button class="btn-sm btn-del" onclick="deleteControl(${c.id})">Delete Control</button></div>`;
+
+  // ArUco markers section
+  h+=`<div class="section-label">ArUco Markers</div>`;
+  const a=c.aruco;
+  if(a){
+    h+=`<div class="field-row"><label>Camera</label><span style="font-size:.85rem">${esc(a.camera_name)}</span>`;
+    h+=` <label style="min-width:auto">A:</label><span style="font-size:.85rem">${a.marker_id_a}</span>`;
+    h+=` <label style="min-width:auto">B:</label><span style="font-size:.85rem">${a.marker_id_b}</span>`;
+    if(a.tolerance_mm!=null)h+=` <label style="min-width:auto">Tol:</label><span style="font-size:.85rem">${a.tolerance_mm}mm</span>`;
+    h+=`<button class="btn-sm btn-del" onclick="removeAruco(${c.id})" style="margin-left:8px">Remove</button></div>`;
+  }else{
+    h+=`<div class="field-row"><label>Camera</label><select id="aruco-cam-${c.id}">`;
+    h+=`<option value="">-- None --</option>`;
+    for(const cam of _cameras)h+=`<option value="${cam.id}">${esc(cam.name)}</option>`;
+    h+=`</select>`;
+    h+=`<label style="min-width:auto">A</label><input id="aruco-a-${c.id}" type="number" min="0" max="49" style="width:60px"/>`;
+    h+=`<label style="min-width:auto">B</label><input id="aruco-b-${c.id}" type="number" min="0" max="49" style="width:60px"/>`;
+    h+=`<label style="min-width:auto">Tol (mm)</label><input id="aruco-tol-${c.id}" style="width:70px"/>`;
+    h+=`<button class="btn-sm btn-save" onclick="attachAruco(${c.id})">Attach</button></div>`;
+  }
+
+  // Trigger words section
+  h+=`<div class="section-label">Trigger Words</div>`;
+  h+=`<div class="tw-list" id="tw-${c.id}">`;
+  for(const tw of c.trigger_words){
+    h+=`<span class="tw-chip">${esc(tw.phrase)}<button onclick="delTrigger(${tw.id},${c.id})">&times;</button></span>`;
+  }
+  if(!c.trigger_words.length)h+=`<span style="font-size:.78rem;color:var(--text-muted)">None</span>`;
+  h+=`</div>`;
+  h+=`<div class="field-row"><input id="tw-input-${c.id}" placeholder="Add trigger phrase..." style="max-width:200px" onkeydown="if(event.key==='Enter')addTrigger(${c.id})"/>`;
+  h+=`<button class="btn-sm btn-add" onclick="addTrigger(${c.id})">Add</button></div>`;
+
+  return h;
+}
+
+function toggleCtrl(id){
+  const body=document.getElementById('body-'+id);
+  body.classList.toggle('open');
+}
+
+async function saveControl(id){
+  const label=document.getElementById('ed-label-'+id).value.trim();
+  const unit=document.getElementById('ed-unit-'+id).value.trim();
+  const category=document.getElementById('ed-cat-'+id).value;
+  if(!label)return;
+  await fetch(`/api/controls/${id}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({label,unit,category})});
+  loadControls();
+}
+
+async function deleteControl(id){
+  if(!confirm('Delete this control and all its data?'))return;
+  await fetch(`/api/controls/${id}`,{method:'DELETE'});
+  loadControls();
+}
+
+async function attachAruco(id){
+  const cam=document.getElementById('aruco-cam-'+id).value;
+  const a=document.getElementById('aruco-a-'+id).value;
+  const b=document.getElementById('aruco-b-'+id).value;
+  const tol=document.getElementById('aruco-tol-'+id).value.trim();
+  if(!cam||!a||!b)return;
+  const body={camera_id:parseInt(cam),marker_id_a:parseInt(a),marker_id_b:parseInt(b)};
+  if(tol)body.tolerance_mm=parseFloat(tol);
+  await fetch(`/api/controls/${id}/aruco`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  loadControls();
+}
+
+async function removeAruco(id){
+  if(!confirm('Remove ArUco marker config from this control?'))return;
+  await fetch(`/api/controls/${id}/aruco`,{method:'DELETE'});
+  loadControls();
+}
+
+async function addTrigger(id){
+  const input=document.getElementById('tw-input-'+id);
+  const phrase=input.value.trim();
+  if(!phrase)return;
+  const r=await fetch(`/api/controls/${id}/trigger-words`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phrase})});
+  if(r.ok){input.value='';loadControls();}
+}
+
+async function delTrigger(twId,ctrlId){
+  await fetch(`/api/controls/trigger-words/${twId}`,{method:'DELETE'});
+  loadControls();
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+loadControls();
+</script>
+{% endblock %}

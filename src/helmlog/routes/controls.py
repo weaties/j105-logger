@@ -5,13 +5,29 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from helmlog.auth import require_auth
 from helmlog.boat_settings import CATEGORY_ORDER
-from helmlog.routes._helpers import audit, get_storage
+from helmlog.routes._helpers import audit, get_storage, templates, tpl_ctx
 
 router = APIRouter()
+
+
+# ---------------------------------------------------------------------------
+# Admin page
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/controls", response_class=HTMLResponse, include_in_schema=False)
+async def admin_controls_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(
+        request, "admin/controls.html", tpl_ctx(request, "/admin/controls")
+    )
 
 
 # ---------------------------------------------------------------------------

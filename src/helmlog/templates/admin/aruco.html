@@ -48,10 +48,9 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 
 <div class="tab-bar">
 <button class="active" onclick="showTab('cameras')">Cameras</button>
-<button onclick="showTab('controls')">Controls</button>
-<button onclick="showTab('triggers')">Trigger Words</button>
 <button onclick="showTab('settings')">Settings</button>
 </div>
+<div style="font-size:.8rem;color:var(--text-secondary);margin-bottom:12px">Controls, markers, and trigger words are managed on the <a href="/admin/controls" style="color:var(--accent)">Controls</a> page.</div>
 
 <!-- Cameras Tab -->
 <div class="tab-content active" id="tab-cameras">
@@ -79,49 +78,6 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 </div>
 </div>
 
-<!-- Controls Tab -->
-<div class="tab-content" id="tab-controls">
-<div class="card">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-<div class="label">Marker Pair Controls</div>
-<button class="btn-sm btn-add" onclick="showAddControl()">+ Add Control</button>
-</div>
-<div id="ctrl-list">Loading...</div>
-<div id="add-ctrl-form" style="display:none">
-<div class="form-row">
-<input id="cc-name" placeholder="Control name" maxlength="100"/>
-<select id="cc-cam"></select>
-<input id="cc-a" placeholder="Marker A" style="width:80px" type="number" min="0" max="49"/>
-<input id="cc-b" placeholder="Marker B" style="width:80px" type="number" min="0" max="49"/>
-<input id="cc-tol" placeholder="Tolerance (mm)" style="width:120px"/>
-<button class="btn-sm btn-add" onclick="addControl()">Save</button>
-<button class="btn-sm" onclick="hideAddControl()">Cancel</button>
-</div>
-<div class="err" id="cc-err"></div>
-</div>
-</div>
-</div>
-
-<!-- Trigger Words Tab -->
-<div class="tab-content" id="tab-triggers">
-<div class="card">
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-<div class="label">Transcript Trigger Words</div>
-<button class="btn-sm btn-add" onclick="showAddTrigger()">+ Add Trigger</button>
-</div>
-<div id="tw-list">Loading...</div>
-<div id="add-tw-form" style="display:none">
-<div class="form-row">
-<input id="tw-phrase" placeholder="Trigger phrase" maxlength="100"/>
-<select id="tw-ctrl"></select>
-<button class="btn-sm btn-add" onclick="addTrigger()">Save</button>
-<button class="btn-sm" onclick="hideAddTrigger()">Cancel</button>
-</div>
-<div class="err" id="tw-err"></div>
-</div>
-</div>
-</div>
-
 <!-- Settings Tab -->
 <div class="tab-content" id="tab-settings">
 <div class="card">
@@ -140,16 +96,12 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 {% block scripts %}
 <script>
 let _cameras=[];
-let _controls=[];
-
 function showTab(name){
   document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.remove('active'));
   document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
   document.getElementById('tab-'+name).classList.add('active');
   event.target.classList.add('active');
   if(name==='cameras')loadCameras();
-  if(name==='controls')loadControls();
-  if(name==='triggers')loadTriggers();
   if(name==='settings')loadSettings();
 }
 
@@ -201,91 +153,6 @@ async function addCamera(){
 }
 async function delCamera(id){if(!confirm('Delete this camera and all its controls/measurements?'))return;await fetch(`/api/aruco/cameras/${id}`,{method:'DELETE'});loadCameras()}
 
-// --- Controls (unified /api/controls) ---
-async function loadControls(){
-  const r=await fetch('/api/controls');
-  if(!r.ok){document.getElementById('ctrl-list').textContent='Failed to load';return}
-  const data=await r.json();
-  _controls=[];
-  for(const cat of data.categories)for(const c of cat.controls)_controls.push(c);
-  // Refresh camera select
-  if(!_cameras.length)await loadCameras();
-  const sel=document.getElementById('cc-cam');
-  sel.innerHTML=_cameras.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  if(!_controls.length){document.getElementById('ctrl-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No controls configured</div>';return}
-  let h='<table><tr><th>Name</th><th>Category</th><th>Camera</th><th>Markers</th><th>Trigger Words</th><th>Actions</th></tr>';
-  for(const c of _controls){
-    const a=c.aruco;
-    const camInfo=a?`${esc(a.camera_name||'')}`:'-';
-    const markers=a?`${a.marker_id_a} / ${a.marker_id_b}`:'-';
-    const tw=c.trigger_words.map(t=>esc(t.phrase)).join(', ')||'-';
-    h+=`<tr><td>${esc(c.label)}<div style="font-size:.7rem;color:var(--text-muted)">${esc(c.name)}</div></td>`;
-    h+=`<td style="font-size:.78rem">${esc(c.category)}</td><td>${camInfo}</td><td>${markers}</td>`;
-    h+=`<td style="font-size:.78rem;max-width:200px;overflow:hidden;text-overflow:ellipsis">${tw}</td>`;
-    h+=`<td><button class="btn-sm btn-del" onclick="delControl(${c.id})">Delete</button></td></tr>`;
-  }
-  h+='</table>';
-  document.getElementById('ctrl-list').innerHTML=h;
-}
-function showAddControl(){document.getElementById('add-ctrl-form').style.display='';document.getElementById('cc-name').focus()}
-function hideAddControl(){document.getElementById('add-ctrl-form').style.display='none';document.getElementById('cc-err').textContent=''}
-async function addControl(){
-  const name=document.getElementById('cc-name').value.trim();
-  if(!name){document.getElementById('cc-err').textContent='Name required';return}
-  // Create the control
-  const label=name.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase());
-  const body={name:name.toLowerCase().replace(/\s+/g,'_'),label,unit:'cm',category:'sail_controls'};
-  const r=await fetch('/api/controls',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(!r.ok){const d=await r.json();document.getElementById('cc-err').textContent=d.detail||'Failed';return}
-  const ctrl_id=r.json?((await r.json()).id):null;
-  // Optionally attach ArUco markers
-  const cam_id=document.getElementById('cc-cam').value;
-  const a=document.getElementById('cc-a').value;
-  const b=document.getElementById('cc-b').value;
-  if(cam_id&&a&&b&&ctrl_id){
-    const abody={camera_id:parseInt(cam_id),marker_id_a:parseInt(a),marker_id_b:parseInt(b)};
-    const tol=document.getElementById('cc-tol').value.trim();
-    if(tol)abody.tolerance_mm=parseFloat(tol);
-    await fetch(`/api/controls/${ctrl_id}/aruco`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(abody)});
-  }
-  hideAddControl();loadControls();
-}
-async function delControl(id){if(!confirm('Delete this control?'))return;await fetch(`/api/controls/${id}`,{method:'DELETE'});loadControls()}
-
-// --- Trigger Words (unified /api/controls/{id}/trigger-words) ---
-async function loadTriggers(){
-  // Load all controls with their trigger words
-  const r=await fetch('/api/controls');
-  if(!r.ok){document.getElementById('tw-list').textContent='Failed to load';return}
-  const data=await r.json();
-  _controls=[];
-  const allTw=[];
-  for(const cat of data.categories)for(const c of cat.controls){
-    _controls.push(c);
-    for(const tw of c.trigger_words)allTw.push({...tw,control_name:c.name,control_label:c.label,control_id:c.id});
-  }
-  const sel=document.getElementById('tw-ctrl');
-  sel.innerHTML=_controls.map(c=>`<option value="${c.id}">${esc(c.label)}</option>`).join('');
-  if(!allTw.length){document.getElementById('tw-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No trigger words configured</div>';return}
-  let h='<table><tr><th>Phrase</th><th>Control</th><th>Actions</th></tr>';
-  for(const w of allTw){
-    h+=`<tr><td>${esc(w.phrase)}</td><td>${esc(w.control_label)}</td>`;
-    h+=`<td><button class="btn-sm btn-del" onclick="delTrigger(${w.id})">Delete</button></td></tr>`;
-  }
-  h+='</table>';
-  document.getElementById('tw-list').innerHTML=h;
-}
-function showAddTrigger(){document.getElementById('add-tw-form').style.display='';document.getElementById('tw-phrase').focus()}
-function hideAddTrigger(){document.getElementById('add-tw-form').style.display='none';document.getElementById('tw-err').textContent=''}
-async function addTrigger(){
-  const phrase=document.getElementById('tw-phrase').value.trim();
-  const control_id=parseInt(document.getElementById('tw-ctrl').value);
-  if(!phrase||isNaN(control_id)){document.getElementById('tw-err').textContent='Phrase and control required';return}
-  const r=await fetch(`/api/controls/${control_id}/trigger-words`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phrase})});
-  if(!r.ok){const d=await r.json();document.getElementById('tw-err').textContent=d.detail||'Failed';return}
-  hideAddTrigger();loadTriggers();
-}
-async function delTrigger(id){if(!confirm('Delete this trigger word?'))return;await fetch(`/api/controls/trigger-words/${id}`,{method:'DELETE'});loadTriggers()}
 
 // --- Settings ---
 async function loadSettings(){
