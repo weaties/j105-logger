@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 55
+_CURRENT_VERSION: int = 56
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1265,6 +1265,15 @@ _MIGRATIONS: dict[int, str] = {
             phrase     TEXT NOT NULL UNIQUE
         );
     """,
+    56: """
+        -- Configurable control categories (#425)
+        CREATE TABLE IF NOT EXISTS control_categories (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            label       TEXT NOT NULL,
+            sort_order  INTEGER NOT NULL DEFAULT 0
+        );
+    """,
 }
 
 
@@ -1521,6 +1530,10 @@ class Storage:
         # Post-DDL data migration for v55 (unified controls)
         if current < 55:
             await self._migrate_v55_controls()
+
+        # Post-DDL data migration for v56 (seed categories)
+        if current < 56:
+            await self._migrate_v56_categories()
 
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
@@ -1815,6 +1828,26 @@ class Storage:
             len(PARAMETERS) + len(aruco_rows),
             len(aruco_rows),
         )
+
+    async def _migrate_v56_categories(self) -> None:
+        """Data migration for v56: seed control_categories from CATEGORY_ORDER."""
+        from helmlog.boat_settings import CATEGORY_ORDER
+
+        db = self._conn()
+
+        cur = await db.execute("SELECT COUNT(*) FROM control_categories")
+        row = await cur.fetchone()
+        if row is not None and row[0] > 0:
+            return
+
+        for order, (name, label) in enumerate(CATEGORY_ORDER):
+            await db.execute(
+                "INSERT OR IGNORE INTO control_categories (name, label, sort_order)"
+                " VALUES (?, ?, ?)",
+                (name, label, order),
+            )
+        await db.commit()
+        logger.info("v56 data migration: seeded {} categories", len(CATEGORY_ORDER))
 
     # ------------------------------------------------------------------
     # Write (batched)
@@ -6621,6 +6654,57 @@ class Storage:
             names,
         )
         return {str(row["name"]): int(row["id"]) for row in await cur.fetchall()}
+
+    # ------------------------------------------------------------------
+    # Control categories (#425)
+    # ------------------------------------------------------------------
+
+    async def list_control_categories(self) -> list[dict[str, Any]]:
+        """Return all categories ordered by sort_order."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, label, sort_order FROM control_categories ORDER BY sort_order, name"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_control_category(self, name: str, label: str, sort_order: int = 0) -> int:
+        """Add a category. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO control_categories (name, label, sort_order) VALUES (?, ?, ?)",
+            (name, label, sort_order),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def update_control_category(
+        self,
+        category_id: int,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        sort_order: int | None = None,
+    ) -> bool:
+        """Update a category. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE control_categories SET"
+            " name = COALESCE(?, name),"
+            " label = COALESCE(?, label),"
+            " sort_order = COALESCE(?, sort_order)"
+            " WHERE id = ?",
+            (name, label, sort_order, category_id),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_control_category(self, category_id: int) -> bool:
+        """Delete a category. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM control_categories WHERE id = ?", (category_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
 
     # ------------------------------------------------------------------
     # Unified controls (#425)

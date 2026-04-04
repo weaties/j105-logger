@@ -40,6 +40,25 @@
 {% block content %}
 <h1>Boat Controls</h1>
 
+<!-- Categories management -->
+<div class="card" style="margin-bottom:16px">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">Categories</div>
+<button class="btn-sm btn-add" onclick="toggleCatForm()">+ New Category</button>
+</div>
+<div id="cat-list" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+<div class="add-form" id="cat-form">
+<div class="field-row">
+<input id="cat-name" placeholder="name (e.g. rigging)" maxlength="50" style="max-width:150px"/>
+<input id="cat-label" placeholder="Display label" maxlength="50" style="max-width:200px"/>
+<input id="cat-order" type="number" placeholder="Order" value="10" style="width:60px"/>
+<button class="btn-sm btn-save" onclick="addCategory()">Add</button>
+<button class="btn-sm" onclick="toggleCatForm()">Cancel</button>
+</div>
+<div class="err" id="cat-err"></div>
+</div>
+</div>
+
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
 <div style="font-size:.85rem;color:var(--text-secondary)">Configure boat controls, ArUco markers, and transcript trigger words</div>
 <button class="btn-sm btn-add" onclick="toggleAddForm()">+ New Control</button>
@@ -55,14 +74,7 @@
 <div class="field-row">
 <label>Unit</label><input id="new-unit" placeholder="e.g. cm, in, Loos" value="in" maxlength="20" style="max-width:100px"/>
 <label>Category</label>
-<select id="new-cat">
-<option value="sail_controls">Sail Controls</option>
-<option value="deck_hardware">Deck Hardware</option>
-<option value="rig">Rig</option>
-<option value="crew">Crew</option>
-<option value="conditions">Conditions</option>
-<option value="instrument_calibration">Instrument Calibration</option>
-</select>
+<select id="new-cat"></select>
 </div>
 <div style="display:flex;gap:6px;margin-top:8px">
 <button class="btn-sm btn-save" onclick="createControl()">Create</button>
@@ -78,6 +90,52 @@
 <script>
 let _controls=[];
 let _cameras=[];
+let _categories=[];
+
+// --- Categories ---
+function toggleCatForm(){
+  const f=document.getElementById('cat-form');
+  f.classList.toggle('show');
+  if(f.classList.contains('show'))document.getElementById('cat-name').focus();
+}
+async function loadCategories(){
+  const r=await fetch('/api/controls/categories');
+  if(!r.ok)return;
+  _categories=await r.json();
+  // Render category chips
+  let h='';
+  for(const c of _categories){
+    h+=`<span class="tw-chip">${esc(c.label)} <span style="font-size:.65rem;color:var(--text-muted)">(${c.sort_order})</span>`;
+    h+=`<button onclick="delCategory(${c.id})">&times;</button></span>`;
+  }
+  if(!_categories.length)h='<span style="font-size:.78rem;color:var(--text-muted)">No categories</span>';
+  document.getElementById('cat-list').innerHTML=h;
+  // Update all category selects
+  const opts=_categories.map(c=>`<option value="${esc(c.name)}">${esc(c.label)}</option>`).join('');
+  document.querySelectorAll('.cat-select').forEach(s=>{const v=s.value;s.innerHTML=opts;if(v)s.value=v});
+  const newCat=document.getElementById('new-cat');
+  if(newCat)newCat.innerHTML=opts;
+}
+async function addCategory(){
+  const name=document.getElementById('cat-name').value.trim().toLowerCase().replace(/\s+/g,'_');
+  const label=document.getElementById('cat-label').value.trim();
+  const order=parseInt(document.getElementById('cat-order').value)||10;
+  if(!name||!label){document.getElementById('cat-err').textContent='Name and label required';return}
+  const r=await fetch('/api/controls/categories',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,label,sort_order:order})});
+  if(!r.ok){const d=await r.json();document.getElementById('cat-err').textContent=d.detail||'Failed';return}
+  document.getElementById('cat-err').textContent='';
+  document.getElementById('cat-name').value='';
+  document.getElementById('cat-label').value='';
+  toggleCatForm();
+  loadCategories();
+  loadControls();
+}
+async function delCategory(id){
+  if(!confirm('Delete this category? Controls using it will need to be reassigned.'))return;
+  await fetch(`/api/controls/categories/${id}`,{method:'DELETE'});
+  loadCategories();
+  loadControls();
+}
 
 function toggleAddForm(){
   const f=document.getElementById('add-form');
@@ -134,14 +192,13 @@ async function loadControls(){
 }
 
 function renderControlBody(c){
-  const cats=[['sail_controls','Sail Controls'],['deck_hardware','Deck Hardware'],['rig','Rig'],['crew','Crew'],['conditions','Conditions'],['instrument_calibration','Instrument Calibration']];
   let h='';
 
   // Editable fields
   h+=`<div class="field-row"><label>Label</label><input id="ed-label-${c.id}" value="${esc(c.label)}"/></div>`;
   h+=`<div class="field-row"><label>Unit</label><input id="ed-unit-${c.id}" value="${esc(c.unit||'')}" style="max-width:80px"/>`;
-  h+=`<label>Category</label><select id="ed-cat-${c.id}">`;
-  for(const[val,lbl]of cats)h+=`<option value="${val}"${c.category===val?' selected':''}>${lbl}</option>`;
+  h+=`<label>Category</label><select id="ed-cat-${c.id}" class="cat-select">`;
+  for(const cat of _categories)h+=`<option value="${esc(cat.name)}"${c.category===cat.name?' selected':''}>${esc(cat.label)}</option>`;
   h+=`</select></div>`;
   h+=`<div style="display:flex;gap:6px;margin-bottom:12px"><button class="btn-sm btn-save" onclick="saveControl(${c.id})">Save Changes</button>`;
   h+=`<button class="btn-sm btn-del" onclick="deleteControl(${c.id})">Delete Control</button></div>`;
@@ -233,6 +290,6 @@ async function delTrigger(twId,ctrlId){
 
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 
-loadControls();
+loadCategories().then(()=>loadControls());
 </script>
 {% endblock %}

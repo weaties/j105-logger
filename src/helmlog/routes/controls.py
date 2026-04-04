@@ -8,7 +8,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from helmlog.auth import require_auth
-from helmlog.boat_settings import CATEGORY_ORDER
 from helmlog.routes._helpers import audit, get_storage, templates, tpl_ctx
 
 router = APIRouter()
@@ -43,10 +42,11 @@ async def api_list_controls(
     """Return all controls grouped by category, with ArUco config and trigger words."""
     storage = get_storage(request)
     controls = await storage.list_controls()
+    db_cats = await storage.list_control_categories()
 
     # Group by category in display order
-    cat_order = [cat for cat, _label in CATEGORY_ORDER]
-    cat_labels = dict(CATEGORY_ORDER)
+    cat_order = [c["name"] for c in db_cats]
+    cat_labels = {c["name"]: c["label"] for c in db_cats}
     grouped: dict[str, list[dict[str, Any]]] = {cat: [] for cat in cat_order}
 
     for ctrl in controls:
@@ -65,7 +65,7 @@ async def api_list_controls(
                     "controls": grouped[cat],
                 }
             )
-    # Add any categories not in CATEGORY_ORDER
+    # Add any categories not in the DB table
     for cat, ctrls in grouped.items():
         if cat not in cat_order and ctrls:
             categories.append(
@@ -77,6 +77,75 @@ async def api_list_controls(
             )
 
     return JSONResponse({"categories": categories})
+
+
+# ---------------------------------------------------------------------------
+# Categories
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/controls/categories")
+async def api_list_categories(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth()),  # noqa: B008
+) -> JSONResponse:
+    """Return all control categories."""
+    storage = get_storage(request)
+    cats = await storage.list_control_categories()
+    return JSONResponse(cats)
+
+
+@router.post("/api/controls/categories")
+async def api_add_category(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Create a new category."""
+    storage = get_storage(request)
+    body = await request.json()
+    name = body.get("name", "").strip().lower().replace(" ", "_")
+    label = body.get("label", "").strip()
+    if not name or not label:
+        raise HTTPException(400, "name and label are required")
+    cat_id = await storage.add_control_category(name, label, sort_order=body.get("sort_order", 99))
+    await audit(request, "control_category_add", f"name={name}", _user)
+    return JSONResponse({"id": cat_id}, status_code=201)
+
+
+@router.put("/api/controls/categories/{category_id}")
+async def api_update_category(
+    request: Request,
+    category_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Update a category."""
+    storage = get_storage(request)
+    body = await request.json()
+    ok = await storage.update_control_category(
+        category_id,
+        name=body.get("name"),
+        label=body.get("label"),
+        sort_order=body.get("sort_order"),
+    )
+    if not ok:
+        raise HTTPException(404, "Category not found")
+    await audit(request, "control_category_update", f"id={category_id}", _user)
+    return JSONResponse({"ok": True})
+
+
+@router.delete("/api/controls/categories/{category_id}")
+async def api_delete_category(
+    request: Request,
+    category_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Delete a category."""
+    storage = get_storage(request)
+    ok = await storage.delete_control_category(category_id)
+    if not ok:
+        raise HTTPException(404, "Category not found")
+    await audit(request, "control_category_delete", f"id={category_id}", _user)
+    return JSONResponse({"ok": True})
 
 
 # ---------------------------------------------------------------------------

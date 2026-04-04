@@ -9,7 +9,6 @@ from fastapi.responses import JSONResponse
 
 from helmlog.auth import require_auth
 from helmlog.boat_settings import (
-    CATEGORY_ORDER,
     PARAMETER_NAMES,
     WEIGHT_DISTRIBUTION_PRESETS,
 )
@@ -50,10 +49,11 @@ async def api_boat_settings_parameters(
     """
     storage = get_storage(request)
     controls = await storage.list_controls()
+    db_cats = await storage.list_control_categories()
 
     # Group by category in display order
-    cat_order = [cat for cat, _label in CATEGORY_ORDER]
-    cat_labels = dict(CATEGORY_ORDER)
+    cat_order = [c["name"] for c in db_cats]
+    cat_labels = {c["name"]: c["label"] for c in db_cats}
     grouped: dict[str, list[dict[str, Any]]] = {cat: [] for cat in cat_order}
     for ctrl in controls:
         cat = ctrl["category"]
