@@ -622,6 +622,35 @@ async def api_start_calibration(
     return JSONResponse({"status": "capturing"})
 
 
+@router.post("/api/aruco/cameras/{camera_id}/calibration/capture")
+async def api_calibration_capture(
+    request: Request,
+    camera_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Capture a frame from the ESP32-CAM and use it as a calibration frame."""
+    storage = get_storage(request)
+    camera = await storage.get_aruco_camera(camera_id)
+    if not camera:
+        raise HTTPException(404, "Camera not found")
+    if camera["calibration_state"] != "capturing":
+        raise HTTPException(400, "Camera is not in calibration mode")
+
+    # Fetch frame from ESP32-CAM
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"http://{camera['ip']}/capture")
+            if resp.status_code != 200:
+                raise HTTPException(502, "Camera capture failed")
+            image_bytes = resp.content
+    except httpx.HTTPError:
+        raise HTTPException(502, "Camera unreachable")  # noqa: B904
+
+    return _process_calibration_frame(request, camera_id, image_bytes)
+
+
 @router.post("/api/aruco/cameras/{camera_id}/calibration/frame")
 async def api_calibration_frame(
     request: Request,
@@ -629,7 +658,7 @@ async def api_calibration_frame(
     image: UploadFile,
     _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
-    """Submit a calibration frame. Returns frame count and whether ready to calibrate."""
+    """Submit a calibration frame (upload). Returns frame count and whether ready."""
     storage = get_storage(request)
     camera = await storage.get_aruco_camera(camera_id)
     if not camera:
@@ -640,6 +669,14 @@ async def api_calibration_frame(
     image_bytes = await image.read()
     if not image_bytes:
         raise HTTPException(400, "Empty image")
+
+    return _process_calibration_frame(request, camera_id, image_bytes)
+
+
+def _process_calibration_frame(
+    request: Request, camera_id: int, image_bytes: bytes
+) -> JSONResponse:
+    """Shared logic: decode image, find corners, add to calibration session."""
 
     from helmlog.aruco_detector import CalibrationSession, decode_jpeg
 

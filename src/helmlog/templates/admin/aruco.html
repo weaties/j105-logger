@@ -165,7 +165,7 @@ async function loadCameras(){
     if(st==='uncalibrated'||st==='calibration_failed'){
       h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();startCalibration(${c.id},'${esc(c.name)}')">Start Calibration</button>`;
     }else if(st==='capturing'){
-      h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();uploadCalFrame(${c.id})">Upload Frame</button>`;
+      h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();captureCalFrame(${c.id})">Capture Frame</button>`;
       h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();runCalibration(${c.id})">Run Calibration</button>`;
     }
     if(st==='calibrated'){
@@ -173,8 +173,6 @@ async function loadCameras(){
     }
     h+=`<button class="btn-sm btn-del" onclick="event.stopPropagation();delCamera(${c.id})">Delete Camera</button>`;
     h+=`</div>`;
-    // Hidden file input for calibration frames
-    h+=`<input type="file" id="cal-file-${c.id}" accept="image/*" style="display:none" onchange="submitCalFrame(${c.id})"/>`;
     h+=`</div></div>`;
   }
   document.getElementById('cam-list').innerHTML=h;
@@ -312,30 +310,22 @@ async function deleteSelectedProfile(camId){
 async function startCalibration(camId,camName){
   const r=await fetch(`/api/aruco/cameras/${camId}/calibration/start`,{method:'POST'});
   if(r.ok){
-    document.getElementById('cal-status-'+camId).innerHTML='<div style="color:var(--accent)">Calibration mode active. Hold a 9x6 checkerboard (25mm squares) in front of the camera and upload frames.</div>';
+    document.getElementById('cal-status-'+camId).innerHTML='<div style="color:var(--accent)">Calibration mode active. Hold a 9x6 checkerboard (25mm squares) in front of the camera and click Capture Frame. Move the board to different angles between captures.</div>';
     loadCameras();
   }
 }
-function uploadCalFrame(camId){
-  document.getElementById('cal-file-'+camId).click();
-}
-async function submitCalFrame(camId){
-  const file=document.getElementById('cal-file-'+camId).files[0];
-  if(!file)return;
-  const fd=new FormData();
-  fd.append('image',file);
+async function captureCalFrame(camId){
   const st=document.getElementById('cal-status-'+camId);
-  st.innerHTML='<span style="color:var(--text-secondary)">Uploading...</span>';
-  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/frame`,{method:'POST',body:fd});
-  if(!r.ok){st.innerHTML='<span style="color:var(--danger)">Upload failed</span>';return}
+  st.innerHTML='<span style="color:var(--text-secondary)">Capturing from camera...</span>';
+  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/capture`,{method:'POST'});
+  if(!r.ok){const d=await r.json().catch(()=>({}));st.innerHTML=`<span style="color:var(--danger)">${d.detail||'Capture failed'}</span>`;return}
   const d=await r.json();
   const pct=Math.round(d.frame_count/d.required_frames*100);
   let h=`<div>Frame ${d.frame_count}/${d.required_frames} — `;
-  h+=d.corners_found?'<span style="color:var(--success)">Corners found</span>':'<span style="color:var(--warning)">No corners — reposition board</span>';
+  h+=d.corners_found?'<span style="color:var(--success)">Corners found</span>':'<span style="color:var(--warning)">No corners detected — reposition checkerboard</span>';
   h+=`</div><div class="cal-progress"><div class="bar"><div class="fill" style="width:${pct}%"></div></div></div>`;
   if(d.ready)h+=`<div style="color:var(--success);font-weight:600">Ready to calibrate!</div>`;
   st.innerHTML=h;
-  document.getElementById('cal-file-'+camId).value='';
 }
 async function runCalibration(camId){
   const st=document.getElementById('cal-status-'+camId);
