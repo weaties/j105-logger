@@ -171,6 +171,7 @@ async function loadCameras(){
     }else if(st==='capturing'){
       h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();captureCalFrame(${c.id})">Capture Frame</button>`;
       h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();runCalibration(${c.id})">Run Calibration</button>`;
+      h+=`<button class="btn-sm" onclick="event.stopPropagation();resetCalibration(${c.id})">Cancel</button>`;
     }
     if(st==='calibrated'){
       h+=`<button class="btn-sm" onclick="event.stopPropagation();resetCalibration(${c.id})">Reset Calibration</button>`;
