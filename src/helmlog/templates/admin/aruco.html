@@ -44,10 +44,13 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 .cam-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
 .cam-expand{display:none;padding:12px;border-top:1px solid var(--border);font-size:.82rem}
 .cam-expand.open{display:block}
-.settings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:4px 12px;margin:8px 0}
-.settings-grid .sg-item{display:flex;justify-content:space-between}
-.settings-grid .sg-label{color:var(--text-secondary);font-size:.75rem}
-.settings-grid .sg-val{font-weight:600;font-size:.8rem}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 16px;margin:8px 0}
+.sg-item{display:flex;align-items:center;gap:6px}
+.sg-item label{color:var(--text-secondary);font-size:.75rem;min-width:70px}
+.sg-item input[type=range]{flex:1;min-width:80px}
+.sg-item select{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:.78rem}
+.sg-item .sg-val{font-weight:600;font-size:.78rem;min-width:24px;text-align:right}
+.sg-item .sg-chk{display:flex;align-items:center;gap:4px;font-size:.78rem}
 .cal-progress{margin:8px 0}
 .cal-progress .bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
 .cal-progress .fill{height:100%;background:var(--accent);transition:width .3s}
@@ -196,6 +199,27 @@ async function toggleCam(name){
   el.classList.toggle('open');
   if(el.classList.contains('open'))loadCamSettings(name);
 }
+const _sliders=[
+  {k:'brightness',label:'Brightness',min:-2,max:2},
+  {k:'contrast',label:'Contrast',min:-2,max:2},
+  {k:'saturation',label:'Saturation',min:-2,max:2},
+  {k:'sharpness',label:'Sharpness',min:-2,max:2},
+  {k:'ae_level',label:'AE Level',min:-2,max:2},
+  {k:'quality',label:'Quality',min:4,max:63},
+  {k:'aec_value',label:'AEC Value',min:0,max:1200},
+  {k:'agc_gain',label:'Gain',min:0,max:30},
+  {k:'gainceiling',label:'Gain Ceiling',min:0,max:6},
+];
+const _checks=[
+  {k:'whitebal',label:'AWB'},
+  {k:'awb_gain',label:'AWB Gain'},
+  {k:'exposure_ctrl',label:'Auto Exposure'},
+  {k:'gain_ctrl',label:'Auto Gain'},
+  {k:'hmirror',label:'H-Mirror'},
+  {k:'vflip',label:'V-Flip'},
+  {k:'aec2',label:'AEC DSP'},
+  {k:'denoise',label:'Denoise'},
+];
 async function loadCamSettings(name){
   const el=document.getElementById('cam-settings-'+name);
   el.innerHTML='<span style="color:var(--text-muted)">Loading...</span>';
@@ -203,16 +227,34 @@ async function loadCamSettings(name){
     const r=await fetch(`/api/aruco/cameras/${encodeURIComponent(name)}/settings`);
     if(!r.ok){el.innerHTML='<span style="color:var(--text-muted)">Unreachable</span>';return}
     const s=await r.json();
-    const keys=['brightness','contrast','saturation','sharpness','quality','framesize',
-      'exposure_ctrl','aec_value','ae_level','gain_ctrl','agc_gain','gainceiling',
-      'whitebal','awb_gain','wb_mode','hmirror','vflip','denoise'];
     let h='';
-    for(const k of keys){
-      if(s[k]!==undefined)h+=`<div class="sg-item"><span class="sg-label">${k}</span><span class="sg-val">${s[k]}</span></div>`;
+    // Resolution select
+    const resOpts=[['13','QXGA 2048x1536'],['12','SXGA 1600x1200'],['10','XGA 1024x768'],['8','SVGA 800x600'],['5','VGA 640x480']];
+    h+=`<div class="sg-item"><label>Resolution</label><select onchange="setCamSetting('${esc(name)}','framesize',this.value)">`;
+    for(const[v,l]of resOpts)h+=`<option value="${v}"${s.framesize==v?' selected':''}>${l}</option>`;
+    h+=`</select></div>`;
+    h+=`<div class="sg-item"><label>WB Mode</label><select onchange="setCamSetting('${esc(name)}','wb_mode',this.value)">`;
+    for(const[v,l]of[['0','Auto'],['1','Sunny'],['2','Cloudy'],['3','Office'],['4','Home']])h+=`<option value="${v}"${s.wb_mode==v?' selected':''}>${l}</option>`;
+    h+=`</select></div>`;
+    // Sliders
+    for(const d of _sliders){
+      if(s[d.k]===undefined)continue;
+      h+=`<div class="sg-item"><label>${d.label}</label>`;
+      h+=`<input type="range" min="${d.min}" max="${d.max}" value="${s[d.k]}" oninput="this.nextElementSibling.textContent=this.value" onchange="setCamSetting('${esc(name)}','${d.k}',this.value)"/>`;
+      h+=`<span class="sg-val">${s[d.k]}</span></div>`;
     }
-    if(s.free_psram)h+=`<div class="sg-item"><span class="sg-label">PSRAM free</span><span class="sg-val">${Math.round(s.free_psram/1024)}KB</span></div>`;
+    // Checkboxes
+    for(const d of _checks){
+      if(s[d.k]===undefined)continue;
+      h+=`<div class="sg-item"><label class="sg-chk"><input type="checkbox"${s[d.k]?' checked':''} onchange="setCamSetting('${esc(name)}','${d.k}',this.checked?1:0)"/> ${d.label}</label></div>`;
+    }
+    if(s.free_psram)h+=`<div class="sg-item"><label>PSRAM</label><span class="sg-val">${Math.round(s.free_psram/1024)}KB</span></div>`;
     el.innerHTML=h||'<span style="color:var(--text-muted)">No settings</span>';
   }catch(e){el.innerHTML=`<span style="color:var(--danger)">${e.message}</span>`}
+}
+async function setCamSetting(name,key,value){
+  const body={};body[key]=parseInt(value);
+  await fetch(`/api/aruco/cameras/${encodeURIComponent(name)}/settings`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
 }
 
 // --- Calibration ---

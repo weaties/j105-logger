@@ -370,6 +370,38 @@ async def api_camera_settings(
         raise HTTPException(502, "Camera unreachable")  # noqa: B904
 
 
+@router.post("/api/aruco/cameras/{name}/settings")
+async def api_update_camera_settings(
+    request: Request,
+    name: str,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Push a setting change to the ESP32-CAM's /settings endpoint."""
+    storage = get_storage(request)
+    camera = await storage.get_aruco_camera_by_name(name)
+    if not camera:
+        raise HTTPException(404, f"Camera '{name}' not found")
+
+    body = await request.json()
+    # Build form-encoded body matching the ESP32-CAM's POST /settings format
+    form_data = "&".join(f"{k}={v}" for k, v in body.items())
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.post(
+                f"http://{camera['ip']}/settings",
+                content=form_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            if resp.status_code != 200:
+                raise HTTPException(502, "Camera returned an error")
+            return JSONResponse(resp.json())
+    except httpx.HTTPError:
+        raise HTTPException(502, "Camera unreachable")  # noqa: B904
+
+
 # ---------------------------------------------------------------------------
 # Measurements
 # ---------------------------------------------------------------------------
