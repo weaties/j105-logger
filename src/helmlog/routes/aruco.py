@@ -403,6 +403,71 @@ async def api_latest_camera_readings(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/api/aruco/calibration/checkerboard.pdf")
+async def api_calibration_checkerboard(
+    request: Request,
+    cols: int = 9,
+    rows: int = 6,
+    square_mm: int = 25,
+) -> Response:
+    """Generate a printable checkerboard PDF for camera calibration.
+
+    Default: 9x6 inner corners, 25mm squares — suitable for A4/Letter paper.
+    """
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    # Render at 300 DPI
+    dpi = 300
+    mm_to_px = dpi / 25.4
+    sq_px = int(square_mm * mm_to_px)
+
+    # Board includes 1 extra row/col of squares on each side for the border
+    board_cols = cols + 1
+    board_rows = rows + 1
+    board_w = board_cols * sq_px
+    board_h = board_rows * sq_px
+
+    # Page size: A4 at 300 DPI (210x297mm)
+    page_w = int(210 * mm_to_px)
+    page_h = int(297 * mm_to_px)
+
+    img = Image.new("L", (page_w, page_h), 255)
+    draw = ImageDraw.Draw(img)
+
+    # Center the board on the page
+    x_off = (page_w - board_w) // 2
+    y_off = (page_h - board_h) // 2 + int(10 * mm_to_px)  # shift down for title
+
+    for r in range(board_rows):
+        for c in range(board_cols):
+            if (r + c) % 2 == 0:
+                x0 = x_off + c * sq_px
+                y0 = y_off + r * sq_px
+                draw.rectangle([x0, y0, x0 + sq_px, y0 + sq_px], fill=0)
+
+    # Title text
+    title = f"HelmLog Calibration Target — {cols}x{rows} inner corners, {square_mm}mm squares"
+    try:
+        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+    except OSError:
+        font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), title, font=font)
+    tw = bbox[2] - bbox[0]
+    draw.text(((page_w - tw) // 2, int(5 * mm_to_px)), title, fill=0, font=font)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PDF", resolution=dpi)
+    buf.seek(0)
+
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": "inline; filename=calibration-checkerboard.pdf"},
+    )
+
+
 @router.post("/api/aruco/cameras/{camera_id}/calibration/start")
 async def api_start_calibration(
     request: Request,

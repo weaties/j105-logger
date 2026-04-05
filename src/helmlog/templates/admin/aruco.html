@@ -144,7 +144,7 @@ async function loadCameras(){
     h+=`<div style="font-weight:600;margin-bottom:6px">Sensor Settings</div>`;
     h+=`<div id="cam-settings-${esc(c.name)}" class="settings-grid"><span style="color:var(--text-muted)">Click to load...</span></div>`;
     // Calibration section
-    h+=`<div style="font-weight:600;margin:12px 0 6px">Calibration</div>`;
+    h+=`<div style="font-weight:600;margin:12px 0 6px">Calibration <a href="/api/aruco/calibration/checkerboard.pdf" target="_blank" style="font-weight:400;font-size:.78rem;color:var(--accent);margin-left:8px">Download checkerboard PDF</a></div>`;
     if(st==='calibrated'&&c.calibration){
       const cal=typeof c.calibration==='string'?JSON.parse(c.calibration):c.calibration;
       h+=`<div class="cam-detail">Reprojection error: ${cal.reprojection_error_px||'?'}px &middot; Frames: ${cal.frame_count||'?'}</div>`;
