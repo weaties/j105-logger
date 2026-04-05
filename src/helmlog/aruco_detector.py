@@ -301,7 +301,10 @@ class CalibrationSession:
         """
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 else image
 
-        ret, corners = cv2.findChessboardCorners(gray, (self.cols, self.rows), None)
+        flags = (
+            cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK
+        )
+        ret, corners = cv2.findChessboardCorners(gray, (self.cols, self.rows), flags)
         if not ret:
             return False
 

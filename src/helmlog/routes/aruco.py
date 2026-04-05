@@ -612,14 +612,40 @@ async def api_start_calibration(
     camera_id: int,
     _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
-    """Begin calibration mode for a camera."""
+    """Begin calibration mode for a camera.
+
+    Accepts optional JSON body with checkerboard dimensions:
+    ``{"cols": 9, "rows": 6, "square_mm": 25}``
+    """
     storage = get_storage(request)
     camera = await storage.get_aruco_camera(camera_id)
     if not camera:
         raise HTTPException(404, "Camera not found")
+
+    # Parse optional checkerboard config
+    cols, rows, square_mm = 9, 6, 25.0
+    try:
+        body = await request.json()
+        cols = int(body.get("cols", cols))
+        rows = int(body.get("rows", rows))
+        square_mm = float(body.get("square_mm", square_mm))
+    except Exception:  # noqa: BLE001
+        pass  # No body or invalid JSON — use defaults
+
     await storage.update_aruco_calibration(camera_id, "", "capturing")
+
+    # Create calibration session with the specified dimensions
+    from helmlog.aruco_detector import CalibrationSession
+
+    cal_sessions: dict[int, CalibrationSession] = getattr(
+        request.app.state, "aruco_cal_sessions", {}
+    )
+    if not hasattr(request.app.state, "aruco_cal_sessions"):
+        request.app.state.aruco_cal_sessions = cal_sessions
+    cal_sessions[camera_id] = CalibrationSession(cols=cols, rows=rows, square_mm=square_mm)
+
     await audit(request, "aruco_calibration_start", f"camera={camera['name']}", _user)
-    return JSONResponse({"status": "capturing"})
+    return JSONResponse({"status": "capturing", "cols": cols, "rows": rows})
 
 
 @router.post("/api/aruco/cameras/{camera_id}/calibration/capture")

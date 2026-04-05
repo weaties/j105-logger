@@ -163,7 +163,11 @@ async function loadCameras(){
     h+=`<div id="cal-status-${c.id}"></div>`;
     h+=`<div class="cam-actions">`;
     if(st==='uncalibrated'||st==='calibration_failed'){
-      h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();startCalibration(${c.id},'${esc(c.name)}')">Start Calibration</button>`;
+      h+=`<span style="font-size:.78rem;color:var(--text-secondary)">Checkerboard: </span>`;
+      h+=`<input id="cal-cols-${c.id}" type="number" value="9" min="3" max="20" style="width:45px;padding:3px 4px;font-size:.78rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary)"/> x `;
+      h+=`<input id="cal-rows-${c.id}" type="number" value="6" min="3" max="20" style="width:45px;padding:3px 4px;font-size:.78rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary)"/> `;
+      h+=`<span style="font-size:.78rem;color:var(--text-secondary)">inner corners</span> `;
+      h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();startCalibration(${c.id})">Start Calibration</button>`;
     }else if(st==='capturing'){
       h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();captureCalFrame(${c.id})">Capture Frame</button>`;
       h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();runCalibration(${c.id})">Run Calibration</button>`;
@@ -307,10 +311,14 @@ async function deleteSelectedProfile(camId){
 }
 
 // --- Calibration ---
-async function startCalibration(camId,camName){
-  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/start`,{method:'POST'});
+async function startCalibration(camId){
+  const colsEl=document.getElementById('cal-cols-'+camId);
+  const rowsEl=document.getElementById('cal-rows-'+camId);
+  const cols=colsEl?parseInt(colsEl.value)||9:9;
+  const rows=rowsEl?parseInt(rowsEl.value)||6:6;
+  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cols,rows})});
   if(r.ok){
-    document.getElementById('cal-status-'+camId).innerHTML='<div style="color:var(--accent)">Calibration mode active. Hold a 9x6 checkerboard (25mm squares) in front of the camera and click Capture Frame. Move the board to different angles between captures.</div>';
+    document.getElementById('cal-status-'+camId).innerHTML=`<div style="color:var(--accent)">Calibration mode active (${cols}x${rows} inner corners). Hold the checkerboard in front of the camera and click Capture Frame. Move the board to different angles between captures.</div>`;
     loadCameras();
   }
 }
