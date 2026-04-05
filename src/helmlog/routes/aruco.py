@@ -429,9 +429,9 @@ async def api_calibration_checkerboard(
     board_w = board_cols * sq_px
     board_h = board_rows * sq_px
 
-    # Page size: A4 at 300 DPI (210x297mm)
-    page_w = int(210 * mm_to_px)
-    page_h = int(297 * mm_to_px)
+    # Page size: US Letter at 300 DPI (215.9x279.4mm)
+    page_w = int(215.9 * mm_to_px)
+    page_h = int(279.4 * mm_to_px)
 
     img = Image.new("L", (page_w, page_h), 255)
     draw = ImageDraw.Draw(img)
