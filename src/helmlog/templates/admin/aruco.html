@@ -143,6 +143,14 @@ async function loadCameras(){
     h+=`</div></div>`;
     // Expandable detail panel
     h+=`<div class="cam-expand" id="cam-detail-${esc(c.name)}">`;
+    // Profiles
+    h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">`;
+    h+=`<span style="font-weight:600;font-size:.85rem">Profile:</span>`;
+    h+=`<select id="prof-sel-${c.id}" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:.8rem"><option value="">Loading...</option></select>`;
+    h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();loadProfile(${c.id})">Load</button>`;
+    h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();saveProfile(${c.id},'${esc(c.name)}')">Save Current</button>`;
+    h+=`<button class="btn-sm btn-del" onclick="event.stopPropagation();deleteSelectedProfile(${c.id})">Delete</button>`;
+    h+=`</div>`;
     // Camera sensor settings
     h+=`<div style="font-weight:600;margin-bottom:6px">Sensor Settings</div>`;
     h+=`<div id="cam-settings-${esc(c.name)}" class="settings-grid"><span style="color:var(--text-muted)">Click to load...</span></div>`;
@@ -197,7 +205,11 @@ async function delCamera(id){if(!confirm('Delete this camera and all its control
 async function toggleCam(name){
   const el=document.getElementById('cam-detail-'+name);
   el.classList.toggle('open');
-  if(el.classList.contains('open'))loadCamSettings(name);
+  if(el.classList.contains('open')){
+    loadCamSettings(name);
+    const cam=_cameras.find(c=>c.name===name);
+    if(cam)loadProfiles(cam.id);
+  }
 }
 const _sliders=[
   {k:'brightness',label:'Brightness',min:-2,max:2},
@@ -255,6 +267,45 @@ async function loadCamSettings(name){
 async function setCamSetting(name,key,value){
   const body={};body[key]=parseInt(value);
   await fetch(`/api/aruco/cameras/${encodeURIComponent(name)}/settings`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+
+// --- Profiles ---
+async function loadProfiles(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  if(!sel)return;
+  const r=await fetch(`/api/aruco/cameras/${camId}/profiles`);
+  if(!r.ok){sel.innerHTML='<option value="">Error</option>';return}
+  const profiles=await r.json();
+  let h='<option value="">-- Select profile --</option>';
+  for(const p of profiles){
+    h+=`<option value="${p.id}"${p.is_active?' selected':''}>${esc(p.name)}${p.is_active?' (active)':''}</option>`;
+  }
+  sel.innerHTML=h;
+}
+async function loadProfile(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  const profId=sel?.value;
+  if(!profId){return}
+  await fetch(`/api/aruco/profiles/${profId}/load`,{method:'POST'});
+  // Refresh settings display
+  const cam=_cameras.find(c=>c.id===camId);
+  if(cam)loadCamSettings(cam.name);
+  loadProfiles(camId);
+}
+async function saveProfile(camId,camName){
+  const name=prompt('Profile name:');
+  if(!name)return;
+  const r=await fetch(`/api/aruco/cameras/${camId}/profiles/save-current`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  if(!r.ok){const d=await r.json();alert(d.detail||'Failed to save');return}
+  loadProfiles(camId);
+}
+async function deleteSelectedProfile(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  const profId=sel?.value;
+  if(!profId){return}
+  if(!confirm('Delete this profile?'))return;
+  await fetch(`/api/aruco/profiles/${profId}`,{method:'DELETE'});
+  loadProfiles(camId);
 }
 
 // --- Calibration ---

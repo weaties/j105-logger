@@ -163,6 +163,112 @@ async def api_activate_profile(
     return JSONResponse({"ok": True})
 
 
+@router.post("/api/aruco/profiles/{profile_id}/load")
+async def api_load_profile(
+    request: Request,
+    profile_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Load a profile's settings onto its camera (activate + push to ESP32-CAM)."""
+    storage = get_storage(request)
+
+    # Get profile and its camera
+    profiles_db = storage._read_conn()
+    cur = await profiles_db.execute(
+        "SELECT p.id, p.camera_id, p.name, p.settings, c.ip"
+        " FROM aruco_camera_profiles p"
+        " JOIN aruco_cameras c ON c.id = p.camera_id"
+        " WHERE p.id = ?",
+        (profile_id,),
+    )
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Profile not found")
+
+    settings = json.loads(row["settings"]) if row["settings"] else {}
+
+    # Activate this profile in DB
+    await storage.activate_aruco_profile(profile_id)
+
+    # Push settings to the ESP32-CAM
+    if settings:
+        import httpx
+
+        form_data = "&".join(f"{k}={v}" for k, v in settings.items())
+        try:
+            async with httpx.AsyncClient(timeout=5) as client:
+                await client.post(
+                    f"http://{row['ip']}/settings",
+                    content=form_data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                )
+        except httpx.HTTPError:
+            pass  # Camera may be offline — settings saved in DB regardless
+
+    await audit(request, "aruco_profile_load", f"profile={row['name']}", _user)
+    return JSONResponse({"ok": True, "settings": settings})
+
+
+@router.post("/api/aruco/cameras/{camera_id}/profiles/save-current")
+async def api_save_current_profile(
+    request: Request,
+    camera_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Capture the camera's current sensor settings and save as a named profile."""
+    storage = get_storage(request)
+    camera = await storage.get_aruco_camera(camera_id)
+    if not camera:
+        raise HTTPException(404, "Camera not found")
+
+    body = await request.json()
+    name = body.get("name", "").strip()
+    if not name:
+        raise HTTPException(400, "name is required")
+
+    # Fetch current settings from ESP32-CAM
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(f"http://{camera['ip']}/settings")
+            if resp.status_code != 200:
+                raise HTTPException(502, "Camera returned an error")
+            settings = resp.json()
+    except httpx.HTTPError:
+        raise HTTPException(502, "Camera unreachable")  # noqa: B904
+
+    # Keep only the sensor-relevant keys
+    keep = {
+        "brightness",
+        "contrast",
+        "saturation",
+        "sharpness",
+        "quality",
+        "framesize",
+        "whitebal",
+        "awb_gain",
+        "wb_mode",
+        "exposure_ctrl",
+        "aec2",
+        "ae_level",
+        "aec_value",
+        "gain_ctrl",
+        "agc_gain",
+        "gainceiling",
+        "hmirror",
+        "vflip",
+        "denoise",
+    }
+    filtered = {k: v for k, v in settings.items() if k in keep}
+
+    profile_id = await storage.add_aruco_profile(
+        camera_id, name, json.dumps(filtered), is_active=True
+    )
+    await audit(request, "aruco_profile_save", f"name={name} camera={camera['name']}", _user)
+    return JSONResponse({"id": profile_id, "settings": filtered}, status_code=201)
+
+
 @router.delete("/api/aruco/profiles/{profile_id}")
 async def api_delete_profile(
     request: Request,
