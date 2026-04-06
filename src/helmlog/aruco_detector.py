@@ -304,7 +304,7 @@ class CalibrationSession:
         flags = (
             cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE | cv2.CALIB_CB_FAST_CHECK
         )
-        ret, corners = cv2.findChessboardCorners(gray, (self.cols, self.rows), flags)
+        ret, corners = cv2.findChessboardCorners(gray, (self.cols, self.rows), flags=flags)
         if not ret:
             return False
 
