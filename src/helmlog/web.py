@@ -129,7 +129,7 @@ def create_app(
         """Track per-request bandwidth attribution (#403)."""
         return await bandwidth_middleware(request, call_next)
 
-    from helmlog.auth import _is_auth_disabled, _resolve_user
+    from helmlog.auth import _is_auth_disabled, _resolve_user, check_device_scope, resolve_device
 
     _PUBLIC_PATHS = {
         "/login",
@@ -158,6 +158,18 @@ def create_app(
             return await call_next(request)  # type: ignore[no-any-return]
         if path in _PUBLIC_PATHS or path.startswith(("/static/", "/co-op/", "/auth/")):
             return await call_next(request)  # type: ignore[no-any-return]
+
+        # Try device bearer token auth first (#423)
+        device_user = await resolve_device(request)
+        if device_user is not None:
+            # Enforce scope restriction
+            if not check_device_scope(device_user.get("device_scope"), request.method, path):
+                from starlette.responses import JSONResponse as _JR
+
+                return _JR({"detail": "Outside device scope"}, status_code=403)
+            request.state.user = device_user
+            return await call_next(request)  # type: ignore[no-any-return]
+
         from http.cookies import SimpleCookie
 
         raw_cookie = request.headers.get("cookie", "")
@@ -181,13 +193,16 @@ def create_app(
     from helmlog.routes import (
         admin,
         analysis,
+        aruco,
         audio,
         auth,
         boat_settings,
         cameras,
         comments,
+        controls,
         crew,
         deployment,
+        devices,
         federation,
         instruments,
         me,
@@ -211,6 +226,7 @@ def create_app(
         me,
         auth,
         admin,
+        devices,
         instruments,
         polar,
         races,
@@ -219,6 +235,8 @@ def create_app(
         sails,
         audio,
         cameras,
+        aruco,
+        controls,
         network,
         notes,
         videos,

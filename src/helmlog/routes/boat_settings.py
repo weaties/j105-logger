@@ -9,10 +9,8 @@ from fastapi.responses import JSONResponse
 
 from helmlog.auth import require_auth
 from helmlog.boat_settings import (
-    CATEGORY_ORDER,
     PARAMETER_NAMES,
     WEIGHT_DISTRIBUTION_PRESETS,
-    parameters_by_category,
 )
 from helmlog.routes._helpers import audit, get_storage
 from helmlog.tuning_extraction import (
@@ -45,19 +43,53 @@ async def api_boat_settings_parameters(
     request: Request,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """Return the canonical parameter definitions grouped by category."""
-    get_storage(request)
-    grouped = parameters_by_category()
+    """Return parameter definitions from the unified controls table.
+
+    Backward-compatible with the old hardcoded PARAMETERS response shape.
+    """
+    storage = get_storage(request)
+    controls = await storage.list_controls()
+    db_cats = await storage.list_control_categories()
+
+    # Group by category in display order
+    cat_order = [c["name"] for c in db_cats]
+    cat_labels = {c["name"]: c["label"] for c in db_cats}
+    grouped: dict[str, list[dict[str, Any]]] = {cat: [] for cat in cat_order}
+    for ctrl in controls:
+        cat = ctrl["category"]
+        if cat not in grouped:
+            grouped[cat] = []
+        grouped[cat].append(
+            {
+                "name": ctrl["name"],
+                "label": ctrl["label"],
+                "unit": ctrl["unit"],
+                "input_type": ctrl["input_type"],
+            }
+        )
+
     result = []
-    for cat, label in CATEGORY_ORDER:
-        params = [
-            {"name": p.name, "label": p.label, "unit": p.unit, "input_type": p.input_type}
-            for p in grouped[cat]
-        ]
-        result.append({"category": cat, "label": label, "parameters": params})
-    return JSONResponse(
-        {"categories": result, "weight_distribution_presets": list(WEIGHT_DISTRIBUTION_PRESETS)}
-    )
+    for cat in cat_order:
+        if grouped.get(cat):
+            result.append(
+                {"category": cat, "label": cat_labels.get(cat, cat), "parameters": grouped[cat]}
+            )
+    for cat, ctrls in grouped.items():
+        if cat not in cat_order and ctrls:
+            result.append(
+                {"category": cat, "label": cat.replace("_", " ").title(), "parameters": ctrls}
+            )
+
+    # Find weight_distribution presets from controls
+    wd_presets = list(WEIGHT_DISTRIBUTION_PRESETS)
+    for ctrl in controls:
+        if ctrl["name"] == "weight_distribution" and ctrl.get("preset_values"):
+            pv = ctrl["preset_values"]
+            if isinstance(pv, list):
+                wd_presets = pv
+            break
+
+    return JSONResponse({"categories": result, "weight_distribution_presets": wd_presets})
 
 
 @router.post("/api/boat-settings", status_code=201)

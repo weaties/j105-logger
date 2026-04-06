@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+{% block title %}ArUco Markers — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+.badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
+.badge-cal{background:var(--bg-secondary);color:var(--success)}
+.badge-uncal{background:var(--border);color:var(--text-secondary)}
+.badge-fail{background:var(--bg-secondary);color:var(--danger)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-edit{color:var(--warning);border-color:var(--warning)}
+.btn-refresh{color:var(--accent);border-color:var(--accent-strong)}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+.err{color:var(--danger);font-size:.8rem;margin-top:4px}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:460px;width:90%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog .form-row{flex-direction:column;align-items:stretch}
+dialog .form-row input,dialog .form-row select{width:100%}
+dialog .form-row label{font-size:.75rem;color:var(--text-secondary);margin-bottom:2px}
+dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.tab-bar{display:flex;gap:4px;margin-bottom:16px;border-bottom:1px solid var(--border);padding-bottom:0}
+.tab-bar button{padding:8px 16px;border:none;background:none;color:var(--text-secondary);font-size:.85rem;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab-bar button.active{color:var(--accent);border-bottom-color:var(--accent);font-weight:600}
+.tab-content{display:none}
+.tab-content.active{display:block}
+.setting-row{display:flex;align-items:center;gap:12px;margin-bottom:12px}
+.setting-row label{font-size:.85rem;min-width:180px}
+.setting-row input{width:100px}
+.cam-card{display:flex;gap:16px;align-items:flex-start;padding:12px;border-bottom:1px solid var(--border)}
+.cam-card:last-child{border-bottom:none}
+.cam-thumb{width:160px;min-width:160px;height:120px;border-radius:8px;background:var(--bg-primary);object-fit:cover;cursor:pointer}
+.cam-thumb-placeholder{width:160px;min-width:160px;height:120px;border-radius:8px;background:var(--bg-primary);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:.75rem}
+.cam-info{flex:1;font-size:.85rem}
+.cam-info .cam-name{font-weight:600;font-size:1rem;margin-bottom:4px}
+.cam-info .cam-detail{color:var(--text-secondary);margin-bottom:2px}
+.cam-actions{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+.cam-expand{display:none;padding:12px;border-top:1px solid var(--border);font-size:.82rem}
+.cam-expand.open{display:block}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px 16px;margin:8px 0}
+.sg-item{display:flex;align-items:center;gap:6px}
+.sg-item label{color:var(--text-secondary);font-size:.75rem;min-width:70px}
+.sg-item input[type=range]{flex:1;min-width:80px}
+.sg-item select{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:2px 4px;font-size:.78rem}
+.sg-item .sg-val{font-weight:600;font-size:.78rem;min-width:24px;text-align:right}
+.sg-item .sg-chk{display:flex;align-items:center;gap:4px;font-size:.78rem}
+.cal-progress{margin:8px 0}
+.cal-progress .bar{height:6px;background:var(--border);border-radius:3px;overflow:hidden}
+.cal-progress .fill{height:100%;background:var(--accent);transition:width .3s}
+</style>
+{% endblock %}
+{% block content %}
+<h1>ArUco Marker Tracking</h1>
+
+<div class="tab-bar">
+<button class="active" onclick="showTab('cameras')">Cameras</button>
+<button onclick="showTab('settings')">Settings</button>
+</div>
+<div style="font-size:.8rem;color:var(--text-secondary);margin-bottom:12px">Controls, markers, and trigger words are managed on the <a href="/admin/controls" style="color:var(--accent)">Controls</a> page.</div>
+
+<!-- Cameras Tab -->
+<div class="tab-content active" id="tab-cameras">
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">ESP32-CAM Cameras</div>
+<div style="display:flex;gap:6px">
+<button class="btn-sm btn-refresh" onclick="loadCameras()">&#x21bb; Refresh</button>
+<button class="btn-sm btn-add" onclick="showAddCamera()">+ Add Camera</button>
+</div>
+</div>
+<div id="cam-list">Loading...</div>
+<div id="add-cam-form" style="display:none">
+<div class="form-row">
+<input id="ac-name" placeholder="Name (e.g. shrouds)" maxlength="50"/>
+<input id="ac-ip" placeholder="IP address" maxlength="45"/>
+<input id="ac-size" placeholder="Marker size (mm)" value="50" style="width:120px"/>
+<input id="ac-interval" placeholder="Interval (s)" value="60" style="width:100px"/>
+<label style="font-size:.8rem"><input type="checkbox" id="ac-retain"/> Retain images</label>
+<button class="btn-sm btn-add" onclick="addCamera()">Save</button>
+<button class="btn-sm" onclick="hideAddCamera()">Cancel</button>
+</div>
+<div class="err" id="ac-err"></div>
+</div>
+</div>
+</div>
+
+<!-- Settings Tab -->
+<div class="tab-content" id="tab-settings">
+<div class="card">
+<div class="label">Global Settings</div>
+<div class="setting-row">
+<label>Default tolerance (mm)</label>
+<input id="set-tol" type="number" step="0.1" min="0"/>
+<button class="btn-sm btn-edit" onclick="saveSettings()">Save</button>
+</div>
+<div class="err" id="set-err"></div>
+<div id="set-ok" style="color:var(--success);font-size:.8rem;display:none">Saved</div>
+</div>
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+let _cameras=[];
+function showTab(name){
+  document.querySelectorAll('.tab-bar button').forEach(b=>b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.add('active');
+  event.target.classList.add('active');
+  if(name==='cameras')loadCameras();
+  if(name==='settings')loadSettings();
+}
+
+// --- Cameras ---
+let _previewTimer=null;
+async function loadCameras(){
+  const r=await fetch('/api/aruco/cameras');
+  if(!r.ok){document.getElementById('cam-list').textContent='Failed to load';return}
+  _cameras=await r.json();
+  if(!_cameras.length){document.getElementById('cam-list').innerHTML='<div style="color:var(--text-secondary);font-size:.85rem">No cameras configured</div>';return}
+  let h='';
+  for(const c of _cameras){
+    const st=c.calibration_state;
+    const badge=st==='calibrated'?'<span class="badge badge-cal">Calibrated</span>':
+      st==='calibration_failed'?'<span class="badge badge-fail">Failed</span>':
+      '<span class="badge badge-uncal">Uncalibrated</span>';
+    const thumbUrl=`/api/aruco/cameras/${encodeURIComponent(c.name)}/preview?t=${Date.now()}`;
+    h+=`<div style="border:1px solid var(--border);border-radius:8px;margin-bottom:8px">`;
+    h+=`<div class="cam-card" onclick="toggleCam('${esc(c.name)}')" style="cursor:pointer">`;
+    h+=`<img class="cam-thumb" id="thumb-${esc(c.name)}" src="${thumbUrl}" alt="Preview" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>`;
+    h+=`<div class="cam-thumb-placeholder" style="display:none">No preview</div>`;
+    h+=`<div class="cam-info">`;
+    h+=`<div class="cam-name">${esc(c.name)}</div>`;
+    h+=`<div class="cam-detail">IP: ${esc(c.ip)} &middot; Marker: ${c.marker_size_mm}mm &middot; Interval: ${c.capture_interval_s}s</div>`;
+    h+=`<div class="cam-detail">${badge}</div>`;
+    h+=`</div></div>`;
+    // Expandable detail panel
+    h+=`<div class="cam-expand" id="cam-detail-${esc(c.name)}">`;
+    // Profiles
+    h+=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">`;
+    h+=`<span style="font-weight:600;font-size:.85rem">Profile:</span>`;
+    h+=`<select id="prof-sel-${c.id}" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:.8rem"><option value="">Loading...</option></select>`;
+    h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();loadProfile(${c.id})">Load</button>`;
+    h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();saveProfile(${c.id},'${esc(c.name)}')">Save Current</button>`;
+    h+=`<button class="btn-sm btn-del" onclick="event.stopPropagation();deleteSelectedProfile(${c.id})">Delete</button>`;
+    h+=`</div>`;
+    // Camera sensor settings
+    h+=`<div style="font-weight:600;margin-bottom:6px">Sensor Settings</div>`;
+    h+=`<div id="cam-settings-${esc(c.name)}" class="settings-grid"><span style="color:var(--text-muted)">Click to load...</span></div>`;
+    // Calibration section
+    h+=`<div style="font-weight:600;margin:12px 0 6px">Calibration <a href="/api/aruco/calibration/checkerboard.pdf" target="_blank" style="font-weight:400;font-size:.78rem;color:var(--accent);margin-left:8px">Download checkerboard PDF</a></div>`;
+    if(st==='calibrated'&&c.calibration){
+      const cal=typeof c.calibration==='string'?JSON.parse(c.calibration):c.calibration;
+      h+=`<div class="cam-detail">Reprojection error: ${cal.reprojection_error_px||'?'}px &middot; Frames: ${cal.frame_count||'?'}</div>`;
+    }
+    h+=`<div id="cal-status-${c.id}"></div>`;
+    h+=`<div class="cam-actions">`;
+    if(st==='uncalibrated'||st==='calibration_failed'){
+      h+=`<span style="font-size:.78rem;color:var(--text-secondary)">Checkerboard: </span>`;
+      h+=`<input id="cal-cols-${c.id}" type="number" value="9" min="3" max="20" style="width:45px;padding:3px 4px;font-size:.78rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary)"/> x `;
+      h+=`<input id="cal-rows-${c.id}" type="number" value="6" min="3" max="20" style="width:45px;padding:3px 4px;font-size:.78rem;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary)"/> `;
+      h+=`<span style="font-size:.78rem;color:var(--text-secondary)">inner corners</span> `;
+      h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();startCalibration(${c.id})">Start Calibration</button>`;
+    }else if(st==='capturing'){
+      h+=`<button class="btn-sm btn-add" onclick="event.stopPropagation();captureCalFrame(${c.id})">Capture Frame</button>`;
+      h+=`<button class="btn-sm btn-edit" onclick="event.stopPropagation();runCalibration(${c.id})">Run Calibration</button>`;
+      h+=`<button class="btn-sm" onclick="event.stopPropagation();resetCalibration(${c.id})">Cancel</button>`;
+    }
+    if(st==='calibrated'){
+      h+=`<button class="btn-sm" onclick="event.stopPropagation();resetCalibration(${c.id})">Reset Calibration</button>`;
+    }
+    h+=`<button class="btn-sm btn-del" onclick="event.stopPropagation();delCamera(${c.id})">Delete Camera</button>`;
+    h+=`</div>`;
+    h+=`</div></div>`;
+  }
+  document.getElementById('cam-list').innerHTML=h;
+  // Refresh thumbnails periodically
+  if(_previewTimer)clearInterval(_previewTimer);
+  _previewTimer=setInterval(refreshThumbnails,10000);
+}
+function refreshThumbnails(){
+  for(const c of _cameras){
+    const img=document.getElementById('thumb-'+c.name);
+    if(img)img.src=`/api/aruco/cameras/${encodeURIComponent(c.name)}/preview?t=${Date.now()}`;
+  }
+}
+function showAddCamera(){document.getElementById('add-cam-form').style.display='';document.getElementById('ac-name').focus()}
+function hideAddCamera(){document.getElementById('add-cam-form').style.display='none';document.getElementById('ac-err').textContent=''}
+async function addCamera(){
+  const name=document.getElementById('ac-name').value.trim();
+  const ip=document.getElementById('ac-ip').value.trim();
+  if(!name||!ip){document.getElementById('ac-err').textContent='Name and IP required';return}
+  const body={name,ip,marker_size_mm:parseFloat(document.getElementById('ac-size').value)||50,capture_interval_s:parseInt(document.getElementById('ac-interval').value)||60,retain_images:document.getElementById('ac-retain').checked};
+  const r=await fetch('/api/aruco/cameras',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const d=await r.json();document.getElementById('ac-err').textContent=d.detail||'Failed';return}
+  hideAddCamera();loadCameras();
+}
+async function delCamera(id){if(!confirm('Delete this camera and all its controls/measurements?'))return;await fetch(`/api/aruco/cameras/${id}`,{method:'DELETE'});loadCameras()}
+
+// --- Camera expand/settings ---
+async function toggleCam(name){
+  const el=document.getElementById('cam-detail-'+name);
+  el.classList.toggle('open');
+  if(el.classList.contains('open')){
+    loadCamSettings(name);
+    const cam=_cameras.find(c=>c.name===name);
+    if(cam)loadProfiles(cam.id);
+  }
+}
+const _sliders=[
+  {k:'brightness',label:'Brightness',min:-2,max:2},
+  {k:'contrast',label:'Contrast',min:-2,max:2},
+  {k:'saturation',label:'Saturation',min:-2,max:2},
+  {k:'sharpness',label:'Sharpness',min:-2,max:2},
+  {k:'ae_level',label:'AE Level',min:-2,max:2},
+  {k:'quality',label:'Quality',min:4,max:63},
+  {k:'aec_value',label:'AEC Value',min:0,max:1200},
+  {k:'agc_gain',label:'Gain',min:0,max:30},
+  {k:'gainceiling',label:'Gain Ceiling',min:0,max:6},
+];
+const _checks=[
+  {k:'whitebal',label:'AWB'},
+  {k:'awb_gain',label:'AWB Gain'},
+  {k:'exposure_ctrl',label:'Auto Exposure'},
+  {k:'gain_ctrl',label:'Auto Gain'},
+  {k:'hmirror',label:'H-Mirror'},
+  {k:'vflip',label:'V-Flip'},
+  {k:'aec2',label:'AEC DSP'},
+  {k:'denoise',label:'Denoise'},
+];
+async function loadCamSettings(name){
+  const el=document.getElementById('cam-settings-'+name);
+  el.innerHTML='<span style="color:var(--text-muted)">Loading...</span>';
+  try{
+    const r=await fetch(`/api/aruco/cameras/${encodeURIComponent(name)}/settings`);
+    if(!r.ok){el.innerHTML='<span style="color:var(--text-muted)">Unreachable</span>';return}
+    const s=await r.json();
+    let h='';
+    // Resolution select
+    const resOpts=[['13','QXGA 2048x1536'],['12','SXGA 1600x1200'],['10','XGA 1024x768'],['8','SVGA 800x600'],['5','VGA 640x480']];
+    h+=`<div class="sg-item"><label>Resolution</label><select onchange="setCamSetting('${esc(name)}','framesize',this.value)">`;
+    for(const[v,l]of resOpts)h+=`<option value="${v}"${s.framesize==v?' selected':''}>${l}</option>`;
+    h+=`</select></div>`;
+    h+=`<div class="sg-item"><label>WB Mode</label><select onchange="setCamSetting('${esc(name)}','wb_mode',this.value)">`;
+    for(const[v,l]of[['0','Auto'],['1','Sunny'],['2','Cloudy'],['3','Office'],['4','Home']])h+=`<option value="${v}"${s.wb_mode==v?' selected':''}>${l}</option>`;
+    h+=`</select></div>`;
+    // Sliders
+    for(const d of _sliders){
+      if(s[d.k]===undefined)continue;
+      h+=`<div class="sg-item"><label>${d.label}</label>`;
+      h+=`<input type="range" min="${d.min}" max="${d.max}" value="${s[d.k]}" oninput="this.nextElementSibling.textContent=this.value" onchange="setCamSetting('${esc(name)}','${d.k}',this.value)"/>`;
+      h+=`<span class="sg-val">${s[d.k]}</span></div>`;
+    }
+    // Checkboxes
+    for(const d of _checks){
+      if(s[d.k]===undefined)continue;
+      h+=`<div class="sg-item"><label class="sg-chk"><input type="checkbox"${s[d.k]?' checked':''} onchange="setCamSetting('${esc(name)}','${d.k}',this.checked?1:0)"/> ${d.label}</label></div>`;
+    }
+    if(s.free_psram)h+=`<div class="sg-item"><label>PSRAM</label><span class="sg-val">${Math.round(s.free_psram/1024)}KB</span></div>`;
+    el.innerHTML=h||'<span style="color:var(--text-muted)">No settings</span>';
+  }catch(e){el.innerHTML=`<span style="color:var(--danger)">${e.message}</span>`}
+}
+async function setCamSetting(name,key,value){
+  const body={};body[key]=parseInt(value);
+  await fetch(`/api/aruco/cameras/${encodeURIComponent(name)}/settings`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+}
+
+// --- Profiles ---
+async function loadProfiles(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  if(!sel)return;
+  const r=await fetch(`/api/aruco/cameras/${camId}/profiles`);
+  if(!r.ok){sel.innerHTML='<option value="">Error</option>';return}
+  const profiles=await r.json();
+  let h='<option value="">-- Select profile --</option>';
+  for(const p of profiles){
+    h+=`<option value="${p.id}"${p.is_active?' selected':''}>${esc(p.name)}${p.is_active?' (active)':''}</option>`;
+  }
+  sel.innerHTML=h;
+}
+async function loadProfile(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  const profId=sel?.value;
+  if(!profId){return}
+  await fetch(`/api/aruco/profiles/${profId}/load`,{method:'POST'});
+  // Refresh settings display
+  const cam=_cameras.find(c=>c.id===camId);
+  if(cam)loadCamSettings(cam.name);
+  loadProfiles(camId);
+}
+async function saveProfile(camId,camName){
+  const name=prompt('Profile name:');
+  if(!name)return;
+  const r=await fetch(`/api/aruco/cameras/${camId}/profiles/save-current`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+  if(!r.ok){const d=await r.json();alert(d.detail||'Failed to save');return}
+  loadProfiles(camId);
+}
+async function deleteSelectedProfile(camId){
+  const sel=document.getElementById('prof-sel-'+camId);
+  const profId=sel?.value;
+  if(!profId){return}
+  if(!confirm('Delete this profile?'))return;
+  await fetch(`/api/aruco/profiles/${profId}`,{method:'DELETE'});
+  loadProfiles(camId);
+}
+
+// --- Calibration ---
+async function startCalibration(camId){
+  const colsEl=document.getElementById('cal-cols-'+camId);
+  const rowsEl=document.getElementById('cal-rows-'+camId);
+  const cols=colsEl?parseInt(colsEl.value)||9:9;
+  const rows=rowsEl?parseInt(rowsEl.value)||6:6;
+  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/start`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cols,rows})});
+  if(r.ok){
+    document.getElementById('cal-status-'+camId).innerHTML=`<div style="color:var(--accent)">Calibration mode active (${cols}x${rows} inner corners). Hold the checkerboard in front of the camera and click Capture Frame. Move the board to different angles between captures.</div>`;
+    loadCameras();
+  }
+}
+async function captureCalFrame(camId){
+  const st=document.getElementById('cal-status-'+camId);
+  st.innerHTML='<span style="color:var(--text-secondary)">Capturing from camera...</span>';
+  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/capture`,{method:'POST'});
+  if(!r.ok){const d=await r.json().catch(()=>({}));st.innerHTML=`<span style="color:var(--danger)">${d.detail||'Capture failed'}</span>`;return}
+  const d=await r.json();
+  const pct=Math.round(d.frame_count/d.required_frames*100);
+  let h=`<div>Frame ${d.frame_count}/${d.required_frames} — `;
+  h+=d.corners_found?'<span style="color:var(--success)">Corners found</span>':'<span style="color:var(--warning)">No corners detected — reposition checkerboard</span>';
+  h+=`</div><div class="cal-progress"><div class="bar"><div class="fill" style="width:${pct}%"></div></div></div>`;
+  if(d.ready)h+=`<div style="color:var(--success);font-weight:600">Ready to calibrate!</div>`;
+  st.innerHTML=h;
+}
+async function runCalibration(camId){
+  const st=document.getElementById('cal-status-'+camId);
+  st.innerHTML='<span style="color:var(--text-secondary)">Calibrating...</span>';
+  const r=await fetch(`/api/aruco/cameras/${camId}/calibration/run`,{method:'POST'});
+  if(!r.ok){const d=await r.json();st.innerHTML=`<span style="color:var(--danger)">${d.detail||'Failed'}</span>`;return}
+  const d=await r.json();
+  if(d.state==='calibrated'){
+    st.innerHTML=`<div style="color:var(--success)">Calibrated! RMS error: ${d.reprojection_error_px}px (${d.frame_count} frames)</div>`;
+  }else{
+    st.innerHTML=`<div style="color:var(--danger)">Calibration failed (error: ${d.reprojection_error_px}px). Try again with more varied angles.</div>`;
+  }
+  setTimeout(loadCameras,1500);
+}
+async function resetCalibration(camId){
+  if(!confirm('Reset calibration? The camera will revert to pixel-ratio distance estimation.'))return;
+  await fetch(`/api/aruco/cameras/${camId}/calibration/reset`,{method:'POST'});
+  loadCameras();
+}
+
+
+// --- Settings ---
+async function loadSettings(){
+  const r=await fetch('/api/aruco/settings');
+  if(!r.ok)return;
+  const s=await r.json();
+  document.getElementById('set-tol').value=s.tolerance_mm_default;
+}
+async function saveSettings(){
+  const tol=parseFloat(document.getElementById('set-tol').value);
+  if(isNaN(tol)||tol<0){document.getElementById('set-err').textContent='Invalid tolerance';return}
+  const r=await fetch('/api/aruco/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({tolerance_mm_default:tol})});
+  if(!r.ok){document.getElementById('set-err').textContent='Failed to save';return}
+  document.getElementById('set-err').textContent='';
+  const ok=document.getElementById('set-ok');ok.style.display='';setTimeout(()=>ok.style.display='none',2000);
+}
+
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+// Init
+loadCameras();
+</script>
+{% endblock %}

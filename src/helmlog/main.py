@@ -217,6 +217,158 @@ async def _deploy_loop(storage: object, config: object) -> None:
         await asyncio.sleep(config.poll_interval)
 
 
+async def _aruco_poll_loop(storage: object) -> None:
+    """Background task: poll ESP32-CAMs for images and run ArUco detection.
+
+    For each configured ArUco camera, fetches a JPEG from the camera's
+    ``/capture`` endpoint at the camera's ``capture_interval_s`` rate,
+    then runs marker detection and records measurements that exceed
+    the configured tolerance.
+    """
+    import json
+    import os
+
+    import httpx
+
+    from helmlog.aruco_detector import (
+        CameraCalibration,
+        create_thumbnail,
+        decode_jpeg,
+        detect_and_measure,
+    )
+    from helmlog.storage import Storage
+
+    assert isinstance(storage, Storage)
+
+    # Wait for storage to be ready and initial startup to settle
+    await asyncio.sleep(5)
+
+    # Track last poll time per camera and latest thumbnails
+    last_poll: dict[int, float] = {}
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        while True:
+            try:
+                cameras = await storage.list_aruco_cameras()
+                if not cameras:
+                    await asyncio.sleep(30)
+                    continue
+
+                now = asyncio.get_event_loop().time()
+
+                for camera in cameras:
+                    cam_id = camera["id"]
+                    interval = camera["capture_interval_s"]
+
+                    # Skip if not yet time for this camera
+                    if cam_id in last_poll and (now - last_poll[cam_id]) < interval:
+                        continue
+
+                    last_poll[cam_id] = now
+
+                    try:
+                        resp = await client.get(f"http://{camera['ip']}/capture")
+                        if resp.status_code != 200:
+                            logger.debug(
+                                "ArUco camera {} returned {}", camera["name"], resp.status_code
+                            )
+                            continue
+                        image_bytes = resp.content
+                    except httpx.HTTPError as exc:
+                        logger.debug("ArUco camera {} unreachable: {}", camera["name"], exc)
+                        continue
+
+                    # Store thumbnail for live preview
+                    thumb = await asyncio.to_thread(create_thumbnail, image_bytes)
+                    # Store on storage instance for the preview endpoint to read
+                    if not hasattr(storage, "_aruco_thumbnails"):
+                        storage._aruco_thumbnails = {}  # type: ignore[attr-defined]
+                    storage._aruco_thumbnails[camera["name"]] = thumb  # type: ignore[attr-defined]
+
+                    # Run detection
+                    try:
+                        img = decode_jpeg(image_bytes)
+                    except ValueError:
+                        logger.debug("ArUco camera {}: invalid image", camera["name"])
+                        continue
+
+                    # Parse calibration
+                    calibration = None
+                    if camera["calibration"]:
+                        try:
+                            cal_data = camera["calibration"]
+                            if not isinstance(cal_data, str):
+                                cal_data = json.dumps(cal_data)
+                            calibration = CameraCalibration.from_json(cal_data)
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+
+                    # Get controls with ArUco config for this camera (unified)
+                    all_aruco = await storage.controls_with_aruco()
+                    cam_controls = [c for c in all_aruco if c["camera_id"] == cam_id]
+                    if not cam_controls:
+                        continue
+                    pairs = [(c["marker_id_a"], c["marker_id_b"]) for c in cam_controls]
+                    control_map = {(c["marker_id_a"], c["marker_id_b"]): c for c in cam_controls}
+
+                    result = detect_and_measure(img, pairs, camera["marker_size_mm"], calibration)
+
+                    # Record measurements to boat_settings with source="camera"
+                    current_race = await storage.get_current_race()
+                    race_id = current_race.id if current_race else None
+                    ts_iso = datetime.now(UTC).isoformat()
+
+                    for dist in result.distances:
+                        ctrl = control_map.get((dist.marker_id_a, dist.marker_id_b))
+                        if not ctrl:
+                            continue
+
+                        tolerance = await storage.get_aruco_tolerance_mm()
+                        if ctrl.get("tolerance_mm") is not None:
+                            tolerance = float(ctrl["tolerance_mm"])
+
+                        latest = await storage.get_latest_camera_reading(ctrl["name"])
+                        if latest is not None:
+                            delta_mm = abs(dist.distance_cm * 10 - float(latest["value"]) * 10)
+                            if delta_mm <= tolerance:
+                                continue
+
+                        if camera["retain_images"]:
+                            ts_str = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+                            img_dir = os.path.join("data", "aruco", camera["name"])
+                            os.makedirs(img_dir, exist_ok=True)
+                            img_path = os.path.join(img_dir, f"{ts_str}.jpg")
+                            with open(img_path, "wb") as f:
+                                f.write(image_bytes)
+
+                        await storage.create_boat_settings(
+                            race_id,
+                            [
+                                {
+                                    "ts": ts_iso,
+                                    "parameter": ctrl["name"],
+                                    "value": str(dist.distance_cm),
+                                }
+                            ],
+                            source="camera",
+                        )
+
+                    if result.distances:
+                        logger.debug(
+                            "ArUco camera {}: {} markers, {} distances",
+                            camera["name"],
+                            len(result.markers),
+                            len(result.distances),
+                        )
+
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("ArUco poll loop error (will retry): {}", exc)
+
+            await asyncio.sleep(1)  # tight loop; per-camera timing is tracked above
+
+
 async def _run() -> None:
     """Main async loop: read instrument data, decode, persist.
 
@@ -286,6 +438,7 @@ async def _run() -> None:
                 logger.info("External data fetching disabled (EXTERNAL_DATA_ENABLED=false)")
             weather_task = asyncio.create_task(asyncio.sleep(1e9))  # no-op placeholder
             tide_task = asyncio.create_task(asyncio.sleep(1e9))
+        aruco_task = asyncio.create_task(_aruco_poll_loop(storage))
         web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
         monitor_task = asyncio.create_task(monitor_loop())
         deploy_config = DeployConfig()
@@ -329,12 +482,14 @@ async def _run() -> None:
         except asyncio.CancelledError:
             logger.info("Shutdown signal received — flushing and stopping")
         finally:
+            aruco_task.cancel()
             weather_task.cancel()
             tide_task.cancel()
             web_task.cancel()
             monitor_task.cancel()
             deploy_task.cancel()
             await asyncio.gather(
+                aruco_task,
                 weather_task,
                 tide_task,
                 web_task,

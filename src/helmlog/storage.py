@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 52
+_CURRENT_VERSION: int = 56
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1167,6 +1167,113 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_rudder_angles_ts ON rudder_angles(ts);
     """,
+    53: """
+        -- Device API keys for headless IoT devices (#423)
+        CREATE TABLE IF NOT EXISTS devices (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            key_hash    TEXT NOT NULL,
+            role        TEXT NOT NULL DEFAULT 'crew',
+            scope       TEXT,
+            is_active   INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            last_used   TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_devices_key_hash ON devices(key_hash);
+    """,
+    54: """
+        -- ArUco marker tracking (#425)
+        CREATE TABLE IF NOT EXISTS aruco_cameras (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            ip TEXT NOT NULL,
+            marker_size_mm REAL NOT NULL DEFAULT 50.0,
+            capture_interval_s INTEGER NOT NULL DEFAULT 60,
+            retain_images INTEGER NOT NULL DEFAULT 0,
+            calibration JSON,
+            calibration_state TEXT NOT NULL DEFAULT 'uncalibrated',
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS aruco_camera_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            camera_id INTEGER NOT NULL REFERENCES aruco_cameras(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            settings JSON NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 0,
+            UNIQUE (camera_id, name)
+        );
+
+        CREATE TABLE IF NOT EXISTS aruco_controls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            camera_id INTEGER NOT NULL REFERENCES aruco_cameras(id) ON DELETE CASCADE,
+            marker_id_a INTEGER NOT NULL,
+            marker_id_b INTEGER NOT NULL,
+            tolerance_mm REAL,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS aruco_measurements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            control_id INTEGER NOT NULL REFERENCES aruco_controls(id) ON DELETE CASCADE,
+            distance_cm REAL NOT NULL,
+            image_path TEXT,
+            session_id INTEGER REFERENCES races(id) ON DELETE SET NULL,
+            measured_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_aruco_measurements_control_time
+            ON aruco_measurements(control_id, measured_at DESC);
+
+        CREATE TABLE IF NOT EXISTS aruco_trigger_words (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            phrase TEXT NOT NULL UNIQUE,
+            control_id INTEGER NOT NULL REFERENCES aruco_controls(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS aruco_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        INSERT OR IGNORE INTO aruco_settings VALUES ('tolerance_mm_default', '5.0');
+    """,
+    55: """
+        -- Unified boat controls (#425)
+        CREATE TABLE IF NOT EXISTS controls (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT NOT NULL UNIQUE,
+            label         TEXT NOT NULL,
+            unit          TEXT NOT NULL DEFAULT '',
+            input_type    TEXT NOT NULL DEFAULT 'number',
+            category      TEXT NOT NULL DEFAULT 'sail_controls',
+            sort_order    INTEGER NOT NULL DEFAULT 0,
+            preset_values TEXT,
+            created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS control_aruco (
+            control_id   INTEGER PRIMARY KEY REFERENCES controls(id) ON DELETE CASCADE,
+            camera_id    INTEGER NOT NULL REFERENCES aruco_cameras(id) ON DELETE CASCADE,
+            marker_id_a  INTEGER NOT NULL,
+            marker_id_b  INTEGER NOT NULL,
+            tolerance_mm REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS control_trigger_words (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            control_id INTEGER NOT NULL REFERENCES controls(id) ON DELETE CASCADE,
+            phrase     TEXT NOT NULL UNIQUE
+        );
+    """,
+    56: """
+        -- Configurable control categories (#425)
+        CREATE TABLE IF NOT EXISTS control_categories (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            name        TEXT NOT NULL UNIQUE,
+            label       TEXT NOT NULL,
+            sort_order  INTEGER NOT NULL DEFAULT 0
+        );
+    """,
 }
 
 
@@ -1420,6 +1527,14 @@ class Storage:
         if current < 41:
             await self._migrate_v41_sail_changes()
 
+        # Post-DDL data migration for v55 (unified controls)
+        if current < 55:
+            await self._migrate_v55_controls()
+
+        # Post-DDL data migration for v56 (seed categories)
+        if current < 56:
+            await self._migrate_v56_categories()
+
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
     async def _migrate_v38_data(self) -> None:
@@ -1593,6 +1708,146 @@ class Storage:
             logger.info(
                 "v41 data migration: converted {} race_sails rows to sail_changes", len(races)
             )
+
+    async def _migrate_v55_controls(self) -> None:
+        """Data migration for v55: seed controls from canonical parameters + ArUco data."""
+        import json as _json
+
+        from helmlog.boat_settings import (
+            PARAMETERS,
+            WEIGHT_DISTRIBUTION_PRESETS,
+        )
+
+        db = self._conn()
+
+        # Idempotent check
+        cur = await db.execute("SELECT COUNT(*) FROM controls")
+        row = await cur.fetchone()
+        if row is not None and row[0] > 0:
+            return
+
+        # 1. Seed all 37 canonical parameters
+        for order, p in enumerate(PARAMETERS):
+            preset_json = None
+            if p.name == "weight_distribution":
+                preset_json = _json.dumps(list(WEIGHT_DISTRIBUTION_PRESETS))
+            await db.execute(
+                "INSERT OR IGNORE INTO controls"
+                " (name, label, unit, input_type, category, sort_order, preset_values)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (p.name, p.label, p.unit, p.input_type, p.category, order, preset_json),
+            )
+
+        # 2. Migrate ArUco controls → unified controls + control_aruco
+        cur = await db.execute(
+            "SELECT id, name, camera_id, marker_id_a, marker_id_b, tolerance_mm FROM aruco_controls"
+        )
+        aruco_rows = await cur.fetchall()
+        for ac in aruco_rows:
+            # Insert control if it doesn't already exist (e.g., "vang" already seeded)
+            await db.execute(
+                "INSERT OR IGNORE INTO controls (name, label, unit, category, sort_order)"
+                " VALUES (?, ?, 'cm', 'sail_controls', 100)",
+                (ac["name"], ac["name"].replace("_", " ").title()),
+            )
+            # Get the control ID
+            ccur = await db.execute("SELECT id FROM controls WHERE name = ?", (ac["name"],))
+            ctrl_row = await ccur.fetchone()
+            if ctrl_row:
+                await db.execute(
+                    "INSERT OR IGNORE INTO control_aruco"
+                    " (control_id, camera_id, marker_id_a, marker_id_b, tolerance_mm)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (
+                        ctrl_row["id"],
+                        ac["camera_id"],
+                        ac["marker_id_a"],
+                        ac["marker_id_b"],
+                        ac["tolerance_mm"],
+                    ),
+                )
+
+        # 3. Migrate aruco_trigger_words → control_trigger_words
+        cur = await db.execute(
+            "SELECT tw.phrase, ac.name AS control_name"
+            " FROM aruco_trigger_words tw"
+            " JOIN aruco_controls ac ON ac.id = tw.control_id"
+        )
+        for tw in await cur.fetchall():
+            ccur = await db.execute("SELECT id FROM controls WHERE name = ?", (tw["control_name"],))
+            ctrl_row = await ccur.fetchone()
+            if ctrl_row:
+                await db.execute(
+                    "INSERT OR IGNORE INTO control_trigger_words (control_id, phrase)"
+                    " VALUES (?, ?)",
+                    (ctrl_row["id"], tw["phrase"]),
+                )
+
+        # 4. Seed Whisper aliases as trigger words
+        whisper_aliases: dict[str, list[str]] = {
+            "main_halyard": ["main higher", "main hires", "main hired", "main halyards"],
+            "jib_halyard": [
+                "jib higher",
+                "jib hires",
+                "jib hired",
+                "jib howard",
+                "jib halyards",
+            ],
+            "vang": ["bang", "boom bang", "van"],
+            "cunningham": ["cunninghams"],
+            "main_sheet_tension": [
+                "main cheat tension",
+                "main cheap tension",
+                "main sheat tension",
+            ],
+            "jib_sheet_tension_port": [
+                "gybsheet tension port",
+                "gyb sheet tension port",
+                "jibsheet tension port",
+            ],
+            "jib_sheet_tension_starboard": [
+                "gybsheet tension starboard",
+                "gyb sheet tension starboard",
+                "jibsheet tension starboard",
+            ],
+        }
+        for param_name, aliases in whisper_aliases.items():
+            ccur = await db.execute("SELECT id FROM controls WHERE name = ?", (param_name,))
+            ctrl_row = await ccur.fetchone()
+            if ctrl_row:
+                for alias in aliases:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO control_trigger_words (control_id, phrase)"
+                        " VALUES (?, ?)",
+                        (ctrl_row["id"], alias),
+                    )
+
+        await db.commit()
+        logger.info(
+            "v55 data migration: seeded {} controls + {} ArUco mappings",
+            len(PARAMETERS) + len(aruco_rows),
+            len(aruco_rows),
+        )
+
+    async def _migrate_v56_categories(self) -> None:
+        """Data migration for v56: seed control_categories from CATEGORY_ORDER."""
+        from helmlog.boat_settings import CATEGORY_ORDER
+
+        db = self._conn()
+
+        cur = await db.execute("SELECT COUNT(*) FROM control_categories")
+        row = await cur.fetchone()
+        if row is not None and row[0] > 0:
+            return
+
+        for order, (name, label) in enumerate(CATEGORY_ORDER):
+            await db.execute(
+                "INSERT OR IGNORE INTO control_categories (name, label, sort_order)"
+                " VALUES (?, ?, ?)",
+                (name, label, order),
+            )
+        await db.commit()
+        logger.info("v56 data migration: seeded {} categories", len(CATEGORY_ORDER))
 
     # ------------------------------------------------------------------
     # Write (batched)
@@ -4505,6 +4760,88 @@ class Storage:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Device API keys (#423)
+    # ------------------------------------------------------------------
+
+    async def create_device(
+        self,
+        name: str,
+        key_hash: str,
+        role: str,
+        scope: str | None = None,
+    ) -> int:
+        """Insert a new device and return its id.
+
+        *role* must be ``crew`` or ``viewer`` — devices cannot have admin role.
+        *key_hash* is the SHA-256 hex digest of the plaintext bearer token.
+        """
+        if role == "admin":
+            raise ValueError("Devices cannot be assigned the admin role")
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO devices (name, key_hash, role, scope, created_at) VALUES (?, ?, ?, ?, ?)",
+            (name, key_hash, role, scope, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    _DEVICE_COLS = "id, name, key_hash, role, scope, is_active, created_at, last_used"
+
+    async def get_device(self, device_id: int) -> dict[str, Any] | None:
+        """Return a device by id, or None."""
+        cur = await self._read_conn().execute(
+            f"SELECT {self._DEVICE_COLS} FROM devices WHERE id = ?",
+            (device_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_device_by_key_hash(self, key_hash: str) -> dict[str, Any] | None:
+        """Return an active device matching the key hash, or None."""
+        cur = await self._read_conn().execute(
+            f"SELECT {self._DEVICE_COLS} FROM devices WHERE key_hash = ? AND is_active = 1",
+            (key_hash,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_devices(self) -> list[dict[str, Any]]:
+        """Return all devices ordered by creation time."""
+        cur = await self._read_conn().execute(
+            "SELECT id, name, role, scope, is_active, created_at, last_used"
+            " FROM devices ORDER BY created_at"
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+    async def revoke_device(self, device_id: int) -> None:
+        """Deactivate a device (soft-delete)."""
+        db = self._conn()
+        await db.execute("UPDATE devices SET is_active = 0 WHERE id = ?", (device_id,))
+        await db.commit()
+
+    async def rotate_device_key(self, device_id: int, new_key_hash: str) -> None:
+        """Replace a device's key hash."""
+        db = self._conn()
+        await db.execute("UPDATE devices SET key_hash = ? WHERE id = ?", (new_key_hash, device_id))
+        await db.commit()
+
+    async def update_device_last_used(self, device_id: int) -> None:
+        """Update the last_used timestamp to now."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute("UPDATE devices SET last_used = ? WHERE id = ?", (now, device_id))
+        await db.commit()
+
+    # ------------------------------------------------------------------
     # Tags (#99)
     # ------------------------------------------------------------------
 
@@ -5442,14 +5779,14 @@ class Storage:
         from datetime import UTC
         from datetime import datetime as _datetime
 
-        from helmlog.boat_settings import PARAMETER_NAMES
-
         db = self._conn()
+        # Validate against DB-backed controls table
+        valid_names = await self.get_control_names()
         now = _datetime.now(UTC).isoformat()
         ids: list[int] = []
         for entry in entries:
             param = entry["parameter"]
-            if param not in PARAMETER_NAMES:
+            if param not in valid_names:
                 raise ValueError(f"Unknown parameter: {param!r}")
             cur = await db.execute(
                 "INSERT INTO boat_settings"
@@ -5540,10 +5877,10 @@ class Storage:
         race_level = await _latest_per_param("race_id = ?", (race_id,))
 
         # Merge: race-specific wins; track what it supersedes
-        from helmlog.boat_settings import PARAMETER_NAMES
+        all_names = await self.get_control_names()
 
         result: list[dict[str, Any]] = []
-        for param in sorted(PARAMETER_NAMES):
+        for param in sorted(all_names):
             race_row = race_level.get(param)
             boat_row = boat_level.get(param)
             if race_row:
@@ -6317,6 +6654,644 @@ class Storage:
             names,
         )
         return {str(row["name"]): int(row["id"]) for row in await cur.fetchall()}
+
+    # ------------------------------------------------------------------
+    # Control categories (#425)
+    # ------------------------------------------------------------------
+
+    async def list_control_categories(self) -> list[dict[str, Any]]:
+        """Return all categories ordered by sort_order."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, label, sort_order FROM control_categories ORDER BY sort_order, name"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_control_category(self, name: str, label: str, sort_order: int = 0) -> int:
+        """Add a category. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO control_categories (name, label, sort_order) VALUES (?, ?, ?)",
+            (name, label, sort_order),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def update_control_category(
+        self,
+        category_id: int,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        sort_order: int | None = None,
+    ) -> bool:
+        """Update a category. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE control_categories SET"
+            " name = COALESCE(?, name),"
+            " label = COALESCE(?, label),"
+            " sort_order = COALESCE(?, sort_order)"
+            " WHERE id = ?",
+            (name, label, sort_order, category_id),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_control_category(self, category_id: int) -> bool:
+        """Delete a category. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM control_categories WHERE id = ?", (category_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    # ------------------------------------------------------------------
+    # Unified controls (#425)
+    # ------------------------------------------------------------------
+
+    async def list_controls(self) -> list[dict[str, Any]]:
+        """Return all controls with ArUco config and trigger words."""
+        import json as _json
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, label, unit, input_type, category,"
+            " sort_order, preset_values, created_at"
+            " FROM controls ORDER BY sort_order, name"
+        )
+        controls = [dict(r) for r in await cur.fetchall()]
+
+        # Attach ArUco config
+        cur = await db.execute(
+            "SELECT control_id, camera_id, marker_id_a, marker_id_b, tolerance_mm"
+            " FROM control_aruco"
+        )
+        aruco_map = {r["control_id"]: dict(r) for r in await cur.fetchall()}
+
+        # Attach trigger words
+        cur = await db.execute(
+            "SELECT id, control_id, phrase FROM control_trigger_words ORDER BY phrase"
+        )
+        tw_map: dict[int, list[dict[str, Any]]] = {}
+        for r in await cur.fetchall():
+            tw_map.setdefault(r["control_id"], []).append({"id": r["id"], "phrase": r["phrase"]})
+
+        # Attach camera names for ArUco controls
+        cur = await db.execute("SELECT id, name FROM aruco_cameras")
+        cam_names = {r["id"]: r["name"] for r in await cur.fetchall()}
+
+        for ctrl in controls:
+            cid = ctrl["id"]
+            aruco = aruco_map.get(cid)
+            if aruco:
+                aruco["camera_name"] = cam_names.get(aruco["camera_id"], "")
+            ctrl["aruco"] = aruco
+            ctrl["trigger_words"] = tw_map.get(cid, [])
+            if ctrl["preset_values"]:
+                import contextlib
+
+                with contextlib.suppress(_json.JSONDecodeError, TypeError):
+                    ctrl["preset_values"] = _json.loads(ctrl["preset_values"])
+        return controls
+
+    async def get_control_by_name(self, name: str) -> dict[str, Any] | None:
+        """Return a single control by canonical name."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, label, unit, input_type, category,"
+            " sort_order, preset_values, created_at"
+            " FROM controls WHERE name = ?",
+            (name,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def add_control(
+        self,
+        name: str,
+        label: str,
+        unit: str = "",
+        input_type: str = "number",
+        category: str = "sail_controls",
+        sort_order: int = 0,
+        preset_values: str | None = None,
+    ) -> int:
+        """Add a control. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO controls"
+            " (name, label, unit, input_type, category, sort_order, preset_values)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (name, label, unit, input_type, category, sort_order, preset_values),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("Control added: id={} name={}", cur.lastrowid, name)
+        return cur.lastrowid
+
+    async def update_control(
+        self,
+        control_id: int,
+        *,
+        name: str | None = None,
+        label: str | None = None,
+        unit: str | None = None,
+        input_type: str | None = None,
+        category: str | None = None,
+        sort_order: int | None = None,
+    ) -> bool:
+        """Update a control. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE controls SET"
+            " name = COALESCE(?, name),"
+            " label = COALESCE(?, label),"
+            " unit = COALESCE(?, unit),"
+            " input_type = COALESCE(?, input_type),"
+            " category = COALESCE(?, category),"
+            " sort_order = COALESCE(?, sort_order)"
+            " WHERE id = ?",
+            (name, label, unit, input_type, category, sort_order, control_id),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_control(self, control_id: int) -> bool:
+        """Delete a control (cascades to aruco, trigger words, measurements)."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM controls WHERE id = ?", (control_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def set_control_aruco(
+        self,
+        control_id: int,
+        camera_id: int,
+        marker_id_a: int,
+        marker_id_b: int,
+        tolerance_mm: float | None = None,
+    ) -> None:
+        """Attach or update ArUco marker config for a control."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO control_aruco"
+            " (control_id, camera_id, marker_id_a, marker_id_b, tolerance_mm)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(control_id) DO UPDATE SET"
+            " camera_id = excluded.camera_id,"
+            " marker_id_a = excluded.marker_id_a,"
+            " marker_id_b = excluded.marker_id_b,"
+            " tolerance_mm = excluded.tolerance_mm",
+            (control_id, camera_id, marker_id_a, marker_id_b, tolerance_mm),
+        )
+        await db.commit()
+
+    async def delete_control_aruco(self, control_id: int) -> bool:
+        """Remove ArUco marker config from a control."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM control_aruco WHERE control_id = ?", (control_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def list_control_trigger_words(
+        self, control_id: int | None = None
+    ) -> list[dict[str, Any]]:
+        """Return trigger words, optionally filtered by control."""
+        db = self._read_conn()
+        if control_id is not None:
+            cur = await db.execute(
+                "SELECT tw.id, tw.control_id, tw.phrase, c.name AS control_name"
+                " FROM control_trigger_words tw"
+                " JOIN controls c ON c.id = tw.control_id"
+                " WHERE tw.control_id = ? ORDER BY tw.phrase",
+                (control_id,),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT tw.id, tw.control_id, tw.phrase, c.name AS control_name"
+                " FROM control_trigger_words tw"
+                " JOIN controls c ON c.id = tw.control_id"
+                " ORDER BY tw.phrase"
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_control_trigger_word(self, control_id: int, phrase: str) -> int:
+        """Add a trigger word to a control. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO control_trigger_words (control_id, phrase) VALUES (?, ?)",
+            (control_id, phrase),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def delete_control_trigger_word(self, trigger_id: int) -> bool:
+        """Delete a trigger word."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM control_trigger_words WHERE id = ?", (trigger_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def get_latest_camera_reading(self, parameter: str) -> dict[str, Any] | None:
+        """Return the latest boat_settings entry with source='camera' for a parameter."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, race_id, ts, parameter, value, source, created_at"
+            " FROM boat_settings WHERE parameter = ? AND source = 'camera'"
+            " ORDER BY ts DESC, id DESC LIMIT 1",
+            (parameter,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_control_names(self) -> frozenset[str]:
+        """Return the set of all control names (for validation)."""
+        db = self._read_conn()
+        cur = await db.execute("SELECT name FROM controls")
+        return frozenset(r["name"] for r in await cur.fetchall())
+
+    async def controls_with_aruco(self) -> list[dict[str, Any]]:
+        """Return controls that have ArUco marker config, with camera info."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT c.id, c.name, ca.camera_id, ca.marker_id_a, ca.marker_id_b,"
+            " ca.tolerance_mm, cam.name AS camera_name, cam.ip AS camera_ip,"
+            " cam.marker_size_mm, cam.calibration, cam.retain_images"
+            " FROM controls c"
+            " JOIN control_aruco ca ON ca.control_id = c.id"
+            " JOIN aruco_cameras cam ON cam.id = ca.camera_id"
+            " ORDER BY c.name"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # ArUco marker tracking (#425)
+    # ------------------------------------------------------------------
+
+    async def list_aruco_cameras(self) -> list[dict[str, Any]]:
+        """Return all ArUco cameras ordered by name."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, ip, marker_size_mm, capture_interval_s,"
+            " retain_images, calibration, calibration_state, created_at"
+            " FROM aruco_cameras ORDER BY name ASC"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_aruco_camera(self, camera_id: int) -> dict[str, Any] | None:
+        """Return a single ArUco camera by id."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, ip, marker_size_mm, capture_interval_s,"
+            " retain_images, calibration, calibration_state, created_at"
+            " FROM aruco_cameras WHERE id = ?",
+            (camera_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def get_aruco_camera_by_name(self, name: str) -> dict[str, Any] | None:
+        """Return a single ArUco camera by name."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, ip, marker_size_mm, capture_interval_s,"
+            " retain_images, calibration, calibration_state, created_at"
+            " FROM aruco_cameras WHERE name = ?",
+            (name,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def add_aruco_camera(
+        self,
+        name: str,
+        ip: str,
+        marker_size_mm: float = 50.0,
+        capture_interval_s: int = 60,
+        retain_images: bool = False,
+    ) -> int:
+        """Add an ArUco camera. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO aruco_cameras"
+            " (name, ip, marker_size_mm, capture_interval_s, retain_images)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (name, ip, marker_size_mm, capture_interval_s, int(retain_images)),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info("ArUco camera added: id={} name={} ip={}", cur.lastrowid, name, ip)
+        return cur.lastrowid
+
+    async def update_aruco_camera(
+        self,
+        camera_id: int,
+        *,
+        name: str | None = None,
+        ip: str | None = None,
+        marker_size_mm: float | None = None,
+        capture_interval_s: int | None = None,
+        retain_images: bool | None = None,
+    ) -> bool:
+        """Update an ArUco camera. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE aruco_cameras SET"
+            " name = COALESCE(?, name),"
+            " ip = COALESCE(?, ip),"
+            " marker_size_mm = COALESCE(?, marker_size_mm),"
+            " capture_interval_s = COALESCE(?, capture_interval_s),"
+            " retain_images = COALESCE(?, retain_images)"
+            " WHERE id = ?",
+            (
+                name,
+                ip,
+                marker_size_mm,
+                capture_interval_s,
+                int(retain_images) if retain_images is not None else None,
+                camera_id,
+            ),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_aruco_camera(self, camera_id: int) -> bool:
+        """Delete an ArUco camera and cascade to profiles/controls/measurements."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM aruco_cameras WHERE id = ?", (camera_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def update_aruco_calibration(
+        self, camera_id: int, calibration_json: str, state: str
+    ) -> bool:
+        """Update calibration data and state for a camera."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE aruco_cameras SET calibration = ?, calibration_state = ? WHERE id = ?",
+            (calibration_json, state, camera_id),
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- Camera profiles --
+
+    async def list_aruco_profiles(self, camera_id: int) -> list[dict[str, Any]]:
+        """Return all profiles for a camera."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, camera_id, name, settings, is_active"
+            " FROM aruco_camera_profiles WHERE camera_id = ? ORDER BY name",
+            (camera_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_aruco_profile(
+        self, camera_id: int, name: str, settings: str, *, is_active: bool = False
+    ) -> int:
+        """Add a camera profile. Returns the new row id."""
+        db = self._conn()
+        if is_active:
+            await db.execute(
+                "UPDATE aruco_camera_profiles SET is_active = 0 WHERE camera_id = ?",
+                (camera_id,),
+            )
+        cur = await db.execute(
+            "INSERT INTO aruco_camera_profiles (camera_id, name, settings, is_active)"
+            " VALUES (?, ?, ?, ?)",
+            (camera_id, name, settings, int(is_active)),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def activate_aruco_profile(self, profile_id: int) -> bool:
+        """Activate a profile (deactivating others for the same camera)."""
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT camera_id FROM aruco_camera_profiles WHERE id = ?", (profile_id,)
+        )
+        row = await cur.fetchone()
+        if not row:
+            return False
+        camera_id = row[0]
+        await db.execute(
+            "UPDATE aruco_camera_profiles SET is_active = 0 WHERE camera_id = ?",
+            (camera_id,),
+        )
+        await db.execute(
+            "UPDATE aruco_camera_profiles SET is_active = 1 WHERE id = ?",
+            (profile_id,),
+        )
+        await db.commit()
+        return True
+
+    async def delete_aruco_profile(self, profile_id: int) -> bool:
+        """Delete a camera profile."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM aruco_camera_profiles WHERE id = ?", (profile_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- Controls --
+
+    async def list_aruco_controls(self) -> list[dict[str, Any]]:
+        """Return all ArUco controls with camera name."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT c.id, c.name, c.camera_id, c.marker_id_a, c.marker_id_b,"
+            " c.tolerance_mm, c.created_at, cam.name AS camera_name"
+            " FROM aruco_controls c"
+            " JOIN aruco_cameras cam ON cam.id = c.camera_id"
+            " ORDER BY c.name"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def get_aruco_control(self, control_id: int) -> dict[str, Any] | None:
+        """Return a single ArUco control by id."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, name, camera_id, marker_id_a, marker_id_b,"
+            " tolerance_mm, created_at FROM aruco_controls WHERE id = ?",
+            (control_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def add_aruco_control(
+        self,
+        name: str,
+        camera_id: int,
+        marker_id_a: int,
+        marker_id_b: int,
+        tolerance_mm: float | None = None,
+    ) -> int:
+        """Add a control (marker pair → boat control mapping). Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO aruco_controls (name, camera_id, marker_id_a, marker_id_b, tolerance_mm)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (name, camera_id, marker_id_a, marker_id_b, tolerance_mm),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        logger.info(
+            "ArUco control added: id={} name={} markers={}/{}",
+            cur.lastrowid,
+            name,
+            marker_id_a,
+            marker_id_b,
+        )
+        return cur.lastrowid
+
+    async def update_aruco_control(
+        self,
+        control_id: int,
+        *,
+        name: str | None = None,
+        marker_id_a: int | None = None,
+        marker_id_b: int | None = None,
+        tolerance_mm: float | None = ...,  # type: ignore[assignment]
+    ) -> bool:
+        """Update an ArUco control. Pass tolerance_mm=None explicitly to clear it."""
+        db = self._conn()
+        # tolerance_mm uses sentinel ... to distinguish "not provided" from "set to NULL"
+        sets = []
+        params: list[Any] = []
+        if name is not None:
+            sets.append("name = ?")
+            params.append(name)
+        if marker_id_a is not None:
+            sets.append("marker_id_a = ?")
+            params.append(marker_id_a)
+        if marker_id_b is not None:
+            sets.append("marker_id_b = ?")
+            params.append(marker_id_b)
+        if tolerance_mm is not ...:  # type: ignore[comparison-overlap]
+            sets.append("tolerance_mm = ?")
+            params.append(tolerance_mm)
+        if not sets:
+            return False
+        params.append(control_id)
+        cur = await db.execute(
+            f"UPDATE aruco_controls SET {', '.join(sets)} WHERE id = ?",
+            params,
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def delete_aruco_control(self, control_id: int) -> bool:
+        """Delete a control and cascade to measurements and trigger words."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM aruco_controls WHERE id = ?", (control_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- Measurements --
+
+    async def add_aruco_measurement(
+        self,
+        control_id: int,
+        distance_cm: float,
+        image_path: str | None = None,
+        session_id: int | None = None,
+    ) -> int:
+        """Record a distance measurement. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO aruco_measurements (control_id, distance_cm, image_path, session_id)"
+            " VALUES (?, ?, ?, ?)",
+            (control_id, distance_cm, image_path, session_id),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def get_latest_aruco_measurement(self, control_id: int) -> dict[str, Any] | None:
+        """Return the most recent measurement for a control."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, control_id, distance_cm, image_path, session_id, measured_at"
+            " FROM aruco_measurements WHERE control_id = ?"
+            " ORDER BY measured_at DESC LIMIT 1",
+            (control_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_aruco_measurements(
+        self, control_id: int, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Return recent measurements for a control, newest first."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, control_id, distance_cm, image_path, session_id, measured_at"
+            " FROM aruco_measurements WHERE control_id = ?"
+            " ORDER BY measured_at DESC LIMIT ?",
+            (control_id, limit),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    # -- Trigger words --
+
+    async def list_aruco_trigger_words(self) -> list[dict[str, Any]]:
+        """Return all trigger word → control mappings."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT tw.id, tw.phrase, tw.control_id, c.name AS control_name"
+            " FROM aruco_trigger_words tw"
+            " JOIN aruco_controls c ON c.id = tw.control_id"
+            " ORDER BY tw.phrase"
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def add_aruco_trigger_word(self, phrase: str, control_id: int) -> int:
+        """Add a trigger word mapping. Returns the new row id."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO aruco_trigger_words (phrase, control_id) VALUES (?, ?)",
+            (phrase, control_id),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def delete_aruco_trigger_word(self, trigger_id: int) -> bool:
+        """Delete a trigger word mapping."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM aruco_trigger_words WHERE id = ?", (trigger_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    # -- ArUco settings --
+
+    async def get_aruco_setting(self, key: str) -> str | None:
+        """Return an ArUco setting value or None."""
+        db = self._read_conn()
+        cur = await db.execute("SELECT value FROM aruco_settings WHERE key = ?", (key,))
+        row = await cur.fetchone()
+        return row["value"] if row else None
+
+    async def set_aruco_setting(self, key: str, value: str) -> None:
+        """Set an ArUco setting (upsert)."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO aruco_settings (key, value) VALUES (?, ?)"
+            " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await db.commit()
+
+    async def get_aruco_tolerance_mm(self, control_id: int | None = None) -> float:
+        """Return the effective tolerance: per-control if set, else global default."""
+        if control_id is not None:
+            ctrl = await self.get_aruco_control(control_id)
+            if ctrl and ctrl["tolerance_mm"] is not None:
+                return float(ctrl["tolerance_mm"])
+        val = await self.get_aruco_setting("tolerance_mm_default")
+        return float(val) if val else 5.0
 
     # ------------------------------------------------------------------
     # Helpers
