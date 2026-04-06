@@ -63,7 +63,11 @@ info()  { echo -e "${CYAN}    $*${NC}"; }
 
 step "Running configuration wizard..."
 if [[ -f "$SCRIPT_DIR/configure.sh" ]]; then
-    bash "$SCRIPT_DIR/configure.sh"
+    if [[ -f "$HOME/.helmlog/config.env" ]]; then
+        bash "$SCRIPT_DIR/configure.sh" --non-interactive
+    else
+        bash "$SCRIPT_DIR/configure.sh"
+    fi
 else
     warn "scripts/configure.sh not found — skipping configuration wizard."
 fi
