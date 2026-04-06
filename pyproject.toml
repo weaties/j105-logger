@@ -45,6 +45,7 @@ dependencies = [
     "itsdangerous>=2.2.0",
     # ArUco marker detection (optional at runtime — only runs when cameras are configured)
     "opencv-contrib-python-headless>=4.8.0",
+    "anthropic>=0.89.0",
 ]
 
 [project.scripts]
