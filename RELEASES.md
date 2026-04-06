@@ -1,5 +1,25 @@
 # Release Notes
 
+## Sprint 6 — Rudder Angle & Signal K Security (2026-04-05)
+
+Rudder angle instrument support and Signal K authentication hardening.
+
+### Rudder angle ([#420](https://github.com/weaties/helmlog/pull/420))
+- **Signal K ingest** — subscribe to `steering.rudderAngle`, decode radians to
+  degrees via new `RudderRecord` dataclass (PGN 127245)
+- **Storage** — new `rudder_angles` table (migration v52) with configurable
+  storage rate (`RUDDER_STORAGE_HZ`) exposed on admin settings page
+- **Instrument panel** — live RDR tile showing rudder angle in degrees
+
+### Signal K auth & security
+- **Auth token support** ([#418](https://github.com/weaties/helmlog/pull/418)) —
+  three-tier waterfall: `SK_TOKEN` env var → `SK_USERNAME`/`SK_PASSWORD` login →
+  `~/.signalk-admin-pass.txt` fallback. Token applied to WebSocket URI and HTTP
+  headers. Backward compatible when no auth is configured
+- **secretKey generation** ([#417](https://github.com/weaties/helmlog/pull/417)) —
+  `setup.sh` now generates a 32-byte random `secretKey` in Signal K's
+  `security.json`, fixing device token issuance and SensESP device approval
+
 ## Sprint 5 — Web Architecture, Networking & Bandwidth, Calibration (2026-03-24)
 
 Major web architecture refactor, metered bandwidth management, admin networking
