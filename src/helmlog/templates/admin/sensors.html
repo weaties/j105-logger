@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}Sensors — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+.badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
+.badge-ready{background:var(--bg-secondary);color:var(--success)}
+.badge-active{background:var(--bg-secondary);color:var(--accent)}
+.badge-unreg{background:var(--border);color:var(--text-secondary)}
+.badge-uncal{background:var(--bg-secondary);color:var(--warning)}
+.badge-zero{background:var(--bg-secondary);color:var(--warning)}
+.badge-offline{background:var(--border);color:var(--danger)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-edit{color:var(--accent);border-color:var(--accent)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-save{color:var(--success);border-color:var(--success)}
+.mono{font-family:monospace;font-size:.8rem}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:520px;width:90%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.field{margin-bottom:10px}
+.field label{display:block;font-size:.78rem;color:var(--text-secondary);margin-bottom:3px}
+.field input,.field select{width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem;box-sizing:border-box}
+.field-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.status-detail{font-size:.8rem;color:var(--text-secondary)}
+#err-msg{color:var(--danger);font-size:.8rem;margin-top:8px}
+</style>
+{% endblock %}
+{% block content %}
+<h1>Sensors</h1>
+<div class="card">
+<div class="label">ESP32 String Potentiometer Sensors</div>
+<div id="sensor-table">Loading…</div>
+</div>
+
+<dialog id="edit-dlg">
+<h3 style="margin:0 0 12px" id="dlg-title">Configure Sensor</h3>
+<form id="edit-form" onsubmit="return false">
+<input type="hidden" id="edit-mac"/>
+<div class="field">
+<label>MAC Address</label>
+<input id="edit-mac-display" disabled class="mono"/>
+</div>
+<div class="field-row">
+<div class="field">
+<label>Control Line</label>
+<input id="edit-line" placeholder="e.g. backstay"/>
+</div>
+<div class="field">
+<label>Friendly Name</label>
+<input id="edit-friendly" placeholder="e.g. Port halyard"/>
+</div>
+</div>
+<div class="field-row">
+<div class="field">
+<label>Cal ADC Point A</label>
+<input id="edit-cal-a" type="number" placeholder="ADC at point A"/>
+</div>
+<div class="field">
+<label>Cal ADC Point B</label>
+<input id="edit-cal-b" type="number" placeholder="ADC at point B"/>
+</div>
+</div>
+<div class="field-row">
+<div class="field">
+<label>Cal Distance (mm)</label>
+<input id="edit-cal-dist" type="number" step="0.1" placeholder="Distance between A and B"/>
+</div>
+<div class="field">
+<label>Total Travel (mm)</label>
+<input id="edit-travel" type="number" step="0.1" placeholder="Max useful range"/>
+</div>
+</div>
+<div class="field-row">
+<div class="field">
+<label>Sleep Idle (s)</label>
+<input id="edit-sleep-idle" type="number" value="30"/>
+</div>
+<div class="field">
+<label>Sleep Active (s)</label>
+<input id="edit-sleep-active" type="number" value="5"/>
+</div>
+</div>
+<div class="field">
+<label>Report Threshold (mm)</label>
+<input id="edit-threshold" type="number" step="0.1" value="2.0"/>
+</div>
+<div id="err-msg"></div>
+<div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
+<button class="btn-sm" onclick="document.getElementById('edit-dlg').close()">Cancel</button>
+<button class="btn-sm btn-save" onclick="saveSensor()">Save</button>
+</div>
+</form>
+</dialog>
+{% endblock %}
+{% block scripts %}
+<script>
+const BADGE={ready:'badge-ready',active:'badge-active',unregistered:'badge-unreg',uncalibrated:'badge-uncal',needs_zero:'badge-zero'};
+function badge(state){return `<span class="badge ${BADGE[state]||'badge-offline'}">${state}</span>`}
+function ago(iso){if(!iso)return'\u2014';const s=Math.floor((Date.now()-new Date(iso).getTime())/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
+
+async function loadSensors(){
+  document.getElementById('sensor-table').textContent='Loading\u2026';
+  const r=await fetch('/api/sensors');
+  if(!r.ok){document.getElementById('sensor-table').textContent='Failed to load';return}
+  const devs=await r.json();
+  if(!devs.length){document.getElementById('sensor-table').innerHTML='<p style="color:var(--text-secondary)">No sensors detected. Power on an ESP32 sensor — it will appear here automatically on first check-in.</p>';return}
+  let h='<table><thead><tr><th>Line</th><th>MAC</th><th>State</th><th>Position</th><th>Battery</th><th>RSSI</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody>';
+  for(const d of devs){
+    const name=d.line_name||'<span style="color:var(--text-muted)">unassigned</span>';
+    const friendly=d.friendly_name?` <span style="color:var(--text-secondary);font-size:.8rem">(${d.friendly_name})</span>`:'';
+    const batt=d.last_battery_mv!=null?Math.round(d.last_battery_mv/10)/100+'V':'\u2014';
+    const rssi=d.last_rssi!=null?d.last_rssi+' dBm':'\u2014';
+    const pos=d.mm_per_adc_count!=null&&d.zero_offset_adc!=null?'calibrated':'\u2014';
+    h+=`<tr>
+      <td>${name}${friendly}</td>
+      <td class="mono">${d.mac}</td>
+      <td>${badge(d.state)}</td>
+      <td>${pos}</td>
+      <td>${batt}</td>
+      <td>${rssi}</td>
+      <td class="status-detail">${ago(d.last_seen_at)}</td>
+      <td style="display:flex;gap:4px">
+        <button class="btn-sm btn-edit" onclick="editSensor('${d.mac}')">Edit</button>
+        <button class="btn-sm btn-del" onclick="delSensor('${d.mac}')">Delete</button>
+      </td>
+    </tr>`;
+  }
+  h+='</tbody></table>';
+  document.getElementById('sensor-table').innerHTML=h;
+}
+
+async function editSensor(mac){
+  const r=await fetch('/api/sensors');
+  if(!r.ok)return;
+  const devs=await r.json();
+  const d=devs.find(x=>x.mac===mac);
+  if(!d)return;
+  document.getElementById('edit-mac').value=mac;
+  document.getElementById('edit-mac-display').value=mac;
+  document.getElementById('edit-line').value=d.line_name||'';
+  document.getElementById('edit-friendly').value=d.friendly_name||'';
+  document.getElementById('edit-cal-a').value=d.cal_adc_a!=null?d.cal_adc_a:'';
+  document.getElementById('edit-cal-b').value=d.cal_adc_b!=null?d.cal_adc_b:'';
+  document.getElementById('edit-cal-dist').value=d.cal_distance_mm!=null?d.cal_distance_mm:'';
+  document.getElementById('edit-travel').value=d.total_travel_mm!=null?d.total_travel_mm:'';
+  document.getElementById('edit-sleep-idle').value=d.sleep_idle_s;
+  document.getElementById('edit-sleep-active').value=d.sleep_active_s;
+  document.getElementById('edit-threshold').value=d.report_threshold_mm;
+  document.getElementById('dlg-title').textContent='Configure '+mac;
+  document.getElementById('err-msg').textContent='';
+  document.getElementById('edit-dlg').showModal();
+}
+
+async function saveSensor(){
+  const mac=document.getElementById('edit-mac').value;
+  const body={};
+  const line=document.getElementById('edit-line').value.trim();
+  if(line)body.line_name=line;
+  const friendly=document.getElementById('edit-friendly').value.trim();
+  body.friendly_name=friendly||null;
+  const calA=document.getElementById('edit-cal-a').value;
+  if(calA!=='')body.cal_adc_a=parseInt(calA);
+  const calB=document.getElementById('edit-cal-b').value;
+  if(calB!=='')body.cal_adc_b=parseInt(calB);
+  const calDist=document.getElementById('edit-cal-dist').value;
+  if(calDist!=='')body.cal_distance_mm=parseFloat(calDist);
+  const travel=document.getElementById('edit-travel').value;
+  if(travel!=='')body.total_travel_mm=parseFloat(travel);
+  else body.total_travel_mm=null;
+  body.sleep_idle_s=parseInt(document.getElementById('edit-sleep-idle').value)||30;
+  body.sleep_active_s=parseInt(document.getElementById('edit-sleep-active').value)||5;
+  body.report_threshold_mm=parseFloat(document.getElementById('edit-threshold').value)||2.0;
+  const r=await fetch('/api/sensors/'+encodeURIComponent(mac),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(!r.ok){const d=await r.json();document.getElementById('err-msg').textContent=d.detail||'Failed';return}
+  document.getElementById('edit-dlg').close();
+  loadSensors();
+}
+
+async function delSensor(mac){
+  if(!confirm('Delete sensor '+mac+'? All readings will be lost.'))return;
+  const r=await fetch('/api/sensors/'+encodeURIComponent(mac),{method:'DELETE'});
+  if(!r.ok){alert('Failed to delete');return}
+  loadSensors();
+}
+
+loadSensors();
+</script>
+{% endblock %}

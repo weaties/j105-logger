@@ -5,11 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from loguru import logger
 
 from helmlog.auth import require_auth
-from helmlog.routes._helpers import audit, get_storage, limiter
+from helmlog.routes._helpers import audit, get_storage, limiter, templates, tpl_ctx
 from helmlog.sensors import (
     DeviceState,
     ReadingRequest,
@@ -20,6 +20,16 @@ from helmlog.sensors import (
 )
 
 router = APIRouter()
+
+
+@router.get("/admin/sensors", response_class=HTMLResponse, include_in_schema=False)
+async def admin_sensors_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    return templates.TemplateResponse(
+        request, "admin/sensors.html", tpl_ctx(request, "/admin/sensors")
+    )
 
 
 @router.post("/api/sensor/reading")
@@ -135,6 +145,9 @@ async def api_list_sensors(
                 "line_name": d.line_name,
                 "friendly_name": d.friendly_name,
                 "state": d.state,
+                "cal_adc_a": d.cal_adc_a,
+                "cal_adc_b": d.cal_adc_b,
+                "cal_distance_mm": d.cal_distance_mm,
                 "mm_per_adc_count": d.mm_per_adc_count,
                 "total_travel_mm": d.total_travel_mm,
                 "zero_offset_adc": d.zero_offset_adc,
