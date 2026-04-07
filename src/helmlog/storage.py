@@ -7410,9 +7410,7 @@ class Storage:
         assert cur.lastrowid is not None
         return cur.lastrowid
 
-    async def get_last_sensor_reading_mm(
-        self, mac: str, session_id: int
-    ) -> float | None:
+    async def get_last_sensor_reading_mm(self, mac: str, session_id: int) -> float | None:
         """Return the most recent position_mm for *mac* in *session_id*, or None."""
         db = self._read_conn()
         cur = await db.execute(
@@ -7470,8 +7468,7 @@ class Storage:
             )
         else:
             cur = await db.execute(
-                "SELECT * FROM sensor_readings"
-                " WHERE session_id = ? ORDER BY timestamp_utc",
+                "SELECT * FROM sensor_readings WHERE session_id = ? ORDER BY timestamp_utc",
                 (session_id,),
             )
         return [dict(r) for r in await cur.fetchall()]
