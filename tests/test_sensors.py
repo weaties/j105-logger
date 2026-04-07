@@ -165,11 +165,68 @@ class TestProcessReadingUncalibrated:
         assert resp.state == "uncalibrated"
         assert reading is None
 
-    def test_uncalibrated_button_pressed(self) -> None:
+    def test_uncalibrated_button_captures_point_a(self) -> None:
         dev = _device(state=DeviceState.UNCALIBRATED)
-        resp, reading, _ = process_reading(dev, _request(button_pressed=True), False, None, None)
-        assert resp.state == "calibrating"
+        # No cal_adc_a yet — should capture point A
+        dev_no_cal = SensorDevice(
+            mac=dev.mac,
+            line_name=dev.line_name,
+            friendly_name=dev.friendly_name,
+            state=DeviceState.UNCALIBRATED,
+            pulley_diameter_mm=None,
+            cal_adc_a=None,
+            cal_adc_b=None,
+            cal_distance_mm=None,
+            mm_per_adc_count=None,
+            total_travel_mm=None,
+            zero_offset_adc=None,
+            last_zeroed_at=None,
+            sleep_idle_s=30,
+            sleep_active_s=5,
+            report_threshold_mm=2.0,
+            last_seen_at=None,
+            last_battery_mv=None,
+            last_rssi=None,
+            created_at="2026-04-06T09:00:00+00:00",
+        )
+        resp, reading, updates = process_reading(
+            dev_no_cal, _request(raw_adc=1000, button_pressed=True), False, None, None
+        )
+        assert resp.state == "calibrating_a"
         assert resp.sleep_seconds == 2
+        assert updates is not None
+        assert updates["cal_adc_a"] == 1000
+        assert reading is None
+
+    def test_uncalibrated_button_captures_point_b(self) -> None:
+        # cal_adc_a already set — should capture point B
+        dev_with_a = SensorDevice(
+            mac="AA:BB:CC:DD:EE:FF",
+            line_name="backstay",
+            friendly_name=None,
+            state=DeviceState.UNCALIBRATED,
+            pulley_diameter_mm=None,
+            cal_adc_a=1000,
+            cal_adc_b=None,
+            cal_distance_mm=None,
+            mm_per_adc_count=None,
+            total_travel_mm=None,
+            zero_offset_adc=None,
+            last_zeroed_at=None,
+            sleep_idle_s=30,
+            sleep_active_s=5,
+            report_threshold_mm=2.0,
+            last_seen_at=None,
+            last_battery_mv=None,
+            last_rssi=None,
+            created_at="2026-04-06T09:00:00+00:00",
+        )
+        resp, reading, updates = process_reading(
+            dev_with_a, _request(raw_adc=2000, button_pressed=True), False, None, None
+        )
+        assert resp.state == "calibrating_b"
+        assert updates is not None
+        assert updates["cal_adc_b"] == 2000
         assert reading is None
 
 

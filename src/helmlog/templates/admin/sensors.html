@@ -18,6 +18,7 @@ td{padding:7px 8px;border-bottom:1px solid var(--border)}
 .btn-edit{color:var(--accent);border-color:var(--accent)}
 .btn-del{color:var(--danger);border-color:var(--danger)}
 .btn-save{color:var(--success);border-color:var(--success)}
+.btn-reset{color:var(--warning);border-color:var(--warning)}
 .mono{font-family:monospace;font-size:.8rem}
 dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:520px;width:90%}
 dialog::backdrop{background:rgba(0,0,0,.6)}
@@ -27,6 +28,10 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .field-row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .status-detail{font-size:.8rem;color:var(--text-secondary)}
 #err-msg{color:var(--danger);font-size:.8rem;margin-top:8px}
+.cal-status{padding:10px;border-radius:6px;background:var(--bg-input);border:1px solid var(--border);margin-bottom:10px;font-size:.85rem}
+.cal-step{color:var(--text-secondary);font-size:.8rem;margin-top:4px}
+.cal-value{font-family:monospace;color:var(--success)}
+.cal-pending{color:var(--warning)}
 </style>
 {% endblock %}
 {% block content %}
@@ -54,25 +59,31 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 <input id="edit-friendly" placeholder="e.g. Port halyard"/>
 </div>
 </div>
+
+<div class="cal-status" id="cal-status"></div>
+
 <div class="field-row">
 <div class="field">
 <label>Cal ADC Point A</label>
-<input id="edit-cal-a" type="number" placeholder="ADC at point A"/>
+<input id="edit-cal-a" type="number" placeholder="Press button on sensor" disabled/>
 </div>
 <div class="field">
 <label>Cal ADC Point B</label>
-<input id="edit-cal-b" type="number" placeholder="ADC at point B"/>
+<input id="edit-cal-b" type="number" placeholder="Press button on sensor" disabled/>
 </div>
 </div>
 <div class="field-row">
 <div class="field">
 <label>Cal Distance (mm)</label>
-<input id="edit-cal-dist" type="number" step="0.1" placeholder="Distance between A and B"/>
+<input id="edit-cal-dist" type="number" step="0.1" placeholder="Measured distance A→B"/>
 </div>
 <div class="field">
 <label>Total Travel (mm)</label>
 <input id="edit-travel" type="number" step="0.1" placeholder="Max useful range"/>
 </div>
+</div>
+<div style="display:flex;gap:8px;margin-bottom:10px">
+<button class="btn-sm btn-reset" onclick="resetCal()" type="button">Reset Calibration</button>
 </div>
 <div class="field-row">
 <div class="field">
@@ -90,8 +101,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 </div>
 <div id="err-msg"></div>
 <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
-<button class="btn-sm" onclick="document.getElementById('edit-dlg').close()">Cancel</button>
-<button class="btn-sm btn-save" onclick="saveSensor()">Save</button>
+<button class="btn-sm" onclick="document.getElementById('edit-dlg').close()" type="button">Cancel</button>
+<button class="btn-sm btn-save" onclick="saveSensor()" type="button">Save</button>
 </div>
 </form>
 </dialog>
@@ -102,24 +113,42 @@ const BADGE={ready:'badge-ready',active:'badge-active',unregistered:'badge-unreg
 function badge(state){return `<span class="badge ${BADGE[state]||'badge-offline'}">${state}</span>`}
 function ago(iso){if(!iso)return'\u2014';const s=Math.floor((Date.now()-new Date(iso).getTime())/1000);if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m ago';if(s<86400)return Math.floor(s/3600)+'h ago';return Math.floor(s/86400)+'d ago'}
 
+function calStatus(d){
+  const el=document.getElementById('cal-status');
+  if(d.state==='ready'||d.state==='needs_zero'){
+    el.innerHTML='<span class="cal-value">Calibrated</span> — mm/count: '+
+      (d.mm_per_adc_count!=null?d.mm_per_adc_count.toFixed(4):'?')+
+      (d.state==='needs_zero'?'<div class="cal-step">Press the button on the sensor at the reference (zero) position.</div>':'');
+    return;
+  }
+  if(d.cal_adc_a!=null&&d.cal_adc_b!=null){
+    el.innerHTML='<span class="cal-value">Both points captured</span> (A: '+d.cal_adc_a+', B: '+d.cal_adc_b+')'+
+      '<div class="cal-step">Enter the measured distance between A and B, then click Save.</div>';
+  } else if(d.cal_adc_a!=null){
+    el.innerHTML='<span class="cal-value">Point A captured</span>: ADC '+d.cal_adc_a+
+      '<div class="cal-step cal-pending">Move the line to position B and press the button on the sensor.</div>';
+  } else {
+    el.innerHTML='<span class="cal-pending">No calibration points captured</span>'+
+      '<div class="cal-step">Move the line to position A and press the button on the sensor.</div>';
+  }
+}
+
 async function loadSensors(){
   document.getElementById('sensor-table').textContent='Loading\u2026';
   const r=await fetch('/api/sensors');
   if(!r.ok){document.getElementById('sensor-table').textContent='Failed to load';return}
   const devs=await r.json();
   if(!devs.length){document.getElementById('sensor-table').innerHTML='<p style="color:var(--text-secondary)">No sensors detected. Power on an ESP32 sensor — it will appear here automatically on first check-in.</p>';return}
-  let h='<table><thead><tr><th>Line</th><th>MAC</th><th>State</th><th>Position</th><th>Battery</th><th>RSSI</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody>';
+  let h='<table><thead><tr><th>Line</th><th>MAC</th><th>State</th><th>Battery</th><th>RSSI</th><th>Last Seen</th><th>Actions</th></tr></thead><tbody>';
   for(const d of devs){
     const name=d.line_name||'<span style="color:var(--text-muted)">unassigned</span>';
     const friendly=d.friendly_name?` <span style="color:var(--text-secondary);font-size:.8rem">(${d.friendly_name})</span>`:'';
     const batt=d.last_battery_mv!=null?Math.round(d.last_battery_mv/10)/100+'V':'\u2014';
     const rssi=d.last_rssi!=null?d.last_rssi+' dBm':'\u2014';
-    const pos=d.mm_per_adc_count!=null&&d.zero_offset_adc!=null?'calibrated':'\u2014';
     h+=`<tr>
       <td>${name}${friendly}</td>
       <td class="mono">${d.mac}</td>
       <td>${badge(d.state)}</td>
-      <td>${pos}</td>
       <td>${batt}</td>
       <td>${rssi}</td>
       <td class="status-detail">${ago(d.last_seen_at)}</td>
@@ -133,14 +162,34 @@ async function loadSensors(){
   document.getElementById('sensor-table').innerHTML=h;
 }
 
+let _pollTimer=null;
 async function editSensor(mac){
   const r=await fetch('/api/sensors');
   if(!r.ok)return;
   const devs=await r.json();
   const d=devs.find(x=>x.mac===mac);
   if(!d)return;
-  document.getElementById('edit-mac').value=mac;
-  document.getElementById('edit-mac-display').value=mac;
+  _fillDialog(d);
+  document.getElementById('edit-dlg').showModal();
+  // Poll for calibration updates while dialog is open
+  if(_pollTimer)clearInterval(_pollTimer);
+  _pollTimer=setInterval(async()=>{
+    if(!document.getElementById('edit-dlg').open){clearInterval(_pollTimer);_pollTimer=null;return}
+    const r2=await fetch('/api/sensors');
+    if(!r2.ok)return;
+    const devs2=await r2.json();
+    const d2=devs2.find(x=>x.mac===mac);
+    if(!d2)return;
+    // Update cal fields and status without overwriting user edits
+    document.getElementById('edit-cal-a').value=d2.cal_adc_a!=null?d2.cal_adc_a:'';
+    document.getElementById('edit-cal-b').value=d2.cal_adc_b!=null?d2.cal_adc_b:'';
+    calStatus(d2);
+  },3000);
+}
+
+function _fillDialog(d){
+  document.getElementById('edit-mac').value=d.mac;
+  document.getElementById('edit-mac-display').value=d.mac;
   document.getElementById('edit-line').value=d.line_name||'';
   document.getElementById('edit-friendly').value=d.friendly_name||'';
   document.getElementById('edit-cal-a').value=d.cal_adc_a!=null?d.cal_adc_a:'';
@@ -150,9 +199,18 @@ async function editSensor(mac){
   document.getElementById('edit-sleep-idle').value=d.sleep_idle_s;
   document.getElementById('edit-sleep-active').value=d.sleep_active_s;
   document.getElementById('edit-threshold').value=d.report_threshold_mm;
-  document.getElementById('dlg-title').textContent='Configure '+mac;
+  document.getElementById('dlg-title').textContent='Configure '+d.mac;
   document.getElementById('err-msg').textContent='';
-  document.getElementById('edit-dlg').showModal();
+  calStatus(d);
+}
+
+async function resetCal(){
+  const mac=document.getElementById('edit-mac').value;
+  if(!confirm('Reset calibration for '+mac+'? You will need to recapture both points.'))return;
+  const r=await fetch('/api/sensors/'+encodeURIComponent(mac),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({cal_adc_a:null,cal_adc_b:null,cal_distance_mm:null})});
+  if(!r.ok){document.getElementById('err-msg').textContent='Failed to reset';return}
+  // Reload dialog
+  editSensor(mac);
 }
 
 async function saveSensor(){
@@ -162,10 +220,6 @@ async function saveSensor(){
   if(line)body.line_name=line;
   const friendly=document.getElementById('edit-friendly').value.trim();
   body.friendly_name=friendly||null;
-  const calA=document.getElementById('edit-cal-a').value;
-  if(calA!=='')body.cal_adc_a=parseInt(calA);
-  const calB=document.getElementById('edit-cal-b').value;
-  if(calB!=='')body.cal_adc_b=parseInt(calB);
   const calDist=document.getElementById('edit-cal-dist').value;
   if(calDist!=='')body.cal_distance_mm=parseFloat(calDist);
   const travel=document.getElementById('edit-travel').value;
@@ -176,6 +230,7 @@ async function saveSensor(){
   body.report_threshold_mm=parseFloat(document.getElementById('edit-threshold').value)||2.0;
   const r=await fetch('/api/sensors/'+encodeURIComponent(mac),{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(!r.ok){const d=await r.json();document.getElementById('err-msg').textContent=d.detail||'Failed';return}
+  if(_pollTimer){clearInterval(_pollTimer);_pollTimer=null}
   document.getElementById('edit-dlg').close();
   loadSensors();
 }

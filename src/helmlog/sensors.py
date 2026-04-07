@@ -147,9 +147,24 @@ def process_reading(
 
         case DeviceState.UNCALIBRATED:
             if request.button_pressed:
+                # Two-point calibration: capture point A, then point B
+                if device.cal_adc_a is None:
+                    status_updates["cal_adc_a"] = request.raw_adc
+                    return (
+                        ReadingResponse(
+                            state="calibrating_a",
+                            sleep_seconds=2,
+                            session_active=False,
+                            server_time_utc=now_utc,
+                        ),
+                        None,
+                        status_updates,
+                    )
+                # Point A already captured — capture point B
+                status_updates["cal_adc_b"] = request.raw_adc
                 return (
                     ReadingResponse(
-                        state="calibrating",
+                        state="calibrating_b",
                         sleep_seconds=2,
                         session_active=False,
                         server_time_utc=now_utc,
