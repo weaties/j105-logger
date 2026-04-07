@@ -158,6 +158,7 @@ async def api_list_sensors(
                 "last_seen_at": d.last_seen_at,
                 "last_battery_mv": d.last_battery_mv,
                 "last_rssi": d.last_rssi,
+                "last_raw_adc": d.last_raw_adc,
             }
             for d in devices
         ]

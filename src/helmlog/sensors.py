@@ -53,6 +53,7 @@ class SensorDevice:
     last_seen_at: str | None
     last_battery_mv: int | None
     last_rssi: int | None
+    last_raw_adc: int | None
     created_at: str
 
 
@@ -130,6 +131,7 @@ def process_reading(
         "last_seen_at": now_utc,
         "last_battery_mv": request.battery_mv,
         "last_rssi": request.rssi,
+        "last_raw_adc": request.raw_adc,
     }
 
     match device.state:
@@ -266,6 +268,7 @@ def process_active_reading(
         "last_seen_at": now_utc,
         "last_battery_mv": request.battery_mv,
         "last_rssi": request.rssi,
+        "last_raw_adc": request.raw_adc,
     }
 
     if not session_active:

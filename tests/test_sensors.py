@@ -59,6 +59,7 @@ def _device(
         last_seen_at=None,
         last_battery_mv=None,
         last_rssi=None,
+        last_raw_adc=None,
         created_at="2026-04-06T09:00:00+00:00",
     )
 
@@ -187,6 +188,7 @@ class TestProcessReadingUncalibrated:
             last_seen_at=None,
             last_battery_mv=None,
             last_rssi=None,
+            last_raw_adc=None,
             created_at="2026-04-06T09:00:00+00:00",
         )
         resp, reading, updates = process_reading(
@@ -219,6 +221,7 @@ class TestProcessReadingUncalibrated:
             last_seen_at=None,
             last_battery_mv=None,
             last_rssi=None,
+            last_raw_adc=None,
             created_at="2026-04-06T09:00:00+00:00",
         )
         resp, reading, updates = process_reading(

@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 57
+_CURRENT_VERSION: int = 58
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1312,6 +1312,10 @@ _MIGRATIONS: dict[int, str] = {
             ON sensor_readings(session_id, mac);
         CREATE INDEX IF NOT EXISTS idx_sensor_readings_ts
             ON sensor_readings(timestamp_utc);
+    """,
+    58: """
+        -- Track last raw ADC for UI-driven calibration capture (#432)
+        ALTER TABLE sensor_devices ADD COLUMN last_raw_adc INTEGER;
     """,
 }
 
@@ -7364,6 +7368,7 @@ class Storage:
             last_seen_at=row["last_seen_at"],
             last_battery_mv=row["last_battery_mv"],
             last_rssi=row["last_rssi"],
+            last_raw_adc=row["last_raw_adc"],
             created_at=row["created_at"],
         )
 
@@ -7449,6 +7454,7 @@ class Storage:
                 last_seen_at=r["last_seen_at"],
                 last_battery_mv=r["last_battery_mv"],
                 last_rssi=r["last_rssi"],
+                last_raw_adc=r["last_raw_adc"],
                 created_at=r["created_at"],
             )
             for r in rows

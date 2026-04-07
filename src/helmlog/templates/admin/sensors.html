@@ -62,14 +62,24 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 
 <div class="cal-status" id="cal-status"></div>
 
+<div class="field">
+<label>Live ADC</label>
+<span id="live-adc" class="mono" style="font-size:.95rem">—</span>
+</div>
 <div class="field-row">
 <div class="field">
 <label>Cal ADC Point A</label>
-<input id="edit-cal-a" type="number" placeholder="Press button on sensor" disabled/>
+<div style="display:flex;gap:4px">
+<input id="edit-cal-a" type="number" placeholder="Move line to A" style="flex:1"/>
+<button class="btn-sm btn-edit" onclick="captureA()" type="button">Capture</button>
+</div>
 </div>
 <div class="field">
 <label>Cal ADC Point B</label>
-<input id="edit-cal-b" type="number" placeholder="Press button on sensor" disabled/>
+<div style="display:flex;gap:4px">
+<input id="edit-cal-b" type="number" placeholder="Move line to B" style="flex:1"/>
+<button class="btn-sm btn-edit" onclick="captureB()" type="button">Capture</button>
+</div>
 </div>
 </div>
 <div class="field-row">
@@ -115,21 +125,58 @@ function ago(iso){if(!iso)return'\u2014';const s=Math.floor((Date.now()-new Date
 
 function calStatus(d){
   const el=document.getElementById('cal-status');
+  // Update live ADC display
+  document.getElementById('live-adc').textContent=d.last_raw_adc!=null?d.last_raw_adc:'—';
   if(d.state==='ready'||d.state==='needs_zero'){
     el.innerHTML='<span class="cal-value">Calibrated</span> — mm/count: '+
       (d.mm_per_adc_count!=null?d.mm_per_adc_count.toFixed(4):'?')+
-      (d.state==='needs_zero'?'<div class="cal-step">Press the button on the sensor at the reference (zero) position.</div>':'');
+      (d.state==='needs_zero'?'<div class="cal-step">Move the line to the reference (zero) position and click Capture on a cal point, or use the Zero button below.</div>':'');
     return;
   }
-  if(d.cal_adc_a!=null&&d.cal_adc_b!=null){
-    el.innerHTML='<span class="cal-value">Both points captured</span> (A: '+d.cal_adc_a+', B: '+d.cal_adc_b+')'+
+  const calA=document.getElementById('edit-cal-a').value;
+  const calB=document.getElementById('edit-cal-b').value;
+  if(calA&&calB){
+    el.innerHTML='<span class="cal-value">Both points set</span> (A: '+calA+', B: '+calB+')'+
       '<div class="cal-step">Enter the measured distance between A and B, then click Save.</div>';
-  } else if(d.cal_adc_a!=null){
-    el.innerHTML='<span class="cal-value">Point A captured</span>: ADC '+d.cal_adc_a+
-      '<div class="cal-step cal-pending">Move the line to position B and press the button on the sensor.</div>';
+  } else if(calA){
+    el.innerHTML='<span class="cal-value">Point A set</span>: ADC '+calA+
+      '<div class="cal-step cal-pending">Move the line to position B and click Capture.</div>';
   } else {
-    el.innerHTML='<span class="cal-pending">No calibration points captured</span>'+
-      '<div class="cal-step">Move the line to position A and press the button on the sensor.</div>';
+    el.innerHTML='<span class="cal-pending">No calibration points set</span>'+
+      '<div class="cal-step">Move the line to position A and click Capture.</div>';
+  }
+}
+
+function captureA(){
+  const adc=document.getElementById('live-adc').textContent;
+  if(adc==='\u2014'){document.getElementById('err-msg').textContent='No ADC reading yet — wait for sensor to check in';return}
+  document.getElementById('edit-cal-a').value=adc;
+  document.getElementById('err-msg').textContent='';
+  // Refresh cal status display
+  const calB=document.getElementById('edit-cal-b').value;
+  const el=document.getElementById('cal-status');
+  if(calB){
+    el.innerHTML='<span class="cal-value">Both points set</span> (A: '+adc+', B: '+calB+')'+
+      '<div class="cal-step">Enter the measured distance between A and B, then click Save.</div>';
+  } else {
+    el.innerHTML='<span class="cal-value">Point A set</span>: ADC '+adc+
+      '<div class="cal-step cal-pending">Move the line to position B and click Capture.</div>';
+  }
+}
+
+function captureB(){
+  const adc=document.getElementById('live-adc').textContent;
+  if(adc==='\u2014'){document.getElementById('err-msg').textContent='No ADC reading yet — wait for sensor to check in';return}
+  document.getElementById('edit-cal-b').value=adc;
+  document.getElementById('err-msg').textContent='';
+  const calA=document.getElementById('edit-cal-a').value;
+  const el=document.getElementById('cal-status');
+  if(calA){
+    el.innerHTML='<span class="cal-value">Both points set</span> (A: '+calA+', B: '+adc+')'+
+      '<div class="cal-step">Enter the measured distance between A and B, then click Save.</div>';
+  } else {
+    el.innerHTML='<span class="cal-value">Point B set</span>: ADC '+adc+
+      '<div class="cal-step cal-pending">Move the line to position A and click Capture.</div>';
   }
 }
 
@@ -180,10 +227,8 @@ async function editSensor(mac){
     const devs2=await r2.json();
     const d2=devs2.find(x=>x.mac===mac);
     if(!d2)return;
-    // Update cal fields and status without overwriting user edits
-    document.getElementById('edit-cal-a').value=d2.cal_adc_a!=null?d2.cal_adc_a:'';
-    document.getElementById('edit-cal-b').value=d2.cal_adc_b!=null?d2.cal_adc_b:'';
-    calStatus(d2);
+    // Only update live ADC — don't overwrite user-entered cal values
+    document.getElementById('live-adc').textContent=d2.last_raw_adc!=null?d2.last_raw_adc:'\u2014';
   },3000);
 }
 
@@ -220,6 +265,10 @@ async function saveSensor(){
   if(line)body.line_name=line;
   const friendly=document.getElementById('edit-friendly').value.trim();
   body.friendly_name=friendly||null;
+  const calA=document.getElementById('edit-cal-a').value;
+  if(calA!=='')body.cal_adc_a=parseInt(calA);
+  const calB=document.getElementById('edit-cal-b').value;
+  if(calB!=='')body.cal_adc_b=parseInt(calB);
   const calDist=document.getElementById('edit-cal-dist').value;
   if(calDist!=='')body.cal_distance_mm=parseFloat(calDist);
   const travel=document.getElementById('edit-travel').value;
