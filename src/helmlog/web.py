@@ -156,7 +156,7 @@ def create_app(
 
             request.state.user = _MOCK_ADMIN
             return await call_next(request)  # type: ignore[no-any-return]
-        if path in _PUBLIC_PATHS or path.startswith(("/static/", "/co-op/", "/auth/")):
+        if path in _PUBLIC_PATHS or path.startswith(("/static/", "/co-op/", "/auth/", "/api/sensor/")):
             return await call_next(request)  # type: ignore[no-any-return]
 
         # Try device bearer token auth first (#423)
@@ -213,6 +213,7 @@ def create_app(
         polar,
         races,
         sails,
+        sensors,
         sessions,
         settings,
         tags,
@@ -241,6 +242,7 @@ def create_app(
         notes,
         videos,
         boat_settings,
+        sensors,
         comments,
         tags,
         settings,

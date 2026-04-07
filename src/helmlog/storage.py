@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from helmlog.audio import AudioSession
     from helmlog.external import TideReading, WeatherReading
     from helmlog.races import Race
+    from helmlog.sensors import SensorDevice
 
 from helmlog.nmea2000 import (
     COGSOGRecord,
@@ -131,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 56
+_CURRENT_VERSION: int = 57
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1273,6 +1274,44 @@ _MIGRATIONS: dict[int, str] = {
             label       TEXT NOT NULL,
             sort_order  INTEGER NOT NULL DEFAULT 0
         );
+    """,
+    57: """
+        -- ESP32 string potentiometer sensors (#432)
+        CREATE TABLE IF NOT EXISTS sensor_devices (
+            mac               TEXT PRIMARY KEY,
+            line_name         TEXT,
+            friendly_name     TEXT,
+            state             TEXT NOT NULL DEFAULT 'unregistered',
+            pulley_diameter_mm REAL,
+            cal_adc_a         INTEGER,
+            cal_adc_b         INTEGER,
+            cal_distance_mm   REAL,
+            mm_per_adc_count  REAL,
+            total_travel_mm   REAL,
+            zero_offset_adc   INTEGER,
+            last_zeroed_at    TEXT,
+            sleep_idle_s      INTEGER NOT NULL DEFAULT 30,
+            sleep_active_s    INTEGER NOT NULL DEFAULT 5,
+            report_threshold_mm REAL NOT NULL DEFAULT 2.0,
+            last_seen_at      TEXT,
+            last_battery_mv   INTEGER,
+            last_rssi         INTEGER,
+            created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS sensor_readings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL REFERENCES races(id),
+            mac           TEXT NOT NULL REFERENCES sensor_devices(mac),
+            timestamp_utc TEXT NOT NULL,
+            raw_adc       INTEGER NOT NULL,
+            position_mm   REAL NOT NULL,
+            battery_mv    INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_sensor_readings_session_mac
+            ON sensor_readings(session_id, mac);
+        CREATE INDEX IF NOT EXISTS idx_sensor_readings_ts
+            ON sensor_readings(timestamp_utc);
     """,
 }
 
@@ -7292,6 +7331,157 @@ class Storage:
                 return float(ctrl["tolerance_mm"])
         val = await self.get_aruco_setting("tolerance_mm_default")
         return float(val) if val else 5.0
+
+    # ------------------------------------------------------------------
+    # Sensors (#432)
+    # ------------------------------------------------------------------
+
+    async def get_sensor_device(self, mac: str) -> SensorDevice | None:
+        """Return the sensor device for *mac*, or None if not registered."""
+        from helmlog.sensors import DeviceState, SensorDevice
+
+        db = self._read_conn()
+        cur = await db.execute("SELECT * FROM sensor_devices WHERE mac = ?", (mac,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return SensorDevice(
+            mac=row["mac"],
+            line_name=row["line_name"],
+            friendly_name=row["friendly_name"],
+            state=DeviceState(row["state"]),
+            pulley_diameter_mm=row["pulley_diameter_mm"],
+            cal_adc_a=row["cal_adc_a"],
+            cal_adc_b=row["cal_adc_b"],
+            cal_distance_mm=row["cal_distance_mm"],
+            mm_per_adc_count=row["mm_per_adc_count"],
+            total_travel_mm=row["total_travel_mm"],
+            zero_offset_adc=row["zero_offset_adc"],
+            last_zeroed_at=row["last_zeroed_at"],
+            sleep_idle_s=row["sleep_idle_s"],
+            sleep_active_s=row["sleep_active_s"],
+            report_threshold_mm=row["report_threshold_mm"],
+            last_seen_at=row["last_seen_at"],
+            last_battery_mv=row["last_battery_mv"],
+            last_rssi=row["last_rssi"],
+            created_at=row["created_at"],
+        )
+
+    async def register_sensor_device(self, mac: str) -> None:
+        """Create a new sensor device row in the unregistered state."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute(
+            "INSERT OR IGNORE INTO sensor_devices (mac, state, created_at) VALUES (?, ?, ?)",
+            (mac, "unregistered", _datetime.now(_UTC).isoformat()),
+        )
+        await db.commit()
+
+    async def update_sensor_device(self, mac: str, updates: dict[str, object]) -> None:
+        """Apply a dict of column updates to a sensor device row."""
+        if not updates:
+            return
+        db = self._conn()
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        vals = [*updates.values(), mac]
+        await db.execute(f"UPDATE sensor_devices SET {cols} WHERE mac = ?", vals)  # noqa: S608
+        await db.commit()
+
+    async def store_sensor_reading(
+        self,
+        session_id: int,
+        mac: str,
+        timestamp_utc: str,
+        raw_adc: int,
+        position_mm: float,
+        battery_mv: int | None,
+    ) -> int:
+        """Insert a sensor reading row and return the new row ID."""
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO sensor_readings"
+            " (session_id, mac, timestamp_utc, raw_adc, position_mm, battery_mv)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, mac, timestamp_utc, raw_adc, position_mm, battery_mv),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def get_last_sensor_reading_mm(
+        self, mac: str, session_id: int
+    ) -> float | None:
+        """Return the most recent position_mm for *mac* in *session_id*, or None."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT position_mm FROM sensor_readings"
+            " WHERE mac = ? AND session_id = ?"
+            " ORDER BY timestamp_utc DESC LIMIT 1",
+            (mac, session_id),
+        )
+        row = await cur.fetchone()
+        return float(row["position_mm"]) if row else None
+
+    async def list_sensor_devices(self) -> list[SensorDevice]:
+        """Return all registered sensor devices."""
+        from helmlog.sensors import DeviceState, SensorDevice
+
+        db = self._read_conn()
+        cur = await db.execute("SELECT * FROM sensor_devices ORDER BY created_at")
+        rows = await cur.fetchall()
+        return [
+            SensorDevice(
+                mac=r["mac"],
+                line_name=r["line_name"],
+                friendly_name=r["friendly_name"],
+                state=DeviceState(r["state"]),
+                pulley_diameter_mm=r["pulley_diameter_mm"],
+                cal_adc_a=r["cal_adc_a"],
+                cal_adc_b=r["cal_adc_b"],
+                cal_distance_mm=r["cal_distance_mm"],
+                mm_per_adc_count=r["mm_per_adc_count"],
+                total_travel_mm=r["total_travel_mm"],
+                zero_offset_adc=r["zero_offset_adc"],
+                last_zeroed_at=r["last_zeroed_at"],
+                sleep_idle_s=r["sleep_idle_s"],
+                sleep_active_s=r["sleep_active_s"],
+                report_threshold_mm=r["report_threshold_mm"],
+                last_seen_at=r["last_seen_at"],
+                last_battery_mv=r["last_battery_mv"],
+                last_rssi=r["last_rssi"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        ]
+
+    async def get_sensor_readings_for_session(
+        self, session_id: int, mac: str | None = None
+    ) -> list[dict[str, object]]:
+        """Return sensor readings for a session, optionally filtered by MAC."""
+        db = self._read_conn()
+        if mac:
+            cur = await db.execute(
+                "SELECT * FROM sensor_readings"
+                " WHERE session_id = ? AND mac = ?"
+                " ORDER BY timestamp_utc",
+                (session_id, mac),
+            )
+        else:
+            cur = await db.execute(
+                "SELECT * FROM sensor_readings"
+                " WHERE session_id = ? ORDER BY timestamp_utc",
+                (session_id,),
+            )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def delete_sensor_device(self, mac: str) -> None:
+        """Delete a sensor device and all its readings."""
+        db = self._conn()
+        await db.execute("DELETE FROM sensor_readings WHERE mac = ?", (mac,))
+        await db.execute("DELETE FROM sensor_devices WHERE mac = ?", (mac,))
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Helpers
