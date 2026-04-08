@@ -5266,9 +5266,11 @@ class Storage:
                 files.append(row["photo_path"])
 
         # Cascade delete handles: race_crew, race_results, race_sails,
-        # race_videos, session_notes, camera_sessions, session_tags.
-        # audio_sessions → transcripts also cascades.
+        # race_videos, session_notes, session_tags, etc.
+        # Tables below lack ON DELETE CASCADE and must be deleted manually.
         await db.execute("DELETE FROM audio_sessions WHERE race_id = ?", (session_id,))
+        await db.execute("DELETE FROM camera_sessions WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM sensor_readings WHERE session_id = ?", (session_id,))
 
         # Delete instrument data in the time range of this session
         cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
