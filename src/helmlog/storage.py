@@ -5225,9 +5225,32 @@ class Storage:
         # Cascade delete handles: race_crew, race_results, race_sails,
         # race_videos, session_notes, session_tags, etc.
         # Tables below lack ON DELETE CASCADE and must be deleted manually.
+
+        # extraction_runs → transcripts → audio_sessions: neither FK has CASCADE,
+        # so delete the chain manually before removing audio_sessions.
+        await db.execute(
+            "DELETE FROM extraction_items WHERE extraction_run_id IN"
+            " (SELECT er.id FROM extraction_runs er"
+            "  JOIN transcripts t ON er.transcript_id = t.id"
+            "  JOIN audio_sessions a ON t.audio_session_id = a.id"
+            "  WHERE a.race_id = ?)",
+            (session_id,),
+        )
+        await db.execute(
+            "DELETE FROM extraction_runs WHERE transcript_id IN"
+            " (SELECT t.id FROM transcripts t"
+            "  JOIN audio_sessions a ON t.audio_session_id = a.id"
+            "  WHERE a.race_id = ?)",
+            (session_id,),
+        )
         await db.execute("DELETE FROM audio_sessions WHERE race_id = ?", (session_id,))
         await db.execute("DELETE FROM camera_sessions WHERE session_id = ?", (session_id,))
-        await db.execute("DELETE FROM sensor_readings WHERE session_id = ?", (session_id,))
+        # sensor_readings may not exist yet (created by sensor device feature)
+        cur = await db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sensor_readings'"
+        )
+        if await cur.fetchone():
+            await db.execute("DELETE FROM sensor_readings WHERE session_id = ?", (session_id,))
 
         # Delete instrument data in the time range of this session
         cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
@@ -5267,7 +5290,20 @@ class Storage:
         if row is None:
             return None
         file_path: str = row["file_path"]
-        # transcripts cascade via FK
+        # extraction_runs FK to transcripts lacks CASCADE — delete manually
+        await db.execute(
+            "DELETE FROM extraction_items WHERE extraction_run_id IN"
+            " (SELECT er.id FROM extraction_runs er"
+            "  JOIN transcripts t ON er.transcript_id = t.id"
+            "  WHERE t.audio_session_id = ?)",
+            (audio_session_id,),
+        )
+        await db.execute(
+            "DELETE FROM extraction_runs WHERE transcript_id IN"
+            " (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+            (audio_session_id,),
+        )
+        # transcripts cascade via FK on audio_sessions
         await db.execute("DELETE FROM audio_sessions WHERE id = ?", (audio_session_id,))
         await db.commit()
         logger.info("Audio session {} deleted", audio_session_id)
