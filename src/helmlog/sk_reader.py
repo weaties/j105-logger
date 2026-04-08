@@ -52,7 +52,8 @@ class SKReaderConfig:
     """Configuration for the Signal K WebSocket reader.
 
     Values fall back to environment variables SK_HOST / SK_PORT if not set.
-    Auth waterfall: SK_TOKEN → SK_USERNAME/SK_PASSWORD → ~/.signalk-admin-pass.txt.
+    Auth waterfall: SK_TOKEN → SK_USERNAME/SK_PASSWORD →
+    SK_PASSWORD_FILE → ~/.signalk-admin-pass.txt.
     """
 
     host: str = field(default_factory=lambda: os.environ.get("SK_HOST", "localhost"))
@@ -61,6 +62,7 @@ class SKReaderConfig:
     token: str | None = field(default_factory=lambda: os.environ.get("SK_TOKEN"))
     username: str | None = field(default_factory=lambda: os.environ.get("SK_USERNAME"))
     password: str | None = field(default_factory=lambda: os.environ.get("SK_PASSWORD"))
+    password_file: str | None = field(default_factory=lambda: os.environ.get("SK_PASSWORD_FILE"))
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +300,11 @@ class SKReader:
         username = config.username
         password = config.password
         if not username or not password:
-            pass_file = Path.home() / ".signalk-admin-pass.txt"
+            # SK_PASSWORD_FILE overrides the default Path.home() lookup
+            if config.password_file:
+                pass_file = Path(config.password_file)
+            else:
+                pass_file = Path.home() / ".signalk-admin-pass.txt"
             try:
                 password = pass_file.read_text().strip()
                 username = "admin"
