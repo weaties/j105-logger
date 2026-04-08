@@ -184,6 +184,91 @@ async def test_list_pending_invitations(storage: Storage) -> None:
     assert pending[0]["email"] == "p1@x.com"
 
 
+@pytest.mark.asyncio
+async def test_list_pending_invitation_emails(storage: Storage) -> None:
+    """list_pending_invitation_emails returns a set of emails with pending invitations."""
+    user_id = await storage.create_user("admin@x.com", None, "admin")
+    t1 = generate_token()
+    await storage.create_invitation(
+        t1, "pending@x.com", "crew", None, False, user_id, invite_expires_at()
+    )
+    t2 = generate_token()
+    await storage.create_invitation(
+        t2, "accepted@x.com", "crew", None, False, user_id, invite_expires_at()
+    )
+    await storage.accept_invitation(t2)
+
+    emails = await storage.list_pending_invitation_emails()
+    assert "pending@x.com" in emails
+    assert "accepted@x.com" not in emails
+
+
+@pytest.mark.asyncio
+async def test_admin_invite_precreates_inactive_user(storage: Storage) -> None:
+    """POST /admin/users/invite pre-creates an inactive user for crew selection."""
+    _, session_id = await _create_admin_user(storage)
+
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": session_id},
+        ) as client:
+            resp = await client.post(
+                "/admin/users/invite",
+                data={"email": "future@x.com", "role": "crew", "name": "Future Sailor"},
+            )
+
+    assert resp.status_code == 201
+    user = await storage.get_user_by_email("future@x.com")
+    assert user is not None
+    assert user["name"] == "Future Sailor"
+    assert user["role"] == "crew"
+    assert user["is_active"] == 0  # inactive until they accept
+
+
+@pytest.mark.asyncio
+async def test_register_activates_precreated_user(storage: Storage) -> None:
+    """Accepting an invitation activates the pre-created inactive user."""
+    admin_id = await storage.create_user("admin@x.com", None, "admin")
+    # Pre-create inactive user (as the invite route would)
+    user_id = await storage.create_user("sailor@x.com", "Sailor", "crew", is_active=False)
+    token = generate_token()
+    await storage.create_invitation(
+        token, "sailor@x.com", "crew", "Sailor", False, admin_id, invite_expires_at()
+    )
+
+    user = await storage.get_user_by_email("sailor@x.com")
+    assert user is not None
+    assert user["is_active"] == 0
+
+    with patch.dict(os.environ, {"AUTH_DISABLED": "false"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            follow_redirects=False,
+        ) as client:
+            resp = await client.post(
+                "/auth/register",
+                data={
+                    "token": token,
+                    "email": "sailor@x.com",
+                    "name": "Sailor Updated",
+                    "password": "securepassword",
+                    "password_confirm": "securepassword",
+                },
+            )
+            assert resp.status_code == 303
+
+    user = await storage.get_user_by_email("sailor@x.com")
+    assert user is not None
+    assert user["is_active"] == 1  # activated on acceptance
+    assert user["name"] == "Sailor Updated"
+    assert user["id"] == user_id  # same user record, not a new one
+
+
 # ---------------------------------------------------------------------------
 # User credential CRUD
 # ---------------------------------------------------------------------------

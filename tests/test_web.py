@@ -969,6 +969,38 @@ async def test_crew_users_endpoint(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_crew_users_pending_flag(storage: Storage) -> None:
+    """GET /api/crew/users marks invited-but-not-accepted users as pending."""
+    from helmlog.auth import generate_token, invite_expires_at
+
+    # Create a regular active user
+    active_id = await storage.create_user("active@x.com", "Active", "crew")
+    # Create an invited (inactive) user with a pending invitation
+    invited_id = await storage.create_user("invited@x.com", "Invited", "crew", is_active=False)
+    await storage.create_invitation(
+        generate_token(),
+        "invited@x.com",
+        "crew",
+        "Invited",
+        False,
+        active_id,
+        invite_expires_at(),
+    )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/crew/users")
+    assert resp.status_code == 200
+    users = resp.json()["users"]
+    active_user = next(u for u in users if u["id"] == active_id)
+    invited_user = next(u for u in users if u["id"] == invited_id)
+    assert active_user["pending"] is False
+    assert invited_user["pending"] is True
+
+
+@pytest.mark.asyncio
 async def test_post_crew_non_attributed(storage: Storage) -> None:
     """POST /api/races/{id}/crew with attributed=false stores non-attributed entries."""
     app = create_app(storage)

@@ -141,6 +141,10 @@ async def admin_invite_user(
     await storage.create_invitation(
         token, email, role, clean_name, dev_flag, _user["id"], invite_expires_at()
     )
+    # Pre-create an inactive user so they appear in crew selectors before accepting
+    existing = await storage.get_user_by_email(email)
+    if existing is None:
+        await storage.create_user(email, clean_name, role, is_developer=dev_flag, is_active=False)
     invite_url = f"{base}/auth/accept-invite?token={token}"
     dev_label = " +developer" if dev_flag else ""
     await audit(request, "user.invite", detail=f"{email} as {role}{dev_label}", user=_user)
