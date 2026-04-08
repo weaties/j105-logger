@@ -178,7 +178,7 @@ async def auth_register(
             status_code=400,
         )
 
-    # Create user (or find existing)
+    # Create user (or find existing pre-created inactive user from invitation)
     clean_name = name.strip() or inv.get("name") or None
     user = await storage.get_user_by_email(inv["email"])
     if user is None:
@@ -190,6 +190,10 @@ async def auth_register(
         )
     else:
         user_id = user["id"]
+        # Activate the pre-created user and update name if provided
+        await storage.activate_user(user_id)
+        if clean_name:
+            await storage.update_user_profile(user_id, clean_name, None)
 
     # Create password credential
     pw_hash = hash_password(password)
@@ -432,6 +436,10 @@ async def oauth_callback(request: Request, provider: str) -> Response:
             )
         else:
             user_id = user["id"]
+            # Activate the pre-created user and update name if provided
+            await storage.activate_user(user_id)
+            if provider_name:
+                await storage.update_user_profile(user_id, provider_name, None)
         await storage.create_credential(user_id, provider, provider_uid, None)
         await storage.accept_invitation(invite_token)
         await audit(request, "auth.register_oauth", detail=f"{inv['email']} via {provider}")

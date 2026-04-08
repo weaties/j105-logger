@@ -649,7 +649,8 @@ async function loadCrewEditForm() {
       const uid = String(u.id);
       if (uid === curVal || !taken.has(uid)) {
         const n = esc(u.name || u.email);
-        html += '<option value="' + uid + '"' + (uid === curVal ? ' selected' : '') + '>' + n + '</option>';
+        const suffix = u.pending ? ' (invited)' : '';
+        html += '<option value="' + uid + '"' + (uid === curVal ? ' selected' : '') + '>' + n + suffix + '</option>';
       }
     }
     if (canEdit) html += '<option value="__new__">+ Add new...</option>';

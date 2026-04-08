@@ -138,9 +138,15 @@ async def api_crew_users(
     request: Request,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """List users for crew selector (crew→admin→viewer order)."""
+    """List users for crew selector (crew→admin→viewer order).
+
+    Includes invited-but-not-yet-accepted users with ``pending: true``.
+    """
     storage = get_storage(request)
     users = await storage.list_users()
+    pending_emails = await storage.list_pending_invitation_emails()
+    for u in users:
+        u["pending"] = u["email"] in pending_emails
     role_order = {"crew": 0, "admin": 1, "viewer": 2}
     users.sort(key=lambda u: (role_order.get(u["role"], 99), u.get("name") or ""))
     return JSONResponse({"users": users})

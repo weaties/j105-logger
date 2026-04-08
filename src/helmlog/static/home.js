@@ -279,7 +279,8 @@ function renderCrewRows() {
     html += '<option value="">\u2014</option>';
     for (const u of _crewUsers) {
       const n = escAttr(u.name || u.email);
-      html += '<option value="' + u.id + '">' + n + '</option>';
+      const suffix = u.pending ? ' (invited)' : '';
+      html += '<option value="' + u.id + '">' + n + suffix + '</option>';
     }
     if (canEdit) html += '<option value="__new__">+ Add new...</option>';
     html += '</select>';

@@ -4389,7 +4389,13 @@ class Storage:
     # ------------------------------------------------------------------
 
     async def create_user(
-        self, email: str, name: str | None, role: str, *, is_developer: bool = False
+        self,
+        email: str,
+        name: str | None,
+        role: str,
+        *,
+        is_developer: bool = False,
+        is_active: bool = True,
     ) -> int:
         """Insert a new user and return the new id."""
         from datetime import UTC
@@ -4398,9 +4404,9 @@ class Storage:
         now = _datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
-            "INSERT INTO users (email, name, role, created_at, is_developer)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (email.lower().strip(), name, role, now, int(is_developer)),
+            "INSERT INTO users (email, name, role, created_at, is_developer, is_active)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (email.lower().strip(), name, role, now, int(is_developer), int(is_active)),
         )
         await db.commit()
         assert cur.lastrowid is not None
@@ -4555,6 +4561,20 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def list_pending_invitation_emails(self) -> set[str]:
+        """Return the set of emails with a pending (unaccepted) invitation."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        cur = await self._read_conn().execute(
+            "SELECT DISTINCT email FROM invitations"
+            " WHERE accepted_at IS NULL AND revoked_at IS NULL AND expires_at > ?",
+            (now,),
+        )
+        rows = await cur.fetchall()
+        return {r["email"] for r in rows}
 
     # ------------------------------------------------------------------
     # User credentials (#268)
