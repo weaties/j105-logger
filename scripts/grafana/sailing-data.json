@@ -393,8 +393,8 @@
         "overrides": [
           {
             "matcher": {
-              "id": "byName",
-              "options": "AWA"
+              "id": "byRegexp",
+              "options": "/AWA/"
             },
             "properties": [
               {
