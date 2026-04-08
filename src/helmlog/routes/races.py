@@ -319,7 +319,6 @@ async def api_start_race(
 
     from helmlog.races import local_today
 
-    now = datetime.now(UTC)
     today = local_today()
     date_str = today.isoformat()
 
@@ -350,6 +349,7 @@ async def api_start_race(
     race_num = await storage.count_sessions_for_date(date_str, session_type) + 1
     name = build_race_name(event, today, race_num, session_type)
 
+    now = datetime.now(UTC)
     race = await storage.start_race(event, now, date_str, race_num, name, session_type)
 
     # Boat-level crew defaults auto-apply via resolve_crew() —
