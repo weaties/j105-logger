@@ -571,7 +571,7 @@ console.log(JSON.stringify(data, null, 2));
     info "Username: admin"
     info "Password: ${SK_ADMIN_PASS}"
     info "Password also saved to ~/.signalk-admin-pass.txt (chmod 600)"
-    unset SK_ADMIN_PASS
+    # Keep SK_ADMIN_PASS for .env injection below; unset after that.
 else
     info "~/.signalk/security.json already exists — skipping."
     info "Password is in ~/.signalk-admin-pass.txt (if this setup.sh created it)."
@@ -618,6 +618,19 @@ if [[ -n "$INFLUX_TOKEN" && "$INFLUX_TOKEN" != "REPLACE_WITH_INFLUX_TOKEN" ]]; t
         sed -i "s|^# INFLUX_BUCKET=.*|INFLUX_BUCKET=signalk|" "$ENV_FILE"
         info "InfluxDB connection configured in .env"
     fi
+fi
+
+# Populate Signal K credentials if we just created the admin account.
+# The helmlog service runs as a dedicated user with a different HOME, so it
+# cannot find ~/.signalk-admin-pass.txt.  Writing credentials into .env
+# (loaded via EnvironmentFile) ensures the service can authenticate.
+if [[ -n "${SK_ADMIN_PASS:-}" ]]; then
+    if grep -q '^# SK_USERNAME=' "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^# SK_USERNAME=.*|SK_USERNAME=admin|" "$ENV_FILE"
+        sed -i "s|^# SK_PASSWORD=.*|SK_PASSWORD=${SK_ADMIN_PASS}|" "$ENV_FILE"
+        info "Signal K credentials configured in .env"
+    fi
+    unset SK_ADMIN_PASS
 fi
 
 # Restrict .env so only weaties (and root via systemd EnvironmentFile) can read it

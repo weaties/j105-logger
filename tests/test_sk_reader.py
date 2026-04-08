@@ -586,6 +586,42 @@ class TestTokenResolution:
         token = await reader._resolve_token()
         assert token is None
 
+    async def test_password_file_env_overrides_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """SK_PASSWORD_FILE env var overrides Path.home() lookup."""
+        # Put password file in a non-home location
+        pass_file = tmp_path / "custom" / ".signalk-admin-pass.txt"
+        pass_file.parent.mkdir()
+        pass_file.write_text("custom-password\n")
+        monkeypatch.setenv("SK_PASSWORD_FILE", str(pass_file))
+
+        # Point Path.home() somewhere without the file — should not matter
+        empty_home = tmp_path / "empty-home"
+        empty_home.mkdir()
+        monkeypatch.setattr("helmlog.sk_reader.Path.home", staticmethod(lambda: empty_home))
+
+        cfg = SKReaderConfig()
+        assert cfg.password_file == str(pass_file)
+        reader = SKReader(cfg)
+
+        async def mock_post(self: httpx.AsyncClient, url: str, **kwargs: object) -> httpx.Response:
+            body = kwargs.get("json", {})
+            assert body.get("password") == "custom-password"  # type: ignore[union-attr]
+            return httpx.Response(200, json={"token": "jwt-custom"}, request=_FAKE_REQUEST)
+
+        with patch.object(httpx.AsyncClient, "post", mock_post):
+            token = await reader._resolve_token()
+        assert token == "jwt-custom"
+
+    async def test_password_file_default_is_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Without SK_PASSWORD_FILE env var, password_file defaults to None."""
+        monkeypatch.delenv("SK_PASSWORD_FILE", raising=False)
+        cfg = SKReaderConfig()
+        assert cfg.password_file is None
+
 
 # ---------------------------------------------------------------------------
 # TestAuthPlumbing — token passed to HTTP and WebSocket connections
