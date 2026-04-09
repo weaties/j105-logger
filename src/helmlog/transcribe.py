@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # Remote transcription offload
 # ---------------------------------------------------------------------------
 
-_REMOTE_TIMEOUT_S = 600  # 10 minutes — long recordings on slow networks
+_REMOTE_TIMEOUT_S = 3600  # 1 hour — diarization on CPU is slow for long debriefs
 
 
 async def _try_remote_transcribe(
@@ -284,7 +284,10 @@ def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
     if pipeline is None:
         raise RuntimeError("pyannote Pipeline.from_pretrained returned None — check HF_TOKEN")
-    pipeline.to(torch.device("cpu"))
+    # Use Apple Silicon GPU when available — ~5x faster than CPU for pyannote
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+    logger.debug("pyannote device: {}", device)
+    pipeline.to(device)
 
     # Load audio via soundfile → numpy, then convert to torch tensor.
     # soundfile returns (samples,) for mono or (samples, channels) for multi-channel;
