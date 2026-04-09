@@ -614,9 +614,7 @@ class TestTokenResolution:
             token = await reader._resolve_token()
         assert token == "jwt-custom"
 
-    async def test_password_file_default_is_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_password_file_default_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Without SK_PASSWORD_FILE env var, password_file defaults to None."""
         monkeypatch.delenv("SK_PASSWORD_FILE", raising=False)
         cfg = SKReaderConfig()
