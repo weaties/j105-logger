@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 56
+_CURRENT_VERSION: int = 57
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -5570,7 +5570,7 @@ class Storage:
         row = await cur.fetchone()
         if row is None:
             return {}
-        result: dict[str, Any] = json.loads(row["speaker_map"] or "{}")  # type: ignore[index]
+        result: dict[str, Any] = json.loads(row["speaker_map"] or "{}")
         return result
 
     # ------------------------------------------------------------------

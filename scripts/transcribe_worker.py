@@ -55,7 +55,6 @@ async def transcribe(
 
         from helmlog.transcribe import (
             _pyannote_available,
-            _run_whisper,
             _run_with_diarization,
         )
 
