@@ -417,6 +417,60 @@ async def test_api_transcript_includes_speaker_map(storage: Storage, tmp_path: P
 
 
 # ---------------------------------------------------------------------------
+# API: retranscribe endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_api_retranscribe(storage: Storage, tmp_path: Path) -> None:
+    """POST retranscribe deletes existing transcript and creates a new job."""
+    from unittest.mock import AsyncMock, patch
+
+    import httpx
+
+    from helmlog.web import create_app
+
+    audio_id = await _create_audio_session(storage, tmp_path)
+    await _create_transcript_with_segments(storage, audio_id)
+
+    # Verify transcript exists
+    t = await storage.get_transcript(audio_id)
+    assert t is not None
+    assert t["status"] == "done"
+
+    app = create_app(storage)
+    with patch("helmlog.web.asyncio.create_task") as mock_create_task:
+        mock_create_task.return_value = AsyncMock()
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/audio/{audio_id}/retranscribe")
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["status"] == "accepted"
+
+    # Old transcript should be replaced with a new pending one
+    t2 = await storage.get_transcript(audio_id)
+    assert t2 is not None
+    assert t2["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_api_retranscribe_no_session(storage: Storage, tmp_path: Path) -> None:
+    """POST retranscribe returns 404 for nonexistent audio session."""
+    import httpx
+
+    from helmlog.web import create_app
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/api/audio/999/retranscribe")
+    assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # API: voice profile endpoints
 # ---------------------------------------------------------------------------
 

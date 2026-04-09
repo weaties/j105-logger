@@ -961,7 +961,8 @@ async function loadTranscript() {
     _renderDiarizedTranscript(body, t);
   } else {
     const text = t.text ? esc(t.text) : '(empty)';
-    body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
+    body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>'
+      + '<div style="margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="retranscribe()" title="Re-run transcription with speaker diarization">&#8635; Retranscribe with diarization</button></div>';
   }
 }
 
@@ -1108,6 +1109,13 @@ async function assignSpeaker(speakerLabel, userId) {
 async function startTranscript() {
   const r = await fetch('/api/audio/' + _session.audio_session_id + '/transcribe', {method: 'POST'});
   if (!r.ok) { alert('Failed to start transcription'); return; }
+  loadTranscript();
+}
+
+async function retranscribe() {
+  if (!confirm('Re-run transcription with diarization? The existing transcript will be replaced.')) return;
+  const r = await fetch('/api/audio/' + _session.audio_session_id + '/retranscribe', {method: 'POST'});
+  if (!r.ok) { alert('Failed to start retranscription'); return; }
   loadTranscript();
 }
 

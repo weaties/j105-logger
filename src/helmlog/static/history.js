@@ -789,9 +789,10 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
     ).join('');
     el.innerHTML = '<div id="' + uid + '" style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + html + '</div>';
   } else {
-    // legacy: plain text fallback
+    // legacy: plain text fallback — offer retranscribe with diarization
     const text = t.text ? t.text.replace(/</g,'&lt;') : '(empty)';
-    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
+    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>'
+      + '<div style="margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="retranscribeHistory(' + audioSessionId + ',' + sessionId + ')" title="Re-run with speaker diarization">&#8635; Retranscribe with diarization</button></div>';
   }
 }
 
@@ -892,6 +893,14 @@ async function assignHistorySpeaker(speakerLabel, userId, audioSessionId) {
 async function startTranscript(sessionId, audioSessionId) {
   const r = await fetch('/api/audio/' + audioSessionId + '/transcribe', {method: 'POST'});
   if (!r.ok) { alert('Failed to start transcription'); return; }
+  const el = document.getElementById('hist-transcript-' + sessionId);
+  await _loadTranscript(sessionId, audioSessionId, el);
+}
+
+async function retranscribeHistory(audioSessionId, sessionId) {
+  if (!confirm('Re-run transcription with diarization? The existing transcript will be replaced.')) return;
+  const r = await fetch('/api/audio/' + audioSessionId + '/retranscribe', {method: 'POST'});
+  if (!r.ok) { alert('Failed to start retranscription'); return; }
   const el = document.getElementById('hist-transcript-' + sessionId);
   await _loadTranscript(sessionId, audioSessionId, el);
 }

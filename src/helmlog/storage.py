@@ -4245,6 +4245,15 @@ class Storage:
         )
         await db.commit()
 
+    async def delete_transcript(self, audio_session_id: int) -> bool:
+        """Delete the transcript for an audio session. Returns True if found and deleted."""
+        db = self._conn()
+        cur = await db.execute(
+            "DELETE FROM transcripts WHERE audio_session_id = ?", (audio_session_id,)
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
     async def get_transcript(self, audio_session_id: int) -> dict[str, Any] | None:
         """Return the transcript row for *audio_session_id*, or None if not found."""
         cur = await self._read_conn().execute(

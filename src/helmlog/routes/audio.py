@@ -105,6 +105,47 @@ async def api_transcribe(
     return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
 
 
+@router.post("/api/audio/{session_id}/retranscribe", status_code=202)
+@limiter.limit("5/minute")
+async def api_retranscribe(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> JSONResponse:
+    """Delete existing transcript and retranscribe with current settings.
+
+    Useful when a transcript was created without diarization and needs to be
+    redone with speaker identification enabled.
+    """
+    storage = get_storage(request)
+    row = await storage.get_audio_session_row(session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Audio session not found")
+    # Delete the existing transcript (and any linked extraction runs)
+    await storage.delete_transcript(session_id)
+    # Create a new job
+    model = os.environ.get("WHISPER_MODEL", "base")
+    transcript_id = await storage.create_transcript_job(session_id, model)
+
+    from helmlog.storage import get_effective_setting
+    from helmlog.transcribe import transcribe_session
+
+    t_url = await get_effective_setting(storage, "TRANSCRIBE_URL")
+    diarize = bool(os.environ.get("HF_TOKEN"))
+    asyncio.create_task(
+        transcribe_session(
+            storage,
+            session_id,
+            transcript_id,
+            model_size=model,
+            diarize=diarize,
+            transcribe_url=t_url,
+        )
+    )
+    await audit(request, "transcribe.retranscribe", detail=str(session_id), user=_user)
+    return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
+
+
 @router.get("/api/audio/{session_id}/transcript")
 async def api_get_transcript(
     request: Request,
