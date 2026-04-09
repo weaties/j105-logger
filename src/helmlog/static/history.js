@@ -841,7 +841,7 @@ async function openHistorySpeakerPicker(speakerLabel, audioSessionId) {
   try {
     const r = await fetch('/api/crew/users');
     if (!r.ok) return;
-    users = await r.json();
+    users = (await r.json()).users || [];
   } catch { return; }
 
   const old = document.getElementById('speaker-picker');

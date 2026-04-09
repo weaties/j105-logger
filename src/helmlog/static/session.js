@@ -1085,7 +1085,7 @@ async function openSpeakerPicker(speakerLabel) {
   try {
     const r = await fetch('/api/crew/users');
     if (!r.ok) return;
-    users = await r.json();
+    users = (await r.json()).users || [];
   } catch { return; }
 
   // Remove any existing picker
