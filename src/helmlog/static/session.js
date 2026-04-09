@@ -957,7 +957,10 @@ async function loadTranscript() {
     loadTuningExtractions();
   }
   _speakerMap = t.speaker_map || {};
-  if (t.segments && t.segments.length > 0) {
+  // Check if segments have speaker labels (diarized) vs plain whisper segments
+  const hasDiarizedSegments = t.segments && t.segments.length > 0
+    && t.segments.some(s => s.speaker);
+  if (hasDiarizedSegments) {
     _renderDiarizedTranscript(body, t);
   } else {
     const text = t.text ? esc(t.text) : '(empty)';

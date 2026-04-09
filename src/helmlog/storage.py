@@ -4246,8 +4246,17 @@ class Storage:
         await db.commit()
 
     async def delete_transcript(self, audio_session_id: int) -> bool:
-        """Delete the transcript for an audio session. Returns True if found and deleted."""
+        """Delete the transcript (and linked extraction_runs) for an audio session.
+
+        Returns True if found and deleted.
+        """
         db = self._conn()
+        # Delete extraction_runs first (no ON DELETE CASCADE on FK)
+        await db.execute(
+            "DELETE FROM extraction_runs WHERE transcript_id IN"
+            " (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+            (audio_session_id,),
+        )
         cur = await db.execute(
             "DELETE FROM transcripts WHERE audio_session_id = ?", (audio_session_id,)
         )

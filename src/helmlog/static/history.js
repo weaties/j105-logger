@@ -755,8 +755,10 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
     return;
   }
   const speakerMap = t.speaker_map || {};
-  // status === 'done'
-  if (t.segments && t.segments.length > 0) {
+  // status === 'done' — check for diarized (speaker-labeled) segments
+  const hasDiarizedSegments = t.segments && t.segments.length > 0
+    && t.segments.some(s => s.speaker);
+  if (hasDiarizedSegments) {
     // merge consecutive same-speaker segments for readability
     const blocks = [];
     for (const seg of t.segments) {
