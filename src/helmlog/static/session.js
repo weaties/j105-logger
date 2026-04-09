@@ -268,37 +268,38 @@ function _createPlayer(videoId) {
     _videoSync.player.loadVideoById(videoId);
     return;
   }
-  _videoSync.player = new YT.Player('yt-player', {
-    height: '100%',
-    width: '100%',
-    videoId: videoId,
-    playerVars: {
-      modestbranding: 1,
-      rel: 0,
-      enablejsapi: 1,
-      origin: location.origin,
-    },
+  // Create an iframe MANUALLY with the right `allow` attribute BEFORE loading
+  // the YouTube embed.  Setting `allow` after the iframe loads is too late —
+  // the security context is already established and 360 panning, gyroscope,
+  // and VR controls won't work for spherical videos.
+  const container = document.getElementById('yt-player');
+  if (!container) return;
+  const iframe = document.createElement('iframe');
+  iframe.id = 'yt-player-iframe';
+  iframe.width = '100%';
+  iframe.height = '100%';
+  iframe.frameBorder = '0';
+  iframe.setAttribute(
+    'allow',
+    'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; xr-spatial-tracking'
+  );
+  iframe.setAttribute('allowfullscreen', '');
+  const params = new URLSearchParams({
+    enablejsapi: '1',
+    modestbranding: '1',
+    rel: '0',
+    origin: location.origin,
+  });
+  iframe.src = 'https://www.youtube.com/embed/' + videoId + '?' + params.toString();
+  container.innerHTML = '';
+  container.appendChild(iframe);
+
+  // Attach the YT.Player API to the existing iframe (not a div).
+  _videoSync.player = new YT.Player('yt-player-iframe', {
     events: {
-      onReady: _onPlayerReady,
       onStateChange: _onPlayerStateChange,
     },
   });
-}
-
-function _onPlayerReady(event) {
-  // Enable 360-video panning + VR controls by adding the right iframe permissions.
-  // YouTube's IFrame API doesn't set these by default, so click-and-drag pan and
-  // gyroscope tilt don't work for spherical (360) videos without this fix.
-  try {
-    const iframe = event.target.getIframe();
-    if (iframe) {
-      iframe.setAttribute(
-        'allow',
-        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; xr-spatial-tracking'
-      );
-      iframe.setAttribute('allowfullscreen', '');
-    }
-  } catch (e) { /* non-fatal */ }
 }
 
 function switchVideo(idx) {
