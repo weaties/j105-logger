@@ -279,9 +279,26 @@ function _createPlayer(videoId) {
       origin: location.origin,
     },
     events: {
+      onReady: _onPlayerReady,
       onStateChange: _onPlayerStateChange,
     },
   });
+}
+
+function _onPlayerReady(event) {
+  // Enable 360-video panning + VR controls by adding the right iframe permissions.
+  // YouTube's IFrame API doesn't set these by default, so click-and-drag pan and
+  // gyroscope tilt don't work for spherical (360) videos without this fix.
+  try {
+    const iframe = event.target.getIframe();
+    if (iframe) {
+      iframe.setAttribute(
+        'allow',
+        'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; xr-spatial-tracking'
+      );
+      iframe.setAttribute('allowfullscreen', '');
+    }
+  } catch (e) { /* non-fatal */ }
 }
 
 function switchVideo(idx) {
