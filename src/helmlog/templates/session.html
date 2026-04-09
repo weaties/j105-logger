@@ -81,6 +81,11 @@
   <div id="track-hint" style="font-size:.72rem;color:var(--text-secondary);margin-top:4px"></div>
 </div>
 
+<div id="video-container" class="card" style="display:none">
+  <div id="video-switcher" style="display:flex;gap:6px;margin-bottom:8px"></div>
+  <div id="yt-player" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>
+</div>
+
 <div id="wind-field-card" class="card" style="display:none">
   <div class="section-title" onclick="toggleSection('wind-field')">Wind Field <span id="wind-field-toggle">&#9660;</span></div>
   <div class="section-body" id="wind-field-body">
@@ -111,11 +116,6 @@
     </div>
     <div id="polar-summary" style="font-size:.78rem;color:var(--text-secondary);margin-top:8px;text-align:center"></div>
   </div>
-</div>
-
-<div id="video-container" class="card" style="display:none">
-  <div id="video-switcher" style="display:flex;gap:6px;margin-bottom:8px"></div>
-  <div id="yt-player" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>
 </div>
 
 <div class="card" id="videos-card" style="display:none">
@@ -165,6 +165,11 @@
   <div class="section-body" id="discussion-body" style="margin-top:6px"></div>
 </div>
 
+<div id="audio-card" class="card" style="display:none">
+  <div class="section-title">Audio</div>
+  <div id="audio-body"></div>
+</div>
+
 <div class="card" id="transcript-card" style="display:none">
   <div class="section-title" onclick="toggleSection('transcript')">Transcript <span id="transcript-toggle">&#9660;</span></div>
   <div class="section-body" id="transcript-body"></div>
@@ -205,11 +210,6 @@
 <div class="card" id="exports-card" style="display:none">
   <div class="section-title">Exports</div>
   <div class="session-exports" id="exports-body"></div>
-</div>
-
-<div id="audio-card" class="card" style="display:none">
-  <div class="section-title">Audio</div>
-  <div id="audio-body"></div>
 </div>
 
 <div id="danger-zone" class="card" style="display:none;border-color:var(--danger)">
