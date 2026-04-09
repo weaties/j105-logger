@@ -10,6 +10,77 @@ let _trackData = null; // {latLngs, timestamps (as Date), line, cursor}
 let _videoSync = null; // {syncUtc (Date), syncOffsetS, durationS, player}
 let _ytReady = false;
 let _syncTimer = null;
+
+// ---------------------------------------------------------------------------
+// Playback clock — single source of truth for the session timeline (#446)
+//
+// Every surface (map, video, audio, transcript) is both a producer (calls
+// setPosition when the user interacts with it) and a consumer (renders the
+// current position). Producers go through one entry point so there is exactly
+// one clock. Echo events from media elements are debounced via _seekingUntil.
+// ---------------------------------------------------------------------------
+
+const _playClock = {
+  positionUtc: null, // current position as a Date on session UTC timeline
+  state: 'idle', // idle | playing | paused | seeking | ended
+  consumers: [], // [{name, render(utc)}]
+  seekingUntil: 0, // performance.now() ms; ignore echo events until this time
+  tickTimer: null,
+  tickAnchorUtc: null, // UTC at last tick anchor
+  tickAnchorPerf: 0, // performance.now() at last tick anchor
+};
+
+function _clockNowMs() { return performance.now(); }
+
+function registerSurface(name, render) {
+  _playClock.consumers.push({name, render});
+}
+
+function setPosition(utc, opts) {
+  if (!utc) return;
+  const date = utc instanceof Date ? utc : new Date(utc);
+  if (isNaN(date.getTime())) return;
+  _playClock.positionUtc = date;
+  // Suppress media echo events for a brief window after a programmatic seek
+  _playClock.seekingUntil = _clockNowMs() + 200;
+  // Re-anchor the playing tick on the new position
+  _playClock.tickAnchorUtc = date;
+  _playClock.tickAnchorPerf = _clockNowMs();
+  const source = (opts && opts.source) || null;
+  for (const c of _playClock.consumers) {
+    if (c.name === source) continue; // don't echo back to producer
+    try { c.render(date); } catch (e) { /* never let one surface break others */ }
+  }
+}
+
+function _isEchoEvent() {
+  return _clockNowMs() < _playClock.seekingUntil;
+}
+
+function _startPlayTick() {
+  _stopPlayTick();
+  _playClock.tickAnchorUtc = _playClock.positionUtc;
+  _playClock.tickAnchorPerf = _clockNowMs();
+  _playClock.state = 'playing';
+  _playClock.tickTimer = setInterval(() => {
+    if (!_playClock.tickAnchorUtc) return;
+    const elapsedMs = _clockNowMs() - _playClock.tickAnchorPerf;
+    const utc = new Date(_playClock.tickAnchorUtc.getTime() + elapsedMs);
+    _playClock.positionUtc = utc;
+    for (const c of _playClock.consumers) {
+      try { c.render(utc); } catch (e) { /* swallow */ }
+    }
+  }, 100);
+}
+
+function _stopPlayTick() {
+  if (_playClock.tickTimer) {
+    clearInterval(_playClock.tickTimer);
+    _playClock.tickTimer = null;
+  }
+  _playClock.state = 'paused';
+}
+
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
 let _transcriptId = null; // transcript ID for tuning extraction
@@ -157,12 +228,21 @@ async function loadTrack() {
 
   _trackData = {latLngs, timestamps, line, cursor};
 
-  // Click track → seek video + update boat settings
+  // Map is a consumer: render the cursor at the requested UTC
+  registerSurface('map', function(utc) {
+    if (!_trackData) return;
+    const idx = _indexForUtc(utc);
+    _moveCursorToIndex(idx);
+    _updateBoatSettingsForUtc(_utcForIndex(idx));
+  });
+
+  // Click track → seek the playback clock (which then seeks video, audio, etc.)
   line.on('click', function(e) {
     const idx = _nearestIndex(e.latlng);
+    const utc = _utcForIndex(idx);
+    if (utc) setPosition(utc, {source: 'map'});
+    // Map producer still updates its own cursor immediately
     _moveCursorToIndex(idx);
-    _seekVideoToIndex(idx);
-    _updateBoatSettingsForUtc(_utcForIndex(idx));
   });
 
   // Right-click track → start discussion at that point
@@ -286,6 +366,7 @@ function _createPlayer(videoId) {
       origin: location.origin,
     },
     events: {
+      onReady: _onVideoReady,
       onStateChange: _onPlayerStateChange,
     },
   });
@@ -314,6 +395,17 @@ function _updateWatchOnYoutubeLink(videoId) {
   linkBar.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" title="Open in YouTube for 360° panning controls">Watch on YouTube &#8599;</a>';
 }
 
+function _onVideoReady() {
+  // Video is a consumer: seek to the requested UTC if it's within range
+  registerSurface('video', function(utc) {
+    if (!_videoSync || !_videoSync.player || !_videoSync.player.seekTo) return;
+    const offset = _utcToVideoOffset(utc);
+    if (offset === null || offset < 0) return;
+    if (_videoSync.durationS && offset > _videoSync.durationS) return;
+    _videoSync.player.seekTo(offset, true);
+  });
+}
+
 function switchVideo(idx) {
   const videos = _videoSync.allVideos;
   if (idx < 0 || idx >= videos.length) return;
@@ -335,36 +427,41 @@ function switchVideo(idx) {
 }
 
 function _onPlayerStateChange(event) {
-  // YT.PlayerState.PLAYING = 1
+  // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, BUFFERING = 3
   if (event.data === 1) {
-    _startSyncTimer();
+    _stopSyncTimer();
+    // Treat YT play as a producer: anchor the clock to the current video time
+    if (typeof _videoSync.player.getCurrentTime === 'function') {
+      const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
+      if (utc) {
+        _playClock.positionUtc = utc;
+        // Don't fire echo to video — but other surfaces should follow
+        setPosition(utc, {source: 'video'});
+      }
+    }
+    // Drive a 2 Hz tick from the YT player so map/transcript follow during play
+    _syncTimer = setInterval(_videoTick, 500);
   } else {
     _stopSyncTimer();
-    // Update cursor on pause too
-    _syncMapToVideo();
+    _videoTick();
   }
-}
-
-function _startSyncTimer() {
-  _stopSyncTimer();
-  _syncTimer = setInterval(_syncMapToVideo, 500);
 }
 
 function _stopSyncTimer() {
   if (_syncTimer) { clearInterval(_syncTimer); _syncTimer = null; }
 }
 
-function _syncMapToVideo() {
-  if (!_videoSync || !_videoSync.player || !_trackData) return;
+function _videoTick() {
+  if (!_videoSync || !_videoSync.player) return;
   if (typeof _videoSync.player.getCurrentTime !== 'function') return;
-
-  const videoTime = _videoSync.player.getCurrentTime();
-  const utc = _videoOffsetToUtc(videoTime);
+  const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
   if (!utc) return;
-
-  const idx = _indexForUtc(utc);
-  _moveCursorToIndex(idx);
-  _updateBoatSettingsForUtc(utc);
+  // Treat as a non-seek update: update other surfaces but not the video itself
+  _playClock.positionUtc = utc;
+  for (const c of _playClock.consumers) {
+    if (c.name === 'video') continue;
+    try { c.render(utc); } catch (e) { /* swallow */ }
+  }
 }
 
 // Convert video playback seconds → UTC
@@ -1036,47 +1133,61 @@ function _renderDiarizedTranscript(body, t) {
     ).join('')
     + '</div>';
 
-  // Set up audio tracking for active segment highlighting
-  _setupTranscriptAudioTracking();
+  // Register the diarized transcript as a playback-clock surface so it
+  // highlights the active segment in sync with audio/video/map (#446).
+  _registerTranscriptSurface();
 }
 
-function _setupTranscriptAudioTracking() {
-  // Find the main audio element on the page
-  const audioEl = document.querySelector('#audio-body audio');
-  if (!audioEl) return;
-  _transcriptAudio = audioEl;
-  audioEl.addEventListener('timeupdate', _highlightActiveSegment);
-}
-
-function _highlightActiveSegment() {
-  if (!_transcriptAudio || !_transcriptBlocks.length) return;
-  const t = _transcriptAudio.currentTime;
-  const segs = document.querySelectorAll('.transcript-seg');
-  for (let i = 0; i < _transcriptBlocks.length; i++) {
-    const b = _transcriptBlocks[i];
-    const el = segs[i];
-    if (!el) continue;
-    if (t >= b.start && t <= b.end) {
-      el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
-      // Scroll into view if needed
-      const container = document.getElementById('transcript-segments');
-      if (container && (el.offsetTop < container.scrollTop || el.offsetTop + el.offsetHeight > container.scrollTop + container.clientHeight)) {
-        el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+let _transcriptSurfaceRegistered = false;
+function _registerTranscriptSurface() {
+  if (!_session || !_session.audio_start_utc) return;
+  if (_transcriptSurfaceRegistered) return; // idempotent — transcript may re-render on poll
+  _transcriptSurfaceRegistered = true;
+  const audioStart = new Date(
+    _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
+      ? _session.audio_start_utc
+      : _session.audio_start_utc + 'Z'
+  );
+  registerSurface('transcript', function(utc) {
+    if (!_transcriptBlocks.length) return;
+    const local = (utc.getTime() - audioStart.getTime()) / 1000;
+    const segs = document.querySelectorAll('.transcript-seg');
+    for (let i = 0; i < _transcriptBlocks.length; i++) {
+      const b = _transcriptBlocks[i];
+      const el = segs[i];
+      if (!el) continue;
+      if (local >= b.start && local <= b.end) {
+        el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
+        const container = document.getElementById('transcript-segments');
+        if (container && (el.offsetTop < container.scrollTop || el.offsetTop + el.offsetHeight > container.scrollTop + container.clientHeight)) {
+          el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+        }
+      } else {
+        el.style.background = '';
       }
-    } else {
-      el.style.background = '';
     }
-  }
+  });
 }
 
 function playTranscriptSegment(idx) {
   const b = _transcriptBlocks[idx];
   if (!b) return;
-  const audioEl = document.querySelector('#audio-body audio');
-  if (!audioEl) return;
-  _transcriptAudio = audioEl;
-  audioEl.currentTime = b.start;
-  audioEl.play();
+  // Route through the playback clock so video and map follow too.
+  if (_session && _session.audio_start_utc) {
+    const audioStart = new Date(
+      _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
+        ? _session.audio_start_utc
+        : _session.audio_start_utc + 'Z'
+    );
+    setPosition(new Date(audioStart.getTime() + b.start * 1000), {source: 'transcript'});
+  }
+  const audioEl = document.getElementById('session-audio')
+    || document.querySelector('#audio-body audio');
+  if (audioEl) {
+    _transcriptAudio = audioEl;
+    audioEl.currentTime = b.start;
+    audioEl.play();
+  }
 }
 
 async function openSpeakerPicker(speakerLabel) {
@@ -1160,7 +1271,83 @@ function loadAudio() {
   const card = document.getElementById('audio-card');
   card.style.display = '';
   document.getElementById('audio-body').innerHTML =
-    '<audio controls style="width:100%"><source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav"></audio>';
+    '<audio id="session-audio" controls style="width:100%">'
+    + '<source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav">'
+    + '</audio>';
+  const el = document.getElementById('session-audio');
+  if (!el) return;
+  // Always wire audio→transcript highlighting (works even if audio_start_utc
+  // is missing — segments use audio-local seconds, same as el.currentTime).
+  el.addEventListener('timeupdate', _highlightTranscriptFromAudio);
+  el.addEventListener('seeked', _highlightTranscriptFromAudio);
+
+  if (!_session.audio_start_utc) return;
+  const audioStart = new Date(
+    _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
+      ? _session.audio_start_utc
+      : _session.audio_start_utc + 'Z'
+  );
+
+  const audioLocalToUtc = s => new Date(audioStart.getTime() + s * 1000);
+  const utcToAudioLocal = utc => (utc.getTime() - audioStart.getTime()) / 1000;
+
+  // Audio is a consumer — seek to the requested UTC if it's within range
+  registerSurface('audio', function(utc) {
+    const local = utcToAudioLocal(utc);
+    if (local < 0 || (el.duration && local > el.duration)) return;
+    if (Math.abs(el.currentTime - local) < 0.15) return; // already there
+    try { el.currentTime = local; } catch (e) { /* not seekable yet */ }
+  });
+
+  // Audio is a producer — fan out to other surfaces when user scrubs/plays.
+  // timeupdate fires ~4 Hz during playback, so this drives the map cursor and
+  // any other UTC-based consumers in real time.
+  let _audioFanoutLast = 0;
+  const _fanout = () => {
+    if (_isEchoEvent()) return;
+    const now = _clockNowMs();
+    if (now - _audioFanoutLast < 150) return; // throttle
+    _audioFanoutLast = now;
+    setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
+  };
+  el.addEventListener('seeked', _fanout);
+  el.addEventListener('timeupdate', _fanout);
+  el.addEventListener('play', function() {
+    setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
+    _startPlayTick();
+  });
+  el.addEventListener('pause', function() {
+    _stopPlayTick();
+  });
+}
+
+// Direct transcript highlighter — follows audio.currentTime regardless of
+// playback-clock state. Drives the same active-segment styling and scroll
+// behavior as the clock-driven path.
+function _highlightTranscriptFromAudio(ev) {
+  const el = ev && ev.target ? ev.target : document.getElementById('session-audio');
+  if (!el || !_transcriptBlocks.length) return;
+  const t = el.currentTime;
+  const segs = document.querySelectorAll('.transcript-seg');
+  let activeIdx = -1;
+  for (let i = 0; i < _transcriptBlocks.length; i++) {
+    const b = _transcriptBlocks[i];
+    if (t >= b.start && t <= b.end) { activeIdx = i; break; }
+  }
+  for (let i = 0; i < segs.length; i++) {
+    const segEl = segs[i];
+    if (!segEl) continue;
+    if (i === activeIdx) {
+      segEl.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
+      const container = document.getElementById('transcript-segments');
+      if (container && (segEl.offsetTop < container.scrollTop
+          || segEl.offsetTop + segEl.offsetHeight > container.scrollTop + container.clientHeight)) {
+        segEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      }
+    } else {
+      segEl.style.background = '';
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1892,9 +2079,7 @@ function highlightManeuver(idx) {
   const m = _maneuvers[idx];
   if (m && _trackData) {
     const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
-    const trackIdx = _indexForUtc(ts);
-    _moveCursorToIndex(trackIdx);
-    _seekVideoToIndex(trackIdx);
+    setPosition(ts);
   }
   // Open the marker popup if available
   if (_maneuverMarkers[idx]) _maneuverMarkers[idx].openPopup();
@@ -2479,7 +2664,9 @@ async function loadDiscussion() {
     const anchor = t.mark_reference
       ? '<span class="thread-anchor">' + esc(t.mark_reference.replace(/_/g, ' ')) + '</span>'
       : t.anchor_timestamp
-        ? '<span class="thread-anchor">' + fmtTime(t.anchor_timestamp) + '</span>'
+        ? '<span class="thread-anchor" style="cursor:pointer;text-decoration:underline" '
+          + 'onclick="event.stopPropagation();seekToThreadAnchor(\'' + esc(t.anchor_timestamp) + '\')" '
+          + 'title="Seek playback to this moment">' + fmtTime(t.anchor_timestamp) + '</span>'
         : '';
     const unread = t.unread_count > 0
       ? '<span class="thread-unread">' + t.unread_count + '</span>'
@@ -2499,6 +2686,13 @@ async function loadDiscussion() {
       + resolutionHtml
       + '</div>';
   }).join('');
+}
+
+function seekToThreadAnchor(ts) {
+  if (!ts) return;
+  const utc = new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z');
+  if (isNaN(utc.getTime())) return;
+  setPosition(utc);
 }
 
 function _checkThreadHash() {
@@ -2605,11 +2799,24 @@ function showNewThreadForm(anchorTimestamp) {
   const form = document.createElement('div');
   form.className = 'thread-form';
   form.style.marginBottom = '10px';
+  // Default anchor to the current playback position if the caller didn't pass one
+  if (!anchorTimestamp && _playClock.positionUtc) {
+    anchorTimestamp = _playClock.positionUtc.toISOString();
+  }
   const anchorLabel = anchorTimestamp ? fmtTime(anchorTimestamp) : '';
   const anchorHidden = anchorTimestamp
     ? '<input type="hidden" id="new-thread-anchor-ts" value="' + esc(anchorTimestamp) + '"/>'
-      + '<div style="font-size:.72rem;color:var(--warning);margin-bottom:6px">Anchored to track at ' + anchorLabel + '</div>'
-    : '<input type="hidden" id="new-thread-anchor-ts" value=""/>';
+      + '<div id="new-thread-anchor-row" style="font-size:.72rem;color:var(--warning);margin-bottom:6px">'
+      + 'Anchored at <span id="new-thread-anchor-label">' + anchorLabel + '</span> '
+      + '<button type="button" onclick="clearNewThreadAnchor()" '
+      + 'style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;text-decoration:underline">clear</button>'
+      + '</div>'
+    : '<input type="hidden" id="new-thread-anchor-ts" value=""/>'
+      + '<div id="new-thread-anchor-row" style="font-size:.72rem;color:var(--text-secondary);margin-bottom:6px">'
+      + 'Race-general thread (no anchor) '
+      + '<button type="button" onclick="useCurrentAnchor()" '
+      + 'style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.72rem;text-decoration:underline">use current time</button>'
+      + '</div>';
   form.innerHTML = anchorHidden
     + '<div style="display:flex;gap:6px;margin-bottom:6px">'
     + '<input id="new-thread-title" placeholder="Thread title (optional)" style="flex:1"/>'
@@ -2627,6 +2834,32 @@ function showNewThreadForm(anchorTimestamp) {
     + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadDiscussion()">Cancel</button>'
     + '</div>';
   body.prepend(form);
+}
+
+function clearNewThreadAnchor() {
+  const inp = document.getElementById('new-thread-anchor-ts');
+  if (inp) inp.value = '';
+  const row = document.getElementById('new-thread-anchor-row');
+  if (row) {
+    row.style.color = 'var(--text-secondary)';
+    row.innerHTML = 'Race-general thread (no anchor) '
+      + '<button type="button" onclick="useCurrentAnchor()" '
+      + 'style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.72rem;text-decoration:underline">use current time</button>';
+  }
+}
+
+function useCurrentAnchor() {
+  if (!_playClock.positionUtc) return;
+  const utc = _playClock.positionUtc.toISOString();
+  const inp = document.getElementById('new-thread-anchor-ts');
+  if (inp) inp.value = utc;
+  const row = document.getElementById('new-thread-anchor-row');
+  if (row) {
+    row.style.color = 'var(--warning)';
+    row.innerHTML = 'Anchored at <span id="new-thread-anchor-label">' + fmtTime(utc) + '</span> '
+      + '<button type="button" onclick="clearNewThreadAnchor()" '
+      + 'style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;text-decoration:underline">clear</button>';
+  }
 }
 
 async function submitNewThread() {
@@ -2664,7 +2897,9 @@ async function openThread(threadId) {
   const anchor = t.mark_reference
     ? '<span class="thread-anchor">' + esc(t.mark_reference.replace(/_/g, ' ')) + '</span>'
     : t.anchor_timestamp
-      ? '<span class="thread-anchor">' + fmtTime(t.anchor_timestamp) + '</span>'
+      ? '<span class="thread-anchor" style="cursor:pointer;text-decoration:underline" '
+        + 'onclick="seekToThreadAnchor(\'' + esc(t.anchor_timestamp) + '\')" '
+        + 'title="Seek playback to this moment">' + fmtTime(t.anchor_timestamp) + '</span>'
       : '';
   let resolveBtn = '';
   if (t.resolved) {

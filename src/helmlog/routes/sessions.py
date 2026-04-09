@@ -367,7 +367,8 @@ async def api_session_detail(
 
     # Check for audio
     acur = await db.execute(
-        "SELECT id FROM audio_sessions WHERE race_id = ? AND session_type IN ('race','practice')",
+        "SELECT id, start_utc FROM audio_sessions"
+        " WHERE race_id = ? AND session_type IN ('race','practice')",
         (session_id,),
     )
     arow = await acur.fetchone()
@@ -394,6 +395,9 @@ async def api_session_detail(
             "first_video_url": row["first_video_url"],
             "has_audio": arow is not None,
             "audio_session_id": arow["id"] if arow else None,
+            "audio_start_utc": (
+                datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
+            ),
             "peer_fingerprint": row["peer_fingerprint"],
             "has_wind_field": has_wind_field,
             "shared_name": row["shared_name"],

@@ -84,13 +84,17 @@ async def transcribe(
 
         logger.info(
             "Done: {} chars, {} segments, diarized={}",
-            len(text), len(segments), use_diarize,
+            len(text),
+            len(segments),
+            use_diarize,
         )
-        return JSONResponse({
-            "text": text,
-            "segments": segments,
-            "diarized": use_diarize,
-        })
+        return JSONResponse(
+            {
+                "text": text,
+                "segments": segments,
+                "diarized": use_diarize,
+            }
+        )
     finally:
         os.unlink(tmp_path)
 
