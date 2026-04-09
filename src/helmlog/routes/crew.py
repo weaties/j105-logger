@@ -346,12 +346,19 @@ async def api_set_consent(
     storage = get_storage(request)
     body = await request.json()
     consent_type = (body.get("consent_type") or "").strip()
-    if consent_type not in ("audio", "video", "name", "photo", "biometric"):
+    valid = ("audio", "video", "name", "photo", "biometric", "voice_profile")
+    if consent_type not in valid:
         raise HTTPException(
-            status_code=422, detail="consent_type must be audio/video/name/photo/biometric"
+            status_code=422,
+            detail=f"consent_type must be one of: {', '.join(valid)}",
         )
     granted = bool(body.get("granted", True))
-    row_id = await storage.set_crew_consent(user_id, consent_type, granted)
+    # Revoking voice_profile consent triggers hard delete of biometric data
+    if consent_type == "voice_profile" and not granted:
+        await storage.revoke_voice_profile_consent(user_id)
+    else:
+        await storage.set_crew_consent(user_id, consent_type, granted)
+    row_id = 0  # consent id not critical for response
     action = "consent.grant" if granted else "consent.revoke"
     await audit(request, action, detail=f"user={user_id}/{consent_type}", user=_user)
     return JSONResponse(
@@ -362,6 +369,20 @@ async def api_set_consent(
             "granted": granted,
         }
     )
+
+
+@router.delete("/api/crew/{user_id:int}/voice-profile", status_code=204)
+async def api_delete_voice_profile(
+    request: Request,
+    user_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> None:
+    """Delete a crew member's voice profile."""
+    storage = get_storage(request)
+    deleted = await storage.delete_voice_profile(user_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Voice profile not found")
+    await audit(request, "voice_profile.delete", detail=f"user={user_id}", user=_user)
 
 
 @router.post("/api/crew/{user_id:int}/anonymize", status_code=200)

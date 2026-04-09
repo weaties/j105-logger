@@ -126,6 +126,9 @@ async def api_get_transcript(
     del t["segments_json"]
     # Remove internal anon map from response
     t.pop("speaker_anon_map", None)
+    # Expose speaker_map for UI (crew labels, auto-match info)
+    raw_map = t.pop("speaker_map", None)
+    t["speaker_map"] = _json.loads(raw_map) if raw_map else {}
     return JSONResponse(t)
 
 
@@ -145,6 +148,48 @@ async def api_delete_audio(
         await asyncio.to_thread(p.unlink)
         logger.info("Deleted audio file: {}", p)
     await audit(request, "audio.delete", detail=str(session_id), user=_user)
+
+
+@router.post("/api/audio/{session_id}/transcript/assign-speaker", status_code=200)
+@limiter.limit("30/minute")
+async def api_assign_speaker(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> JSONResponse:
+    """Assign a speaker label to a crew member in a diarized transcript."""
+    storage = get_storage(request)
+    body = await request.json()
+    speaker_label = (body.get("speaker_label") or "").strip()
+    user_id = body.get("user_id")
+    if not speaker_label:
+        raise HTTPException(status_code=422, detail="speaker_label is required")
+    if user_id is None:
+        raise HTTPException(status_code=422, detail="user_id is required")
+    t = await storage.get_transcript(session_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    # Look up the user name
+    db = storage._conn()
+    cur = await db.execute("SELECT name FROM users WHERE id = ?", (user_id,))
+    row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    name = row["name"] or f"User {user_id}"
+    found = await storage.assign_speaker_crew(t["id"], speaker_label, user_id, name)
+    if not found:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    await audit(
+        request,
+        "transcript.assign_speaker",
+        detail=f"session={session_id} speaker={speaker_label} user={user_id}",
+        user=_user,
+    )
+    # Trigger voice profile build check in background (non-blocking)
+    from helmlog.transcribe import maybe_build_voice_profile
+
+    asyncio.create_task(maybe_build_voice_profile(storage, user_id))
+    return JSONResponse({"speaker_label": speaker_label, "user_id": user_id, "name": name})
 
 
 @router.post("/api/audio/{session_id}/transcript/anonymize-speaker", status_code=200)
