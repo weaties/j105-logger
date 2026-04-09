@@ -13,15 +13,24 @@
 # or run manually after inserting the SD card.
 #
 # Environment overrides:
-#   VIDEO_OUTPUT_DIR          where stitched MP4s go  (default: ~/Videos/helmlog)
-#   VIDEO_RESOLUTION          output resolution       (default: 3840x1920)
+#   VIDEO_OUTPUT_DIR          base dir for stitched MP4s (default: ~/Insta360 Exports)
+#                              Each camera's videos go in <VIDEO_OUTPUT_DIR>/<camera_label>/
+#   VIDEO_RESOLUTION          output resolution        (default: 3840x1920)
+#   VIDEO_BITRATE             output bitrate           (e.g. 100M; default: stitcher default)
+#   VIDEO_FLOWSTATE           FlowState stabilization  (default: true)
+#   VIDEO_DIRECTION_LOCK      FlowState direction lock (default: true)
 #   DOCKER_IMAGE              stitcher image           (default: insta360-cli-utils)
-#   PI_API_URL                HelmLog API          (default: http://corvopi:3002)
+#   PI_API_URL                HelmLog API              (default: http://corvopi:3002)
 #   VIDEO_PRIVACY             YouTube privacy          (default: unlisted)
 #   TIMEZONE                  camera local timezone    (default: America/Los_Angeles)
+#   YOUTUBE_ACCOUNT           YouTube channel handle   (default: corvo105)
+#                              Selects ~/.config/helmlog/youtube/<account>.json
 #   YOUTUBE_CLIENT_SECRETS    OAuth2 client secrets    (default: ~/.helmlog-youtube-client-secrets.json)
-#   YOUTUBE_TOKEN_FILE        OAuth2 token cache       (default: ~/.helmlog-youtube-token.json)
 #   PI_SESSION_COOKIE         session cookie for Pi API (enables auto-linking videos to sessions)
+#
+# Multi-camera: when invoked without arguments the script processes EVERY
+# mounted Insta360 volume in parallel. Pass an explicit mount path to
+# process just one.
 
 set -euo pipefail
 
@@ -30,12 +39,16 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
-OUTPUT_DIR="${VIDEO_OUTPUT_DIR:-$HOME/Videos/helmlog}"
+OUTPUT_BASE="${VIDEO_OUTPUT_DIR:-$HOME/Insta360 Exports}"
 RESOLUTION="${VIDEO_RESOLUTION:-3840x1920}"
+BITRATE="${VIDEO_BITRATE:-}"
+FLOWSTATE="${VIDEO_FLOWSTATE:-true}"
+DIRECTION_LOCK="${VIDEO_DIRECTION_LOCK:-true}"
 IMAGE="${DOCKER_IMAGE:-insta360-cli-utils}"
 PI_API="${PI_API_URL:-http://corvopi:3002}"
-PRIVACY="${VIDEO_PRIVACY:-private}"
+PRIVACY="${VIDEO_PRIVACY:-unlisted}"
 TZ_NAME="${TIMEZONE:-America/Los_Angeles}"
+YT_ACCOUNT="${YOUTUBE_ACCOUNT:-corvo105}"
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
 warn() { echo "[$(date -u +%H:%M:%SZ)] WARNING: $*" >&2; }
@@ -43,31 +56,67 @@ die() { echo "[$(date -u +%H:%M:%SZ)] ERROR: $*" >&2; exit 1; }
 
 # ── 1. Locate the Insta360 SD card ──────────────────────────────────────────
 
-find_insta360_mount() {
+find_insta360_mounts() {
   # Explicit argument takes priority
   if [ -n "${1:-}" ] && [ -d "$1/DCIM/Camera01" ]; then
     echo "$1"
     return 0
   fi
-  # Auto-detect: look for Insta360 volume in /Volumes
+  local found=0
   for vol in /Volumes/*; do
     if [ -d "$vol/DCIM/Camera01" ]; then
-      # Verify it has Insta360 video files (.insv or .mp4 with VID_ prefix)
       if ls "$vol"/DCIM/Camera01/VID_*.insv &>/dev/null || ls "$vol"/DCIM/Camera01/VID_*.mp4 &>/dev/null; then
         echo "$vol"
-        return 0
+        found=1
       fi
     fi
   done
-  return 1
+  [ "$found" = "1" ]
 }
 
-SD_MOUNT=$(find_insta360_mount "${1:-}") || {
+MOUNTS=()
+while IFS= read -r line; do
+  [ -n "$line" ] && MOUNTS+=("$line")
+done < <(find_insta360_mounts "${1:-}" || true)
+
+if [ ${#MOUNTS[@]} -eq 0 ]; then
   log "No Insta360 SD card detected — nothing to do."
   exit 0
+fi
+
+log "Insta360 volume(s) found: ${MOUNTS[*]}"
+
+# Resolve a camera label per mount via volume UUID lookup
+resolve_camera_label_for() {
+  local mount="$1"
+  cd "$PROJECT_DIR" && uv run --no-sync python -c "
+from pathlib import Path
+from helmlog.insta360 import resolve_camera_label
+label, _known = resolve_camera_label(Path('$mount'))
+print(label)
+" 2>/dev/null || echo "$(basename "$mount")"
 }
 
-log "Insta360 SD card found at: $SD_MOUNT"
+# When multiple volumes are mounted, recurse one process per volume so each
+# camera processes in parallel without sharing temp dirs.
+if [ ${#MOUNTS[@]} -gt 1 ] && [ -z "${HELMLOG_PIPELINE_CHILD:-}" ]; then
+  log "Fanning out ${#MOUNTS[@]} pipeline runs (one per camera)..."
+  pids=()
+  for m in "${MOUNTS[@]}"; do
+    HELMLOG_PIPELINE_CHILD=1 "$0" "$m" &
+    pids+=($!)
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || warn "child pipeline pid $pid exited non-zero"
+  done
+  exit 0
+fi
+
+SD_MOUNT="${MOUNTS[0]}"
+CAMERA_LABEL="$(resolve_camera_label_for "$SD_MOUNT")"
+OUTPUT_DIR="$OUTPUT_BASE/$CAMERA_LABEL"
+log "Processing $SD_MOUNT as camera label: $CAMERA_LABEL"
+log "Output dir: $OUTPUT_DIR"
 
 # ── 2. Confirmation dialog (only when triggered by launchd) ─────────────────
 
@@ -152,10 +201,25 @@ for r in json.load(sys.stdin):
       INPUT_ARGS="$INPUT_ARGS /input/$BASENAME"
     done
 
+    STITCH_FLAGS=()
+    if [ "$FLOWSTATE" = "true" ]; then
+      STITCH_FLAGS+=(--flowstate)
+    else
+      STITCH_FLAGS+=(--no-flowstate)
+    fi
+    if [ "$DIRECTION_LOCK" = "true" ]; then
+      STITCH_FLAGS+=(--direction-lock)
+    else
+      STITCH_FLAGS+=(--no-direction-lock)
+    fi
+    [ -n "$BITRATE" ] && STITCH_FLAGS+=(--bitrate "$BITRATE")
+    [ -n "$RESOLUTION" ] && STITCH_FLAGS+=(--resolution "$RESOLUTION")
+
     docker run --rm \
       -v "$CAMERA_DIR:/input:ro" \
       -v "$OUTPUT_DIR:/output" \
       "$IMAGE" \
+      "${STITCH_FLAGS[@]}" \
       --output "/output/${TS}.mp4" $INPUT_ARGS \
     || {
       warn "[$TS] Stitching failed — skipping this recording"
@@ -201,6 +265,11 @@ fi
 
 log "Uploading to YouTube and linking to sessions..."
 
+export HELMLOG_CAMERA_LABEL="$CAMERA_LABEL"
+export YOUTUBE_ACCOUNT="$YT_ACCOUNT"
+export VIDEO_PRIVACY="$PRIVACY"
+export PI_API_URL="$PI_API"
+
 cd "$PROJECT_DIR"
 uv run python -c "
 import asyncio
@@ -219,6 +288,8 @@ async def main():
         pi_session_cookie=os.environ.get('PI_SESSION_COOKIE', ''),
         privacy=os.environ.get('VIDEO_PRIVACY', 'unlisted'),
         timezone=os.environ.get('TIMEZONE', 'America/Los_Angeles'),
+        camera_label=os.environ.get('HELMLOG_CAMERA_LABEL', ''),
+        youtube_account=os.environ.get('YOUTUBE_ACCOUNT', ''),
     )
 
     # Fetch sessions from the Pi for matching

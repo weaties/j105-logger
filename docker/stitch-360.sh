@@ -18,6 +18,10 @@ set -euo pipefail
 
 OUTPUT=""
 INPUTS=()
+FLOWSTATE="1"
+DIRECTION_LOCK="1"
+BITRATE=""
+RESOLUTION=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -25,11 +29,41 @@ while [ $# -gt 0 ]; do
       OUTPUT="$2"
       shift 2
       ;;
+    --flowstate)
+      FLOWSTATE="1"
+      shift
+      ;;
+    --no-flowstate)
+      FLOWSTATE="0"
+      shift
+      ;;
+    --direction-lock)
+      DIRECTION_LOCK="1"
+      shift
+      ;;
+    --no-direction-lock)
+      DIRECTION_LOCK="0"
+      shift
+      ;;
+    --bitrate)
+      BITRATE="$2"
+      shift 2
+      ;;
+    --resolution)
+      RESOLUTION="$2"
+      shift 2
+      ;;
     --help|-h)
-      echo "Usage: stitch-360 --output /output/FILE.mp4 /input/*.insv [...]"
+      echo "Usage: stitch-360 [opts] --output /output/FILE.mp4 /input/*.insv [...]"
       echo ""
       echo "Stitches Insta360 X4 .insv files into equirectangular 360° MP4."
       echo "Auto-detects stitcher: MediaSDKTest (best) or ffmpeg (fallback)."
+      echo ""
+      echo "Options:"
+      echo "  --flowstate / --no-flowstate           FlowState stabilization (default: on)"
+      echo "  --direction-lock / --no-direction-lock FlowState direction lock (default: on)"
+      echo "  --bitrate <N>                          Output bitrate (e.g. 100M)"
+      echo "  --resolution <WxH>                     Output resolution (e.g. 3840x1920)"
       exit 0
       ;;
     *)
@@ -78,13 +112,25 @@ case "$STITCHER" in
     # MediaSDKTest takes a single input file; for multi-segment recordings
     # we use the first segment (MediaSDK reads subsequent segments automatically
     # when they're in the same directory with sequential naming).
-    echo "==> Stitching with MediaSDK..."
-    MediaSDKTest \
-      -inputs "${INPUTS[0]}" \
-      -output "$TEMP_OUTPUT" \
-      -enable_flowstate \
-      -enable_directionlock \
+    echo "==> Stitching with MediaSDK (flowstate=$FLOWSTATE direction-lock=$DIRECTION_LOCK)..."
+    MEDIASDK_ARGS=(
+      -inputs "${INPUTS[0]}"
+      -output "$TEMP_OUTPUT"
       -enable_denoise
+    )
+    if [ "$FLOWSTATE" = "1" ]; then
+      MEDIASDK_ARGS+=(-enable_flowstate)
+    fi
+    if [ "$DIRECTION_LOCK" = "1" ]; then
+      MEDIASDK_ARGS+=(-enable_directionlock)
+    fi
+    if [ -n "$BITRATE" ]; then
+      MEDIASDK_ARGS+=(-bitrate "$BITRATE")
+    fi
+    if [ -n "$RESOLUTION" ]; then
+      MEDIASDK_ARGS+=(-output_size "$RESOLUTION")
+    fi
+    MediaSDKTest "${MEDIASDK_ARGS[@]}"
     ;;
   ffmpeg)
     # Fallback: .insv contains dual-fisheye (two video streams). Stream-copy

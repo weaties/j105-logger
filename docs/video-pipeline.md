@@ -102,7 +102,7 @@ cd ~/src/helmlog  # or wherever your clone is
 
 This will:
 - Verify Docker, exiftool, and uv are available
-- Create `~/Videos/helmlog/` for output files
+- Create `~/Insta360 Exports/` for output files
 - Check YouTube credentials
 - Install the launchd agent to watch for SD card mounts
 
@@ -129,15 +129,64 @@ All via environment variables (or set in `~/.zshrc`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `VIDEO_OUTPUT_DIR` | `~/Videos/helmlog` | Where stitched MP4s are saved |
+| `VIDEO_OUTPUT_DIR` | `~/Insta360 Exports` | Base dir; per-camera videos land in `<dir>/<camera_label>/` |
 | `VIDEO_RESOLUTION` | `3840x1920` | Output resolution (4K) |
+| `VIDEO_BITRATE` | *(stitcher default)* | Output bitrate (e.g. `100M`) |
+| `VIDEO_FLOWSTATE` | `true` | FlowState motion stabilization |
+| `VIDEO_DIRECTION_LOCK` | `true` | FlowState direction lock |
 | `DOCKER_IMAGE` | `insta360-cli-utils` | Docker image for stitching |
 | `PI_API_URL` | `http://corvopi:3002` | HelmLog API on the Pi |
 | `VIDEO_PRIVACY` | `unlisted` | YouTube privacy (private/unlisted/public) |
 | `TIMEZONE` | `America/Los_Angeles` | Camera's local timezone |
+| `YOUTUBE_ACCOUNT` | `corvo105` | YouTube channel handle. Picks `~/.config/helmlog/youtube/<account>.json` |
 | `YOUTUBE_CLIENT_SECRETS` | `~/.helmlog-youtube-client-secrets.json` | OAuth2 client secrets |
-| `YOUTUBE_TOKEN_FILE` | `~/.helmlog-youtube-token.json` | Cached OAuth2 token |
+| `YOUTUBE_TOKEN_FILE` | *(account-derived)* | Override OAuth2 token cache |
 | `PI_SESSION_COOKIE` | *(none)* | Session cookie for auto-linking videos (see below) |
+
+### Multi-camera support (issue #445)
+
+When more than one Insta360 volume is mounted (one SD card per physical
+camera, e.g. `bow` + `stern`), `process-videos.sh` fans out and runs one
+pipeline per volume in parallel. Each camera is identified by macOS
+volume UUID and mapped to a user-assigned label in
+`~/.config/helmlog/cameras.toml`:
+
+```toml
+[cameras]
+"ABCD-1234" = "bow"
+"EFGH-5678" = "stern"
+```
+
+On first sight of an unknown card the pipeline writes a placeholder
+(`camera-<uuid8>`) — rename it in the config file to set the label
+shown in YouTube titles (`… — bow cam`) and on the Pi link
+(`360 cam — bow`). Output paths use the label as a sub-directory:
+
+```
+~/Insta360 Exports/
+├── bow/
+│   └── 20260810_140000.mp4
+└── stern/
+    └── 20260810_140000.mp4
+```
+
+The default base directory changed from `~/Videos/helmlog` (issue #445).
+The old directory is left untouched on upgrade.
+
+### YouTube channel verification
+
+When `YOUTUBE_ACCOUNT` is set, the pipeline calls `channels.list(mine=true)`
+after loading the cached token and aborts the run if the authenticated
+channel title or handle doesn't match. This catches the "uploaded to my
+personal account by mistake" case before any bytes leave the Mac.
+Network failures during verification are downgraded to a warning so a
+flaky connection doesn't block uploads.
+
+### Future work (deferred from #445)
+
+- Admin UI in HelmLog to edit `video_settings` + camera labels (currently file-only on the Mac)
+- Pi-side `video_settings` table as the source of truth, with the Mac caching the latest values
+- OSC HTTP API path for pulling files over Wi-Fi without mounting the SD card
 
 ## How Videos Get Linked to Sessions
 

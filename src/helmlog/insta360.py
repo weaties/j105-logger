@@ -19,16 +19,17 @@ stitcher automatically pairs front+back.
 
 from __future__ import annotations
 
+import plistlib
 import re
+import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Filename parsing
@@ -171,6 +172,123 @@ def recording_start_utc(rec: InstaRecording, tz_name: str) -> datetime:
     naive = datetime.strptime(rec.timestamp_str, "%Y%m%d_%H%M%S")
     local_dt = naive.replace(tzinfo=tz)
     return local_dt.astimezone(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Camera identity (volume UUID → user-assigned label)
+# ---------------------------------------------------------------------------
+
+
+def default_camera_labels_path() -> Path:
+    """Return the on-disk camera-label config path on the Mac."""
+    return Path.home() / ".config" / "helmlog" / "cameras.toml"
+
+
+def volume_uuid_for(mount_path: Path) -> str | None:
+    """Return the macOS volume UUID for a mounted volume.
+
+    Uses ``diskutil info -plist <mount>``. Returns ``None`` on any
+    failure (non-macOS, unmounted, etc.) so callers can fall back to
+    the volume basename.
+    """
+    try:
+        result = subprocess.run(
+            ["diskutil", "info", "-plist", str(mount_path)],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("diskutil lookup failed for {}: {}", mount_path, exc)
+        return None
+    try:
+        info = plistlib.loads(result.stdout)
+    except plistlib.InvalidFileException as exc:
+        logger.debug("Could not parse diskutil plist for {}: {}", mount_path, exc)
+        return None
+    uuid = info.get("VolumeUUID") or info.get("DiskUUID")
+    return str(uuid) if uuid else None
+
+
+def _placeholder_label(volume_uuid: str) -> str:
+    """Build a placeholder camera label from a volume UUID."""
+    short = volume_uuid.replace("-", "").lower()[:8]
+    return f"camera-{short}"
+
+
+def load_camera_labels(path: Path | None = None) -> dict[str, str]:
+    """Load the volume-UUID → camera-label map from the Mac config file.
+
+    Returns an empty dict if the file is missing or unparseable.
+    """
+    cfg = path or default_camera_labels_path()
+    if not cfg.exists():
+        return {}
+    try:
+        data = tomllib.loads(cfg.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Could not read camera labels {}: {}", cfg, exc)
+        return {}
+    cameras = data.get("cameras", {})
+    if not isinstance(cameras, dict):
+        return {}
+    return {str(k).lower(): str(v) for k, v in cameras.items() if v}
+
+
+def save_camera_label(volume_uuid: str, label: str, path: Path | None = None) -> None:
+    """Persist a label for a volume UUID, creating the file if needed."""
+    cfg = path or default_camera_labels_path()
+    existing = load_camera_labels(cfg)
+    existing[volume_uuid.lower()] = label
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[cameras]"]
+    for uuid, lbl in sorted(existing.items()):
+        lines.append(f'"{uuid}" = "{lbl}"')
+    cfg.write_text("\n".join(lines) + "\n")
+
+
+def resolve_camera_label(
+    mount_path: Path,
+    *,
+    labels_path: Path | None = None,
+) -> tuple[str, bool]:
+    """Resolve the camera label to use for a mounted volume.
+
+    Strategy:
+      1. Look up the volume UUID via ``diskutil``.
+      2. If a stored label exists for that UUID, use it (``known=True``).
+      3. Otherwise persist a placeholder ``camera-<uuid8>`` and return
+         it as ``known=False`` so the caller can notify the user to
+         rename the camera in the config.
+      4. If the UUID lookup fails, fall back to the volume basename.
+
+    Returns:
+        ``(label, is_user_assigned)``.
+    """
+    uuid = volume_uuid_for(mount_path)
+    if uuid is None:
+        fallback = mount_path.name or "camera"
+        logger.warning(
+            "No volume UUID for {} — using basename {!r} as camera label",
+            mount_path,
+            fallback,
+        )
+        return fallback, False
+
+    labels = load_camera_labels(labels_path)
+    stored = labels.get(uuid.lower())
+    if stored:
+        return stored, True
+
+    placeholder = _placeholder_label(uuid)
+    save_camera_label(uuid, placeholder, labels_path)
+    logger.warning(
+        "Unknown camera (volume UUID {}); using placeholder label {!r}. Edit {} to rename.",
+        uuid,
+        placeholder,
+        labels_path or default_camera_labels_path(),
+    )
+    return placeholder, False
 
 
 # ---------------------------------------------------------------------------

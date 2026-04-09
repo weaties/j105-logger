@@ -23,7 +23,21 @@ from googleapiclient.discovery import build as _build_service  # type: ignore[im
 from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
 from loguru import logger
 
-_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
+
+
+def account_token_path(account: str) -> Path:
+    """Return the OAuth token cache path for a YouTube account.
+
+    Tokens live under ``~/.config/helmlog/youtube/<account>.json`` so
+    multiple channels can be used without clobbering each other.
+    """
+    base = Path.home() / ".config" / "helmlog" / "youtube"
+    return base / f"{account}.json"
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -82,6 +96,51 @@ def load_credentials(client_secrets: Path, token_file: Path) -> Credentials:
 def build_service(creds: Credentials) -> object:
     """Build the YouTube API service object."""
     return _build_service("youtube", "v3", credentials=creds)
+
+
+class ChannelMismatchError(RuntimeError):
+    """Raised when the authenticated channel does not match the expected account."""
+
+
+def verify_channel(service: object, expected_account: str) -> str:
+    """Confirm the loaded credentials authenticate to the expected channel.
+
+    Calls ``channels.list(mine=true)`` and compares the returned channel
+    title and custom URL/handle against ``expected_account``. Match is
+    case-insensitive and tolerates a leading ``@`` on the handle.
+
+    Args:
+        service: The YouTube API service from :func:`build_service`.
+        expected_account: Channel handle or title (e.g. ``"corvo105"``).
+
+    Returns:
+        The actual channel title returned by the API.
+
+    Raises:
+        ChannelMismatchError: If neither title nor handle matches.
+    """
+    expected = expected_account.lstrip("@").lower()
+    response = (
+        service.channels()  # type: ignore[attr-defined]
+        .list(part="snippet", mine=True)
+        .execute()
+    )
+    items = response.get("items") or []
+    if not items:
+        raise ChannelMismatchError(
+            f"YouTube credentials returned no channel; expected {expected_account!r}"
+        )
+    snippet = items[0].get("snippet", {})
+    title = str(snippet.get("title", ""))
+    custom_url = str(snippet.get("customUrl", "")).lstrip("@")
+    candidates = {title.lower(), custom_url.lower()}
+    if expected not in candidates:
+        raise ChannelMismatchError(
+            f"YouTube credentials authenticate {title!r}/{custom_url!r}, "
+            f"expected {expected_account!r}. Re-run OAuth for this account."
+        )
+    logger.info("YouTube channel verified: {} ({})", title, custom_url or "no handle")
+    return title
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +212,7 @@ async def upload_video(
     tags: list[str] | None = None,
     client_secrets: Path | None = None,
     token_file: Path | None = None,
+    youtube_account: str | None = None,
 ) -> UploadResult:
     """Upload a video to YouTube via the Data API v3.
 
@@ -178,15 +238,36 @@ async def upload_video(
             str(Path.home() / ".helmlog-youtube-client-secrets.json"),
         )
     )
-    token = token_file or Path(
-        os.environ.get(
-            "YOUTUBE_TOKEN_FILE",
-            str(Path.home() / ".helmlog-youtube-token.json"),
+    if token_file is not None:
+        token = token_file
+    elif youtube_account:
+        token = account_token_path(youtube_account)
+        token.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        token = Path(
+            os.environ.get(
+                "YOUTUBE_TOKEN_FILE",
+                str(Path.home() / ".helmlog-youtube-token.json"),
+            )
         )
-    )
 
     creds = load_credentials(secrets, token)
     service = build_service(creds)
+
+    # Verify we're talking to the expected channel before uploading. Network
+    # errors are downgraded to a warning so transient failures don't block
+    # uploads (the cached token is still trusted in that case).
+    if youtube_account:
+        try:
+            verify_channel(service, youtube_account)
+        except ChannelMismatchError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not verify YouTube channel for {!r}: {} — proceeding",
+                youtube_account,
+                exc,
+            )
 
     body: dict[str, object] = {
         "snippet": {

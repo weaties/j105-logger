@@ -26,12 +26,28 @@ from helmlog.youtube import build_description, build_title, upload_video
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    """Runtime configuration for the video pipeline."""
+    """Runtime configuration for the video pipeline.
+
+    Attributes:
+        pi_api_url: HelmLog Pi base URL.
+        pi_session_cookie: Auth cookie for Pi API calls (enables linking).
+        privacy: YouTube privacy status for uploads.
+        timezone: Camera local timezone for filename → UTC conversion.
+        camera_label: Per-camera identifier (e.g. ``"bow"``, ``"stern"``).
+            Used for output subdirectory, YouTube title suffix, and the
+            link label posted to the Pi. Empty string disables the
+            per-camera suffix (single-camera mode).
+        youtube_account: YouTube channel handle to upload to. Drives
+            which OAuth token file is loaded — see
+            :func:`helmlog.youtube.upload_video`.
+    """
 
     pi_api_url: str = "http://corvopi:3002"
     pi_session_cookie: str = ""
     privacy: str = "unlisted"
     timezone: str = "America/Los_Angeles"
+    camera_label: str = ""
+    youtube_account: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +101,20 @@ async def fetch_sessions_from_pi(
         return []
 
 
+def build_link_label(camera_label: str = "") -> str:
+    """Build the per-video label posted to the Pi when linking.
+
+    Examples:
+        >>> build_link_label("")
+        '360 cam'
+        >>> build_link_label("bow")
+        '360 cam — bow'
+    """
+    if camera_label:
+        return f"360 cam — {camera_label}"
+    return "360 cam"
+
+
 async def _link_video_on_pi(
     *,
     pi_api_url: str,
@@ -92,6 +122,7 @@ async def _link_video_on_pi(
     youtube_url: str,
     sync_utc: str,
     session_cookie: str,
+    label: str = "360 cam",
 ) -> httpx.Response:
     """POST to the Pi API to link a YouTube video to a session.
 
@@ -102,7 +133,7 @@ async def _link_video_on_pi(
             f"{pi_api_url}/api/sessions/{session_id}/videos",
             json={
                 "youtube_url": youtube_url,
-                "label": "360 cam",
+                "label": label,
                 "sync_utc": sync_utc,
                 "sync_offset_s": 0.0,
             },
@@ -146,6 +177,7 @@ async def process_recording(
     result.session_id = session_id
 
     # Build metadata
+    title_suffix = f" — {config.camera_label} cam" if config.camera_label else ""
     if session:
         title = build_title(
             event=session.get("event"),
@@ -153,6 +185,7 @@ async def process_recording(
             race_num=session.get("race_num"),
             date=start_utc.strftime("%Y-%m-%d"),
         )
+        title = f"{title}{title_suffix}"
         base = f"{config.pi_api_url}/history"
         session_slug = session.get("slug")
         if session_id and session_slug:
@@ -176,6 +209,7 @@ async def process_recording(
             race_num=None,
             date=start_utc.strftime("%Y-%m-%d"),
         )
+        title = f"{title}{title_suffix}"
         desc = build_description(
             session_url=f"{config.pi_api_url}/history",
             start_utc=start_utc.isoformat(),
@@ -190,6 +224,7 @@ async def process_recording(
             title=title,
             description=desc,
             privacy=config.privacy,
+            youtube_account=config.youtube_account or None,
         )
         result.uploaded = True
         result.video_id = upload_result.video_id
@@ -209,6 +244,7 @@ async def process_recording(
                 youtube_url=upload_result.youtube_url,
                 sync_utc=start_utc.isoformat(),
                 session_cookie=config.pi_session_cookie,
+                label=build_link_label(config.camera_label),
             )
             if link_resp.status_code == 201:
                 result.linked = True
