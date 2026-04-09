@@ -276,18 +276,21 @@ function _createPlayer(videoId) {
   if (!container) return;
   const iframe = document.createElement('iframe');
   iframe.id = 'yt-player-iframe';
-  iframe.width = '100%';
-  iframe.height = '100%';
-  iframe.frameBorder = '0';
+  iframe.style.width = '100%';
+  iframe.style.height = '100%';
+  iframe.style.border = '0';
   iframe.setAttribute(
     'allow',
     'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; xr-spatial-tracking'
   );
   iframe.setAttribute('allowfullscreen', '');
+  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+  // Match YouTube's official embed code as closely as possible.
+  // Notably: no modestbranding (deprecated and can interfere with player chrome
+  // that hosts 360 controls), no rel param, just enablejsapi for sync.
   const params = new URLSearchParams({
     enablejsapi: '1',
-    modestbranding: '1',
-    rel: '0',
+    playsinline: '1',
     origin: location.origin,
   });
   iframe.src = 'https://www.youtube.com/embed/' + videoId + '?' + params.toString();
