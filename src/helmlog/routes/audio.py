@@ -90,7 +90,10 @@ async def api_transcribe(
     from helmlog.transcribe import transcribe_session
 
     t_url = await get_effective_setting(storage, "TRANSCRIBE_URL")
-    diarize = bool(os.environ.get("HF_TOKEN"))
+    # When offloading to a remote worker, always request diarization —
+    # the worker has its own HF_TOKEN and decides locally.  Only gate on
+    # the Pi's HF_TOKEN when running the local fallback path.
+    diarize = True if t_url else bool(os.environ.get("HF_TOKEN"))
     asyncio.create_task(
         transcribe_session(
             storage,

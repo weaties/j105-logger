@@ -2647,6 +2647,40 @@ async def test_create_transcript_job_202(storage: Storage, tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_transcribe_requests_diarize_when_remote(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When TRANSCRIBE_URL is set, diarize=True even without local HF_TOKEN."""
+    from unittest.mock import AsyncMock, patch
+
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    session_id = await _create_audio_session(storage, tmp_path)
+    app = create_app(storage)
+
+    # Stub get_effective_setting to return a remote URL for TRANSCRIBE_URL
+    async def _fake_setting(st: object, key: str, default: str = "") -> str:
+        return "http://fake-mac:8321" if key == "TRANSCRIBE_URL" else default
+
+    mock_transcribe = AsyncMock()
+    with (
+        patch("helmlog.transcribe.transcribe_session", mock_transcribe),
+        patch("helmlog.storage.get_effective_setting", side_effect=_fake_setting),
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            resp = await client.post(f"/api/audio/{session_id}/transcribe")
+        assert resp.status_code == 202
+
+        # Verify transcribe_session was called with diarize=True
+        mock_transcribe.assert_called_once()
+        _, kwargs = mock_transcribe.call_args
+        assert kwargs["diarize"] is True, (
+            "Expected diarize=True when TRANSCRIBE_URL is set (even without local HF_TOKEN)"
+        )
+
+
+@pytest.mark.asyncio
 async def test_transcript_done(storage: Storage, tmp_path: Path) -> None:
     """After transcription completes, GET returns {status:'done', text:...}."""
     from unittest.mock import patch
