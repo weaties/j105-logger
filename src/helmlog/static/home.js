@@ -1344,7 +1344,14 @@ async function _savePhotoNote(sessionId) {
   if (!input.files || !input.files[0]) return;
   const fd = new FormData();
   fd.append('file', input.files[0]);
-  await fetch('/api/sessions/' + sessionId + '/notes/photo', {method: 'POST', body: fd});
+  const resp = await fetch('/api/sessions/' + sessionId + '/notes/photo', {method: 'POST', body: fd});
+  if (!resp.ok) {
+    const mb = (input.files[0].size / 1048576).toFixed(1);
+    alert(resp.status === 413
+      ? 'Photo too large (' + mb + ' MB). Maximum upload size is 20 MB.'
+      : 'Photo upload failed (HTTP ' + resp.status + '). Please try again.');
+    return;
+  }
   input.value = '';
   document.getElementById('photo-preview').innerHTML = '';
   _closeNotePanel(sessionId);
