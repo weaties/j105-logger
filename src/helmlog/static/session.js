@@ -1138,8 +1138,11 @@ function _renderDiarizedTranscript(body, t) {
   _registerTranscriptSurface();
 }
 
+let _transcriptSurfaceRegistered = false;
 function _registerTranscriptSurface() {
   if (!_session || !_session.audio_start_utc) return;
+  if (_transcriptSurfaceRegistered) return; // idempotent — transcript may re-render on poll
+  _transcriptSurfaceRegistered = true;
   const audioStart = new Date(
     _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
       ? _session.audio_start_utc
@@ -1272,7 +1275,13 @@ function loadAudio() {
     + '<source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav">'
     + '</audio>';
   const el = document.getElementById('session-audio');
-  if (!el || !_session.audio_start_utc) return;
+  if (!el) return;
+  // Always wire audio→transcript highlighting (works even if audio_start_utc
+  // is missing — segments use audio-local seconds, same as el.currentTime).
+  el.addEventListener('timeupdate', _highlightTranscriptFromAudio);
+  el.addEventListener('seeked', _highlightTranscriptFromAudio);
+
+  if (!_session.audio_start_utc) return;
   const audioStart = new Date(
     _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
       ? _session.audio_start_utc
@@ -1290,11 +1299,19 @@ function loadAudio() {
     try { el.currentTime = local; } catch (e) { /* not seekable yet */ }
   });
 
-  // Audio is a producer — when the user scrubs/plays, fan out to other surfaces
-  el.addEventListener('seeked', function() {
+  // Audio is a producer — fan out to other surfaces when user scrubs/plays.
+  // timeupdate fires ~4 Hz during playback, so this drives the map cursor and
+  // any other UTC-based consumers in real time.
+  let _audioFanoutLast = 0;
+  const _fanout = () => {
     if (_isEchoEvent()) return;
+    const now = _clockNowMs();
+    if (now - _audioFanoutLast < 150) return; // throttle
+    _audioFanoutLast = now;
     setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
-  });
+  };
+  el.addEventListener('seeked', _fanout);
+  el.addEventListener('timeupdate', _fanout);
   el.addEventListener('play', function() {
     setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
     _startPlayTick();
@@ -1302,12 +1319,35 @@ function loadAudio() {
   el.addEventListener('pause', function() {
     _stopPlayTick();
   });
-  el.addEventListener('timeupdate', function() {
-    if (_playClock.state !== 'playing') return;
-    // Master tick comes from audio while playing — re-anchor each tick
-    _playClock.tickAnchorUtc = audioLocalToUtc(el.currentTime);
-    _playClock.tickAnchorPerf = _clockNowMs();
-  });
+}
+
+// Direct transcript highlighter — follows audio.currentTime regardless of
+// playback-clock state. Drives the same active-segment styling and scroll
+// behavior as the clock-driven path.
+function _highlightTranscriptFromAudio(ev) {
+  const el = ev && ev.target ? ev.target : document.getElementById('session-audio');
+  if (!el || !_transcriptBlocks.length) return;
+  const t = el.currentTime;
+  const segs = document.querySelectorAll('.transcript-seg');
+  let activeIdx = -1;
+  for (let i = 0; i < _transcriptBlocks.length; i++) {
+    const b = _transcriptBlocks[i];
+    if (t >= b.start && t <= b.end) { activeIdx = i; break; }
+  }
+  for (let i = 0; i < segs.length; i++) {
+    const segEl = segs[i];
+    if (!segEl) continue;
+    if (i === activeIdx) {
+      segEl.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
+      const container = document.getElementById('transcript-segments');
+      if (container && (segEl.offsetTop < container.scrollTop
+          || segEl.offsetTop + segEl.offsetHeight > container.scrollTop + container.clientHeight)) {
+        segEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      }
+    } else {
+      segEl.style.background = '';
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
