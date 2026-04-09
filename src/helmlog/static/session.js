@@ -266,43 +266,52 @@ function onYouTubeIframeAPIReady() {
 function _createPlayer(videoId) {
   if (_videoSync.player) {
     _videoSync.player.loadVideoById(videoId);
+    _updateWatchOnYoutubeLink(videoId);
     return;
   }
-  // Create an iframe MANUALLY with the right `allow` attribute BEFORE loading
-  // the YouTube embed.  Setting `allow` after the iframe loads is too late —
-  // the security context is already established and 360 panning, gyroscope,
-  // and VR controls won't work for spherical videos.
-  const container = document.getElementById('yt-player');
-  if (!container) return;
-  const iframe = document.createElement('iframe');
-  iframe.id = 'yt-player-iframe';
-  iframe.style.width = '100%';
-  iframe.style.height = '100%';
-  iframe.style.border = '0';
-  iframe.setAttribute(
-    'allow',
-    'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen; xr-spatial-tracking'
-  );
-  iframe.setAttribute('allowfullscreen', '');
-  iframe.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
-  // Match YouTube's official embed code as closely as possible.
-  // Notably: no modestbranding (deprecated and can interfere with player chrome
-  // that hosts 360 controls), no rel param, just enablejsapi for sync.
-  const params = new URLSearchParams({
-    enablejsapi: '1',
-    playsinline: '1',
-    origin: location.origin,
-  });
-  iframe.src = 'https://www.youtube.com/embed/' + videoId + '?' + params.toString();
-  container.innerHTML = '';
-  container.appendChild(iframe);
-
-  // Attach the YT.Player API to the existing iframe (not a div).
-  _videoSync.player = new YT.Player('yt-player-iframe', {
+  // Use the standard YT.Player div-based instantiation. The manual iframe
+  // approach broke YouTube's embedder identity verification (Error 153).
+  // 360 video panning is NOT supported in YouTube iframe embeds for
+  // third-party domains regardless of `allow` attributes — it only works on
+  // youtube.com itself and in the YouTube app. We expose a "Watch on YouTube"
+  // link below the player as the workaround for spherical videos.
+  _videoSync.player = new YT.Player('yt-player', {
+    height: '100%',
+    width: '100%',
+    videoId: videoId,
+    playerVars: {
+      modestbranding: 1,
+      rel: 0,
+      enablejsapi: 1,
+      origin: location.origin,
+    },
     events: {
       onStateChange: _onPlayerStateChange,
     },
   });
+  _updateWatchOnYoutubeLink(videoId);
+}
+
+function _updateWatchOnYoutubeLink(videoId) {
+  // Render a "Watch on YouTube" link below the player so 360 / spherical
+  // videos can be opened in YouTube's native viewer for panning controls.
+  let linkBar = document.getElementById('yt-watch-on-youtube');
+  if (!linkBar) {
+    linkBar = document.createElement('div');
+    linkBar.id = 'yt-watch-on-youtube';
+    linkBar.style.cssText = 'margin-top:6px;text-align:right;font-size:.75rem';
+    const container = document.getElementById('video-container');
+    if (container) container.appendChild(linkBar);
+  }
+  // Try to seek to current sync position
+  let t = 0;
+  try {
+    if (_videoSync && _videoSync.player && _videoSync.player.getCurrentTime) {
+      t = Math.floor(_videoSync.player.getCurrentTime() || 0);
+    }
+  } catch (e) { /* ignore */ }
+  const url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId) + (t > 0 ? '&t=' + t + 's' : '');
+  linkBar.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" title="Open in YouTube for 360° panning controls">Watch on YouTube &#8599;</a>';
 }
 
 function switchVideo(idx) {
