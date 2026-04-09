@@ -55,11 +55,20 @@ async def transcribe(
 
         from helmlog.transcribe import (
             _pyannote_available,
-            _run_whisper,
             _run_with_diarization,
         )
 
-        use_diarize = want_diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
+        has_token = bool(os.environ.get("HF_TOKEN"))
+        has_pyannote = _pyannote_available()
+        use_diarize = want_diarize and has_token and has_pyannote
+
+        if want_diarize and not use_diarize:
+            reasons = []
+            if not has_token:
+                reasons.append("HF_TOKEN not set")
+            if not has_pyannote:
+                reasons.append("pyannote.audio not installed")
+            logger.warning("Diarization requested but unavailable: {}", ", ".join(reasons))
 
         if use_diarize:
             text, segments_json_str = _run_with_diarization(
@@ -67,11 +76,21 @@ async def transcribe(
             )
             segments: list[dict[str, Any]] = json.loads(segments_json_str)
         else:
-            text = _run_whisper(file_path=tmp_path, model_size=model_size)
-            segments = [{"start": 0.0, "end": 0.0, "text": text}]
+            from helmlog.transcribe import _run_whisper_segments
 
-        logger.info("Done: {} chars, {} segments", len(text), len(segments))
-        return JSONResponse({"text": text, "segments": segments})
+            raw_segs = _run_whisper_segments(file_path=tmp_path, model_size=model_size)
+            text = " ".join(t for _, _, t in raw_segs).strip()
+            segments = [{"start": s, "end": e, "text": t} for s, e, t in raw_segs]
+
+        logger.info(
+            "Done: {} chars, {} segments, diarized={}",
+            len(text), len(segments), use_diarize,
+        )
+        return JSONResponse({
+            "text": text,
+            "segments": segments,
+            "diarized": use_diarize,
+        })
     finally:
         os.unlink(tmp_path)
 

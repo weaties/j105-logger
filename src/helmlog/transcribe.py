@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 # Remote transcription offload
 # ---------------------------------------------------------------------------
 
-_REMOTE_TIMEOUT_S = 600  # 10 minutes — long recordings on slow networks
+_REMOTE_TIMEOUT_S = 3600  # 1 hour — diarization on CPU is slow for long debriefs
 
 
 async def _try_remote_transcribe(
@@ -147,6 +147,9 @@ async def transcribe_session(
                 audio_session_id,
                 len(text),
             )
+            # Voice learning: auto-match speakers against stored profiles
+            if diarize and segments:
+                await _try_auto_match(storage, transcript_id, file_path, segments)
             await _run_trigger_scan(storage, audio_session_id, row, segments)
             return
 
@@ -165,6 +168,8 @@ async def transcribe_session(
             )
             assert segments_json_str is not None  # _run_with_diarization always returns str
             segments = json.loads(segments_json_str)
+            # Voice learning: auto-match speakers against stored profiles
+            await _try_auto_match(storage, transcript_id, file_path, segments)
         else:
             raw_segs = await asyncio.to_thread(
                 _run_whisper_segments, file_path=file_path, model_size=model_size
@@ -279,7 +284,10 @@ def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1", token=token)
     if pipeline is None:
         raise RuntimeError("pyannote Pipeline.from_pretrained returned None — check HF_TOKEN")
-    pipeline.to(torch.device("cpu"))
+    # Use Apple Silicon GPU when available — ~5x faster than CPU for pyannote
+    device = torch.device("mps") if torch.backends.mps.is_available() else torch.device("cpu")
+    logger.debug("pyannote device: {}", device)
+    pipeline.to(device)
 
     # Load audio via soundfile → numpy, then convert to torch tensor.
     # soundfile returns (samples,) for mono or (samples, channels) for multi-channel;
@@ -332,3 +340,321 @@ def _run_with_diarization(*, file_path: str, model_size: str) -> tuple[str, str]
     segments = _merge(whisper_segs, diar_segs)
     plain = "\n".join(f"{seg['speaker']}: {str(seg['text']).strip()}" for seg in segments)
     return plain, json.dumps(segments)
+
+
+# ---------------------------------------------------------------------------
+# Voice learning: embedding extraction + auto-matching (#443)
+# ---------------------------------------------------------------------------
+
+# Minimum thresholds before building a voice profile
+_MIN_SEGMENTS_FOR_PROFILE = 30
+_MIN_SESSIONS_FOR_PROFILE = 2
+
+# Confidence thresholds for auto-matching
+_AUTO_MATCH_HIGH = 0.7  # auto-assign
+_AUTO_MATCH_LOW = 0.4  # suggest (marginal)
+
+
+async def _try_auto_match(
+    storage: Storage,
+    transcript_id: int,
+    file_path: str,
+    segments: list[dict[str, object]],
+) -> None:
+    """Best-effort auto-matching of speakers against stored voice profiles."""
+    try:
+        # Build diar_segs from merged segments for embedding extraction
+        diar_segs = [
+            (float(str(seg["start"])), float(str(seg["end"])), str(seg.get("speaker", "")))
+            for seg in segments
+            if seg.get("speaker")
+        ]
+        if not diar_segs:
+            return
+        speaker_embs = await asyncio.to_thread(_extract_speaker_embeddings, file_path, diar_segs)
+        if speaker_embs:
+            await auto_match_speakers(storage, transcript_id, speaker_embs)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Auto-match failed (non-critical): {}", exc)
+
+
+def _extract_speaker_embeddings(
+    file_path: str,
+    diar_segs: list[tuple[float, float, str]],
+) -> dict[str, bytes]:
+    """Extract per-speaker embedding vectors from diarization segments.
+
+    Uses the pyannote embedding model to compute a centroid embedding for each
+    speaker by averaging embeddings across their segments.
+
+    Returns a dict mapping normalised speaker labels (SPEAKER_00, etc.) to
+    serialised float32 embedding bytes.
+    """
+    try:
+        import numpy as np
+        import soundfile as sf
+        import torch
+        from pyannote.audio import Model
+    except ImportError:
+        logger.debug("pyannote/torch not available for embedding extraction")
+        return {}
+
+    token = os.environ.get("HF_TOKEN") or None
+    try:
+        loaded = Model.from_pretrained("pyannote/wespeaker-voxceleb-resnet34-LM", token=token)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not load embedding model: {}", exc)
+        return {}
+    if loaded is None:
+        logger.debug("Embedding model returned None")
+        return {}
+
+    from pyannote.audio import Inference
+
+    inference = Inference(loaded, window="whole")
+
+    data, sample_rate = sf.read(file_path, dtype="float32")
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+
+    # Normalise speaker labels same as _merge
+    unique: list[str] = []
+    for _, _, label in diar_segs:
+        if label not in unique:
+            unique.append(label)
+    label_map = {lbl: f"SPEAKER_{i:02d}" for i, lbl in enumerate(unique)}
+
+    # Group segments by speaker
+    speaker_segs: dict[str, list[tuple[float, float]]] = {}
+    for s, e, lbl in diar_segs:
+        norm = label_map[lbl]
+        speaker_segs.setdefault(norm, []).append((s, e))
+
+    embeddings: dict[str, bytes] = {}
+    for speaker, segs in speaker_segs.items():
+        seg_embeddings = []
+        for start, end in segs:
+            start_frame = int(start * sample_rate)
+            end_frame = min(int(end * sample_rate), len(data))
+            if end_frame - start_frame < sample_rate * 0.5:
+                continue  # skip very short segments
+            chunk = data[start_frame:end_frame]
+            if chunk.ndim > 1:
+                waveform = torch.from_numpy(chunk).T
+            else:
+                waveform = torch.from_numpy(chunk).unsqueeze(0)
+            try:
+                emb = inference({"waveform": waveform, "sample_rate": sample_rate})
+                seg_embeddings.append(emb)
+            except Exception:  # noqa: BLE001
+                continue
+        if seg_embeddings:
+            centroid = np.mean(seg_embeddings, axis=0).astype(np.float32)
+            embeddings[speaker] = centroid.tobytes()
+
+    return embeddings
+
+
+def _cosine_similarity(a: bytes, b: bytes) -> float:
+    """Compute cosine similarity between two float32 embedding byte vectors."""
+    import numpy as np
+
+    va = np.frombuffer(a, dtype=np.float32)
+    vb = np.frombuffer(b, dtype=np.float32)
+    if len(va) != len(vb) or len(va) == 0:
+        return 0.0
+    dot = float(np.dot(va, vb))
+    norm = float(np.linalg.norm(va) * np.linalg.norm(vb))
+    return dot / norm if norm > 0 else 0.0
+
+
+async def auto_match_speakers(
+    storage: Storage,
+    transcript_id: int,
+    speaker_embeddings: dict[str, bytes],
+) -> dict[str, dict[str, object]]:
+    """Match diarized speakers against stored voice profiles.
+
+    Returns a dict of speaker_label → {type, user_id, name, confidence} for
+    speakers that exceed the marginal confidence threshold.
+    """
+    if not speaker_embeddings:
+        return {}
+
+    # Load all voice profiles with consent
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT vp.user_id, vp.embedding, u.name"
+        " FROM crew_voice_profiles vp"
+        " JOIN users u ON u.id = vp.user_id"
+        " JOIN crew_consents cc ON cc.user_id = vp.user_id"
+        "   AND cc.consent_type = 'voice_profile' AND cc.granted = 1"
+    )
+    profiles = await cur.fetchall()
+    if not profiles:
+        return {}
+
+    matches: dict[str, dict[str, object]] = {}
+    used_users: set[int] = set()
+
+    # For each speaker, find best matching profile
+    scored: list[tuple[str, int, str, float]] = []
+    for speaker, emb in speaker_embeddings.items():
+        for profile in profiles:
+            sim = _cosine_similarity(emb, profile["embedding"])
+            scored.append((speaker, profile["user_id"], profile["name"], sim))
+
+    # Sort by confidence descending, assign greedily (no double-assignment)
+    scored.sort(key=lambda x: x[3], reverse=True)
+    for speaker, uid, name, conf in scored:
+        if speaker in matches or uid in used_users:
+            continue
+        if conf < _AUTO_MATCH_LOW:
+            continue
+        matches[speaker] = {
+            "type": "auto",
+            "user_id": uid,
+            "name": name,
+            "confidence": round(conf, 2),
+        }
+        used_users.add(uid)
+
+    # Write auto-matches to the transcript's speaker_map
+    if matches:
+        existing = await storage.get_speaker_map(transcript_id)
+        for label, entry in matches.items():
+            if label not in existing:  # don't overwrite manual assignments
+                existing[label] = entry
+        await db.execute(
+            "UPDATE transcripts SET speaker_map = ? WHERE id = ?",
+            (json.dumps(existing), transcript_id),
+        )
+        await db.commit()
+        logger.info(
+            "Auto-matched {} speakers in transcript {}: {}",
+            len(matches),
+            transcript_id,
+            {k: f"{v['name']} ({v['confidence']})" for k, v in matches.items()},
+        )
+
+    return matches
+
+
+async def maybe_build_voice_profile(
+    storage: Storage,
+    user_id: int,
+) -> bool:
+    """Check if enough manual assignments exist to build/update a voice profile.
+
+    Requires ≥ _MIN_SEGMENTS_FOR_PROFILE segments across ≥ _MIN_SESSIONS_FOR_PROFILE sessions.
+    Returns True if a profile was built or updated.
+    """
+    # Check consent
+    consents = await storage.get_crew_consents(user_id)
+    has_consent = any(c["consent_type"] == "voice_profile" and c["granted"] for c in consents)
+    if not has_consent:
+        return False
+
+    # Count manual crew assignments across transcripts
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT t.id, t.speaker_map, a.file_path, t.segments_json"
+        " FROM transcripts t"
+        " JOIN audio_sessions a ON a.id = t.audio_session_id"
+        " WHERE t.speaker_map IS NOT NULL AND t.segments_json IS NOT NULL"
+    )
+    rows = await cur.fetchall()
+
+    total_segments = 0
+    sessions_with_assignment = 0
+
+    for row in rows:
+        smap = json.loads(row["speaker_map"] or "{}")
+        user_labels = [
+            label
+            for label, entry in smap.items()
+            if isinstance(entry, dict)
+            and entry.get("type") == "crew"
+            and entry.get("user_id") == user_id
+        ]
+        if not user_labels:
+            continue
+        sessions_with_assignment += 1
+        segments = json.loads(row["segments_json"] or "[]")
+        for seg in segments:
+            if seg.get("speaker") in user_labels:
+                total_segments += 1
+
+    if (
+        total_segments < _MIN_SEGMENTS_FOR_PROFILE
+        or sessions_with_assignment < _MIN_SESSIONS_FOR_PROFILE
+    ):
+        logger.debug(
+            "Voice profile for user {}: {}/{} segments, {}/{} sessions — not enough yet",
+            user_id,
+            total_segments,
+            _MIN_SEGMENTS_FOR_PROFILE,
+            sessions_with_assignment,
+            _MIN_SESSIONS_FOR_PROFILE,
+        )
+        return False
+
+    # Compute aggregate embedding from all assigned segments
+    if not _pyannote_available():
+        logger.debug("pyannote not available — cannot build voice profile")
+        return False
+
+    logger.info(
+        "Building voice profile for user {}: {} segments across {} sessions",
+        user_id,
+        total_segments,
+        sessions_with_assignment,
+    )
+
+    try:
+        import numpy as np
+    except ImportError:
+        return False
+
+    all_embeddings: list[bytes] = []
+    for row in rows:
+        smap = json.loads(row["speaker_map"] or "{}")
+        user_labels = [
+            label
+            for label, entry in smap.items()
+            if isinstance(entry, dict)
+            and entry.get("type") == "crew"
+            and entry.get("user_id") == user_id
+        ]
+        if not user_labels:
+            continue
+        file_path = row["file_path"]
+        # Extract embeddings for the assigned speaker labels
+        segments = json.loads(row["segments_json"] or "[]")
+        diar_segs = [
+            (seg["start"], seg["end"], seg["speaker"])
+            for seg in segments
+            if seg.get("speaker") in user_labels
+        ]
+        if not diar_segs:
+            continue
+        try:
+            embs = await asyncio.to_thread(_extract_speaker_embeddings, file_path, diar_segs)
+            all_embeddings.extend(embs.values())
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Embedding extraction failed for {}: {}", file_path, exc)
+
+    if not all_embeddings:
+        return False
+
+    # Compute centroid
+    vecs = [np.frombuffer(e, dtype=np.float32) for e in all_embeddings]
+    centroid = np.mean(vecs, axis=0).astype(np.float32)
+    await storage.upsert_voice_profile(
+        user_id,
+        centroid.tobytes(),
+        segment_count=total_segments,
+        session_count=sessions_with_assignment,
+    )
+    logger.info("Voice profile built for user {}", user_id)
+    return True

@@ -15,6 +15,9 @@ let _maneuverMarkers = []; // Leaflet markers for maneuvers
 let _transcriptId = null; // transcript ID for tuning extraction
 let _tuningSegmentAudio = null; // shared <audio> for segment playback
 let _tuningSegmentTimer = null; // timeupdate stop timer
+let _transcriptAudio = null; // shared <audio> for transcript segment playback
+let _transcriptBlocks = []; // merged transcript blocks for highlight tracking
+let _speakerMap = {}; // speaker_map from API (crew assignments)
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -263,8 +266,15 @@ function onYouTubeIframeAPIReady() {
 function _createPlayer(videoId) {
   if (_videoSync.player) {
     _videoSync.player.loadVideoById(videoId);
+    _updateWatchOnYoutubeLink(videoId);
     return;
   }
+  // Use the standard YT.Player div-based instantiation. The manual iframe
+  // approach broke YouTube's embedder identity verification (Error 153).
+  // 360 video panning is NOT supported in YouTube iframe embeds for
+  // third-party domains regardless of `allow` attributes — it only works on
+  // youtube.com itself and in the YouTube app. We expose a "Watch on YouTube"
+  // link below the player as the workaround for spherical videos.
   _videoSync.player = new YT.Player('yt-player', {
     height: '100%',
     width: '100%',
@@ -279,6 +289,29 @@ function _createPlayer(videoId) {
       onStateChange: _onPlayerStateChange,
     },
   });
+  _updateWatchOnYoutubeLink(videoId);
+}
+
+function _updateWatchOnYoutubeLink(videoId) {
+  // Render a "Watch on YouTube" link below the player so 360 / spherical
+  // videos can be opened in YouTube's native viewer for panning controls.
+  let linkBar = document.getElementById('yt-watch-on-youtube');
+  if (!linkBar) {
+    linkBar = document.createElement('div');
+    linkBar.id = 'yt-watch-on-youtube';
+    linkBar.style.cssText = 'margin-top:6px;text-align:right;font-size:.75rem';
+    const container = document.getElementById('video-container');
+    if (container) container.appendChild(linkBar);
+  }
+  // Try to seek to current sync position
+  let t = 0;
+  try {
+    if (_videoSync && _videoSync.player && _videoSync.player.getCurrentTime) {
+      t = Math.floor(_videoSync.player.getCurrentTime() || 0);
+    }
+  } catch (e) { /* ignore */ }
+  const url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId) + (t > 0 ? '&t=' + t + 's' : '');
+  linkBar.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" title="Open in YouTube for 360° panning controls">Watch on YouTube &#8599;</a>';
 }
 
 function switchVideo(idx) {
@@ -953,36 +986,169 @@ async function loadTranscript() {
     _transcriptId = t.id;
     loadTuningExtractions();
   }
-  if (t.segments && t.segments.length > 0) {
-    const blocks = [];
-    for (const seg of t.segments) {
-      const last = blocks[blocks.length - 1];
-      if (last && last.speaker === seg.speaker) {
-        last.text += ' ' + seg.text; last.end = seg.end;
-      } else { blocks.push({...seg}); }
-    }
-    const speakers = [...new Set(blocks.map(b => b.speaker))];
-    const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
-    const color = s => palette[speakers.indexOf(s) % palette.length];
-    const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
-    body.innerHTML = '<div style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
-      + blocks.map(b =>
-        '<div style="margin-bottom:8px">'
-        + '<span style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem">' + esc(b.speaker) + '</span>'
-        + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[' + fmt(b.start) + ']</span>'
-        + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">' + esc(b.text.trim()) + '</div>'
-        + '</div>'
-      ).join('')
-      + '</div>';
+  _speakerMap = t.speaker_map || {};
+  // Check if segments have speaker labels (diarized) vs plain whisper segments
+  const hasDiarizedSegments = t.segments && t.segments.length > 0
+    && t.segments.some(s => s.speaker);
+  if (hasDiarizedSegments) {
+    _renderDiarizedTranscript(body, t);
   } else {
     const text = t.text ? esc(t.text) : '(empty)';
-    body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
+    body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>'
+      + '<div style="margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="retranscribe()" title="Re-run transcription with speaker diarization">&#8635; Retranscribe with diarization</button></div>';
   }
+}
+
+function _renderDiarizedTranscript(body, t) {
+  const blocks = [];
+  for (const seg of t.segments) {
+    const last = blocks[blocks.length - 1];
+    if (last && last.speaker === seg.speaker) {
+      last.text += ' ' + seg.text; last.end = seg.end;
+    } else { blocks.push({...seg}); }
+  }
+  _transcriptBlocks = blocks;
+  const rawSpeakers = [...new Set(t.segments.map(s => s.speaker))];
+  const speakers = [...new Set(blocks.map(b => b.speaker))];
+  const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
+  const color = s => palette[rawSpeakers.indexOf(s) >= 0 ? rawSpeakers.indexOf(s) % palette.length : speakers.indexOf(s) % palette.length];
+  const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
+
+  // Display name for a speaker (crew name from speaker_map, or raw label)
+  const displayName = (rawLabel) => {
+    const entry = _speakerMap[rawLabel];
+    if (entry && entry.name) {
+      if (entry.type === 'auto' && entry.confidence != null) {
+        return entry.name + ' (' + Math.round(entry.confidence * 100) + '%)';
+      }
+      return entry.name;
+    }
+    return rawLabel;
+  };
+
+  body.innerHTML = '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
+    + blocks.map((b, i) =>
+      '<div class="transcript-seg" data-idx="' + i + '" style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
+      + '<span class="transcript-speaker" data-speaker="' + esc(b.speaker) + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" title="Click to assign crew">' + esc(displayName(b.speaker)) + '</span>'
+      + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[' + fmt(b.start) + ']</span>'
+      + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">' + esc(b.text.trim()) + '</div>'
+      + '</div>'
+    ).join('')
+    + '</div>';
+
+  // Set up audio tracking for active segment highlighting
+  _setupTranscriptAudioTracking();
+}
+
+function _setupTranscriptAudioTracking() {
+  // Find the main audio element on the page
+  const audioEl = document.querySelector('#audio-body audio');
+  if (!audioEl) return;
+  _transcriptAudio = audioEl;
+  audioEl.addEventListener('timeupdate', _highlightActiveSegment);
+}
+
+function _highlightActiveSegment() {
+  if (!_transcriptAudio || !_transcriptBlocks.length) return;
+  const t = _transcriptAudio.currentTime;
+  const segs = document.querySelectorAll('.transcript-seg');
+  for (let i = 0; i < _transcriptBlocks.length; i++) {
+    const b = _transcriptBlocks[i];
+    const el = segs[i];
+    if (!el) continue;
+    if (t >= b.start && t <= b.end) {
+      el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
+      // Scroll into view if needed
+      const container = document.getElementById('transcript-segments');
+      if (container && (el.offsetTop < container.scrollTop || el.offsetTop + el.offsetHeight > container.scrollTop + container.clientHeight)) {
+        el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      }
+    } else {
+      el.style.background = '';
+    }
+  }
+}
+
+function playTranscriptSegment(idx) {
+  const b = _transcriptBlocks[idx];
+  if (!b) return;
+  const audioEl = document.querySelector('#audio-body audio');
+  if (!audioEl) return;
+  _transcriptAudio = audioEl;
+  audioEl.currentTime = b.start;
+  audioEl.play();
+}
+
+async function openSpeakerPicker(speakerLabel) {
+  // Fetch crew list for the picker
+  let users;
+  try {
+    const r = await fetch('/api/crew/users');
+    if (!r.ok) return;
+    users = (await r.json()).users || [];
+  } catch { return; }
+
+  // Remove any existing picker
+  const old = document.getElementById('speaker-picker');
+  if (old) old.remove();
+
+  // Build a simple dropdown picker
+  const picker = document.createElement('div');
+  picker.id = 'speaker-picker';
+  picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:16px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:200px;max-height:300px;overflow-y:auto';
+
+  let html = '<div style="font-weight:600;margin-bottom:8px;font-size:.85rem">Assign ' + esc(speakerLabel) + ' to:</div>';
+  if (!users || !users.length) {
+    html += '<div style="color:var(--text-secondary);font-size:.8rem">No crew members found</div>';
+  } else {
+    for (const u of users) {
+      html += '<div class="speaker-pick-option" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" onmouseout="this.style.background=\'\'" onclick="assignSpeaker(\'' + esc(speakerLabel) + '\',' + u.id + ')">' + esc(u.name || u.email) + '</div>';
+    }
+  }
+  html += '<div style="text-align:right;margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="document.getElementById(\'speaker-picker\').remove()">Cancel</button></div>';
+  picker.innerHTML = html;
+
+  // Backdrop
+  const backdrop = document.createElement('div');
+  backdrop.id = 'speaker-picker-backdrop';
+  backdrop.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999';
+  backdrop.onclick = () => { picker.remove(); backdrop.remove(); };
+  document.body.appendChild(backdrop);
+  document.body.appendChild(picker);
+}
+
+async function assignSpeaker(speakerLabel, userId) {
+  const r = await fetch('/api/audio/' + _session.audio_session_id + '/transcript/assign-speaker', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({speaker_label: speakerLabel, user_id: userId})
+  });
+  // Clean up picker
+  const picker = document.getElementById('speaker-picker');
+  const backdrop = document.getElementById('speaker-picker-backdrop');
+  if (picker) picker.remove();
+  if (backdrop) backdrop.remove();
+
+  if (!r.ok) { alert('Failed to assign speaker'); return; }
+  const data = await r.json();
+  // Update speaker_map locally and re-render labels
+  _speakerMap[speakerLabel] = {type: 'crew', user_id: data.user_id, name: data.name};
+  // Update all speaker labels in the transcript
+  document.querySelectorAll('.transcript-speaker[data-speaker="' + speakerLabel + '"]').forEach(el => {
+    el.textContent = data.name;
+  });
 }
 
 async function startTranscript() {
   const r = await fetch('/api/audio/' + _session.audio_session_id + '/transcribe', {method: 'POST'});
   if (!r.ok) { alert('Failed to start transcription'); return; }
+  loadTranscript();
+}
+
+async function retranscribe() {
+  if (!confirm('Re-run transcription with diarization? The existing transcript will be replaced.')) return;
+  const r = await fetch('/api/audio/' + _session.audio_session_id + '/retranscribe', {method: 'POST'});
+  if (!r.ok) { alert('Failed to start retranscription'); return; }
   loadTranscript();
 }
 

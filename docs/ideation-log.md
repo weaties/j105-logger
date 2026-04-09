@@ -988,7 +988,8 @@ the opposite of performative broadcasting.
 
 - **Date captured:** 2026-03-14
 - **Origin:** Conversation about keeping user feedback in context with what they're seeing in the app
-- **Status:** `raw`
+- **Status:** `promoted`
+- **Promoted to:** #369
 - **Related:** GitHub Issues, `web.py`, `auth.py`
 
 **Description:**

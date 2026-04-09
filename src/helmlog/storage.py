@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 56
+_CURRENT_VERSION: int = 57
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1273,6 +1273,22 @@ _MIGRATIONS: dict[int, str] = {
             label       TEXT NOT NULL,
             sort_order  INTEGER NOT NULL DEFAULT 0
         );
+    """,
+    57: """
+        -- Diarized transcript crew association + voice profiles (#443)
+        ALTER TABLE transcripts ADD COLUMN speaker_map TEXT;
+
+        CREATE TABLE IF NOT EXISTS crew_voice_profiles (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            embedding     BLOB    NOT NULL,
+            segment_count INTEGER NOT NULL DEFAULT 0,
+            session_count INTEGER NOT NULL DEFAULT 0,
+            created_at    TEXT    NOT NULL,
+            updated_at    TEXT    NOT NULL,
+            UNIQUE(user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_crew_voice_profiles_user ON crew_voice_profiles(user_id);
     """,
 }
 
@@ -4229,11 +4245,29 @@ class Storage:
         )
         await db.commit()
 
+    async def delete_transcript(self, audio_session_id: int) -> bool:
+        """Delete the transcript (and linked extraction_runs) for an audio session.
+
+        Returns True if found and deleted.
+        """
+        db = self._conn()
+        # Delete extraction_runs first (no ON DELETE CASCADE on FK)
+        await db.execute(
+            "DELETE FROM extraction_runs WHERE transcript_id IN"
+            " (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+            (audio_session_id,),
+        )
+        cur = await db.execute(
+            "DELETE FROM transcripts WHERE audio_session_id = ?", (audio_session_id,)
+        )
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
     async def get_transcript(self, audio_session_id: int) -> dict[str, Any] | None:
         """Return the transcript row for *audio_session_id*, or None if not found."""
         cur = await self._read_conn().execute(
             "SELECT id, audio_session_id, status, text, error_msg, model,"
-            " created_utc, updated_utc, segments_json"
+            " created_utc, updated_utc, segments_json, speaker_anon_map, speaker_map"
             " FROM transcripts WHERE audio_session_id = ?",
             (audio_session_id,),
         )
@@ -5397,21 +5431,30 @@ class Storage:
         return True
 
     async def get_transcript_with_anon(self, audio_session_id: int) -> dict[str, Any] | None:
-        """Get transcript with speaker anonymization map applied to segments."""
+        """Get transcript with speaker_map and anonymization applied to segments.
+
+        Priority: anonymization (speaker_anon_map) > crew assignment (speaker_map).
+        """
         t = await self.get_transcript(audio_session_id)
         if t is None:
             return None
         anon_map: dict[str, str] = json.loads(t.get("speaker_anon_map") or "{}")
-        if anon_map and t.get("segments_json"):
+        crew_map: dict[str, Any] = json.loads(t.get("speaker_map") or "{}")
+        if (anon_map or crew_map) and t.get("segments_json"):
             segments = json.loads(t["segments_json"])
             for seg in segments:
                 speaker = seg.get("speaker", "")
                 if speaker in anon_map:
+                    # Anonymization takes priority
                     seg["speaker"] = anon_map[speaker]
                     seg["text"] = "[REDACTED]"
+                elif speaker in crew_map:
+                    entry = crew_map[speaker]
+                    if isinstance(entry, dict):
+                        seg["speaker"] = entry.get("name", speaker)
             t["segments_json"] = json.dumps(segments)
-            # Also redact the plain text
-            if t.get("text"):
+            # Also redact the plain text for anonymized speakers
+            if t.get("text") and anon_map:
                 lines = t["text"].split("\n")
                 redacted_lines = []
                 for line in lines:
@@ -5489,6 +5532,133 @@ class Storage:
         await db.commit()
         logger.info("User {} anonymized to {!r}", user_id, replacement)
         return count
+
+    # ------------------------------------------------------------------
+    # Speaker crew assignment (#443)
+    # ------------------------------------------------------------------
+
+    async def assign_speaker_crew(
+        self, transcript_id: int, speaker_label: str, user_id: int, name: str
+    ) -> bool:
+        """Assign a speaker label to a crew member. Returns True if transcript was found."""
+        db = self._conn()
+        cur = await db.execute("SELECT speaker_map FROM transcripts WHERE id = ?", (transcript_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return False
+        existing: dict[str, Any] = json.loads(row["speaker_map"] or "{}")
+        existing[speaker_label] = {"type": "crew", "user_id": user_id, "name": name}
+        await db.execute(
+            "UPDATE transcripts SET speaker_map = ? WHERE id = ?",
+            (json.dumps(existing), transcript_id),
+        )
+        await db.commit()
+        logger.info(
+            "Speaker {} assigned to user {} ({}) in transcript {}",
+            speaker_label,
+            user_id,
+            name,
+            transcript_id,
+        )
+        return True
+
+    async def get_speaker_map(self, transcript_id: int) -> dict[str, Any]:
+        """Return the speaker_map for a transcript (empty dict if none)."""
+        cur = await self._read_conn().execute(
+            "SELECT speaker_map FROM transcripts WHERE id = ?", (transcript_id,)
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return {}
+        result: dict[str, Any] = json.loads(row["speaker_map"] or "{}")
+        return result
+
+    # ------------------------------------------------------------------
+    # Voice profiles (#443)
+    # ------------------------------------------------------------------
+
+    async def upsert_voice_profile(
+        self,
+        user_id: int,
+        embedding: bytes,
+        segment_count: int,
+        session_count: int,
+    ) -> int:
+        """Insert or update a voice profile. Returns the row id."""
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(_UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO crew_voice_profiles"
+            " (user_id, embedding, segment_count, session_count, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(user_id)"
+            " DO UPDATE SET embedding = excluded.embedding,"
+            " segment_count = excluded.segment_count,"
+            " session_count = excluded.session_count,"
+            " updated_at = excluded.updated_at",
+            (user_id, embedding, segment_count, session_count, now, now),
+        )
+        await db.commit()
+        return cur.lastrowid or 0
+
+    async def get_voice_profile(self, user_id: int) -> dict[str, Any] | None:
+        """Return the voice profile for a user, or None."""
+        cur = await self._read_conn().execute(
+            "SELECT id, user_id, embedding, segment_count, session_count,"
+            " created_at, updated_at"
+            " FROM crew_voice_profiles WHERE user_id = ?",
+            (user_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def delete_voice_profile(self, user_id: int) -> bool:
+        """Delete a voice profile. Returns True if found and deleted."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM crew_voice_profiles WHERE user_id = ?", (user_id,))
+        await db.commit()
+        return (cur.rowcount or 0) > 0
+
+    async def revoke_voice_profile_consent(self, user_id: int) -> None:
+        """Revoke voice_profile consent and hard-delete all related data.
+
+        Deletes: voice profile, all 'auto' speaker_map entries referencing this user.
+        Preserves: manual 'crew' speaker_map entries (crew metadata, not biometric).
+        """
+        db = self._conn()
+        # 1. Delete the voice profile
+        await db.execute("DELETE FROM crew_voice_profiles WHERE user_id = ?", (user_id,))
+        # 2. Remove 'auto' entries from speaker_map in all transcripts
+        cur = await db.execute(
+            "SELECT id, speaker_map FROM transcripts WHERE speaker_map IS NOT NULL"
+        )
+        rows = await cur.fetchall()
+        for row in rows:
+            smap: dict[str, Any] = json.loads(row["speaker_map"] or "{}")
+            changed = False
+            to_remove = []
+            for label, entry in smap.items():
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("type") == "auto"
+                    and entry.get("user_id") == user_id
+                ):
+                    to_remove.append(label)
+                    changed = True
+            for label in to_remove:
+                del smap[label]
+            if changed:
+                await db.execute(
+                    "UPDATE transcripts SET speaker_map = ? WHERE id = ?",
+                    (json.dumps(smap), row["id"]),
+                )
+        # 3. Revoke the consent
+        await self.set_crew_consent(user_id, "voice_profile", False)
+        await db.commit()
+        logger.info("Voice profile consent revoked for user {}, data deleted", user_id)
 
     # ------------------------------------------------------------------
     # Deployment log (#125)

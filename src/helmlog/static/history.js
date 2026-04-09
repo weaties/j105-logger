@@ -754,8 +754,11 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
     el.innerHTML = '<span style="color:var(--danger);font-size:.8rem">Error: ' + (t.error_msg || 'unknown') + '</span>';
     return;
   }
-  // status === 'done'
-  if (t.segments && t.segments.length > 0) {
+  const speakerMap = t.speaker_map || {};
+  // status === 'done' — check for diarized (speaker-labeled) segments
+  const hasDiarizedSegments = t.segments && t.segments.length > 0
+    && t.segments.some(s => s.speaker);
+  if (hasDiarizedSegments) {
     // merge consecutive same-speaker segments for readability
     const blocks = [];
     for (const seg of t.segments) {
@@ -764,28 +767,142 @@ async function _loadTranscript(sessionId, audioSessionId, el) {
         last.text += ' ' + seg.text; last.end = seg.end;
       } else { blocks.push({...seg}); }
     }
+    const rawSpeakers = [...new Set(t.segments.map(s => s.speaker))];
     const speakers = [...new Set(blocks.map(b => b.speaker))];
     const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
-    const color = s => palette[speakers.indexOf(s) % palette.length];
+    const color = s => palette[rawSpeakers.indexOf(s) >= 0 ? rawSpeakers.indexOf(s) % palette.length : speakers.indexOf(s) % palette.length];
     const fmt = s => { const m=Math.floor(s/60); return m+':'+String(Math.floor(s%60)).padStart(2,'0'); };
-    const html = blocks.map(b =>
-      `<div style="margin-bottom:8px">
-         <span style="color:${color(b.speaker)};font-weight:600;font-size:.75rem">${b.speaker}</span>
+    const displayName = (raw) => {
+      const entry = speakerMap[raw];
+      if (entry && entry.name) {
+        if (entry.type === 'auto' && entry.confidence != null) return entry.name + ' (' + Math.round(entry.confidence * 100) + '%)';
+        return entry.name;
+      }
+      return raw;
+    };
+    const escH = s => s.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const uid = 'hist-tseg-' + sessionId;
+    const html = blocks.map((b, i) =>
+      `<div class="hist-transcript-seg" data-idx="${i}" style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .15s" onclick="playHistorySegment(${audioSessionId},${b.start},${b.end},'${uid}',${i})">
+         <span class="hist-transcript-speaker" data-speaker="${escH(b.speaker)}" style="color:${color(b.speaker)};font-weight:600;font-size:.75rem;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="event.stopPropagation();openHistorySpeakerPicker('${escH(b.speaker)}',${audioSessionId})" title="Click to assign crew">${escH(displayName(b.speaker))}</span>
          <span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[${fmt(b.start)}]</span>
          <div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">${b.text.trim().replace(/</g,'&lt;')}</div>
        </div>`
     ).join('');
-    el.innerHTML = '<div style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + html + '</div>';
+    el.innerHTML = '<div id="' + uid + '" style="max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + html + '</div>';
   } else {
-    // legacy: plain text fallback
+    // legacy: plain text fallback — offer retranscribe with diarization
     const text = t.text ? t.text.replace(/</g,'&lt;') : '(empty)';
-    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>';
+    el.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:200px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>'
+      + '<div style="margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="retranscribeHistory(' + audioSessionId + ',' + sessionId + ')" title="Re-run with speaker diarization">&#8635; Retranscribe with diarization</button></div>';
   }
+}
+
+// History page: segment playback via a shared audio element
+let _histAudio = null;
+let _histAudioTimer = null;
+
+function playHistorySegment(audioSessionId, start, end, containerId, idx) {
+  if (!_histAudio || _histAudio.dataset.sid !== String(audioSessionId)) {
+    if (_histAudio) { _histAudio.pause(); _histAudio.remove(); }
+    _histAudio = document.createElement('audio');
+    _histAudio.src = '/api/audio/' + audioSessionId + '/stream';
+    _histAudio.preload = 'auto';
+    _histAudio.dataset.sid = String(audioSessionId);
+  }
+  if (_histAudioTimer) {
+    _histAudio.removeEventListener('timeupdate', _histAudioTimer);
+    _histAudioTimer = null;
+  }
+  _histAudio.currentTime = start;
+  _histAudio.play();
+  // Highlight active segment
+  const container = document.getElementById(containerId);
+  if (container) {
+    container.querySelectorAll('.hist-transcript-seg').forEach((el, i) => {
+      el.style.background = i === idx ? 'var(--bg-hover, rgba(255,255,255,0.08))' : '';
+    });
+  }
+  _histAudioTimer = function() {
+    if (_histAudio.currentTime >= end) {
+      _histAudio.pause();
+      _histAudio.removeEventListener('timeupdate', _histAudioTimer);
+      _histAudioTimer = null;
+      if (container) {
+        container.querySelectorAll('.hist-transcript-seg').forEach(el => { el.style.background = ''; });
+      }
+    }
+  };
+  _histAudio.addEventListener('timeupdate', _histAudioTimer);
+}
+
+async function openHistorySpeakerPicker(speakerLabel, audioSessionId) {
+  let users;
+  try {
+    const r = await fetch('/api/crew/users');
+    if (!r.ok) return;
+    users = (await r.json()).users || [];
+  } catch { return; }
+
+  const old = document.getElementById('speaker-picker');
+  if (old) old.remove();
+  const oldBd = document.getElementById('speaker-picker-backdrop');
+  if (oldBd) oldBd.remove();
+
+  const picker = document.createElement('div');
+  picker.id = 'speaker-picker';
+  picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:16px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:200px;max-height:300px;overflow-y:auto';
+
+  const escH = s => s.replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  let html = '<div style="font-weight:600;margin-bottom:8px;font-size:.85rem">Assign ' + escH(speakerLabel) + ' to:</div>';
+  if (!users || !users.length) {
+    html += '<div style="color:var(--text-secondary);font-size:.8rem">No crew members found</div>';
+  } else {
+    for (const u of users) {
+      html += '<div style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" onmouseout="this.style.background=\'\'" onclick="assignHistorySpeaker(\'' + escH(speakerLabel) + '\',' + u.id + ',' + audioSessionId + ')">' + escH(u.name || u.email) + '</div>';
+    }
+  }
+  html += '<div style="text-align:right;margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="document.getElementById(\'speaker-picker\').remove();document.getElementById(\'speaker-picker-backdrop\').remove()">Cancel</button></div>';
+  picker.innerHTML = html;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'speaker-picker-backdrop';
+  backdrop.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.4);z-index:999';
+  backdrop.onclick = () => { picker.remove(); backdrop.remove(); };
+  document.body.appendChild(backdrop);
+  document.body.appendChild(picker);
+}
+
+async function assignHistorySpeaker(speakerLabel, userId, audioSessionId) {
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcript/assign-speaker', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({speaker_label: speakerLabel, user_id: userId})
+  });
+  const picker = document.getElementById('speaker-picker');
+  const backdrop = document.getElementById('speaker-picker-backdrop');
+  if (picker) picker.remove();
+  if (backdrop) backdrop.remove();
+
+  if (!r.ok) { alert('Failed to assign speaker'); return; }
+  const data = await r.json();
+  // Update all matching speaker labels
+  document.querySelectorAll('.hist-transcript-speaker[data-speaker="' + speakerLabel + '"]').forEach(el => {
+    el.textContent = data.name;
+  });
 }
 
 async function startTranscript(sessionId, audioSessionId) {
   const r = await fetch('/api/audio/' + audioSessionId + '/transcribe', {method: 'POST'});
   if (!r.ok) { alert('Failed to start transcription'); return; }
+  const el = document.getElementById('hist-transcript-' + sessionId);
+  await _loadTranscript(sessionId, audioSessionId, el);
+}
+
+async function retranscribeHistory(audioSessionId, sessionId) {
+  if (!confirm('Re-run transcription with diarization? The existing transcript will be replaced.')) return;
+  const r = await fetch('/api/audio/' + audioSessionId + '/retranscribe', {method: 'POST'});
+  if (!r.ok) { alert('Failed to start retranscription'); return; }
   const el = document.getElementById('hist-transcript-' + sessionId);
   await _loadTranscript(sessionId, audioSessionId, el);
 }
