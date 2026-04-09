@@ -753,6 +753,39 @@ async def test_api_sessions_has_audio_flag(storage: Storage, tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_api_session_detail_includes_audio_start_utc(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """Session detail exposes audio_start_utc so the JS playback clock can map
+    transcript/audio offsets onto the session UTC timeline (#446)."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+
+        resp = await client.get(f"/api/sessions/{r['id']}/detail")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_audio"] is True
+    assert data["audio_session_id"] is not None
+    assert data["audio_start_utc"] is not None
+    # Should be a parseable ISO-8601 timestamp
+    from datetime import datetime as _dt
+
+    _dt.fromisoformat(data["audio_start_utc"])
+
+
+@pytest.mark.asyncio
 async def _get_pos_ids(client: httpx.AsyncClient) -> dict[str, int]:
     """Helper: return position name → id mapping."""
     resp = await client.get("/api/crew/positions")
