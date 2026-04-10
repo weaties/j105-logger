@@ -1900,7 +1900,7 @@ class Storage:
 
         db = self._conn()
         cur = await db.execute("SELECT id, name FROM races WHERE slug IS NULL ORDER BY id ASC")
-        rows = await cur.fetchall()
+        rows = list(await cur.fetchall())
         if not rows:
             return
 
