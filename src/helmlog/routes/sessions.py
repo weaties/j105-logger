@@ -876,6 +876,10 @@ async def api_rename_session(
             "slug": updated.slug,
             "renamed_at": updated.renamed_at.isoformat() if updated.renamed_at else None,
             "retired_slug": retired_slug,
-            "url": f"/session/{updated.slug}",
+            "url": (
+                f"/session/{updated.id}/{updated.slug}"
+                if updated.slug
+                else f"/session/{updated.id}"
+            ),
         }
     )

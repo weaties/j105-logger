@@ -54,55 +54,31 @@ async def history_page(request: Request) -> Response:
     )
 
 
-@router.get("/session/{session_ref}", response_class=HTMLResponse, include_in_schema=False)
-async def session_detail_page(request: Request, session_ref: str) -> Response:
-    """Session detail page — accepts either the integer id or a slug (#449).
+def _canonical_session_url(race_id: int, slug: str | None) -> str:
+    """Build the canonical ``/session/{id}/{slug}`` URL (#449).
 
-    * ``/session/{id}`` → 301 to ``/session/{current_slug}``.
-    * ``/session/{slug}`` with a live slug → render the page.
-    * ``/session/{slug}`` matching a retired slug (within 30 days) → 301
-      to the current slug.
-    * Anything else → 404.
+    The integer id is the stable identity — it stays in the URL even when
+    the session is renamed, so bookmarks survive any slug change. The slug
+    is purely cosmetic for readability. When a row has no slug yet (pre-v58
+    data), the URL collapses to ``/session/{id}``.
     """
+    return f"/session/{race_id}/{slug}" if slug else f"/session/{race_id}"
+
+
+async def _render_session_page(
+    request: Request,
+    race: Any,  # helmlog.races.Race  # noqa: ANN401
+) -> Response:
+    """Render the session detail template for a resolved race (#449)."""
     from datetime import UTC, datetime, timedelta
 
     storage = get_storage(request)
-
-    # Integer id → look up current slug and 301. Rows pre-dating v58 may have
-    # no slug yet (e.g. raw test inserts); fall through and render inline in
-    # that case rather than redirect in a loop.
-    race = None
-    if session_ref.isdigit():
-        race_id = int(session_ref)
-        race = await storage.get_race(race_id)
-        if race is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        if race.slug:
-            return RedirectResponse(url=f"/session/{race.slug}", status_code=301)
-
-    # Slug path — current slug renders, retired slug redirects, else 404.
-    if race is None:
-        race = await storage.get_race_by_slug(session_ref)
-    if race is None:
-        retired = await storage.lookup_retired_slug(session_ref)
-        if retired is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        race_id, retired_at = retired
-        if datetime.now(UTC) - retired_at > timedelta(days=RACE_SLUG_RETENTION_DAYS):
-            raise HTTPException(status_code=404, detail="Session not found")
-        current = await storage.get_race(race_id)
-        if current is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        return RedirectResponse(url=f"/session/{current.slug}", status_code=301)
-
     user: dict[str, Any] | None = getattr(request.state, "user", None)
     user_role = user.get("role", "viewer") if user else "viewer"
     renamed_banner = None
     if race.renamed_at is not None:
         age = datetime.now(UTC) - race.renamed_at
         if age <= timedelta(days=RACE_SLUG_RETENTION_DAYS):
-            # Find the most recently retired slug for this race to show as
-            # "renamed from". Pick the newest entry by retired_at.
             db = storage._read_conn()  # noqa: SLF001
             hist_cur = await db.execute(
                 "SELECT slug FROM race_slug_history WHERE race_id = ?"
@@ -121,12 +97,82 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
             session_id=race.id,
             session_name=race.name,
             session_slug=race.slug,
+            session_url=_canonical_session_url(race.id, race.slug),
             renamed_from=renamed_banner,
             grafana_port=request.app.state.race_config.grafana_port,
             grafana_uid=request.app.state.race_config.grafana_uid,
             user_role=user_role,
         ),
     )
+
+
+@router.get(
+    "/session/{session_id:int}/{slug}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def session_detail_page_canonical(request: Request, session_id: int, slug: str) -> Response:
+    """Canonical session URL carrying both the stable id and the slug (#449).
+
+    * If the id exists and the slug matches the current slug → render.
+    * If the id exists but the slug is stale (renamed) → 301 to the new
+      canonical URL so old bookmarks keep working indefinitely.
+    * If the id doesn't exist → 404.
+    """
+    storage = get_storage(request)
+    race = await storage.get_race(session_id)
+    if race is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    if race.slug and slug != race.slug:
+        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+    return await _render_session_page(request, race)
+
+
+@router.get(
+    "/session/{session_ref}",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def session_detail_page(request: Request, session_ref: str) -> Response:
+    """Single-segment session URL — 301s to the canonical ``/session/{id}/{slug}``.
+
+    Accepts an integer id or a slug (current or retired within 30 days):
+
+    * ``/session/{id}`` → 301 to ``/session/{id}/{slug}``. If the row has
+      no slug yet (pre-v58 data) we render inline instead of redirecting.
+    * ``/session/{slug}`` (current) → 301 to ``/session/{id}/{slug}``.
+    * ``/session/{slug}`` (retired, within retention window) → 301 to the
+      current canonical URL.
+    * Unknown id / slug → 404.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    storage = get_storage(request)
+
+    if session_ref.isdigit():
+        race_id = int(session_ref)
+        race = await storage.get_race(race_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if race.slug:
+            return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+        # Row predates v58 and has no slug — render inline under /session/{id}.
+        return await _render_session_page(request, race)
+
+    race = await storage.get_race_by_slug(session_ref)
+    if race is not None:
+        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+
+    retired = await storage.lookup_retired_slug(session_ref)
+    if retired is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    race_id, retired_at = retired
+    if datetime.now(UTC) - retired_at > timedelta(days=RACE_SLUG_RETENTION_DAYS):
+        raise HTTPException(status_code=404, detail="Session not found")
+    current = await storage.get_race(race_id)
+    if current is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return RedirectResponse(url=_canonical_session_url(current.id, current.slug), status_code=301)
 
 
 @router.get("/sails", response_class=HTMLResponse, include_in_schema=False)

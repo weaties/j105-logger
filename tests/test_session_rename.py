@@ -102,7 +102,7 @@ async def test_rename_admin_success(storage: Storage, admin_client: httpx.AsyncC
     assert body["name"] == "Ballard Cup #1 — finish line confusion"
     assert body["slug"] == "ballard-cup-1-finish-line-confusion"
     assert body["retired_slug"] == "20260408-cyc-4"
-    assert body["url"] == "/session/ballard-cup-1-finish-line-confusion"
+    assert body["url"] == f"/session/{race_id}/ballard-cup-1-finish-line-confusion"
 
     # Audit row written
     audit_rows = await storage.list_audit_log(limit=5)
@@ -177,19 +177,54 @@ async def test_rename_event_and_race_num_regenerates_name(
 
 
 @pytest.mark.asyncio
-async def test_int_id_redirects_to_slug(storage: Storage, admin_client: httpx.AsyncClient) -> None:
+async def test_int_id_redirects_to_canonical(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     resp = await admin_client.get(f"/session/{race_id}")
     assert resp.status_code == 301
-    assert resp.headers["location"] == "/session/20260408-cyc-1"
+    assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1"
 
 
 @pytest.mark.asyncio
-async def test_current_slug_renders_page(storage: Storage, admin_client: httpx.AsyncClient) -> None:
-    await _seed_race(storage, name="20260408-CYC-1")
+async def test_slug_only_redirects_to_canonical(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    race_id = await _seed_race(storage, name="20260408-CYC-1")
     resp = await admin_client.get("/session/20260408-cyc-1")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1"
+
+
+@pytest.mark.asyncio
+async def test_canonical_url_renders_page(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    race_id = await _seed_race(storage, name="20260408-CYC-1")
+    resp = await admin_client.get(f"/session/{race_id}/20260408-cyc-1")
     assert resp.status_code == 200
     assert "text/html" in resp.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_canonical_url_stale_slug_redirects(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    """Old bookmarks with a renamed slug still resolve via the stable id (#449)."""
+    race_id = await _seed_race(storage, name="20260408-CYC-1")
+    await storage.rename_race(race_id, new_name="New Name")
+    # Canonical id/old-slug should 301 to canonical id/new-slug.
+    resp = await admin_client.get(f"/session/{race_id}/20260408-cyc-1")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == f"/session/{race_id}/new-name"
+
+
+@pytest.mark.asyncio
+async def test_canonical_url_wrong_id_404(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    resp = await admin_client.get("/session/99999/anything")
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -200,7 +235,7 @@ async def test_retired_slug_redirects_within_window(
     await storage.rename_race(race_id, new_name="New Name")
     resp = await admin_client.get("/session/20260408-cyc-1")
     assert resp.status_code == 301
-    assert resp.headers["location"] == "/session/new-name"
+    assert resp.headers["location"] == f"/session/{race_id}/new-name"
 
 
 @pytest.mark.asyncio
