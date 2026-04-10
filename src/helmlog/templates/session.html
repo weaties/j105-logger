@@ -240,7 +240,7 @@
 
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-<script src="/static/session.js?v=7"></script>
+<script src="/static/session.js?v={{ git_sha }}"></script>
 <script>
 async function renameSession() {
   const sessionId = document.getElementById('app-config').dataset.sessionId;

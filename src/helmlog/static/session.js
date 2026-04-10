@@ -346,7 +346,7 @@ function onYouTubeIframeAPIReady() {
 function _createPlayer(videoId) {
   if (_videoSync.player) {
     _videoSync.player.loadVideoById(videoId);
-    _updateWatchOnYoutubeLink(videoId);
+    _ensureWatchOnYoutubeLink();
     return;
   }
   // Use the standard YT.Player div-based instantiation. The manual iframe
@@ -370,29 +370,35 @@ function _createPlayer(videoId) {
       onStateChange: _onPlayerStateChange,
     },
   });
-  _updateWatchOnYoutubeLink(videoId);
+  _ensureWatchOnYoutubeLink();
 }
 
-function _updateWatchOnYoutubeLink(videoId) {
-  // Render a "Watch on YouTube" link below the player so 360 / spherical
-  // videos can be opened in YouTube's native viewer for panning controls.
-  let linkBar = document.getElementById('yt-watch-on-youtube');
-  if (!linkBar) {
-    linkBar = document.createElement('div');
-    linkBar.id = 'yt-watch-on-youtube';
-    linkBar.style.cssText = 'margin-top:6px;text-align:right;font-size:.75rem';
-    const container = document.getElementById('video-container');
-    if (container) container.appendChild(linkBar);
-  }
-  // Try to seek to current sync position
+// Render the "Watch on YouTube" link once. The URL is computed live in the
+// click handler so it always reflects the currently selected video and its
+// current playhead — the old implementation baked a stale videoId + t=0 into
+// the href at player-create time and never refreshed on switchVideo().
+function _ensureWatchOnYoutubeLink() {
+  if (document.getElementById('yt-watch-on-youtube')) return;
+  const linkBar = document.createElement('div');
+  linkBar.id = 'yt-watch-on-youtube';
+  linkBar.style.cssText = 'margin-top:6px;text-align:right;font-size:.75rem';
+  const container = document.getElementById('video-container');
+  if (container) container.appendChild(linkBar);
+  linkBar.innerHTML = '<a href="#" rel="noopener" style="color:var(--accent);text-decoration:none" title="Open in YouTube for 360° panning controls" onclick="return _openWatchOnYoutube(event)">Watch on YouTube &#8599;</a>';
+}
+
+function _openWatchOnYoutube(ev) {
+  if (ev && ev.preventDefault) ev.preventDefault();
+  if (!_videoSync || !_videoSync.videoId) return false;
   let t = 0;
   try {
-    if (_videoSync && _videoSync.player && _videoSync.player.getCurrentTime) {
+    if (_videoSync.player && _videoSync.player.getCurrentTime) {
       t = Math.floor(_videoSync.player.getCurrentTime() || 0);
     }
   } catch (e) { /* ignore */ }
-  const url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(videoId) + (t > 0 ? '&t=' + t + 's' : '');
-  linkBar.innerHTML = '<a href="' + url + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none" title="Open in YouTube for 360° panning controls">Watch on YouTube &#8599;</a>';
+  const url = 'https://www.youtube.com/watch?v=' + encodeURIComponent(_videoSync.videoId) + (t > 0 ? '&t=' + t + 's' : '');
+  window.open(url, '_blank', 'noopener');
+  return false;
 }
 
 function _onVideoReady() {
