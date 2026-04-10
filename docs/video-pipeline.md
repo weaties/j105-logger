@@ -106,7 +106,109 @@ This will:
 - Check YouTube credentials
 - Install the launchd agent to watch for SD card mounts
 
-## Usage
+## Lifecycle (issue #445, Apple Silicon path)
+
+The Insta360 MediaSDK Linux/amd64 image runs unusably slow under Docker
+Rosetta emulation on Apple Silicon (~500× slower than realtime in
+testing). On a Mac, **Insta360 Studio is the only viable stitcher** —
+it's a universal Apple-Silicon binary that ships with the same MediaSDK
+under the hood. Studio doesn't expose a CLI, so the lifecycle is split
+into a fully-automated import + upload + archive flow with one manual
+GUI step in the middle:
+
+```
+SD card                ~/Insta360 Imports/        Insta360 Studio
+   │                          │                          │
+   │  ./scripts/import-       │  open files,             │
+   │   matched.sh             │  click Export →          │
+   │  (only files that ───►   │  Start Export       ───► ~/Insta360 Exports/<cam>/
+   │   match a Pi session)    │                          │
+   │                          │                          │
+   │                          │   ./scripts/watch-       │
+   │                          │   exports.sh             │
+   │                          │   (fswatch)         ◄────┘
+   │                          │       │
+   │                          │       ▼
+   │                          │   ./scripts/upload-stitched.sh
+   │                          │       │
+   │                          │       ├─ verify_channel(corvo105)
+   │                          │       ├─ upload to YouTube (resumable, retry)
+   │                          │       ├─ link to race on Pi (parent_race walked)
+   │                          │       ├─ ledger entry written
+   │                          │       └─ macOS notification
+   │                          │
+   │                          ▼
+   │              /Volumes/Insta360 Backups/helmlog/
+   │              (source segments + stitched export
+   │               moved here once linked)
+   │
+   ▼
+(SD card untouched — never deleted automatically)
+```
+
+The user-visible work is **drag files into Studio → click Export → walk
+away.** Everything before and after that is automatic.
+
+### Step 1 — Import session-matching files from the SD card
+
+```bash
+PI_SESSION_COOKIE=<your cookie> ./scripts/import-matched.sh
+```
+
+Walks every `VID_*.{mp4,insv}` on the card, probes its actual duration
+with `ffprobe`, fetches the HelmLog session list from the Pi, and copies
+**only the recordings that overlap a real session** into
+`~/Insta360 Imports/`. Random non-session footage on the same card
+(drone shots, kid videos, dock loading) is ignored. Idempotent — re-runs
+skip files already in the import dir.
+
+### Step 2 — Stitch in Insta360 Studio (manual)
+
+Open the imports folder in Studio (drag-drop or File → Open), select
+your preferred export preset (saved from the previous run), and click
+**Start Export**. Export to `~/Insta360 Exports/<camera_label>/`.
+Studio remembers the last-used settings, so this is two clicks per file
+once you've configured it once.
+
+### Step 3 — Auto-upload + link + archive
+
+Run the watcher in the background (or install the launchd agent below)
+and forget about it:
+
+```bash
+PI_SESSION_COOKIE=<cookie> ./scripts/watch-exports.sh
+```
+
+The watcher fires `upload-stitched.sh` on every new MP4 in
+`~/Insta360 Exports/`. Each upload:
+
+1. Reads the timestamp from the filename
+2. Fetches Pi sessions and walks `parent_race_id` to find the right race
+3. Uploads to YouTube with the title `YYYY-MM-DD HH:MMZ — Event Race N — <camera> cam`
+4. Links the YouTube URL to the race on the Pi with label `360 cam — <camera>`
+5. Writes a ledger entry so the same file can't double-upload
+6. Moves the stitched export **and** the matching source segments from
+   `~/Insta360 Imports/` to `/Volumes/Insta360 Backups/helmlog/`
+7. Pops a macOS notification with the YouTube URL
+
+The ledger lives at `~/.config/helmlog/video-ledger.json` and is keyed
+by camera label + filename + size — re-importing the same SD card later
+won't re-upload anything.
+
+### Auto-start on login (launchd)
+
+```bash
+# Edit the plist to set your PI_SESSION_COOKIE first:
+$EDITOR launchd/com.helmlog.video-watch.plist
+
+cp launchd/com.helmlog.video-watch.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+mkdir -p ~/Library/Logs/helmlog
+```
+
+The watcher then runs at every login and respawns on crash.
+
+## Usage (legacy SD-card-driven flow)
 
 ### Automatic (recommended)
 

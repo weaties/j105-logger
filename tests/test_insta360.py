@@ -150,40 +150,45 @@ class TestDiscoverRecordings:
         assert len(recs[0].segments) == 1
         assert "_00_" in recs[0].segments[0].name
 
-    def test_insv_needs_stitching(self, tmp_path: Path) -> None:
-        """.insv recordings should have needs_stitching=True."""
+    def test_dual_fisheye_needs_stitching(self, tmp_path: Path) -> None:
+        """A recording probed as dual-fisheye should have needs_stitching=True."""
+        from unittest.mock import patch
+
         cam = tmp_path / "DCIM" / "Camera01"
         cam.mkdir(parents=True)
         (cam / "VID_20260810_140530_00_000.insv").write_bytes(b"\x00" * 100)
 
-        recs = discover_recordings(tmp_path)
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=True):
+            recs = discover_recordings(tmp_path)
         assert len(recs) == 1
         assert recs[0].needs_stitching is True
 
-    def test_mp4_no_stitching(self, tmp_path: Path) -> None:
-        """.mp4 recordings should have needs_stitching=False."""
+    def test_single_lens_no_stitching(self, tmp_path: Path) -> None:
+        """A recording probed as single-stream should have needs_stitching=False."""
+        from unittest.mock import patch
+
         cam = tmp_path / "DCIM" / "Camera01"
         cam.mkdir(parents=True)
         (cam / "VID_20260810_140530_00_001.mp4").write_bytes(b"\x00" * 200)
 
-        recs = discover_recordings(tmp_path)
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=False):
+            recs = discover_recordings(tmp_path)
         assert len(recs) == 1
         assert recs[0].needs_stitching is False
-        assert recs[0].segments[0].name == "VID_20260810_140530_00_001.mp4"
 
-    def test_mixed_insv_and_mp4(self, tmp_path: Path) -> None:
-        """SD card with both 360° and single-lens recordings."""
+    def test_mp4_can_be_dual_fisheye_too(self, tmp_path: Path) -> None:
+        """The X4 can write 360° captures as .mp4 — extension is not the signal."""
+        from unittest.mock import patch
+
         cam = tmp_path / "DCIM" / "Camera01"
         cam.mkdir(parents=True)
-        (cam / "VID_20260810_140530_00_000.insv").write_bytes(b"\x00" * 100)
-        (cam / "VID_20260810_153000_00_001.mp4").write_bytes(b"\x00" * 200)
+        # An .mp4 that ffprobe says is dual-fisheye must still get stitched.
+        (cam / "VID_20260810_140530_00_000.mp4").write_bytes(b"\x00" * 100)
 
-        recs = discover_recordings(tmp_path)
-        assert len(recs) == 2
-        assert recs[0].timestamp_str == "20260810_140530"
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=True):
+            recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
         assert recs[0].needs_stitching is True
-        assert recs[1].timestamp_str == "20260810_153000"
-        assert recs[1].needs_stitching is False
 
 
 # ---------------------------------------------------------------------------

@@ -154,21 +154,29 @@ def build_title(
     session_type: str,
     race_num: int | None,
     date: str,
+    time: str | None = None,
 ) -> str:
     """Build a YouTube video title from session metadata.
 
+    Titles lead with date (and optional time) so they sort correctly in
+    chronological order under any alphabetic listing — that's how we
+    keep race videos lined up on the YouTube channel page.
+
     Examples:
-        >>> build_title(event="Ballard Cup", session_type="race", race_num=2, date="2026-08-10")
-        'Ballard Cup Race 2 — 2026-08-10'
-        >>> build_title(event=None, session_type="practice", race_num=None, date="2026-08-10")
-        'Practice — 2026-08-10'
+        >>> build_title(event="Ballard Cup", session_type="race", race_num=2,
+        ...             date="2026-08-10", time="14:05")
+        '2026-08-10 14:05 — Ballard Cup Race 2'
+        >>> build_title(event=None, session_type="practice", race_num=None,
+        ...             date="2026-08-10")
+        '2026-08-10 — Practice'
     """
     label = session_type.capitalize()
     if race_num is not None:
         label = f"{label} {race_num}"
     if event:
         label = f"{event} {label}"
-    return f"{label} — {date}"
+    prefix = f"{date} {time}" if time else date
+    return f"{prefix} — {label}"
 
 
 def build_description(
@@ -285,18 +293,47 @@ async def upload_video(
 
     logger.info("Uploading {} to YouTube as {!r} ({})", file_path.name, title, privacy)
 
-    # Run the upload in a thread to avoid blocking the event loop
+    # Run the upload in a thread to avoid blocking the event loop. Each
+    # ``next_chunk`` call can fail transiently on flaky connections (timeouts,
+    # connection resets, 5xx). Retry the call (not the whole upload) with
+    # exponential backoff so the resumable upload picks up where it left off
+    # instead of starting over from byte zero.
     def _do_upload() -> str:
+        import socket
+        import time
+
         request = service.videos().insert(  # type: ignore[attr-defined]
             part="snippet,status",
             body=body,
             media_body=media,
         )
         response: Any = None
+        retryable: tuple[type[BaseException], ...] = (
+            TimeoutError,
+            ConnectionError,
+            socket.timeout,
+        )
+        max_attempts = 6
         while response is None:
-            status, response = request.next_chunk()
-            if status:
-                logger.debug("Upload progress: {:.0%}", status.progress())
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    status, response = request.next_chunk()
+                except retryable as exc:
+                    if attempt == max_attempts:
+                        raise
+                    delay = 2**attempt
+                    logger.warning(
+                        "Upload chunk failed ({}); retry {}/{} in {}s",
+                        exc,
+                        attempt,
+                        max_attempts - 1,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                if status:
+                    logger.debug("Upload progress: {:.0%}", status.progress())
+                break
         return str(response["id"])
 
     video_id: str = await asyncio.to_thread(_do_upload)

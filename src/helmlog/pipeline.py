@@ -172,18 +172,52 @@ async def process_recording(
     end_utc = start_utc + timedelta(hours=2)
 
     # Match to a session
-    session = match_sessions(start_utc, end_utc, sessions)
+    matched = match_sessions(start_utc, end_utc, sessions)
+    # The /api/sessions list mixes races, debriefs, and practice sessions, but
+    # the link endpoint only accepts race IDs. When the matcher picks a child
+    # session (e.g. a debrief), follow ``parent_race_id`` to the parent race
+    # and use *its* metadata for both linking and title-building so the
+    # YouTube title says "Race 4", not "Debrief 4".
+    session = matched
+    if matched is not None:
+        parent_race_id = matched.get("parent_race_id")
+        if parent_race_id is not None:
+            parent = next(
+                (
+                    s
+                    for s in sessions
+                    if s.get("id") == parent_race_id
+                    and (s.get("type") == "race" or s.get("session_type") == "race")
+                ),
+                None,
+            )
+            if parent is not None:
+                session = parent
+                logger.info(
+                    "[{}] Walked from {} → parent race {} for link + title",
+                    rec.timestamp_str,
+                    matched.get("name", matched.get("id")),
+                    parent.get("name", parent.get("id")),
+                )
     session_id: int | None = session.get("id") if session else None
     result.session_id = session_id
 
     # Build metadata
     title_suffix = f" — {config.camera_label} cam" if config.camera_label else ""
+    # The /api/sessions endpoint returns the session-type field as ``type``,
+    # not ``session_type`` — fall through to keep older callers working.
+    sess_type = (
+        session.get("type") or session.get("session_type") or "sailing" if session else "sailing"
+    )
+    title_date = start_utc.strftime("%Y-%m-%d")
+    title_time = start_utc.strftime("%H:%MZ")
     if session:
         title = build_title(
             event=session.get("event"),
-            session_type=session.get("session_type", "sailing"),
+            session_type=sess_type,
             race_num=session.get("race_num"),
-            date=start_utc.strftime("%Y-%m-%d"),
+            date=title_date,
+            time=title_time,
         )
         title = f"{title}{title_suffix}"
         base = f"{config.pi_api_url}/history"
@@ -207,7 +241,8 @@ async def process_recording(
             event=None,
             session_type="sailing",
             race_num=None,
-            date=start_utc.strftime("%Y-%m-%d"),
+            date=title_date,
+            time=title_time,
         )
         title = f"{title}{title_suffix}"
         desc = build_description(

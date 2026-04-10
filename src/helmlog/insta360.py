@@ -93,12 +93,100 @@ class InstaRecording:
 # ---------------------------------------------------------------------------
 
 
+def probe_duration_s(path: Path) -> float | None:
+    """Return the video duration in seconds, or ``None`` on probe failure.
+
+    Used by the import step to compute an accurate ``end_utc`` for session
+    matching — far more reliable than the old ``start_utc + 2 hours``
+    heuristic, which would over-match recordings to sessions hours away.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("ffprobe duration failed for {}: {}", path, exc)
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def is_dual_fisheye(path: Path) -> bool:
+    """Return True if a video file is X4 dual-fisheye 360°.
+
+    Probes the container with ``ffprobe`` and considers a file to be
+    dual-fisheye when it contains **two** video streams of identical,
+    square dimensions (the X4 5.7K mode is 2880×2880 × 2; 8K mode is
+    3840×3840 × 2). Falls back to ``False`` on any probe failure so the
+    pipeline degrades to a direct upload rather than blowing up.
+
+    The X4 writes 360° captures as either ``.insv`` or ``.mp4``
+    depending on firmware/mode — the file extension is not a reliable
+    signal, so we look at the streams instead.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("ffprobe failed for {}: {}", path, exc)
+        return False
+    streams = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(streams) != 2:
+        return False
+    if streams[0] != streams[1]:
+        return False
+    try:
+        w, h = (int(x) for x in streams[0].split(","))
+    except ValueError:
+        return False
+    return w == h and w >= 1920
+
+
 def discover_recordings(mount_path: Path) -> list[InstaRecording]:
     """Scan an Insta360 SD card for video files and group into recordings.
 
     Looks in ``<mount_path>/DCIM/Camera01/`` for VID_*.insv and VID_*.mp4,
     groups by recording timestamp, and returns them sorted chronologically.
     Only ``_00_`` (back/main lens) segments are included.
+
+    Each recording is probed with :func:`is_dual_fisheye` to decide
+    whether it needs stitching — the X4 can write 360° captures as
+    either ``.insv`` or ``.mp4``, so the file extension alone isn't a
+    reliable signal.
 
     Args:
         mount_path: Root of the mounted SD card (e.g. ``/Volumes/Insta360 X4``).
@@ -111,23 +199,21 @@ def discover_recordings(mount_path: Path) -> list[InstaRecording]:
         logger.debug("No DCIM/Camera01 found at {}", mount_path)
         return []
 
-    # Collect main-lens segments grouped by timestamp + extension
+    # Collect main-lens segments grouped by timestamp
     groups: dict[str, list[tuple[int, Path]]] = {}
-    extensions: dict[str, str] = {}  # timestamp → extension
     for f in camera_dir.iterdir():
         info = parse_insv_filename(f.name)
         if info is None or info.lens != "00":
             continue
         groups.setdefault(info.timestamp_str, []).append((info.segment, f))
-        extensions[info.timestamp_str] = info.extension
 
     recordings: list[InstaRecording] = []
     for ts, segs in sorted(groups.items()):
         segs.sort(key=lambda t: t[0])  # sort by segment number
         paths = [p for _, p in segs]
         total = sum(p.stat().st_size for p in paths)
-        ext = extensions[ts]
-        needs_stitch = ext == "insv"
+        # Probe the first segment — all segments of one recording share format
+        needs_stitch = is_dual_fisheye(paths[0])
         recordings.append(
             InstaRecording(
                 timestamp_str=ts,

@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.helmlog.video-watch — folder watcher for Insta360 stitched exports.
+
+  Install:
+    cp launchd/com.helmlog.video-watch.plist ~/Library/LaunchAgents/
+    launchctl load ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+
+  Uninstall:
+    launchctl unload ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+    rm ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+
+  Logs (rotated by helmlog/scripts; truncate or delete as needed):
+    ~/Library/Logs/helmlog/video-watch.log
+    ~/Library/Logs/helmlog/video-watch.err
+
+  Notes:
+    - PI_SESSION_COOKIE must be edited below for the linker to work; without
+      it, uploads still happen but won't appear on the session page.
+    - The agent runs at user login (RunAtLoad) and KeepAlive=true means
+      launchd will respawn it if it dies.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.helmlog.video-watch</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/dweatbrook/src/helmlog/scripts/watch-exports.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/dweatbrook/src/helmlog</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PI_API_URL</key>
+        <string>http://corvopi-live:3002</string>
+        <key>YOUTUBE_ACCOUNT</key>
+        <string>corvo105</string>
+        <key>TIMEZONE</key>
+        <string>America/Los_Angeles</string>
+        <key>VIDEO_PRIVACY</key>
+        <string>unlisted</string>
+        <!-- Edit this with your active Pi session cookie. Without it the
+             upload still works but the link step is skipped. -->
+        <key>PI_SESSION_COOKIE</key>
+        <string></string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/dweatbrook/Library/Logs/helmlog/video-watch.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/dweatbrook/Library/Logs/helmlog/video-watch.err</string>
+</dict>
+</plist>
