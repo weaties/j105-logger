@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta name="helmlog-version" content="{{ git_sha }}"/>
 <title>{% block title %}HelmLog{% endblock %}</title>
-<link rel="stylesheet" href="/static/base.css"/>
+<link rel="stylesheet" href="/static/base.css?v={{ git_sha }}"/>
 {% if theme_css %}<style>{{ theme_css }}</style>{% endif %}
 {% block extra_css %}{% endblock %}
 </head>
@@ -40,7 +40,7 @@
 <footer>{{ git_info }}<span class="footer-sep"> · </span><a href="#" onclick="window.open(buildIssueUrl('bug'),'_blank');return false">Report a bug</a><span class="footer-sep"> · </span><a href="#" onclick="window.open(buildIssueUrl('feature'),'_blank');return false">Request a feature</a></footer>
 </div>
 {% endblock %}
-<script src="/static/shared.js"></script>
+<script src="/static/shared.js?v={{ git_sha }}"></script>
 <script>initNav();(async()=>{try{const r=await fetch('/api/notifications/count');if(r.ok){const d=await r.json();const b=document.getElementById('notif-badge');if(d.unread>0){b.textContent=d.unread;b.style.display='inline';}}}catch(e){}})();</script>
 {% block scripts %}{% endblock %}
 </body>
