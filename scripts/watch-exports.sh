@@ -41,6 +41,10 @@ log "Upload script: $UPLOAD_SCRIPT"
 # fswatch flags:
 #   -0          NUL-separated output (handles spaces in paths)
 #   -r          recurse so per-camera subdirs are covered
+#   -E          extended regex — {n}, [0-9], etc. in the include pattern
+#               only work under extended syntax; without -E the include
+#               filter silently never matches and -e ".*" swallows every
+#               event, which is exactly what happens if you forget -E.
 #   -e          exclude regex (skip everything by default …)
 #   -i          … then include only VID_*.mp4 / .insv
 #   --event     only fire on Created / MovedTo (file appearance)
@@ -48,6 +52,7 @@ log "Upload script: $UPLOAD_SCRIPT"
 fswatch \
   -0 \
   -r \
+  -E \
   --latency 1 \
   --event=Created \
   --event=Updated \

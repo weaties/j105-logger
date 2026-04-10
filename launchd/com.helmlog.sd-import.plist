@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  com.helmlog.sd-import — triggers import-matched.sh when an Insta360 SD
+  card (or any volume) is mounted.
+
+  Copy the cookie-filled version into ~/Library/LaunchAgents/ and load with
+  launchctl. Pairs with com.helmlog.video-watch.plist: this one copies the
+  session-matching recordings off the card into ~/Insta360 Imports/, then
+  the user manually opens Insta360 Studio to export to ~/Insta360 Exports/,
+  and video-watch picks up the exports and uploads them.
+
+  PI_SESSION_COOKIE must be filled in before loading — without it the
+  session-fetch returns empty and nothing is copied.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.helmlog.sd-import</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/dweatbrook/src/helmlog/scripts/import-matched.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/dweatbrook/src/helmlog</string>
+
+    <key>WatchPaths</key>
+    <array>
+        <string>/Volumes</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/dweatbrook</string>
+        <key>PATH</key>
+        <string>/Users/dweatbrook/.local/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PI_API_URL</key>
+        <string>http://corvopi-live:3002</string>
+        <key>TIMEZONE</key>
+        <string>America/Los_Angeles</string>
+        <!-- Filled in by the installer at ~/Library/LaunchAgents/ time. -->
+        <key>PI_SESSION_COOKIE</key>
+        <string></string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/dweatbrook/Library/Logs/helmlog/sd-import.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/dweatbrook/Library/Logs/helmlog/sd-import.err</string>
+</dict>
+</plist>
