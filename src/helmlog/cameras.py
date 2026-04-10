@@ -121,10 +121,16 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
 async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
     """Send ``camera.setOptions`` then ``camera.startCapture`` to a single camera.
 
-    ``camera.setOptions`` is sent first to ensure the X4 records unstitched
-    ``.insv`` files (``videoStitching: none``) in video mode (``captureMode:
-    video``).  Unstitched files retain the gyroscope metadata required for
-    horizon leveling during post-processing.
+    ``camera.setOptions`` is sent first with ``videoStitching: "none"`` to
+    request that the X4 saves unstitched dual-fisheye ``.insv`` files rather
+    than on-device-stitched ``.mp4``.  Unstitched files retain the gyroscope
+    metadata required for horizon leveling during post-processing.
+
+    ``captureMode`` is intentionally NOT set here — ``captureMode: "video"``
+    on the X4 switches the camera to single-lens mode (which always produces
+    ``.mp4``), overriding the 360° mode the user has configured on the device.
+    The camera must already be in 360° video mode (set via touchscreen or the
+    Insta360 app).
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
     round-trip time of the HTTP request (used as ``sync_offset_ms``).
@@ -133,8 +139,10 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
-            # Set recording options before starting: unstitched dual-lens video
-            # to preserve gyroscope metadata for horizon leveling.
+            # Request unstitched output to preserve gyroscope metadata for
+            # horizon leveling.  Do NOT set captureMode here: on the X4,
+            # captureMode="video" means single-lens mode and would switch the
+            # camera out of 360° mode, causing .mp4 output instead of .insv.
             set_opts_resp = await client.post(
                 _osc_url(camera),
                 headers=_OSC_HEADERS,
@@ -142,7 +150,6 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
                     "name": "camera.setOptions",
                     "parameters": {
                         "options": {
-                            "captureMode": "video",
                             "videoStitching": "none",
                         }
                     },
@@ -150,7 +157,7 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
                 timeout=timeout,
             )
             set_opts_resp.raise_for_status()
-            logger.debug("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
+            logger.info("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
 
             resp = await client.post(
                 _osc_url(camera),

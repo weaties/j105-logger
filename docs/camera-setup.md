@@ -235,9 +235,11 @@ Response includes `"captureStatus": "shooting"` (recording) or `"idle"`.
 - **No STA mode.**  The camera will not join your boat's WiFi network.  The
   Pi must connect to the camera's hotspot.
 - **Set video mode first.**  If the camera is in photo or timelapse mode,
-  `startCapture` will capture in that mode.  The logger does not currently
-  set the capture mode — make sure the camera is set to video mode before
-  the first race.
+  `startCapture` will capture in that mode.  The logger does not set
+  `captureMode` automatically — doing so would switch the X4 out of 360° mode
+  into single-lens mode, producing `.mp4` instead of `.insv`.  Make sure the
+  camera is set to **360° video mode** via the touchscreen or Insta360 app
+  before the first race.
 
 ---
 

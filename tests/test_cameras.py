@@ -25,9 +25,13 @@ from helmlog.cameras import (
 
 @pytest.mark.asyncio
 async def test_start_camera_sends_set_options_before_start_capture() -> None:
-    """start_camera must call camera.setOptions with videoStitching=none and
-    captureMode=video immediately before camera.startCapture so that the X4
-    records unstitched .insv files that retain gyroscope horizon metadata."""
+    """start_camera must call camera.setOptions with videoStitching=none
+    immediately before camera.startCapture so that the X4 records unstitched
+    .insv files that retain gyroscope horizon metadata.
+
+    captureMode must NOT be included in the setOptions payload: on the X4,
+    captureMode='video' means single-lens mode and would switch the camera out
+    of 360° mode, causing .mp4 output instead of .insv."""
     cam = Camera(name="test", ip="192.168.42.1")
 
     mock_resp = MagicMock()
@@ -57,11 +61,14 @@ async def test_start_camera_sends_set_options_before_start_capture() -> None:
     start_capture_idx = sent_commands.index("camera.startCapture")
     assert set_options_idx < start_capture_idx, "setOptions must come before startCapture"
 
-    # Verify the required options are present
+    # Verify the required options are present and captureMode is NOT set
     set_options_call = calls[set_options_idx]
     options = set_options_call.kwargs.get("json", {}).get("parameters", {}).get("options", {})
     assert options.get("videoStitching") == "none", "videoStitching must be 'none'"
-    assert options.get("captureMode") == "video", "captureMode must be 'video'"
+    assert "captureMode" not in options, (
+        "captureMode must NOT be set — on the X4 captureMode='video' switches "
+        "to single-lens mode, producing .mp4 instead of .insv"
+    )
 
 
 # ---------------------------------------------------------------------------
