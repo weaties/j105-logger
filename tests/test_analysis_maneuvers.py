@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 from helmlog.analysis.maneuvers import (
     enrich_maneuver,
+    extract_local_track,
     rank_maneuvers,
 )
 
@@ -206,6 +207,63 @@ class TestEnrichManeuver:
         )
         # Should still compute entry_bsp from pre-window
         assert m.entry_bsp is not None and abs(m.entry_bsp - 5.0) < 0.01
+
+
+class TestExtractLocalTrack:
+    def test_entry_aligned_track_has_forward_axis_along_entry_bearing(self) -> None:
+        # Straight line heading 090° (due east) at 5 kt for 60s.
+        positions = _straight_positions(37.0, -122.0, 90.0, 5.0, 60)
+        bsp = _const(60, 5.0)
+        track = extract_local_track(
+            maneuver_ts=_BASE_TS + timedelta(seconds=20),
+            exit_ts=_BASE_TS + timedelta(seconds=30),
+            entry_bearing_deg=90.0,
+            positions=positions,
+            bsp=bsp,
+        )
+        assert len(track) > 0
+        # All points should have forward (y) progress and ~0 cross (x).
+        for p in track:
+            assert abs(p["x"]) < 1.0  # cross-track < 1 m
+        ys = [p["y"] for p in track]
+        assert max(ys) > 0  # forward progress exists
+        assert min(ys) < 0  # pre-window points have negative forward
+
+    def test_origin_at_maneuver_start(self) -> None:
+        positions = _straight_positions(37.0, -122.0, 0.0, 5.0, 60)
+        bsp = _const(60, 5.0)
+        track = extract_local_track(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=35),
+            entry_bearing_deg=0.0,
+            positions=positions,
+            bsp=bsp,
+        )
+        zero = [p for p in track if p["t"] == 0.0]
+        assert len(zero) == 1
+        assert abs(zero[0]["x"]) < 0.01 and abs(zero[0]["y"]) < 0.01
+
+    def test_empty_positions_returns_empty(self) -> None:
+        track = extract_local_track(
+            maneuver_ts=_BASE_TS,
+            exit_ts=None,
+            entry_bearing_deg=0.0,
+            positions=[],
+            bsp=[],
+        )
+        assert track == []
+
+    def test_bsp_attached_when_available(self) -> None:
+        positions = _straight_positions(37.0, -122.0, 0.0, 5.0, 60)
+        bsp = _const(60, 4.2)
+        track = extract_local_track(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=35),
+            entry_bearing_deg=0.0,
+            positions=positions,
+            bsp=bsp,
+        )
+        assert any("bsp" in p and abs(p["bsp"] - 4.2) < 0.01 for p in track)
 
 
 class TestRankManeuvers:

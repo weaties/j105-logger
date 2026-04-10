@@ -305,6 +305,75 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session window
+_TRACK_PRE_S = 20  # seconds of track before maneuver_ts
+_TRACK_POST_S = 30  # seconds of track after exit_ts (or maneuver_ts if exit unknown)
+
+
+def extract_local_track(
+    *,
+    maneuver_ts: datetime,
+    exit_ts: datetime | None,
+    entry_bearing_deg: float | None,
+    positions: list[tuple[datetime, float, float]],
+    bsp: list[tuple[datetime, float]],
+    pre_s: int = _TRACK_PRE_S,
+    post_s: int = _TRACK_POST_S,
+) -> list[dict[str, float]]:
+    """Return the boat track around the maneuver in a local entry-aligned frame.
+
+    Points are translated so the maneuver-start position is at the origin,
+    then rotated so the entry bearing points along +y (North up = entry
+    direction). ``t`` is seconds relative to ``maneuver_ts``. If
+    ``entry_bearing`` is None the track is returned in an east/north frame
+    (still centered on entry). BSP is looked up by nearest-second for an
+    optional colour channel in the UI.
+    """
+    if not positions:
+        return []
+    end_anchor = exit_ts or maneuver_ts
+    win_start = maneuver_ts - timedelta(seconds=pre_s)
+    win_end = end_anchor + timedelta(seconds=post_s)
+    window = [(ts, lat, lon) for ts, lat, lon in positions if win_start <= ts <= win_end]
+    if len(window) < 2:
+        return []
+
+    entry_pos = _position_at(positions, maneuver_ts)
+    if entry_pos is None:
+        return []
+    lat0, lon0 = entry_pos
+
+    if entry_bearing_deg is not None:
+        br_rad = math.radians(entry_bearing_deg)
+        cos_b = math.cos(br_rad)
+        sin_b = math.sin(br_rad)
+    else:
+        cos_b, sin_b = 1.0, 0.0
+
+    bsp_by_sec: dict[str, float] = {}
+    for ts_b, bv in bsp:
+        bsp_by_sec.setdefault(ts_b.isoformat()[:19], bv)
+
+    out: list[dict[str, float]] = []
+    for ts, lat, lon in window:
+        # East (x) / North (y) in metres from entry position.
+        ex, ny = _ll_to_xy(lat0, lon0, lat, lon)
+        # Rotate so entry bearing → +y. Bearing is measured clockwise from
+        # north, so the rotation from (E, N) into (cross, forward) is:
+        #   forward = N*cos(b) + E*sin(b)
+        #   cross   = E*cos(b) − N*sin(b)
+        forward = ny * cos_b + ex * sin_b
+        cross = ex * cos_b - ny * sin_b
+        t_rel = (ts - maneuver_ts).total_seconds()
+        bv = bsp_by_sec.get(ts.isoformat()[:19])
+        pt: dict[str, float] = {
+            "t": round(t_rel, 1),
+            "x": round(cross, 2),
+            "y": round(forward, 2),
+        }
+        if bv is not None:
+            pt["bsp"] = round(bv, 2)
+        out.append(pt)
+    return out
 
 
 def _parse_iso(s: str) -> datetime:
@@ -360,6 +429,11 @@ async def enrich_session_maneuvers(
     if not bsp and cogsog_raw:
         bsp = [(_ts_of(r), float(r["sog_kts"])) for r in cogsog_raw]
 
+    # Build a heading lookup so we can convert north-referenced TWD to TWA.
+    hdg_by_sec: dict[str, float] = {}
+    for ts_h, hv in hdg:
+        hdg_by_sec.setdefault(ts_h.isoformat()[:19], hv)
+
     twa: list[tuple[datetime, float]] = []
     tws: list[tuple[datetime, float]] = []
     for r in winds_raw:
@@ -367,11 +441,20 @@ async def enrich_session_maneuvers(
             ref = int(r.get("reference", -1) or -1)
         except (TypeError, ValueError):
             ref = -1
-        if ref != 0:  # only boat-referenced TWA for simplicity
+        # 0 = boat-referenced TWA, 4 = north-referenced TWD. Both are "true wind".
+        if ref not in (0, 4):
             continue
         ts = _ts_of(r)
-        twa.append((ts, float(r["wind_angle_deg"])))
         tws.append((ts, float(r["wind_speed_kts"])))
+        if ref == 0:
+            raw = abs(float(r["wind_angle_deg"])) % 360.0
+            twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
+        else:
+            twd = float(r["wind_angle_deg"]) % 360.0
+            hv = hdg_by_sec.get(ts.isoformat()[:19])
+            if hv is not None:
+                raw = (twd - hv + 360.0) % 360.0
+                twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
 
     positions: list[tuple[datetime, float, float]] = [
         (_ts_of(r), float(r["latitude_deg"]), float(r["longitude_deg"])) for r in positions_raw
@@ -438,6 +521,15 @@ async def enrich_session_maneuvers(
         pos = _position_at(positions, m_ts)
         d["lat"] = pos[0] if pos else None
         d["lon"] = pos[1] if pos else None
+
+        # Local entry-aligned track for per-maneuver diagrams and overlay.
+        d["track"] = extract_local_track(
+            maneuver_ts=m_ts,
+            exit_ts=exit_ts,
+            entry_bearing_deg=metrics.entry_hdg,
+            positions=positions,
+            bsp=bsp,
+        )
 
         # Per-maneuver YouTube deep-link offset.
         if video_sync and video_sync_utc is not None:

@@ -1999,6 +1999,7 @@ const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warn
 const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
+let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
@@ -2038,6 +2039,98 @@ function setManeuverFilter(f) {
   renderManeuverCard();
 }
 
+function toggleManeuverOverlay() {
+  _maneuverOverlay = !_maneuverOverlay;
+  renderManeuverCard();
+}
+
+// ---------- Tack diagram rendering (SVG) ----------
+
+function _trackBounds(tracks) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  tracks.forEach(tr => tr.forEach(p => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }));
+  if (!isFinite(minX)) return null;
+  // Square-ish bounds with a bit of padding.
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(10, Math.max(maxX - minX, maxY - minY) / 2 + 5);
+  return { minX: cx - half, maxX: cx + half, minY: cy - half, maxY: cy + half };
+}
+
+function _renderTrackSvg(tracks, opts) {
+  // tracks: array of { points, color, label, highlight? }
+  opts = opts || {};
+  const w = opts.width || 260;
+  const h = opts.height || 200;
+  const pad = 12;
+  const pointSets = tracks.map(t => t.points).filter(p => p && p.length);
+  if (!pointSets.length) return '';
+  const b = _trackBounds(pointSets);
+  if (!b) return '';
+  const sx = x => pad + (x - b.minX) / (b.maxX - b.minX) * (w - 2 * pad);
+  // SVG y grows downward; our "forward" y should go up.
+  const sy = y => (h - pad) - (y - b.minY) / (b.maxY - b.minY) * (h - 2 * pad);
+
+  const scaleM = (b.maxX - b.minX);
+  const gridStep = scaleM > 200 ? 50 : scaleM > 80 ? 20 : 10;
+  const gridLines = [];
+  for (let gx = Math.ceil(b.minX / gridStep) * gridStep; gx <= b.maxX; gx += gridStep) {
+    gridLines.push('<line x1="' + sx(gx) + '" y1="' + pad + '" x2="' + sx(gx) + '" y2="' + (h - pad) + '" stroke="var(--border)" stroke-width="0.5"/>');
+  }
+  for (let gy = Math.ceil(b.minY / gridStep) * gridStep; gy <= b.maxY; gy += gridStep) {
+    gridLines.push('<line x1="' + pad + '" y1="' + sy(gy) + '" x2="' + (w - pad) + '" y2="' + sy(gy) + '" stroke="var(--border)" stroke-width="0.5"/>');
+  }
+
+  // Origin crosshair (entry point).
+  const originX = sx(0), originY = sy(0);
+  const crosshair = '<circle cx="' + originX + '" cy="' + originY + '" r="3" fill="var(--accent)"/>'
+    + '<line x1="' + originX + '" y1="' + (originY - 8) + '" x2="' + originX + '" y2="' + (originY + 8) + '" stroke="var(--accent)" stroke-width="0.6"/>'
+    + '<line x1="' + (originX - 8) + '" y1="' + originY + '" x2="' + (originX + 8) + '" y2="' + originY + '" stroke="var(--accent)" stroke-width="0.6"/>';
+
+  // Entry direction arrow (+y).
+  const arrowY1 = sy(0), arrowY2 = sy(Math.min(b.maxY, scaleM * 0.25));
+  const entryArrow = '<line x1="' + originX + '" y1="' + arrowY1 + '" x2="' + originX + '" y2="' + arrowY2 + '" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2"/>';
+
+  const paths = tracks.map(t => {
+    if (!t.points || !t.points.length) return '';
+    const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
+    const width = t.highlight ? 2.5 : 1.2;
+    const opacity = t.highlight ? 1 : 0.55;
+    return '<path d="' + d + '" fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '"/>';
+  }).join('');
+
+  const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
+
+  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
+    + gridLines.join('') + entryArrow + paths + crosshair + scaleLabel + '</svg>';
+}
+
+function _renderOverlaySvg() {
+  const items = _maneuverRows().filter(m => m.track && m.track.length);
+  if (!items.length) {
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No track data for current filter.</div>';
+  }
+  const tracks = items.map(m => ({
+    points: m.track,
+    color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)',
+    label: m.type,
+    highlight: false,
+  }));
+  const svg = _renderTrackSvg(tracks, { width: 380, height: 300 });
+  const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
+    + items.length + ' maneuvers overlaid. Colours = rank '
+    + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
+    + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
+    + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
+    + 'Entry at origin (+), entry direction ↑.'
+    + '</div>';
+  return svg + legend;
+}
+
 function _manHeader(label, key) {
   const arrow = _maneuverSort.key === key ? (_maneuverSort.dir > 0 ? ' ▲' : ' ▼') : '';
   return '<th style="cursor:pointer" onclick="setManeuverSort(\'' + key + '\')">' + label + arrow + '</th>';
@@ -2059,11 +2152,15 @@ function renderManeuverCard() {
   const good = _maneuvers.filter(m => m.rank === 'good').length;
   const bad = _maneuvers.filter(m => m.rank === 'bad').length;
 
+  const overlayBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverOverlay ? 'var(--accent)' : 'transparent') + ';color:'
+    + (_maneuverOverlay ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
   const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
     + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
     + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
     + '<span style="flex:1"></span>'
+    + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
@@ -2110,7 +2207,11 @@ function renderManeuverCard() {
       + '</tr>';
   }).join('');
 
-  body.innerHTML = summary + filterBar
+  const overlayBlock = _maneuverOverlay
+    ? '<div style="margin-bottom:8px">' + _renderOverlaySvg() + '</div>'
+    : '';
+
+  body.innerHTML = summary + filterBar + overlayBlock
     + '<table class="maneuver-table"><thead><tr>'
     + _manHeader('Type', 'type')
     + _manHeader('Time', 'ts')
@@ -2138,8 +2239,20 @@ function _renderManeuverDetail(m) {
     ['Time to recover', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
     ['Distance loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
   ];
-  el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
+  const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
+    + '</div>';
+  const diagram = (m.track && m.track.length)
+    ? _renderTrackSvg([{
+        points: m.track,
+        color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
+        label: m.type,
+        highlight: true,
+      }])
+    : '';
+  el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
+    + (diagram ? '<div>' + diagram + '</div>' : '')
     + '</div>';
 }
 
