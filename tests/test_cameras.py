@@ -24,13 +24,18 @@ from helmlog.cameras import (
 
 
 @pytest.mark.asyncio
-async def test_start_camera_sends_only_start_capture() -> None:
-    """start_camera must send ONLY camera.startCapture — no camera.setOptions.
+async def test_start_camera_sends_set_options_then_start_capture() -> None:
+    """start_camera must send setOptions(captureMode=video, videoStitching=none)
+    followed by startCapture to produce .insv 360° recordings via OSC.
 
-    Sending any setOptions before startCapture (including videoStitching='none')
-    causes the X4 to switch to single-lens mode and produce .mp4 files.
-    Without setOptions, the camera respects its on-device 360° mode setting
-    and records .insv files by default."""
+    A pre-flight getOptions call is also made for diagnostic logging; its
+    failure is non-fatal and must not prevent recording from starting.
+
+    Background: the X4 OSC layer is independent of the on-screen mode setting.
+    Sending startCapture alone (no setOptions) defaults to single-lens mode and
+    produces .mp4.  Both captureMode AND videoStitching must be set together —
+    setting videoStitching alone without captureMode is silently ignored by the
+    firmware (confirmed: still produces .mp4)."""
     cam = Camera(name="test", ip="192.168.42.1")
 
     mock_resp = MagicMock()
@@ -48,14 +53,28 @@ async def test_start_camera_sends_only_start_capture() -> None:
 
     assert status.recording is True
 
-    # Exactly one POST call — camera.startCapture only
     calls = mock_client.post.call_args_list
-    assert len(calls) == 1, (
-        f"Expected exactly 1 POST call (startCapture only), got {len(calls)}: "
-        f"{[c.kwargs.get('json', {}).get('name') for c in calls]}"
+    sent_commands = [c.kwargs.get("json", {}).get("name") for c in calls]
+
+    # Must include setOptions and startCapture (getOptions may also be present)
+    assert "camera.setOptions" in sent_commands, f"camera.setOptions missing from {sent_commands}"
+    assert "camera.startCapture" in sent_commands, (
+        f"camera.startCapture missing from {sent_commands}"
     )
-    sent_name = calls[0].kwargs.get("json", {}).get("name")
-    assert sent_name == "camera.startCapture", f"Expected camera.startCapture, got {sent_name!r}"
+
+    set_options_idx = sent_commands.index("camera.setOptions")
+    start_capture_idx = sent_commands.index("camera.startCapture")
+    assert set_options_idx < start_capture_idx, "setOptions must come before startCapture"
+
+    # Verify captureMode AND videoStitching are set together
+    set_options_call = calls[set_options_idx]
+    options = set_options_call.kwargs.get("json", {}).get("parameters", {}).get("options", {})
+    assert options.get("captureMode") == "video", (
+        "captureMode must be 'video' to put the OSC layer into video-recording mode"
+    )
+    assert options.get("videoStitching") == "none", (
+        "videoStitching must be 'none' to request unstitched 360° .insv output"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +354,9 @@ async def test_start_all_one_fails(storage: object) -> None:
     async def _mock_post(*args: object, **kwargs: object) -> MagicMock:
         nonlocal call_count
         call_count += 1
-        if call_count == 1:
+        # Raise for any call targeting the "broken" camera's IP
+        url = args[0] if args else kwargs.get("url", "")
+        if "1.1.1.1" in str(url):
             raise httpx.ConnectError("Connection refused")
         return mock_resp
 

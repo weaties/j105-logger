@@ -119,29 +119,80 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
 
 
 async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
-    """Send ``camera.startCapture`` to a single camera.
+    """Send ``camera.setOptions`` then ``camera.startCapture`` to a single camera.
 
-    No ``camera.setOptions`` is sent before ``startCapture``.  Testing on the
-    physical X4 showed that sending **any** ``setOptions`` call (including
-    ``videoStitching: "none"``) caused the camera to switch to single-lens mode
-    and produce ``.mp4`` files.  When ``startCapture`` is sent without prior
-    ``setOptions``, the X4 respects whatever recording mode is active on the
-    device — pressing the physical shutter button in 360° mode produces
-    ``.insv``, and OSC ``startCapture`` without ``setOptions`` behaves the
-    same way.
+    The Insta360 X4 OSC layer has its own state that is independent of the
+    mode shown on the camera's touchscreen.  OSC ``startCapture`` without any
+    preceding ``setOptions`` always starts a single-lens recording and produces
+    ``.mp4`` files — it does not honour the camera's on-screen 360° setting.
 
-    The camera **must** be in **360° Video** mode (set via touchscreen or
-    Insta360 app) before starting a session.  In that mode the X4 saves
-    unstitched dual-fisheye ``.insv`` files by default, retaining the
-    gyroscope metadata required for horizon leveling during post-processing.
+    To produce unstitched dual-fisheye ``.insv`` files (which retain the
+    gyroscope metadata required for horizon leveling) we must set **both**
+    options together:
+
+    * ``captureMode: "video"`` — puts the OSC layer into video-recording mode.
+      This is required; without it the ``videoStitching`` option is silently
+      ignored by the firmware.
+    * ``videoStitching: "none"`` — requests unstitched 360° output.  Combined
+      with ``captureMode: "video"``, this selects the dual-fisheye 360° mode
+      and produces ``.insv`` files.
+
+    The camera must have been set to **360° Video** mode at least once via the
+    touchscreen or Insta360 app so that the 360° hardware mode is active.
+
+    A ``getOptions`` call is made first solely for diagnostic logging — it
+    lets us confirm which mode the camera thinks it is in before we change
+    anything.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
-    round-trip time of the HTTP request (used as ``sync_offset_ms``).
+    round-trip time of the HTTP requests (used as ``sync_offset_ms``).
     """
     timeout = timeout if timeout is not None else _default_timeout()
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
+            # Diagnostic: log the camera's current mode before changing anything.
+            try:
+                get_opts_resp = await client.post(
+                    _osc_url(camera),
+                    headers=_OSC_HEADERS,
+                    json={
+                        "name": "camera.getOptions",
+                        "parameters": {
+                            "optionNames": [
+                                "captureMode",
+                                "videoStitching",
+                                "videoStitchingSupport",
+                            ]
+                        },
+                    },
+                    timeout=timeout,
+                )
+                logger.debug("Camera {} pre-start getOptions: {}", camera.name, get_opts_resp.text)
+            except (httpx.HTTPError, OSError) as exc:
+                logger.debug(
+                    "Camera {} pre-start getOptions failed (non-fatal): {}", camera.name, exc
+                )
+
+            # Set captureMode AND videoStitching together.  The firmware
+            # ignores videoStitching when captureMode is not explicitly "video".
+            set_opts_resp = await client.post(
+                _osc_url(camera),
+                headers=_OSC_HEADERS,
+                json={
+                    "name": "camera.setOptions",
+                    "parameters": {
+                        "options": {
+                            "captureMode": "video",
+                            "videoStitching": "none",
+                        }
+                    },
+                },
+                timeout=timeout,
+            )
+            set_opts_resp.raise_for_status()
+            logger.info("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
+
             resp = await client.post(
                 _osc_url(camera),
                 headers=_OSC_HEADERS,

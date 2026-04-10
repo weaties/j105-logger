@@ -187,13 +187,19 @@ curl -s -X POST http://192.168.42.1/osc/state \
     -H "X-XSRF-Protected: 1"
 ```
 
-**Set video mode** (required before first recording):
+**Set 360° video mode for unstitched recording:**
 ```bash
 curl -s -X POST http://192.168.42.1/osc/commands/execute \
     -H "Content-Type: application/json;charset=utf-8" \
     -H "X-XSRF-Protected: 1" \
-    -d '{"name":"camera.setOptions","parameters":{"options":{"captureMode":"video"}}}'
+    -d '{"name":"camera.setOptions","parameters":{"options":{"captureMode":"video","videoStitching":"none"}}}'
 ```
+
+Note: `captureMode` and `videoStitching` must be set together.  Setting
+`videoStitching: "none"` alone (without `captureMode: "video"`) is silently
+ignored by the firmware — the camera stays in whatever mode it was in and
+records `.mp4`.  Setting `captureMode: "video"` alone without
+`videoStitching: "none"` records stitched 360° as `.mp4`.
 
 **Start recording:**
 ```bash
@@ -234,12 +240,14 @@ Response includes `"captureStatus": "shooting"` (recording) or `"idle"`.
   a few meters of each other.
 - **No STA mode.**  The camera will not join your boat's WiFi network.  The
   Pi must connect to the camera's hotspot.
-- **Set video mode first.**  If the camera is in photo or timelapse mode,
-  `startCapture` will capture in that mode.  The logger does not set
-  `captureMode` automatically — doing so would switch the X4 out of 360° mode
-  into single-lens mode, producing `.mp4` instead of `.insv`.  Make sure the
-  camera is set to **360° video mode** via the touchscreen or Insta360 app
-  before the first race.
+- **Set 360° video mode first.**  The X4 OSC layer is independent of the
+  camera's touchscreen mode.  Sending `startCapture` alone (without
+  `setOptions`) always starts single-lens recording and produces `.mp4`.
+  The logger sets `captureMode: "video"` and `videoStitching: "none"` together
+  before each `startCapture` to request unstitched 360° `.insv` output.
+  Both options must be sent together — setting either one alone is ignored.
+  The camera must be in **360° Video** mode on the touchscreen for the
+  `videoStitching: "none"` option to produce `.insv` files.
 
 ---
 
