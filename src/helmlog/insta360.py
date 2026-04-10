@@ -15,6 +15,24 @@ File naming convention (Insta360 X4):
 
 Only ``_00_`` files are included in recording segments; for .insv the
 stitcher automatically pairs front+back.
+
+X4 OSC startCapture quirk
+-------------------------
+When the X4 is started via the OSC HTTP API (``camera.startCapture``)
+rather than the physical shutter button, the camera writes a *correct*
+dual-fisheye 360° recording — two HEVC video streams + audio + IMU
+trailer — but **labels the file with a ``.mp4`` extension** instead of
+``.insv``. Insta360 Studio (and the GoPro VR plugin, Pano2VR, etc.)
+gate 360° processing on the extension and silently treat ``.mp4`` as
+flat single-lens video, discarding the second video stream and the
+gyroscope metadata needed for horizon-leveling.
+
+:func:`is_dual_fisheye` detects this content-vs-extension mismatch by
+probing the stream count + dimensions with ffprobe.
+:func:`promote_to_insv_extension` renames the file in place when copied
+into the import staging dir so Studio sees it as the 360° recording it
+really is. Genuine single-lens ``.mp4`` files (one video stream) are
+left untouched.
 """
 
 from __future__ import annotations
@@ -174,6 +192,46 @@ def is_dual_fisheye(path: Path) -> bool:
     except ValueError:
         return False
     return w == h and w >= 1920
+
+
+def promote_to_insv_extension(path: Path) -> Path:
+    """Rename a dual-fisheye ``.mp4`` to ``.insv`` on disk and return the new path.
+
+    Insta360 Studio (and Pano2VR, the GoPro VR plugin, Premiere's spatial
+    metadata reader, etc.) gate 360° processing on the ``.insv`` file
+    extension and silently treat ``.mp4`` as flat single-lens video —
+    throwing away the second video stream and the IMU/gyro metadata
+    needed for horizon-leveling.
+
+    The X4 OSC ``camera.startCapture`` writes correct dual-fisheye
+    content but mislabels the file ``.mp4``; this helper detects that
+    case via :func:`is_dual_fisheye` and renames the file in place so
+    Studio (and any downstream tool that reads from ``HELMLOG_IMPORT_DIR``)
+    sees it as the 360° recording it actually is.
+
+    No-op for files that are not ``.mp4``, files that fail the
+    dual-fisheye probe, and the case where the ``.insv`` twin already
+    exists. Idempotent. Returns the (possibly new) path.
+    """
+    if path.suffix.lower() != ".mp4":
+        return path
+    if not is_dual_fisheye(path):
+        return path
+    target = path.with_suffix(".insv")
+    if target.exists():
+        logger.warning(
+            "Refusing to promote {} → {}: target already exists",
+            path.name,
+            target.name,
+        )
+        return path
+    path.rename(target)
+    logger.info(
+        "Promoted X4 OSC recording {} → {} (dual-fisheye 360°, .mp4 → .insv)",
+        path.name,
+        target.name,
+    )
+    return target
 
 
 def discover_recordings(mount_path: Path) -> list[InstaRecording]:

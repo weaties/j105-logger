@@ -15,6 +15,7 @@ from helmlog.insta360 import (
     discover_recordings,
     match_sessions,
     parse_insv_filename,
+    promote_to_insv_extension,
     recording_start_utc,
 )
 
@@ -189,6 +190,87 @@ class TestDiscoverRecordings:
             recs = discover_recordings(tmp_path)
         assert len(recs) == 1
         assert recs[0].needs_stitching is True
+
+
+# ---------------------------------------------------------------------------
+# .mp4 → .insv promotion (Insta360 Studio recognises 360° by extension only,
+# but the X4 OSC startCapture writes dual-fisheye content as .mp4 — we
+# rename during import-matched.sh copy so Studio sees the imports correctly.)
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteToInsvExtension:
+    def test_dual_fisheye_mp4_renamed_to_insv(self, tmp_path: Path) -> None:
+        """A dual-fisheye .mp4 must be renamed to .insv on disk."""
+        from unittest.mock import patch
+
+        src = tmp_path / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=True):
+            result = promote_to_insv_extension(src)
+
+        assert result.name == "VID_20260810_140530_00_000.insv"
+        assert result.exists()
+        assert not src.exists()
+
+    def test_single_lens_mp4_left_alone(self, tmp_path: Path) -> None:
+        """A genuine single-lens .mp4 must NOT be renamed."""
+        from unittest.mock import patch
+
+        src = tmp_path / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=False):
+            result = promote_to_insv_extension(src)
+
+        assert result == src
+        assert src.exists()
+        assert not src.with_suffix(".insv").exists()
+
+    def test_insv_not_probed(self, tmp_path: Path) -> None:
+        """A .insv file is trusted by extension; ffprobe is not invoked."""
+        from unittest.mock import patch
+
+        src = tmp_path / "VID_20260810_140530_00_000.insv"
+        src.write_bytes(b"\x00" * 4096)
+
+        with patch(
+            "helmlog.insta360.is_dual_fisheye", side_effect=AssertionError("should not be called")
+        ):
+            result = promote_to_insv_extension(src)
+
+        assert result == src
+        assert src.exists()
+
+    def test_idempotent_when_target_already_exists(self, tmp_path: Path) -> None:
+        """If the .insv twin already exists, leave the .mp4 alone (no clobber)."""
+        from unittest.mock import patch
+
+        src = tmp_path / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+        (tmp_path / "VID_20260810_140530_00_000.insv").write_bytes(b"\xff" * 4096)
+
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=True):
+            result = promote_to_insv_extension(src)
+
+        # Source still exists, target was not overwritten
+        assert result == src
+        assert src.exists()
+        assert (tmp_path / "VID_20260810_140530_00_000.insv").read_bytes() == b"\xff" * 4096
+
+    def test_uppercase_mp4_extension_handled(self, tmp_path: Path) -> None:
+        """Defensive: handle .MP4 (some camera firmware variants) too."""
+        from unittest.mock import patch
+
+        src = tmp_path / "VID_20260810_140530_00_000.MP4"
+        src.write_bytes(b"\x00" * 4096)
+
+        with patch("helmlog.insta360.is_dual_fisheye", return_value=True):
+            result = promote_to_insv_extension(src)
+
+        assert result.name == "VID_20260810_140530_00_000.insv"
+        assert result.exists()
 
 
 # ---------------------------------------------------------------------------

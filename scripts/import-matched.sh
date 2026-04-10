@@ -80,6 +80,7 @@ from helmlog.insta360 import (
     discover_recordings,
     match_sessions,
     probe_duration_s,
+    promote_to_insv_extension,
     recording_start_utc,
 )
 from helmlog.pipeline import fetch_sessions_from_pi
@@ -144,15 +145,30 @@ async def main() -> int:
         # Copy every segment of this recording. Multi-segment recordings
         # (Studio joins them on export) need all parts present in the import
         # dir before Studio can stitch them together.
+        #
+        # After each copy, promote dual-fisheye .mp4 → .insv on disk so
+        # Insta360 Studio recognises the X4 OSC-recorded files as 360°
+        # (see promote_to_insv_extension docstring for the full story).
         for seg in rec.segments:
             dest = import_dir / seg.name
+            # Already-present check must consider the .insv twin too,
+            # otherwise re-runs would re-copy every promoted file.
+            promoted_dest = dest.with_suffix(".insv")
             if dest.exists() and dest.stat().st_size == seg.stat().st_size:
+                skipped_existing += 1
+                continue
+            if (
+                dest.suffix.lower() == ".mp4"
+                and promoted_dest.exists()
+                and promoted_dest.stat().st_size == seg.stat().st_size
+            ):
                 skipped_existing += 1
                 continue
             tmp = dest.with_suffix(dest.suffix + ".part")
             print(f"    copying {seg.name} ({seg.stat().st_size / 1_073_741_824:.2f} GB)")
             shutil.copy2(seg, tmp)
             tmp.replace(dest)
+            promote_to_insv_extension(dest)
             copied += 1
 
         # Also copy the LRV preview if it exists — Studio uses it for fast

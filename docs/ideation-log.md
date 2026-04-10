@@ -2208,3 +2208,63 @@ disables Signal K, audio, and CAN readers.
   infrastructure needed. Litestream is interesting for continuous streaming
   but adds complexity. The read-only mode is important to prevent the
   replica from trying to record data or connect to instruments.
+
+---
+
+## IDX-035: BLE shutter-remote emulation as fallback for X4 OSC mode control
+
+- **Date captured:** 2026-04-10
+- **Origin:** Insta360 horizon-leveling investigation that landed
+  `is_dual_fisheye()` and `promote_to_insv_extension()` in
+  `src/helmlog/insta360.py`
+- **Status:** `raw`
+- **Related:** `src/helmlog/cameras.py`, `src/helmlog/insta360.py`,
+  `scripts/import-matched.sh`
+
+**Description:**
+Insurance plan in case Insta360 ever changes the X4 OSC behaviour we
+currently rely on. Today the X4 (firmware `DLC4_1.9.21.6_build5`) records
+correct dual-fisheye 360° content via OSC `camera.startCapture` but
+mislabels the file `.mp4`; we work around it by probing the stream count
+with ffprobe (`is_dual_fisheye`) and renaming on disk during import
+(`promote_to_insv_extension`). If a future firmware actually starts
+recording flat single-lens video over OSC, no amount of `setOptions` can
+fix it (we exhaustively probed every documented and undocumented option,
+and `videoStitchingSupport` is hard-coded to `["none"]`). At that point
+we'd need to drive the camera through a transport that inherits the
+touchscreen mode the way the physical shutter button does — i.e. emulate
+a Bluetooth shutter remote from the Pi.
+
+**Reference implementation details (verified by Patrick Chwalek's
+ESP32 work and the btittelbach ESPHome config — see Notes for sources):**
+
+- Pi advertises BLE local name `Insta360 GPS Remote` (the camera's
+  "Add Remote" pairing screen filters on this name)
+- Service UUID: `0000ce80-0000-1000-8000-00805f9b34fb`
+- Write characteristic (commands): `0000ce81-...`
+- Notify characteristic (status): `0000ce82-...`
+- Shutter toggle (one press = start, next press = stop, inherits
+  whatever mode the touchscreen is in):
+  `fc ef fe 86 00 03 01 02 00`
+- Mode button: `fc ef fe 86 00 03 01 01 00`
+- Power short / long: `... 00 03 01 00 00` / `... 00 03`
+- No pairing/bonding crypto required after first "Add Remote" handshake;
+  the camera whitelists the Pi's BLE MAC and reconnects automatically
+
+Implementation would live in a new `src/helmlog/cameras_ble.py` sibling
+module, called from the same `start_camera`/`stop_camera` entry points
+in `cameras.py` selected by a `CAMERA_TRANSPORT=osc|ble` env var. Pi
+side: `bleak` for GATT writes, BlueZ `btmgmt`/`bless` for advertising
+the local name. Estimate: 1–2 days of work to a first cut.
+
+**Notes:**
+- *2026-04-10:* Captured during the same investigation that found the
+  `.mp4` mislabelling. The actual fix turned out to be much smaller (the
+  OSC recordings were always correct content with a wrong extension), so
+  this BLE plan is intentionally being parked rather than built. Holding
+  it here so we don't have to re-discover the protocol from scratch if
+  Insta360 ever forces our hand. Sources:
+  [pchwalek/insta360_ble_esp32](https://github.com/pchwalek/insta360_ble_esp32),
+  [Patrick Chwalek — BLE Control of Insta360 Cameras](https://medium.com/@patrickchwalek/ble-control-of-insta360-cameras-7bf6894648a4),
+  [btittelbach ESPHome X4 config](https://github.com/btittelbach/esphome_config_examples/blob/main/insta360_ble_remote_waveshare_touch169_esp32s3.yaml),
+  [Hackaday: X3 BLE remote with ESP32](https://hackaday.io/project/188975-insta360-x3-ble-remote-control-with-esp32).
