@@ -568,10 +568,12 @@ async function toggleHistoryPlayer(sessionId) {
 
   // Build switcher + player + video list
   let html = '';
-  if (videos.filter(v => v.video_id).length > 1) {
+  const playable = videos.filter(v => v.video_id);
+  if (playable.length > 1) {
+    const btnLabels = videoButtonLabels(playable);
     html += '<div style="display:flex;gap:6px;margin-bottom:6px">';
-    html += videos.filter(v => v.video_id).map((v, i) => {
-      const label = (v.label || v.title || 'Video ' + (i + 1)).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    html += playable.map((v, i) => {
+      const label = btnLabels[i].replace(/&/g,'&amp;').replace(/</g,'&lt;');
       const cls = v.video_id === vid.video_id ? 'filter-btn active' : 'filter-btn';
       return '<button class="' + cls + '" onclick="switchHistVideo(' + sessionId + ',\'' + v.video_id + '\',this)">' + label + '</button>';
     }).join('');

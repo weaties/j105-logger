@@ -147,6 +147,64 @@ function parseVideoPosition(str) {
 }
 
 // ---------------------------------------------------------------------------
+// Video selector button labels
+// ---------------------------------------------------------------------------
+
+// Given a list of video objects (each with .title, .label, .video_id), return
+// a parallel list of short strings to use as switcher-button labels. The
+// algorithm strips time-of-day tokens from each title, then collapses
+// everything that's common across all titles (longest common prefix +
+// longest common suffix) so only the part that actually varies is left.
+//
+// When that leaves nothing unique (e.g. grandfathered videos that only differ
+// by upload time), fall back to the stripped time tokens themselves. Final
+// fallback is "Video 1/2/3" so a degenerate set never renders empty buttons.
+//
+// Pure function — no DOM access. Called by session.js and history.js.
+function videoButtonLabels(videos) {
+  // HH:MM or HH:MM:SS, optionally followed by a 2–5 char uppercase TZ abbr.
+  const TIME_RE = /\b\d{1,2}:\d{2}(?::\d{2})?(?:\s*[A-Z]{2,5})?\b/g;
+
+  const sources = videos.map((v, i) => v.title || v.label || ('Video ' + (i + 1)));
+  const stripped = sources.map(s => s.replace(TIME_RE, '').replace(/\s+/g, ' ').trim());
+  const times = sources.map(s => {
+    const m = s.match(TIME_RE);
+    return m ? m.join(' ') : '';
+  });
+
+  function lcp(strs) {
+    if (!strs.length) return '';
+    let p = strs[0];
+    for (let i = 1; i < strs.length; i++) {
+      while (p && !strs[i].startsWith(p)) p = p.substring(0, p.length - 1);
+      if (!p) return '';
+    }
+    return p;
+  }
+  function lcsuf(strs) {
+    if (!strs.length) return '';
+    let s = strs[0];
+    for (let i = 1; i < strs.length; i++) {
+      while (s && !strs[i].endsWith(s)) s = s.substring(1);
+      if (!s) return '';
+    }
+    return s;
+  }
+
+  const prefix = lcp(stripped);
+  const afterPrefix = stripped.map(s => s.substring(prefix.length));
+  const suffix = lcsuf(afterPrefix);
+  const unique = afterPrefix.map(s => s.substring(0, s.length - suffix.length).trim());
+
+  const collapsed = unique.every(l => !l) || new Set(unique).size === 1;
+  if (collapsed) {
+    if (new Set(times).size > 1 && times.every(t => t)) return times;
+    return videos.map((_, i) => 'Video ' + (i + 1));
+  }
+  return unique.map((l, i) => l || ('Video ' + (i + 1)));
+}
+
+// ---------------------------------------------------------------------------
 // Grafana URL helpers
 // ---------------------------------------------------------------------------
 

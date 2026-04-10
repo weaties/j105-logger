@@ -324,10 +324,10 @@ async function loadVideoPlayer() {
   // Render video switcher if multiple videos
   if (videos.length > 1) {
     const switcher = document.getElementById('video-switcher');
+    const btnLabels = videoButtonLabels(videos);
     switcher.innerHTML = videos.map((v, i) => {
-      const label = v.label || v.title || ('Video ' + (i + 1));
       const cls = i === _videoSync.activeIdx ? 'filter-btn active' : 'filter-btn';
-      return '<button class="' + cls + '" onclick="switchVideo(' + i + ')">' + esc(label) + '</button>';
+      return '<button class="' + cls + '" onclick="switchVideo(' + i + ')">' + esc(btnLabels[i]) + '</button>';
     }).join('');
   }
 
