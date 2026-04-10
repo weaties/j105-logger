@@ -126,11 +126,17 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
     than on-device-stitched ``.mp4``.  Unstitched files retain the gyroscope
     metadata required for horizon leveling during post-processing.
 
-    ``captureMode`` is intentionally NOT set here — ``captureMode: "video"``
-    on the X4 switches the camera to single-lens mode (which always produces
-    ``.mp4``), overriding the 360° mode the user has configured on the device.
-    The camera must already be in 360° video mode (set via touchscreen or the
-    Insta360 app).
+    **Important:** ``videoStitching: "none"`` only produces ``.insv`` files
+    when the camera is already in **360° dual-fisheye mode**.  If the camera
+    is in single-lens (normal video) mode — shown as ``captureMode: "video"``
+    in ``getOptions`` — the stitching option has no effect and recordings will
+    still be saved as ``.mp4``.  Set the camera to **360° Video** mode via
+    the touchscreen or Insta360 app before starting a session.
+
+    ``captureMode`` is intentionally NOT set here — setting
+    ``captureMode: "video"`` via OSC switches the X4 *from* 360° mode *to*
+    single-lens mode, so we must not send it and risk overriding a correctly
+    configured camera.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
     round-trip time of the HTTP request (used as ``sync_offset_ms``).
@@ -167,7 +173,7 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
             resp.raise_for_status()
-            logger.debug("Camera {} startCapture response: {}", camera.name, resp.text)
+            logger.info("Camera {} startCapture response: {}", camera.name, resp.text)
             return CameraStatus(
                 name=camera.name, ip=camera.ip, recording=True, latency_ms=latency_ms
             )
