@@ -152,6 +152,10 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
     try:
         async with httpx.AsyncClient() as client:
             # Diagnostic: log the camera's current mode before changing anything.
+            # This runs at INFO level so it appears in the default log output.
+            # If videoStitching / videoStitchingSupport are absent from the
+            # response the X4 firmware does not support that option name and
+            # we need a different approach.
             try:
                 get_opts_resp = await client.post(
                     _osc_url(camera),
@@ -161,16 +165,21 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
                         "parameters": {
                             "optionNames": [
                                 "captureMode",
+                                "captureStatus",
                                 "videoStitching",
                                 "videoStitchingSupport",
+                                "_videoType",
+                                "_videoTypeSupport",
+                                "fileFormat",
+                                "fileFormatSupport",
                             ]
                         },
                     },
                     timeout=timeout,
                 )
-                logger.debug("Camera {} pre-start getOptions: {}", camera.name, get_opts_resp.text)
+                logger.info("Camera {} pre-start getOptions: {}", camera.name, get_opts_resp.text)
             except (httpx.HTTPError, OSError) as exc:
-                logger.debug(
+                logger.warning(
                     "Camera {} pre-start getOptions failed (non-fatal): {}", camera.name, exc
                 )
 
