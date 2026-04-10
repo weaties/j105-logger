@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from loguru import logger
@@ -202,15 +203,19 @@ async def process_recording(
     session_id: int | None = session.get("id") if session else None
     result.session_id = session_id
 
-    # Build metadata
+    # Build metadata. Date + time in the title use the configured local
+    # timezone (typically the boat's local time) so sailors reading the
+    # YouTube channel see the date/time they actually sailed — and so titles
+    # sort chronologically when the session spans midnight UTC.
     title_suffix = f" — {config.camera_label} cam" if config.camera_label else ""
     # The /api/sessions endpoint returns the session-type field as ``type``,
     # not ``session_type`` — fall through to keep older callers working.
     sess_type = (
         session.get("type") or session.get("session_type") or "sailing" if session else "sailing"
     )
-    title_date = start_utc.strftime("%Y-%m-%d")
-    title_time = start_utc.strftime("%H:%MZ")
+    local_start = start_utc.astimezone(ZoneInfo(config.timezone))
+    title_date = local_start.strftime("%Y-%m-%d")
+    title_time = local_start.strftime("%H:%M %Z")
     if session:
         title = build_title(
             event=session.get("event"),
