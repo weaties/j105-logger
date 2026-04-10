@@ -267,6 +267,106 @@ async def test_unknown_int_id_404(storage: Storage, admin_client: httpx.AsyncCli
 
 
 # ---------------------------------------------------------------------------
+# Debrief fallback + lazy slug allocation (#449 follow-up)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_debrief_session_renders_under_int_url(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    """Debrief (audio_sessions) ids fall through from /session/{id} and render."""
+    db = storage._conn()  # noqa: SLF001
+    cur = await db.execute(
+        "INSERT INTO audio_sessions"
+        " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
+        "  session_type, name)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "/tmp/debrief.wav",
+            "Mic",
+            _START.isoformat(),
+            (_START + timedelta(minutes=30)).isoformat(),
+            48000,
+            1,
+            "debrief",
+            "Post-race debrief",
+        ),
+    )
+    await db.commit()
+    audio_id = cur.lastrowid
+    assert audio_id is not None
+
+    resp = await admin_client.get(f"/session/{audio_id}")
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers.get("content-type", "")
+
+
+@pytest.mark.asyncio
+async def test_race_without_slug_is_lazily_assigned(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    """A race row with NULL slug (e.g. failed backfill) gets one on access."""
+    db = storage._conn()  # noqa: SLF001
+    cur = await db.execute(
+        "INSERT INTO races"
+        " (name, event, race_num, date, start_utc, end_utc, session_type, slug)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        (
+            "20260408-Practice-1",
+            "Practice",
+            1,
+            "2026-04-08",
+            _START.isoformat(),
+            (_START + timedelta(hours=1)).isoformat(),
+            "practice",
+        ),
+    )
+    await db.commit()
+    race_id = cur.lastrowid
+    assert race_id is not None
+
+    resp = await admin_client.get(f"/session/{race_id}")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == f"/session/{race_id}/20260408-practice-1"
+
+    # Subsequent calls should keep redirecting (slug now persisted).
+    race = await storage.get_race(race_id)
+    assert race is not None
+    assert race.slug == "20260408-practice-1"
+
+
+@pytest.mark.asyncio
+async def test_v58_backfill_is_idempotent(storage: Storage) -> None:
+    """Re-running ``_migrate_v58_slugs`` after a partial failure completes it."""
+    db = storage._conn()  # noqa: SLF001
+    await db.execute(
+        "INSERT INTO races"
+        " (name, event, race_num, date, start_utc, end_utc, session_type, slug)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
+        (
+            "Partial backfill row",
+            "E",
+            1,
+            "2026-04-08",
+            _START.isoformat(),
+            None,
+            "race",
+        ),
+    )
+    await db.commit()
+
+    await storage._migrate_v58_slugs()  # noqa: SLF001
+    cur = await db.execute("SELECT slug FROM races WHERE name = 'Partial backfill row'")
+    row = await cur.fetchone()
+    assert row is not None
+    assert row["slug"] == "partial-backfill-row"
+
+    # Running again is a no-op and does not raise.
+    await storage._migrate_v58_slugs()  # noqa: SLF001
+
+
+# ---------------------------------------------------------------------------
 # Video pipeline — rename must not break race_videos links
 # ---------------------------------------------------------------------------
 

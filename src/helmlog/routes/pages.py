@@ -128,6 +128,28 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
     return await _render_session_page(request, race)
 
 
+async def _render_debrief_page(request: Request, debrief: dict[str, Any]) -> Response:
+    """Render the session template for a debrief (audio_sessions row) (#449)."""
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    user_role = user.get("role", "viewer") if user else "viewer"
+    return templates.TemplateResponse(
+        request,
+        "session.html",
+        tpl_ctx(
+            request,
+            "/history",
+            session_id=debrief["id"],
+            session_name=debrief["name"],
+            session_slug="",
+            session_url=f"/session/{debrief['id']}",
+            renamed_from=None,
+            grafana_port=request.app.state.race_config.grafana_port,
+            grafana_uid=request.app.state.race_config.grafana_uid,
+            user_role=user_role,
+        ),
+    )
+
+
 @router.get(
     "/session/{session_ref}",
     response_class=HTMLResponse,
@@ -136,11 +158,15 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
 async def session_detail_page(request: Request, session_ref: str) -> Response:
     """Single-segment session URL — 301s to the canonical ``/session/{id}/{slug}``.
 
-    Accepts an integer id or a slug (current or retired within 30 days):
+    Accepts an integer id (race or debrief) or a slug:
 
-    * ``/session/{id}`` → 301 to ``/session/{id}/{slug}``. If the row has
-      no slug yet (pre-v58 data) we render inline instead of redirecting.
-    * ``/session/{slug}`` (current) → 301 to ``/session/{id}/{slug}``.
+    * ``/session/{race_id}`` → 301 to ``/session/{id}/{slug}``. A race row
+      with no slug (pre-v58 data whose backfill didn't complete) has one
+      lazily allocated on first access.
+    * ``/session/{audio_id}`` where that id matches a debrief row in
+      ``audio_sessions`` → render inline (debriefs have no slug; the id is
+      the stable key from the history list).
+    * ``/session/{slug}`` (current) → 301 to the canonical URL.
     * ``/session/{slug}`` (retired, within retention window) → 301 to the
       current canonical URL.
     * Unknown id / slug → 404.
@@ -150,14 +176,20 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
     storage = get_storage(request)
 
     if session_ref.isdigit():
-        race_id = int(session_ref)
-        race = await storage.get_race(race_id)
-        if race is None:
-            raise HTTPException(status_code=404, detail="Session not found")
-        if race.slug:
-            return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
-        # Row predates v58 and has no slug — render inline under /session/{id}.
-        return await _render_session_page(request, race)
+        numeric_id = int(session_ref)
+        race = await storage.get_race(numeric_id)
+        if race is not None:
+            slug = race.slug or await storage.ensure_race_slug(race.id) or ""
+            if slug:
+                return RedirectResponse(url=_canonical_session_url(race.id, slug), status_code=301)
+            # Last-resort fallback — render inline rather than redirect-loop.
+            return await _render_session_page(request, race)
+        # Not a race — try the debrief (audio_sessions) id space so history
+        # links to debrief sessions keep resolving.
+        debrief = await storage.get_debrief_session(numeric_id)
+        if debrief is not None:
+            return await _render_debrief_page(request, debrief)
+        raise HTTPException(status_code=404, detail="Session not found")
 
     race = await storage.get_race_by_slug(session_ref)
     if race is not None:

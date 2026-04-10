@@ -1570,9 +1570,11 @@ class Storage:
         if current < 56:
             await self._migrate_v56_categories()
 
-        # Post-DDL data migration for v58 (backfill race slugs)
-        if current < 58:
-            await self._migrate_v58_slugs()
+        # Post-DDL data migration for v58 (backfill race slugs). Always
+        # called — the method is idempotent (no-op when every row has a
+        # slug) so a previously-failed partial backfill gets repaired on
+        # the next boot instead of leaving rows with NULL slugs forever.
+        await self._migrate_v58_slugs()
 
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
@@ -2869,6 +2871,46 @@ class Storage:
         )
         row = await cur.fetchone()
         return self._row_to_race(row) if row else None
+
+    async def ensure_race_slug(self, race_id: int) -> str | None:
+        """Allocate and persist a slug for *race_id* if it doesn't have one yet (#449).
+
+        Returns the slug (newly assigned or already present), or ``None`` if
+        the race doesn't exist. Used as a lazy repair for rows that missed
+        the v58 backfill — e.g. a race row whose backfill transaction
+        crashed on a prior boot.
+        """
+        from helmlog.races import slugify
+
+        db = self._conn()
+        cur = await db.execute("SELECT id, name, slug FROM races WHERE id = ?", (race_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        if row["slug"]:
+            return str(row["slug"])
+        base = slugify(row["name"]) or f"race-{race_id}"
+        slug = await self._allocate_slug(base, exclude_race_id=race_id)
+        await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, race_id))
+        await db.commit()
+        logger.info("Lazy slug allocation for race {}: {}", race_id, slug)
+        return slug
+
+    async def get_debrief_session(self, audio_session_id: int) -> dict[str, Any] | None:
+        """Return a minimal debrief session record by audio_sessions id (#449).
+
+        Debriefs live in ``audio_sessions`` with ``session_type='debrief'`` and
+        have no slug. The session detail page renders them under
+        ``/session/{audio_id}`` so links from the history list keep working.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, COALESCE(name, file_path) AS name, session_type, start_utc"
+            " FROM audio_sessions WHERE id = ? AND session_type = 'debrief'",
+            (audio_session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
     async def lookup_retired_slug(self, slug: str) -> tuple[int, datetime] | None:
         """Return ``(race_id, retired_at)`` for a retired slug, or None (#449)."""
