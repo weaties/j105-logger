@@ -27,25 +27,42 @@ from helmlog.youtube import (
 class TestBuildTitle:
     def test_race_with_event(self) -> None:
         title = build_title(event="Ballard Cup", session_type="race", race_num=2, date="2026-08-10")
-        assert title == "Ballard Cup Race 2 — 2026-08-10"
+        assert title == "2026-08-10 — Ballard Cup Race 2"
+
+    def test_race_with_time(self) -> None:
+        title = build_title(
+            event="Ballard Cup",
+            session_type="race",
+            race_num=2,
+            date="2026-08-10",
+            time="14:05Z",
+        )
+        assert title == "2026-08-10 14:05Z — Ballard Cup Race 2"
 
     def test_race_without_event(self) -> None:
         title = build_title(event=None, session_type="race", race_num=1, date="2026-08-10")
-        assert title == "Race 1 — 2026-08-10"
+        assert title == "2026-08-10 — Race 1"
 
     def test_practice(self) -> None:
         title = build_title(event=None, session_type="practice", race_num=None, date="2026-08-10")
-        assert title == "Practice — 2026-08-10"
+        assert title == "2026-08-10 — Practice"
 
     def test_practice_with_event(self) -> None:
         title = build_title(
             event="Ballard Cup", session_type="practice", race_num=None, date="2026-08-10"
         )
-        assert title == "Ballard Cup Practice — 2026-08-10"
+        assert title == "2026-08-10 — Ballard Cup Practice"
 
     def test_unknown_session_type(self) -> None:
         title = build_title(event=None, session_type="other", race_num=None, date="2026-08-10")
-        assert title == "Other — 2026-08-10"
+        assert title == "2026-08-10 — Other"
+
+    def test_titles_sort_chronologically(self) -> None:
+        """Date-leading titles must sort to chronological order alphabetically."""
+        a = build_title(event=None, session_type="race", race_num=1, date="2026-08-10")
+        b = build_title(event=None, session_type="race", race_num=2, date="2026-08-11")
+        c = build_title(event=None, session_type="race", race_num=3, date="2026-08-09")
+        assert sorted([a, b, c]) == [c, a, b]
 
 
 # ---------------------------------------------------------------------------

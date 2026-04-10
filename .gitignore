@@ -56,3 +56,4 @@ htmlcov/
 .DS_Store
 **/.DS_Store
 .env.claude-dev
+docker/libMediaSDK-dev*.deb

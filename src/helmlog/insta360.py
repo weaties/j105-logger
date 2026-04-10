@@ -15,20 +15,39 @@ File naming convention (Insta360 X4):
 
 Only ``_00_`` files are included in recording segments; for .insv the
 stitcher automatically pairs front+back.
+
+X4 OSC startCapture quirk
+-------------------------
+When the X4 is started via the OSC HTTP API (``camera.startCapture``)
+rather than the physical shutter button, the camera writes a *correct*
+dual-fisheye 360° recording — two HEVC video streams + audio + IMU
+trailer — but **labels the file with a ``.mp4`` extension** instead of
+``.insv``. Insta360 Studio (and the GoPro VR plugin, Pano2VR, etc.)
+gate 360° processing on the extension and silently treat ``.mp4`` as
+flat single-lens video, discarding the second video stream and the
+gyroscope metadata needed for horizon-leveling.
+
+:func:`is_dual_fisheye` detects this content-vs-extension mismatch by
+probing the stream count + dimensions with ffprobe.
+:func:`promote_to_insv_extension` renames the file in place when copied
+into the import staging dir so Studio sees it as the 360° recording it
+really is. Genuine single-lens ``.mp4`` files (one video stream) are
+left untouched.
 """
 
 from __future__ import annotations
 
+import plistlib
 import re
+import subprocess
+import tomllib
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Filename parsing
@@ -92,12 +111,140 @@ class InstaRecording:
 # ---------------------------------------------------------------------------
 
 
+def probe_duration_s(path: Path) -> float | None:
+    """Return the video duration in seconds, or ``None`` on probe failure.
+
+    Used by the import step to compute an accurate ``end_utc`` for session
+    matching — far more reliable than the old ``start_utc + 2 hours``
+    heuristic, which would over-match recordings to sessions hours away.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("ffprobe duration failed for {}: {}", path, exc)
+        return None
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def is_dual_fisheye(path: Path) -> bool:
+    """Return True if a video file is X4 dual-fisheye 360°.
+
+    Probes the container with ``ffprobe`` and considers a file to be
+    dual-fisheye when it contains **two** video streams of identical,
+    square dimensions (the X4 5.7K mode is 2880×2880 × 2; 8K mode is
+    3840×3840 × 2). Falls back to ``False`` on any probe failure so the
+    pipeline degrades to a direct upload rather than blowing up.
+
+    The X4 writes 360° captures as either ``.insv`` or ``.mp4``
+    depending on firmware/mode — the file extension is not a reliable
+    signal, so we look at the streams instead.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("ffprobe failed for {}: {}", path, exc)
+        return False
+    streams = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if len(streams) != 2:
+        return False
+    if streams[0] != streams[1]:
+        return False
+    try:
+        w, h = (int(x) for x in streams[0].split(","))
+    except ValueError:
+        return False
+    return w == h and w >= 1920
+
+
+def promote_to_insv_extension(path: Path) -> Path:
+    """Rename a dual-fisheye ``.mp4`` to ``.insv`` on disk and return the new path.
+
+    Insta360 Studio (and Pano2VR, the GoPro VR plugin, Premiere's spatial
+    metadata reader, etc.) gate 360° processing on the ``.insv`` file
+    extension and silently treat ``.mp4`` as flat single-lens video —
+    throwing away the second video stream and the IMU/gyro metadata
+    needed for horizon-leveling.
+
+    The X4 OSC ``camera.startCapture`` writes correct dual-fisheye
+    content but mislabels the file ``.mp4``; this helper detects that
+    case via :func:`is_dual_fisheye` and renames the file in place so
+    Studio (and any downstream tool that reads from ``HELMLOG_IMPORT_DIR``)
+    sees it as the 360° recording it actually is.
+
+    No-op for files that are not ``.mp4``, files that fail the
+    dual-fisheye probe, and the case where the ``.insv`` twin already
+    exists. Idempotent. Returns the (possibly new) path.
+    """
+    if path.suffix.lower() != ".mp4":
+        return path
+    if not is_dual_fisheye(path):
+        return path
+    target = path.with_suffix(".insv")
+    if target.exists():
+        logger.warning(
+            "Refusing to promote {} → {}: target already exists",
+            path.name,
+            target.name,
+        )
+        return path
+    path.rename(target)
+    logger.info(
+        "Promoted X4 OSC recording {} → {} (dual-fisheye 360°, .mp4 → .insv)",
+        path.name,
+        target.name,
+    )
+    return target
+
+
 def discover_recordings(mount_path: Path) -> list[InstaRecording]:
     """Scan an Insta360 SD card for video files and group into recordings.
 
     Looks in ``<mount_path>/DCIM/Camera01/`` for VID_*.insv and VID_*.mp4,
     groups by recording timestamp, and returns them sorted chronologically.
     Only ``_00_`` (back/main lens) segments are included.
+
+    Each recording is probed with :func:`is_dual_fisheye` to decide
+    whether it needs stitching — the X4 can write 360° captures as
+    either ``.insv`` or ``.mp4``, so the file extension alone isn't a
+    reliable signal.
 
     Args:
         mount_path: Root of the mounted SD card (e.g. ``/Volumes/Insta360 X4``).
@@ -110,23 +257,21 @@ def discover_recordings(mount_path: Path) -> list[InstaRecording]:
         logger.debug("No DCIM/Camera01 found at {}", mount_path)
         return []
 
-    # Collect main-lens segments grouped by timestamp + extension
+    # Collect main-lens segments grouped by timestamp
     groups: dict[str, list[tuple[int, Path]]] = {}
-    extensions: dict[str, str] = {}  # timestamp → extension
     for f in camera_dir.iterdir():
         info = parse_insv_filename(f.name)
         if info is None or info.lens != "00":
             continue
         groups.setdefault(info.timestamp_str, []).append((info.segment, f))
-        extensions[info.timestamp_str] = info.extension
 
     recordings: list[InstaRecording] = []
     for ts, segs in sorted(groups.items()):
         segs.sort(key=lambda t: t[0])  # sort by segment number
         paths = [p for _, p in segs]
         total = sum(p.stat().st_size for p in paths)
-        ext = extensions[ts]
-        needs_stitch = ext == "insv"
+        # Probe the first segment — all segments of one recording share format
+        needs_stitch = is_dual_fisheye(paths[0])
         recordings.append(
             InstaRecording(
                 timestamp_str=ts,
@@ -171,6 +316,123 @@ def recording_start_utc(rec: InstaRecording, tz_name: str) -> datetime:
     naive = datetime.strptime(rec.timestamp_str, "%Y%m%d_%H%M%S")
     local_dt = naive.replace(tzinfo=tz)
     return local_dt.astimezone(UTC)
+
+
+# ---------------------------------------------------------------------------
+# Camera identity (volume UUID → user-assigned label)
+# ---------------------------------------------------------------------------
+
+
+def default_camera_labels_path() -> Path:
+    """Return the on-disk camera-label config path on the Mac."""
+    return Path.home() / ".config" / "helmlog" / "cameras.toml"
+
+
+def volume_uuid_for(mount_path: Path) -> str | None:
+    """Return the macOS volume UUID for a mounted volume.
+
+    Uses ``diskutil info -plist <mount>``. Returns ``None`` on any
+    failure (non-macOS, unmounted, etc.) so callers can fall back to
+    the volume basename.
+    """
+    try:
+        result = subprocess.run(
+            ["diskutil", "info", "-plist", str(mount_path)],
+            check=True,
+            capture_output=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        logger.debug("diskutil lookup failed for {}: {}", mount_path, exc)
+        return None
+    try:
+        info = plistlib.loads(result.stdout)
+    except plistlib.InvalidFileException as exc:
+        logger.debug("Could not parse diskutil plist for {}: {}", mount_path, exc)
+        return None
+    uuid = info.get("VolumeUUID") or info.get("DiskUUID")
+    return str(uuid) if uuid else None
+
+
+def _placeholder_label(volume_uuid: str) -> str:
+    """Build a placeholder camera label from a volume UUID."""
+    short = volume_uuid.replace("-", "").lower()[:8]
+    return f"camera-{short}"
+
+
+def load_camera_labels(path: Path | None = None) -> dict[str, str]:
+    """Load the volume-UUID → camera-label map from the Mac config file.
+
+    Returns an empty dict if the file is missing or unparseable.
+    """
+    cfg = path or default_camera_labels_path()
+    if not cfg.exists():
+        return {}
+    try:
+        data = tomllib.loads(cfg.read_text())
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        logger.warning("Could not read camera labels {}: {}", cfg, exc)
+        return {}
+    cameras = data.get("cameras", {})
+    if not isinstance(cameras, dict):
+        return {}
+    return {str(k).lower(): str(v) for k, v in cameras.items() if v}
+
+
+def save_camera_label(volume_uuid: str, label: str, path: Path | None = None) -> None:
+    """Persist a label for a volume UUID, creating the file if needed."""
+    cfg = path or default_camera_labels_path()
+    existing = load_camera_labels(cfg)
+    existing[volume_uuid.lower()] = label
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    lines = ["[cameras]"]
+    for uuid, lbl in sorted(existing.items()):
+        lines.append(f'"{uuid}" = "{lbl}"')
+    cfg.write_text("\n".join(lines) + "\n")
+
+
+def resolve_camera_label(
+    mount_path: Path,
+    *,
+    labels_path: Path | None = None,
+) -> tuple[str, bool]:
+    """Resolve the camera label to use for a mounted volume.
+
+    Strategy:
+      1. Look up the volume UUID via ``diskutil``.
+      2. If a stored label exists for that UUID, use it (``known=True``).
+      3. Otherwise persist a placeholder ``camera-<uuid8>`` and return
+         it as ``known=False`` so the caller can notify the user to
+         rename the camera in the config.
+      4. If the UUID lookup fails, fall back to the volume basename.
+
+    Returns:
+        ``(label, is_user_assigned)``.
+    """
+    uuid = volume_uuid_for(mount_path)
+    if uuid is None:
+        fallback = mount_path.name or "camera"
+        logger.warning(
+            "No volume UUID for {} — using basename {!r} as camera label",
+            mount_path,
+            fallback,
+        )
+        return fallback, False
+
+    labels = load_camera_labels(labels_path)
+    stored = labels.get(uuid.lower())
+    if stored:
+        return stored, True
+
+    placeholder = _placeholder_label(uuid)
+    save_camera_label(uuid, placeholder, labels_path)
+    logger.warning(
+        "Unknown camera (volume UUID {}); using placeholder label {!r}. Edit {} to rename.",
+        uuid,
+        placeholder,
+        labels_path or default_camera_labels_path(),
+    )
+    return placeholder, False
 
 
 # ---------------------------------------------------------------------------

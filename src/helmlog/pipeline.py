@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 from loguru import logger
@@ -26,12 +27,28 @@ from helmlog.youtube import build_description, build_title, upload_video
 
 @dataclass(frozen=True)
 class PipelineConfig:
-    """Runtime configuration for the video pipeline."""
+    """Runtime configuration for the video pipeline.
+
+    Attributes:
+        pi_api_url: HelmLog Pi base URL.
+        pi_session_cookie: Auth cookie for Pi API calls (enables linking).
+        privacy: YouTube privacy status for uploads.
+        timezone: Camera local timezone for filename → UTC conversion.
+        camera_label: Per-camera identifier (e.g. ``"bow"``, ``"stern"``).
+            Used for output subdirectory, YouTube title suffix, and the
+            link label posted to the Pi. Empty string disables the
+            per-camera suffix (single-camera mode).
+        youtube_account: YouTube channel handle to upload to. Drives
+            which OAuth token file is loaded — see
+            :func:`helmlog.youtube.upload_video`.
+    """
 
     pi_api_url: str = "http://corvopi:3002"
     pi_session_cookie: str = ""
     privacy: str = "unlisted"
     timezone: str = "America/Los_Angeles"
+    camera_label: str = ""
+    youtube_account: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +102,20 @@ async def fetch_sessions_from_pi(
         return []
 
 
+def build_link_label(camera_label: str = "") -> str:
+    """Build the per-video label posted to the Pi when linking.
+
+    Examples:
+        >>> build_link_label("")
+        '360 cam'
+        >>> build_link_label("bow")
+        '360 cam — bow'
+    """
+    if camera_label:
+        return f"360 cam — {camera_label}"
+    return "360 cam"
+
+
 async def _link_video_on_pi(
     *,
     pi_api_url: str,
@@ -92,6 +123,7 @@ async def _link_video_on_pi(
     youtube_url: str,
     sync_utc: str,
     session_cookie: str,
+    label: str = "360 cam",
 ) -> httpx.Response:
     """POST to the Pi API to link a YouTube video to a session.
 
@@ -102,7 +134,7 @@ async def _link_video_on_pi(
             f"{pi_api_url}/api/sessions/{session_id}/videos",
             json={
                 "youtube_url": youtube_url,
-                "label": "360 cam",
+                "label": label,
                 "sync_utc": sync_utc,
                 "sync_offset_s": 0.0,
             },
@@ -141,18 +173,58 @@ async def process_recording(
     end_utc = start_utc + timedelta(hours=2)
 
     # Match to a session
-    session = match_sessions(start_utc, end_utc, sessions)
+    matched = match_sessions(start_utc, end_utc, sessions)
+    # The /api/sessions list mixes races, debriefs, and practice sessions, but
+    # the link endpoint only accepts race IDs. When the matcher picks a child
+    # session (e.g. a debrief), follow ``parent_race_id`` to the parent race
+    # and use *its* metadata for both linking and title-building so the
+    # YouTube title says "Race 4", not "Debrief 4".
+    session = matched
+    if matched is not None:
+        parent_race_id = matched.get("parent_race_id")
+        if parent_race_id is not None:
+            parent = next(
+                (
+                    s
+                    for s in sessions
+                    if s.get("id") == parent_race_id
+                    and (s.get("type") == "race" or s.get("session_type") == "race")
+                ),
+                None,
+            )
+            if parent is not None:
+                session = parent
+                logger.info(
+                    "[{}] Walked from {} → parent race {} for link + title",
+                    rec.timestamp_str,
+                    matched.get("name", matched.get("id")),
+                    parent.get("name", parent.get("id")),
+                )
     session_id: int | None = session.get("id") if session else None
     result.session_id = session_id
 
-    # Build metadata
+    # Build metadata. Date + time in the title use the configured local
+    # timezone (typically the boat's local time) so sailors reading the
+    # YouTube channel see the date/time they actually sailed — and so titles
+    # sort chronologically when the session spans midnight UTC.
+    title_suffix = f" — {config.camera_label} cam" if config.camera_label else ""
+    # The /api/sessions endpoint returns the session-type field as ``type``,
+    # not ``session_type`` — fall through to keep older callers working.
+    sess_type = (
+        session.get("type") or session.get("session_type") or "sailing" if session else "sailing"
+    )
+    local_start = start_utc.astimezone(ZoneInfo(config.timezone))
+    title_date = local_start.strftime("%Y-%m-%d")
+    title_time = local_start.strftime("%H:%M %Z")
     if session:
         title = build_title(
             event=session.get("event"),
-            session_type=session.get("session_type", "sailing"),
+            session_type=sess_type,
             race_num=session.get("race_num"),
-            date=start_utc.strftime("%Y-%m-%d"),
+            date=title_date,
+            time=title_time,
         )
+        title = f"{title}{title_suffix}"
         base = f"{config.pi_api_url}/history"
         session_slug = session.get("slug")
         if session_id and session_slug:
@@ -174,8 +246,10 @@ async def process_recording(
             event=None,
             session_type="sailing",
             race_num=None,
-            date=start_utc.strftime("%Y-%m-%d"),
+            date=title_date,
+            time=title_time,
         )
+        title = f"{title}{title_suffix}"
         desc = build_description(
             session_url=f"{config.pi_api_url}/history",
             start_utc=start_utc.isoformat(),
@@ -190,6 +264,7 @@ async def process_recording(
             title=title,
             description=desc,
             privacy=config.privacy,
+            youtube_account=config.youtube_account or None,
         )
         result.uploaded = True
         result.video_id = upload_result.video_id
@@ -209,6 +284,7 @@ async def process_recording(
                 youtube_url=upload_result.youtube_url,
                 sync_utc=start_utc.isoformat(),
                 session_cookie=config.pi_session_cookie,
+                label=build_link_label(config.camera_label),
             )
             if link_resp.status_code == 201:
                 result.linked = True
