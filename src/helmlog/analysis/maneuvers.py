@@ -437,10 +437,13 @@ async def enrich_session_maneuvers(
     twa: list[tuple[datetime, float]] = []
     tws: list[tuple[datetime, float]] = []
     for r in winds_raw:
+        ref_raw = r.get("reference")
+        if ref_raw is None:
+            continue
         try:
-            ref = int(r.get("reference", -1) or -1)
+            ref = int(ref_raw)
         except (TypeError, ValueError):
-            ref = -1
+            continue
         # 0 = boat-referenced TWA, 4 = north-referenced TWD. Both are "true wind".
         if ref not in (0, 4):
             continue

@@ -2000,13 +2000,57 @@ const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: c
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
+let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
+
+function _parseUtc(iso) {
+  if (!iso) return null;
+  const s = (iso.endsWith('Z') || iso.includes('+')) ? iso : iso + 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function _fmtElapsed(iso) {
+  const t = _parseUtc(iso);
+  if (!t || !_session || !_session.start_utc) return '\u2014';
+  const start = _parseUtc(_session.start_utc);
+  if (!start) return '\u2014';
+  const secs = Math.max(0, Math.round((t.getTime() - start.getTime()) / 1000));
+  const mm = Math.floor(secs / 60);
+  const ss = secs % 60;
+  return '+' + String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
   if (!r.ok) return;
   _maneuvers = await r.json();
+  // Default: select all maneuvers for overlay when a new list arrives.
+  _maneuverSelected = new Set(_maneuvers.map((m, i) => m.id != null ? m.id : i));
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
+}
+
+function _manKey(m, idx) {
+  return m.id != null ? m.id : idx;
+}
+
+function toggleManeuverSelected(keyStr) {
+  // keyStr may be a number-as-string; normalise
+  const key = isNaN(Number(keyStr)) ? keyStr : Number(keyStr);
+  if (_maneuverSelected.has(key)) _maneuverSelected.delete(key);
+  else _maneuverSelected.add(key);
+  if (_maneuverOverlay) renderManeuverCard();
+}
+
+function setManeuverSelectAll(mode) {
+  if (mode === 'all') {
+    _maneuverSelected = new Set(_maneuvers.map((m, i) => _manKey(m, i)));
+  } else if (mode === 'none') {
+    _maneuverSelected = new Set();
+  } else if (mode === 'filtered') {
+    _maneuverSelected = new Set(_maneuverRows().map((m) => _manKey(m, _maneuvers.indexOf(m))));
+  }
+  renderManeuverCard();
 }
 
 function _maneuverRows() {
@@ -2110,9 +2154,11 @@ function _renderTrackSvg(tracks, opts) {
 }
 
 function _renderOverlaySvg() {
-  const items = _maneuverRows().filter(m => m.track && m.track.length);
+  const items = _maneuvers
+    .filter((m, i) => _maneuverSelected.has(_manKey(m, i)))
+    .filter(m => m.track && m.track.length);
   if (!items.length) {
-    return '<div style="color:var(--text-secondary);font-size:.75rem">No track data for current filter.</div>';
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers selected for overlay. Tick rows below to include them.</div>';
   }
   const tracks = items.map(m => ({
     points: m.track,
@@ -2122,7 +2168,7 @@ function _renderOverlaySvg() {
   }));
   const svg = _renderTrackSvg(tracks, { width: 380, height: 300 });
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
-    + items.length + ' maneuvers overlaid. Colours = rank '
+    + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
     + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
     + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
@@ -2178,24 +2224,33 @@ function renderManeuverCard() {
   const items = _maneuverRows();
   let rows = items.map((m) => {
     const idx = _maneuvers.indexOf(m);
+    const key = _manKey(m, idx);
     const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
     const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'transparent';
     const rankDot = m.rank
       ? '<span title="' + m.rank + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + rankColor + ';margin-right:4px"></span>'
       : '';
     const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
+    const selected = _maneuverSelected.has(key);
+    const cbox = '<input type="checkbox" ' + (selected ? 'checked ' : '') + 'onclick="event.stopPropagation();toggleManeuverSelected(\'' + key + '\')" title="Include in overlay">';
+    const elapsed = _fmtElapsed(m.ts);
     const t = fmtTime(m.ts);
     const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
     const turn = m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—';
     const bspLoss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
     const distLoss = m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—';
     const entry = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—');
-    const cond = (m.entry_tws != null ? m.entry_tws.toFixed(0) + ' kt' : '—');
+    // Fall back to the detector's stored tws_bin (integer kt) when the
+    // averaged entry window didn't hit any wind samples.
+    const twsVal = m.entry_tws != null ? m.entry_tws : (m.tws_bin != null ? m.tws_bin : null);
+    const cond = twsVal != null ? (twsVal.toFixed ? twsVal.toFixed(0) : twsVal) + ' kt' : '—';
     const yt = m.youtube_url
       ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
       : '';
     return '<tr id="mrow-' + idx + '" style="cursor:pointer" onclick="highlightManeuver(' + idx + ')">'
+      + '<td>' + cbox + '</td>'
       + '<td>' + typeBadge + '</td>'
+      + '<td style="font-variant-numeric:tabular-nums">' + elapsed + '</td>'
       + '<td>' + t + '</td>'
       + '<td>' + dur + '</td>'
       + '<td>' + turn + '</td>'
@@ -2211,9 +2266,19 @@ function renderManeuverCard() {
     ? '<div style="margin-bottom:8px">' + _renderOverlaySvg() + '</div>'
     : '';
 
-  body.innerHTML = summary + filterBar + overlayBlock
+  const selCount = _maneuverSelected.size;
+  const selectBar = '<div style="font-size:.7rem;color:var(--text-secondary);margin:4px 0;display:flex;gap:6px;align-items:center">'
+    + '<span>Overlay: ' + selCount + ' selected</span>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'none\')">none</button>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'filtered\')">match filter</button>'
+    + '</div>';
+
+  body.innerHTML = summary + filterBar + overlayBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
+    + '<th title="Include in overlay"></th>'
     + _manHeader('Type', 'type')
+    + '<th>Elapsed</th>'
     + _manHeader('Time', 'ts')
     + _manHeader('Dur', 'duration_sec')
     + _manHeader('Turn', 'turn_angle_deg')

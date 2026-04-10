@@ -4,9 +4,16 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
+
+import pytest
+
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
 
 from helmlog.analysis.maneuvers import (
     enrich_maneuver,
+    enrich_session_maneuvers,
     extract_local_track,
     rank_maneuvers,
 )
@@ -264,6 +271,91 @@ class TestExtractLocalTrack:
             bsp=bsp,
         )
         assert any("bsp" in p and abs(p["bsp"] - 4.2) < 0.01 for p in track)
+
+
+class TestEnrichSessionManeuversWindRefZero:
+    """Regression for a falsy-zero bug where ``reference=0`` wind rows were
+    skipped by ``int(r.get("reference", -1) or -1)`` because ``0 or -1 == -1``,
+    leaving ``entry_tws`` / ``entry_twa`` blank on every maneuver in a session
+    whose B&G feed publishes boat-referenced true wind (the common case).
+    """
+
+    @pytest.mark.asyncio
+    async def test_reference_zero_wind_rows_populate_entry_tws(self, storage: Storage) -> None:
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "test-session",
+                "test-event",
+                1,
+                start.date().isoformat(),
+                "race",
+                start.isoformat(),
+                end.isoformat(),
+            ),
+        )
+
+        # Seed 120s of 1Hz instrument data across a 60-second tack.
+        for i in range(121):
+            ts = (start + timedelta(seconds=i)).isoformat()
+            hdg = 10.0 if i < 60 else 280.0
+            bsp = 6.0 if i < 55 or i > 70 else 3.0
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts, 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts, 0x05, bsp),
+            )
+            # Crucially: reference=0, the falsy value that used to be dropped.
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts, 0x05, 12.5, 40.0),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+
+        # Seed one stored maneuver at t=60.
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                1,
+                "tack",
+                (start + timedelta(seconds=60)).isoformat(),
+                (start + timedelta(seconds=70)).isoformat(),
+                10.0,
+                3.0,
+                None,
+                12,
+                40,
+                None,
+            ),
+        )
+        await db.commit()
+
+        enriched, _video = await enrich_session_maneuvers(storage, 1)
+
+        assert len(enriched) == 1
+        m = enriched[0]
+        assert m["entry_tws"] is not None
+        assert abs(m["entry_tws"] - 12.5) < 0.1
+        assert m["entry_twa"] is not None
+        assert abs(m["entry_twa"] - 40.0) < 1.0
 
 
 class TestRankManeuvers:
