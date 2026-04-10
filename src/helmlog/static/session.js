@@ -2106,17 +2106,17 @@ function _trackBounds(tracks) {
 }
 
 function _renderTrackSvg(tracks, opts) {
-  // tracks: array of { points, color, label, highlight? }
+  // tracks: array of { points, color, label, highlight?, maneuverIdx? }
   opts = opts || {};
   const w = opts.width || 260;
   const h = opts.height || 200;
   const pad = 12;
+  const interactive = !!opts.interactive;
   const pointSets = tracks.map(t => t.points).filter(p => p && p.length);
   if (!pointSets.length) return '';
   const b = _trackBounds(pointSets);
   if (!b) return '';
   const sx = x => pad + (x - b.minX) / (b.maxX - b.minX) * (w - 2 * pad);
-  // SVG y grows downward; our "forward" y should go up.
   const sy = y => (h - pad) - (y - b.minY) / (b.maxY - b.minY) * (h - 2 * pad);
 
   const scaleM = (b.maxX - b.minX);
@@ -2129,28 +2129,104 @@ function _renderTrackSvg(tracks, opts) {
     gridLines.push('<line x1="' + pad + '" y1="' + sy(gy) + '" x2="' + (w - pad) + '" y2="' + sy(gy) + '" stroke="var(--border)" stroke-width="0.5"/>');
   }
 
-  // Origin crosshair (entry point).
   const originX = sx(0), originY = sy(0);
   const crosshair = '<circle cx="' + originX + '" cy="' + originY + '" r="3" fill="var(--accent)"/>'
     + '<line x1="' + originX + '" y1="' + (originY - 8) + '" x2="' + originX + '" y2="' + (originY + 8) + '" stroke="var(--accent)" stroke-width="0.6"/>'
     + '<line x1="' + (originX - 8) + '" y1="' + originY + '" x2="' + (originX + 8) + '" y2="' + originY + '" stroke="var(--accent)" stroke-width="0.6"/>';
 
-  // Entry direction arrow (+y).
   const arrowY1 = sy(0), arrowY2 = sy(Math.min(b.maxY, scaleM * 0.25));
   const entryArrow = '<line x1="' + originX + '" y1="' + arrowY1 + '" x2="' + originX + '" y2="' + arrowY2 + '" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2"/>';
 
   const paths = tracks.map(t => {
     if (!t.points || !t.points.length) return '';
     const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
-    const width = t.highlight ? 2.5 : 1.2;
-    const opacity = t.highlight ? 1 : 0.55;
-    return '<path d="' + d + '" fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '"/>';
+    const width = t.highlight ? 2.5 : 1.4;
+    const opacity = t.highlight ? 1 : 0.7;
+    let attrs = 'fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '" stroke-linecap="round"';
+    if (interactive && t.maneuverIdx != null) {
+      attrs += ' style="pointer-events:stroke;cursor:pointer"'
+        + ' onmousemove="showOverlayTip(event,' + t.maneuverIdx + ')"'
+        + ' onmouseleave="hideOverlayTip()"'
+        + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"';
+    }
+    return '<path d="' + d + '" ' + attrs + '/>';
   }).join('');
+
+  // Invisible fat underlay to widen hover hit-target.
+  const hoverUnderlay = interactive ? tracks.map(t => {
+    if (!t.points || !t.points.length || t.maneuverIdx == null) return '';
+    const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
+    return '<path d="' + d + '" fill="none" stroke="rgba(0,0,0,0)" stroke-width="12"'
+      + ' style="pointer-events:stroke;cursor:pointer"'
+      + ' onmousemove="showOverlayTip(event,' + t.maneuverIdx + ')"'
+      + ' onmouseleave="hideOverlayTip()"'
+      + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"/>';
+  }).join('') : '';
 
   const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
 
   return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
-    + gridLines.join('') + entryArrow + paths + crosshair + scaleLabel + '</svg>';
+    + gridLines.join('') + entryArrow + hoverUnderlay + paths + crosshair + scaleLabel + '</svg>';
+}
+
+// Overlay tooltip for per-trace stats + YouTube link
+function _ensureOverlayTip() {
+  let tip = document.getElementById('overlay-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'overlay-tip';
+    tip.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-primary);'
+      + 'border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:.72rem;'
+      + 'box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:220px;display:none';
+    tip.onmouseleave = hideOverlayTip;
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function showOverlayTip(ev, idx) {
+  const m = _maneuvers[idx];
+  if (!m) return;
+  const tip = _ensureOverlayTip();
+  const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'var(--text-secondary)';
+  const twsVal = m.entry_tws != null ? m.entry_tws : (m.tws_bin != null ? m.tws_bin : null);
+  const twsStr = twsVal != null ? ((twsVal.toFixed ? twsVal.toFixed(1) : twsVal) + ' kt') : '—';
+  const rows = [
+    ['Elapsed', _fmtElapsed(m.ts)],
+    ['Time', fmtTime(m.ts)],
+    ['Duration', m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—'],
+    ['Turn', m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—'],
+    ['BSP in→out', (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—')],
+    ['BSP loss', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
+    ['Dist loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['TWS', twsStr],
+  ];
+  const header = '<div style="margin-bottom:4px">'
+    + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
+    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '')
+    + '</div>';
+  const grid = '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px">'
+    + rows.map(([k, v]) => '<span style="color:var(--text-secondary)">' + k + '</span><b>' + esc(v) + '</b>').join('')
+    + '</div>';
+  const yt = m.youtube_url
+    ? '<div style="margin-top:6px"><a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">&#9654; Watch on YouTube &#8599;</a></div>'
+    : '';
+  tip.innerHTML = header + grid + yt;
+  tip.style.display = 'block';
+  const margin = 12;
+  let x = ev.clientX + margin;
+  let y = ev.clientY + margin;
+  const r = tip.getBoundingClientRect();
+  if (x + r.width > window.innerWidth) x = ev.clientX - r.width - margin;
+  if (y + r.height > window.innerHeight) y = ev.clientY - r.height - margin;
+  tip.style.left = Math.max(2, x) + 'px';
+  tip.style.top = Math.max(2, y) + 'px';
+}
+
+function hideOverlayTip() {
+  const tip = document.getElementById('overlay-tip');
+  if (tip) tip.style.display = 'none';
 }
 
 function _renderOverlaySvg() {
@@ -2165,14 +2241,15 @@ function _renderOverlaySvg() {
     color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)',
     label: m.type,
     highlight: false,
+    maneuverIdx: _maneuvers.indexOf(m),
   }));
-  const svg = _renderTrackSvg(tracks, { width: 380, height: 300 });
+  const svg = _renderTrackSvg(tracks, { width: 380, height: 300, interactive: true });
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
     + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
     + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
     + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
-    + 'Entry at origin (+), entry direction ↑.'
+    + 'Entry at origin (+), entry direction ↑. Hover a trace for stats &amp; video.'
     + '</div>';
   return svg + legend;
 }

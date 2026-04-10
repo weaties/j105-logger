@@ -23,6 +23,12 @@ async def api_state(
     ss = request.app.state.session_state
     from helmlog.races import Race as _Race
     from helmlog.races import configured_tz, default_event_for_date, local_today, local_weekday
+    from helmlog.storage import get_effective_setting
+
+    # Effective timezone: DB setting → env → "UTC". configured_tz() only
+    # reads env, so a settings.json / DB-configured timezone was invisible
+    # to the frontend. Resolve via the full settings chain here.
+    tz_name = await get_effective_setting(storage, "TIMEZONE", str(configured_tz()))
 
     now = datetime.now(UTC)
     today = local_today()
@@ -105,7 +111,7 @@ async def api_state(
         {
             "date": date_str,
             "weekday": weekday,
-            "timezone": str(configured_tz()),
+            "timezone": tz_name,
             "event": event,
             "event_is_default": event_is_default,
             "current_race": current_dict,
