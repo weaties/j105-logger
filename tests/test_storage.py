@@ -100,6 +100,34 @@ class TestMigration:
         assert row is not None
         assert row[0] == "boat_settings"
 
+    async def test_migration_v58_backfills_slugs_with_collisions(self, storage: Storage) -> None:
+        """v58 backfill slugifies names and resolves collisions by id order (#449)."""
+        db = storage._conn()
+
+        # Insert three rows with colliding slug bases, then wipe the slug to
+        # simulate pre-migration state, then re-run the v58 backfill.
+        await db.execute(
+            "INSERT INTO races"
+            " (name, event, race_num, date, start_utc, end_utc, session_type, slug)"
+            " VALUES"
+            " ('Ballard Cup', 'BC', 1, '2025-08-10', '2025-08-10T12:00:00+00:00',"
+            "  NULL, 'race', NULL),"
+            " ('ballard-cup', 'BC', 2, '2025-08-10', '2025-08-10T13:00:00+00:00',"
+            "  NULL, 'race', NULL),"
+            " ('BALLARD CUP!!', 'BC', 3, '2025-08-10', '2025-08-10T14:00:00+00:00',"
+            "  NULL, 'race', NULL)"
+        )
+        await db.commit()
+
+        await storage._migrate_v58_slugs()  # noqa: SLF001
+
+        cur = await db.execute("SELECT id, slug FROM races ORDER BY id ASC")
+        slugs = [row["slug"] for row in await cur.fetchall()]
+        # First race keeps the bare slug, later ones get suffixed.
+        assert slugs[0] == "ballard-cup"
+        assert slugs[1] == "ballard-cup-2"
+        assert slugs[2] == "ballard-cup-3"
+
     async def test_migration_v39_adds_point_of_sail(self, storage: Storage) -> None:
         """Migration v39 adds point_of_sail column and auto-populates existing sails."""
         db = storage._conn()

@@ -7,6 +7,7 @@ storage.py. This module is importable without hardware or a running server.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -33,6 +34,8 @@ class Race:
     start_utc: datetime
     end_utc: datetime | None
     session_type: str = "race"  # "race" | "practice"
+    slug: str = ""  # human-readable URL slug (#449); backfilled from name
+    renamed_at: datetime | None = None  # UTC ts of most recent rename (#449)
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +86,28 @@ def default_event_for_date(d: date, rules: dict[int, str] | None = None) -> str 
     if not rules:
         return None
     return rules.get(d.weekday())
+
+
+_SLUG_RUN_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(text: str, *, max_length: int = 80) -> str:
+    """Slugify ``text`` for use in a URL path segment.
+
+    Lowercases, replaces every run of non-``[a-z0-9]`` with a single ``-``,
+    strips leading/trailing ``-``, and caps total length at ``max_length``.
+    When truncation splits a word, the slug is trimmed back to the last ``-``
+    boundary so partial words aren't left dangling. Returns ``""`` for empty
+    input — callers are responsible for a fallback (typically ``race-{id}``).
+    """
+    s = _SLUG_RUN_RE.sub("-", text.lower()).strip("-")
+    if len(s) <= max_length:
+        return s
+    window = s[:max_length]
+    boundary = window.rfind("-")
+    if boundary > 0:
+        return window[:boundary].rstrip("-")
+    return window.rstrip("-")
 
 
 def build_race_name(event: str, d: date, race_num: int, session_type: str = "race") -> str:

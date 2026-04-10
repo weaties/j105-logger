@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from helmlog.races import RaceConfig, build_grafana_url, build_race_name, default_event_for_date
+from helmlog.races import (
+    RaceConfig,
+    build_grafana_url,
+    build_race_name,
+    default_event_for_date,
+    slugify,
+)
 
 if TYPE_CHECKING:
     from helmlog.storage import Storage
@@ -79,6 +85,56 @@ def test_build_race_name_practice() -> None:
 def test_build_race_name_synthesized() -> None:
     name = build_race_name("BallardCup", date(2025, 8, 10), 2, "synthesized")
     assert name == "20250810-BallardCup-S2"
+
+
+# ---------------------------------------------------------------------------
+# slugify tests (#449)
+# ---------------------------------------------------------------------------
+
+
+def test_slugify_basic() -> None:
+    assert slugify("20250810-BallardCup-2") == "20250810-ballardcup-2"
+
+
+def test_slugify_spaces_and_punctuation() -> None:
+    assert slugify("CYC Spring — Race 4") == "cyc-spring-race-4"
+
+
+def test_slugify_collapses_runs() -> None:
+    assert slugify("Hello   ---   World!!!") == "hello-world"
+
+
+def test_slugify_strips_edges() -> None:
+    assert slugify("--foo--bar--") == "foo-bar"
+
+
+def test_slugify_unicode_stripped() -> None:
+    # Non-ASCII characters are replaced with '-' and collapsed.
+    assert slugify("Ballard Cüp #1 — ¡finish!") == "ballard-c-p-1-finish"
+
+
+def test_slugify_empty_input_returns_empty() -> None:
+    assert slugify("") == ""
+    assert slugify("!!!") == ""
+
+
+def test_slugify_max_length_truncates_on_dash_boundary() -> None:
+    text = "one-two-three-four-five-six-seven-eight-nine-ten-eleven-twelve-thirteen-fourteen"
+    out = slugify(text, max_length=30)
+    assert len(out) <= 30
+    assert not out.endswith("-")
+    # Should cut at a dash, not mid-word
+    assert out == "one-two-three-four-five-six"
+
+
+def test_slugify_max_length_no_dash_in_window() -> None:
+    # If the first max_length chars contain no dash, hard-truncate.
+    out = slugify("abcdefghijklmnopqrstuvwxyz", max_length=10)
+    assert out == "abcdefghij"
+
+
+def test_slugify_already_lowercase_noop() -> None:
+    assert slugify("already-a-slug") == "already-a-slug"
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +229,145 @@ async def test_list_races_for_date_ordered(storage: Storage) -> None:
     assert races[0].race_num == 1
     assert races[1].race_num == 2
     assert races[0].start_utc < races[1].start_utc
+
+
+# ---------------------------------------------------------------------------
+# Slug + rename storage tests (#449)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_race_assigns_slug(storage: Storage) -> None:
+    race = await storage.start_race("CYC Spring", _START1, _DATE, 4, "20250810-CYC Spring-4")
+    assert race.slug == "20250810-cyc-spring-4"
+
+
+@pytest.mark.asyncio
+async def test_start_race_slug_collision_appends_suffix(storage: Storage) -> None:
+    # Two races with names that slugify to the same thing → second gets -2.
+    r1 = await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-ballardcup-1")
+    r2 = await storage.start_race("BallardCup", _START2, _DATE, 1, "20250810-BallardCup-1")
+    assert r1.slug == "20250810-ballardcup-1"
+    assert r2.slug == "20250810-ballardcup-1-2"
+
+
+@pytest.mark.asyncio
+async def test_get_race_by_slug_returns_current(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "20250810-CYC-1")
+    found = await storage.get_race_by_slug(race.slug)
+    assert found is not None
+    assert found.id == race.id
+
+
+@pytest.mark.asyncio
+async def test_get_race_by_slug_miss(storage: Storage) -> None:
+    assert await storage.get_race_by_slug("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_rename_race_updates_name_and_slug(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 4, "20260408-CYC-4")
+    updated, retired = await storage.rename_race(
+        race.id, new_name="Ballard Cup #1 — finish line confusion"
+    )
+    assert updated.name == "Ballard Cup #1 — finish line confusion"
+    assert updated.slug == "ballard-cup-1-finish-line-confusion"
+    assert retired == "20260408-cyc-4"
+    assert updated.renamed_at is not None
+
+    # Retired slug is recorded in history.
+    hit = await storage.lookup_retired_slug("20260408-cyc-4")
+    assert hit is not None
+    assert hit[0] == race.id
+
+
+@pytest.mark.asyncio
+async def test_rename_race_noop_when_same_values(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "20250810-CYC-1")
+    updated, retired = await storage.rename_race(race.id, new_name="20250810-CYC-1")
+    assert retired is None
+    assert updated.renamed_at is None  # no-op leaves renamed_at untouched
+
+
+@pytest.mark.asyncio
+async def test_rename_race_name_collision_raises(storage: Storage) -> None:
+    await storage.start_race("CYC", _START1, _DATE, 1, "20250810-CYC-1")
+    r2 = await storage.start_race("CYC", _START2, _DATE, 2, "20250810-CYC-2")
+    with pytest.raises(ValueError, match="name_taken"):
+        await storage.rename_race(r2.id, new_name="20250810-CYC-1")
+
+
+@pytest.mark.asyncio
+async def test_rename_race_blank_name_raises(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "20250810-CYC-1")
+    with pytest.raises(ValueError, match="name_blank"):
+        await storage.rename_race(race.id, new_name="   ")
+
+
+@pytest.mark.asyncio
+async def test_rename_race_changing_event_regenerates_name(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "20250810-CYC-1")
+    updated, _retired = await storage.rename_race(race.id, new_event="BallardCup", new_race_num=3)
+    assert updated.name == "20250810-BallardCup-3"
+    assert updated.event == "BallardCup"
+    assert updated.race_num == 3
+    assert updated.slug == "20250810-ballardcup-3"
+
+
+@pytest.mark.asyncio
+async def test_rename_race_slug_collision_with_other_race(storage: Storage) -> None:
+    # r1's slug is "cool-race". When r2 is renamed to produce the same slug,
+    # r2 should end up with "cool-race-2".
+    r1 = await storage.start_race("E", _START1, _DATE, 1, "Cool Race")
+    r2 = await storage.start_race("E", _START2, _DATE, 2, "20260408-E-2")
+    assert r1.slug == "cool-race"
+    updated, _ = await storage.rename_race(r2.id, new_name="Cool  Race!")
+    assert updated.name == "Cool  Race!"
+    assert updated.slug == "cool-race-2"
+
+
+@pytest.mark.asyncio
+async def test_rename_race_back_to_prior_name_reuses_slug(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "Alpha")
+    await storage.rename_race(race.id, new_name="Beta")
+    # "alpha" is now in history. Renaming back should reclaim the bare slug
+    # and remove the history row (not append -2).
+    updated, retired_from_beta = await storage.rename_race(race.id, new_name="Alpha")
+    assert updated.slug == "alpha"
+    assert retired_from_beta == "beta"
+    assert await storage.lookup_retired_slug("alpha") is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_retired_slug_after_rename(storage: Storage) -> None:
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "Original")
+    await storage.rename_race(race.id, new_name="Renamed")
+    hit = await storage.lookup_retired_slug("original")
+    assert hit is not None
+    rid, ts = hit
+    assert rid == race.id
+    assert ts.tzinfo is not None
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_slug_history(storage: Storage) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    race = await storage.start_race("CYC", _START1, _DATE, 1, "Original")
+    await storage.rename_race(race.id, new_name="Renamed")
+
+    # Nothing to purge immediately.
+    assert await storage.purge_expired_slug_history(30) == 0
+
+    # Backdate the history row to 40 days ago and purge with 30-day retention.
+    old_ts = (datetime.now(UTC) - timedelta(days=40)).isoformat()
+    await storage._conn().execute(  # noqa: SLF001
+        "UPDATE race_slug_history SET retired_at = ? WHERE slug = ?",
+        (old_ts, "original"),
+    )
+    await storage._conn().commit()  # noqa: SLF001
+    assert await storage.purge_expired_slug_history(30) == 1
+    assert await storage.lookup_retired_slug("original") is None
 
 
 @pytest.mark.asyncio

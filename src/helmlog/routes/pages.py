@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from helmlog.auth import require_auth
 from helmlog.routes._helpers import audit, get_storage, templates, tpl_ctx
+from helmlog.storage import RACE_SLUG_RETENTION_DAYS
 
 router = APIRouter()
 
@@ -53,22 +54,74 @@ async def history_page(request: Request) -> Response:
     )
 
 
-@router.get("/session/{session_id}", response_class=HTMLResponse, include_in_schema=False)
-async def session_detail_page(request: Request, session_id: int) -> Response:
+@router.get("/session/{session_ref}", response_class=HTMLResponse, include_in_schema=False)
+async def session_detail_page(request: Request, session_ref: str) -> Response:
+    """Session detail page — accepts either the integer id or a slug (#449).
+
+    * ``/session/{id}`` → 301 to ``/session/{current_slug}``.
+    * ``/session/{slug}`` with a live slug → render the page.
+    * ``/session/{slug}`` matching a retired slug (within 30 days) → 301
+      to the current slug.
+    * Anything else → 404.
+    """
+    from datetime import UTC, datetime, timedelta
+
     storage = get_storage(request)
-    cur = await storage._conn().execute("SELECT name FROM races WHERE id = ?", (session_id,))
-    row = await cur.fetchone()
-    session_name = row["name"] if row else f"Session {session_id}"
+
+    # Integer id → look up current slug and 301. Rows pre-dating v58 may have
+    # no slug yet (e.g. raw test inserts); fall through and render inline in
+    # that case rather than redirect in a loop.
+    race = None
+    if session_ref.isdigit():
+        race_id = int(session_ref)
+        race = await storage.get_race(race_id)
+        if race is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if race.slug:
+            return RedirectResponse(url=f"/session/{race.slug}", status_code=301)
+
+    # Slug path — current slug renders, retired slug redirects, else 404.
+    if race is None:
+        race = await storage.get_race_by_slug(session_ref)
+    if race is None:
+        retired = await storage.lookup_retired_slug(session_ref)
+        if retired is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        race_id, retired_at = retired
+        if datetime.now(UTC) - retired_at > timedelta(days=RACE_SLUG_RETENTION_DAYS):
+            raise HTTPException(status_code=404, detail="Session not found")
+        current = await storage.get_race(race_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return RedirectResponse(url=f"/session/{current.slug}", status_code=301)
+
     user: dict[str, Any] | None = getattr(request.state, "user", None)
     user_role = user.get("role", "viewer") if user else "viewer"
+    renamed_banner = None
+    if race.renamed_at is not None:
+        age = datetime.now(UTC) - race.renamed_at
+        if age <= timedelta(days=RACE_SLUG_RETENTION_DAYS):
+            # Find the most recently retired slug for this race to show as
+            # "renamed from". Pick the newest entry by retired_at.
+            db = storage._read_conn()  # noqa: SLF001
+            hist_cur = await db.execute(
+                "SELECT slug FROM race_slug_history WHERE race_id = ?"
+                " ORDER BY retired_at DESC LIMIT 1",
+                (race.id,),
+            )
+            hist_row = await hist_cur.fetchone()
+            if hist_row is not None:
+                renamed_banner = hist_row["slug"]
     return templates.TemplateResponse(
         request,
         "session.html",
         tpl_ctx(
             request,
             "/history",
-            session_id=session_id,
-            session_name=session_name,
+            session_id=race.id,
+            session_name=race.name,
+            session_slug=race.slug,
+            renamed_from=renamed_banner,
             grafana_port=request.app.state.race_config.grafana_port,
             grafana_uid=request.app.state.race_config.grafana_uid,
             user_role=user_role,
