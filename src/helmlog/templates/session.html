@@ -61,6 +61,7 @@
 {% block content %}
 <div id="app-config"
   data-session-id="{{ session_id }}"
+  data-session-slug="{{ session_slug or '' }}"
   data-grafana-port="{{ grafana_port }}"
   data-grafana-uid="{{ grafana_uid }}"
   data-user-role="{{ user_role }}"
@@ -68,10 +69,26 @@
 
 <a href="/history" class="back-link">&larr; History</a>
 
+{% if renamed_from %}
+<div class="card" style="background:var(--bg-secondary);border:1px dashed var(--accent-strong);font-size:.78rem;color:var(--text-secondary);margin-bottom:8px">
+  Renamed from <code>{{ renamed_from }}</code> — old bookmarks will continue to redirect here for 30 days.
+</div>
+{% endif %}
+
 <div class="card">
-  <div id="session-header">
-    <div class="session-name" id="session-name"></div>
-    <div class="session-meta" id="session-meta"></div>
+  <div id="session-header" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <div style="flex:1;min-width:0">
+      <div class="session-name" id="session-name">{{ session_name }}</div>
+      <div class="session-meta" id="session-meta"></div>
+    </div>
+    {% if user_role == "admin" %}
+    <button id="rename-session-btn"
+            type="button"
+            onclick="renameSession()"
+            style="background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:4px 10px;font-size:.75rem;cursor:pointer">
+      Rename
+    </button>
+    {% endif %}
   </div>
 </div>
 
@@ -224,4 +241,33 @@
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/session.js?v=7"></script>
+<script>
+async function renameSession() {
+  const sessionId = document.getElementById('app-config').dataset.sessionId;
+  const current = document.getElementById('session-name').textContent.trim();
+  const next = window.prompt('New session name:', current);
+  if (next === null) return;
+  const trimmed = next.trim();
+  if (!trimmed || trimmed === current) return;
+  try {
+    const resp = await fetch(`/api/sessions/${sessionId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: trimmed}),
+    });
+    if (resp.status === 409) {
+      window.alert('That name is already used by another session.');
+      return;
+    }
+    if (!resp.ok) {
+      window.alert(`Rename failed: ${resp.status}`);
+      return;
+    }
+    const body = await resp.json();
+    window.location.href = body.url;
+  } catch (err) {
+    window.alert(`Rename failed: ${err}`);
+  }
+}
+</script>
 {% endblock %}

@@ -817,3 +817,69 @@ async def api_delete_session(
             await asyncio.to_thread(p.unlink)
             logger.info("Deleted file: {}", p)
     await audit(request, "session.delete", detail=row["name"], user=_user)
+
+
+@router.patch("/api/sessions/{session_id}")
+async def api_rename_session(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Rename a race session and regenerate its slug (#449).
+
+    Body: ``{"name": str?, "event": str?, "race_num": int?}`` — at least one
+    field is required. When *name* is omitted but *event* or *race_num*
+    changes, the name is regenerated from the standard ``build_race_name``
+    template. Admin only.
+    """
+    storage = get_storage(request)
+    body = await request.json()
+    raw_name = body.get("name")
+    raw_event = body.get("event")
+    raw_race_num = body.get("race_num")
+    if raw_name is None and raw_event is None and raw_race_num is None:
+        raise HTTPException(status_code=422, detail="name, event, or race_num required")
+
+    new_name = str(raw_name) if raw_name is not None else None
+    new_event = str(raw_event).strip() if raw_event is not None else None
+    if new_event == "":
+        raise HTTPException(status_code=422, detail="event must not be blank")
+    try:
+        new_race_num = int(raw_race_num) if raw_race_num is not None else None
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="race_num must be an integer") from exc
+
+    try:
+        updated, retired_slug = await storage.rename_race(
+            session_id,
+            new_name=new_name,
+            new_event=new_event,
+            new_race_num=new_race_num,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Session not found") from exc
+    except ValueError as exc:
+        if str(exc) == "name_taken":
+            raise HTTPException(status_code=409, detail={"error": "name_taken"}) from exc
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    changed = retired_slug is not None or updated.renamed_at is not None
+    if changed:
+        detail = f"{session_id}: {retired_slug!r} → {updated.slug!r} ({updated.name!r})"
+        await audit(request, "race.rename", detail=detail, user=_user)
+    return JSONResponse(
+        {
+            "id": updated.id,
+            "name": updated.name,
+            "event": updated.event,
+            "race_num": updated.race_num,
+            "slug": updated.slug,
+            "renamed_at": updated.renamed_at.isoformat() if updated.renamed_at else None,
+            "retired_slug": retired_slug,
+            "url": (
+                f"/session/{updated.id}/{updated.slug}"
+                if updated.slug
+                else f"/session/{updated.id}"
+            ),
+        }
+    )

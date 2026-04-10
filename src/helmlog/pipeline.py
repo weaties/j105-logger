@@ -154,7 +154,13 @@ async def process_recording(
             date=start_utc.strftime("%Y-%m-%d"),
         )
         base = f"{config.pi_api_url}/history"
-        session_url = f"{base}#{session_id}" if session_id else base
+        session_slug = session.get("slug")
+        if session_id and session_slug:
+            session_url = f"{config.pi_api_url}/session/{session_id}/{session_slug}"
+        elif session_id:
+            session_url = f"{config.pi_api_url}/session/{session_id}"
+        else:
+            session_url = base
         s_end = session.get("end_utc", "")
         desc = build_description(
             session_url=session_url,

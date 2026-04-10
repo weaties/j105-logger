@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 57
+_CURRENT_VERSION: int = 58
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1290,7 +1290,26 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_crew_voice_profiles_user ON crew_voice_profiles(user_id);
     """,
+    58: """
+        -- Session rename + human-readable URL slugs (#449).
+        -- slug is NULL until the post-DDL backfill in _migrate_v58_slugs runs.
+        ALTER TABLE races ADD COLUMN slug TEXT;
+        ALTER TABLE races ADD COLUMN renamed_at TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_races_slug ON races(slug);
+
+        CREATE TABLE IF NOT EXISTS race_slug_history (
+            slug       TEXT PRIMARY KEY,
+            race_id    INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            retired_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_race_slug_history_race ON race_slug_history(race_id);
+    """,
 }
+
+# Retention window for retired slugs (#449). Requests for a retired slug 301
+# to the current slug while the retirement is within this window; beyond it
+# they 404.
+RACE_SLUG_RETENTION_DAYS: int = 30
 
 
 def _split_migration_sql(sql: str) -> list[str]:
@@ -1550,6 +1569,12 @@ class Storage:
         # Post-DDL data migration for v56 (seed categories)
         if current < 56:
             await self._migrate_v56_categories()
+
+        # Post-DDL data migration for v58 (backfill race slugs). Always
+        # called — the method is idempotent (no-op when every row has a
+        # slug) so a previously-failed partial backfill gets repaired on
+        # the next boot instead of leaving rows with NULL slugs forever.
+        await self._migrate_v58_slugs()
 
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
@@ -1864,6 +1889,39 @@ class Storage:
             )
         await db.commit()
         logger.info("v56 data migration: seeded {} categories", len(CATEGORY_ORDER))
+
+    async def _migrate_v58_slugs(self) -> None:
+        """Data migration for v58: backfill ``races.slug`` from ``name`` (#449).
+
+        Slug is the slugified ``name``; when two rows collide, the row with the
+        lowest ``id`` keeps the bare slug and higher-id rows get ``-2``, ``-3``
+        suffixes. Empty slugs (e.g. a name that's all punctuation) fall back to
+        ``race-{id}``.
+        """
+        from helmlog.races import slugify
+
+        db = self._conn()
+        cur = await db.execute("SELECT id, name FROM races WHERE slug IS NULL ORDER BY id ASC")
+        rows = list(await cur.fetchall())
+        if not rows:
+            return
+
+        # Seed the used-set with any slugs already present on rows we're not
+        # touching (defensive — a prior partial backfill).
+        used_cur = await db.execute("SELECT slug FROM races WHERE slug IS NOT NULL")
+        used: set[str] = {r["slug"] for r in await used_cur.fetchall()}
+
+        for row in rows:
+            base = slugify(row["name"]) or f"race-{row['id']}"
+            slug = base
+            n = 2
+            while slug in used:
+                slug = f"{base}-{n}"
+                n += 1
+            used.add(slug)
+            await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, row["id"]))
+        await db.commit()
+        logger.info("v58 data migration: backfilled slugs for {} races", len(rows))
 
     # ------------------------------------------------------------------
     # Write (batched)
@@ -2330,6 +2388,44 @@ class Storage:
     # Races
     # ------------------------------------------------------------------
 
+    async def _allocate_slug(
+        self,
+        base: str,
+        *,
+        exclude_race_id: int | None = None,
+    ) -> str:
+        """Return an unused slug derived from *base*.
+
+        Collides against both live ``races.slug`` and non-expired
+        ``race_slug_history`` entries (same race_id is treated as free so
+        this race's own retired slugs can be reused). When the base itself
+        is free we return it unchanged; otherwise we append ``-2``, ``-3``, …
+
+        If *exclude_race_id* matches a row currently holding ``base``, that
+        row is ignored so a no-op slug check on the same race doesn't force
+        an unnecessary suffix.
+        """
+        db = self._conn()
+        n = 1
+        while True:
+            candidate = base if n == 1 else f"{base}-{n}"
+            live_cur = await db.execute(
+                "SELECT id FROM races WHERE slug = ? AND (? IS NULL OR id != ?)",
+                (candidate, exclude_race_id, exclude_race_id),
+            )
+            if await live_cur.fetchone() is not None:
+                n += 1
+                continue
+            hist_cur = await db.execute(
+                "SELECT race_id FROM race_slug_history WHERE slug = ?"
+                " AND (? IS NULL OR race_id != ?)",
+                (candidate, exclude_race_id, exclude_race_id),
+            )
+            if await hist_cur.fetchone() is not None:
+                n += 1
+                continue
+            return candidate
+
     async def start_race(
         self,
         event: str,
@@ -2341,6 +2437,7 @@ class Storage:
     ) -> Race:
         """Auto-close any open race for the day, insert a new race row, and return it."""
         from helmlog.races import Race as _Race
+        from helmlog.races import slugify
 
         db = self._conn()
 
@@ -2356,13 +2453,19 @@ class Storage:
                 (start_utc.isoformat(), open_row["id"]),
             )
 
+        # Insert with NULL slug first; we compute and assign the final slug
+        # after the insert so the empty-name fallback can use the row id.
         cur = await db.execute(
-            "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type)"
-            " VALUES (?, ?, ?, ?, ?, NULL, ?)",
+            "INSERT INTO races"
+            " (name, event, race_num, date, start_utc, end_utc, session_type, slug)"
+            " VALUES (?, ?, ?, ?, ?, NULL, ?, NULL)",
             (name, event, race_num, date_str, start_utc.isoformat(), session_type),
         )
-        await db.commit()
         assert cur.lastrowid is not None
+        base = slugify(name) or f"race-{cur.lastrowid}"
+        slug = await self._allocate_slug(base, exclude_race_id=cur.lastrowid)
+        await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, cur.lastrowid))
+        await db.commit()
         logger.info("Race started: {} (id={}) type={}", name, cur.lastrowid, session_type)
         self._session_active = True
         return _Race(
@@ -2374,6 +2477,7 @@ class Storage:
             start_utc=start_utc,
             end_utc=None,
             session_type=session_type,
+            slug=slug,
         )
 
     async def end_race(self, race_id: int, end_utc: datetime) -> None:
@@ -2386,6 +2490,131 @@ class Storage:
         await db.commit()
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
+
+    async def rename_race(
+        self,
+        race_id: int,
+        *,
+        new_name: str | None = None,
+        new_event: str | None = None,
+        new_race_num: int | None = None,
+    ) -> tuple[Race, str | None]:
+        """Rename a race and regenerate its slug (#449).
+
+        At least one of *new_name*, *new_event*, *new_race_num* must be set.
+        When *new_name* is ``None`` but event/race_num change, the name is
+        regenerated via ``build_race_name``. Returns ``(updated_race,
+        retired_slug_or_None)`` — the retired slug is ``None`` when the
+        rename was a no-op or didn't change the slug.
+
+        Raises:
+            LookupError: if the race id doesn't exist.
+            ValueError: with message ``"name_taken"`` if the resulting name
+                collides with another race's ``name``.
+        """
+        from datetime import UTC as _UTC
+        from datetime import date as _date
+        from datetime import datetime as _datetime
+
+        from helmlog.races import build_race_name, slugify
+
+        current = await self.get_race(race_id)
+        if current is None:
+            raise LookupError(f"race {race_id} not found")
+
+        target_event = new_event if new_event is not None else current.event
+        target_race_num = new_race_num if new_race_num is not None else current.race_num
+        if new_name is not None:
+            target_name = new_name.strip()
+            if not target_name:
+                raise ValueError("name_blank")
+        elif new_event is not None or new_race_num is not None:
+            d = _date.fromisoformat(current.date)
+            target_name = build_race_name(target_event, d, target_race_num, current.session_type)
+        else:
+            target_name = current.name
+
+        no_op = (
+            target_name == current.name
+            and target_event == current.event
+            and target_race_num == current.race_num
+        )
+        if no_op:
+            return current, None
+
+        db = self._conn()
+
+        # Name collision on another race?
+        collide_cur = await db.execute(
+            "SELECT id FROM races WHERE name = ? AND id != ?",
+            (target_name, race_id),
+        )
+        if await collide_cur.fetchone() is not None:
+            raise ValueError("name_taken")
+
+        base = slugify(target_name) or f"race-{race_id}"
+        new_slug = await self._allocate_slug(base, exclude_race_id=race_id)
+        old_slug = current.slug
+        now = _datetime.now(_UTC).isoformat()
+
+        slug_changed = new_slug != old_slug
+
+        await db.execute(
+            "UPDATE races"
+            " SET name = ?, event = ?, race_num = ?, slug = ?, renamed_at = ?"
+            " WHERE id = ?",
+            (target_name, target_event, target_race_num, new_slug, now, race_id),
+        )
+
+        retired: str | None = None
+        if slug_changed and old_slug:
+            # If the new slug matches a retired entry this race previously
+            # owned (rename-churn back to a prior name), clean up that entry.
+            await db.execute(
+                "DELETE FROM race_slug_history WHERE race_id = ? AND slug = ?",
+                (race_id, new_slug),
+            )
+            await db.execute(
+                "INSERT OR REPLACE INTO race_slug_history (slug, race_id, retired_at)"
+                " VALUES (?, ?, ?)",
+                (old_slug, race_id, now),
+            )
+            retired = old_slug
+
+        await db.commit()
+        logger.info(
+            "Race {} renamed: {!r} → {!r} (slug {!r} → {!r})",
+            race_id,
+            current.name,
+            target_name,
+            old_slug,
+            new_slug,
+        )
+        updated = await self.get_race(race_id)
+        assert updated is not None
+        return updated, retired
+
+    async def purge_expired_slug_history(self, retention_days: int) -> int:
+        """Delete ``race_slug_history`` rows older than *retention_days* (#449).
+
+        Returns the number of rows deleted. Callers typically invoke this
+        from a periodic maintenance task; the slug resolution logic also
+        treats rows older than the retention window as 404 at read time so
+        purging is a housekeeping optimisation rather than a correctness
+        requirement.
+        """
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+        from datetime import timedelta as _timedelta
+
+        cutoff = (_datetime.now(_UTC) - _timedelta(days=retention_days)).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "DELETE FROM race_slug_history WHERE retired_at < ?",
+            (cutoff,),
+        )
+        await db.commit()
+        return cur.rowcount or 0
 
     # -- Scheduled starts (#345) ------------------------------------------
 
@@ -2472,14 +2701,16 @@ class Storage:
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
 
+        from helmlog.races import slugify
+
         db = self._conn()
         now = _datetime.now(_UTC).isoformat()
         cur = await db.execute(
             "INSERT INTO races"
             " (name, event, race_num, date, start_utc, end_utc,"
             "  session_type, source, source_id, imported_at,"
-            "  peer_fingerprint, peer_co_op_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  peer_fingerprint, peer_co_op_id, slug)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
             (
                 name,
                 event,
@@ -2495,9 +2726,12 @@ class Storage:
                 peer_co_op_id,
             ),
         )
-        await db.commit()
         race_id = cur.lastrowid
         assert race_id is not None
+        base = slugify(name) or f"race-{race_id}"
+        slug = await self._allocate_slug(base, exclude_race_id=race_id)
+        await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, race_id))
+        await db.commit()
         logger.info("Imported race {} (source={}, source_id={})", race_id, source, source_id)
         return race_id
 
@@ -2593,21 +2827,12 @@ class Storage:
         await db.commit()
         return len(pos_rows)
 
-    async def get_race(self, race_id: int) -> Race | None:
-        """Return the race with the given id, or None if not found."""
+    @staticmethod
+    def _row_to_race(row: Any) -> Race:  # noqa: ANN401
         from datetime import datetime as _datetime
 
         from helmlog.races import Race as _Race
 
-        db = self._read_conn()
-        cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
-            " FROM races WHERE id = ?",
-            (race_id,),
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return None
         return _Race(
             id=row["id"],
             name=row["name"],
@@ -2617,88 +2842,122 @@ class Storage:
             start_utc=_datetime.fromisoformat(row["start_utc"]),
             end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
             session_type=row["session_type"],
+            slug=row["slug"] or "",
+            renamed_at=(_datetime.fromisoformat(row["renamed_at"]) if row["renamed_at"] else None),
         )
 
-    async def get_current_race(self) -> Race | None:
-        """Return the most recent race with no end_utc, or None."""
-        from datetime import datetime as _datetime
+    _RACE_COLS = (
+        "id, name, event, race_num, date, start_utc, end_utc, session_type, slug, renamed_at"
+    )
 
-        from helmlog.races import Race as _Race
-
+    async def get_race(self, race_id: int) -> Race | None:
+        """Return the race with the given id, or None if not found."""
         db = self._read_conn()
         cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
-            " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
+            f"SELECT {self._RACE_COLS} FROM races WHERE id = ?",
+            (race_id,),
         )
         row = await cur.fetchone()
         if row is None:
             return None
-        return _Race(
-            id=row["id"],
-            name=row["name"],
-            event=row["event"],
-            race_num=row["race_num"],
-            date=row["date"],
-            start_utc=_datetime.fromisoformat(row["start_utc"]),
-            end_utc=None,
-            session_type=row["session_type"],
+        return self._row_to_race(row)
+
+    async def get_race_by_slug(self, slug: str) -> Race | None:
+        """Return the race whose *current* slug matches, or None (#449)."""
+        db = self._read_conn()
+        cur = await db.execute(
+            f"SELECT {self._RACE_COLS} FROM races WHERE slug = ?",
+            (slug,),
         )
+        row = await cur.fetchone()
+        return self._row_to_race(row) if row else None
+
+    async def ensure_race_slug(self, race_id: int) -> str | None:
+        """Allocate and persist a slug for *race_id* if it doesn't have one yet (#449).
+
+        Returns the slug (newly assigned or already present), or ``None`` if
+        the race doesn't exist. Used as a lazy repair for rows that missed
+        the v58 backfill — e.g. a race row whose backfill transaction
+        crashed on a prior boot.
+        """
+        from helmlog.races import slugify
+
+        db = self._conn()
+        cur = await db.execute("SELECT id, name, slug FROM races WHERE id = ?", (race_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        if row["slug"]:
+            return str(row["slug"])
+        base = slugify(row["name"]) or f"race-{race_id}"
+        slug = await self._allocate_slug(base, exclude_race_id=race_id)
+        await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, race_id))
+        await db.commit()
+        logger.info("Lazy slug allocation for race {}: {}", race_id, slug)
+        return slug
+
+    async def get_debrief_session(self, audio_session_id: int) -> dict[str, Any] | None:
+        """Return a minimal debrief session record by audio_sessions id (#449).
+
+        Debriefs live in ``audio_sessions`` with ``session_type='debrief'`` and
+        have no slug. The session detail page renders them under
+        ``/session/{audio_id}`` so links from the history list keep working.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, COALESCE(name, file_path) AS name, session_type, start_utc"
+            " FROM audio_sessions WHERE id = ? AND session_type = 'debrief'",
+            (audio_session_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def lookup_retired_slug(self, slug: str) -> tuple[int, datetime] | None:
+        """Return ``(race_id, retired_at)`` for a retired slug, or None (#449)."""
+        from datetime import datetime as _datetime
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT race_id, retired_at FROM race_slug_history WHERE slug = ?",
+            (slug,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return int(row["race_id"]), _datetime.fromisoformat(row["retired_at"])
+
+    async def get_current_race(self) -> Race | None:
+        """Return the most recent race with no end_utc, or None."""
+        db = self._read_conn()
+        cur = await db.execute(
+            f"SELECT {self._RACE_COLS}"
+            " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        return self._row_to_race(row) if row else None
 
     async def list_races_for_date(self, date_str: str) -> list[Race]:
         """Return all races for a UTC date string, ordered by start_utc ASC."""
-        from datetime import datetime as _datetime
-
-        from helmlog.races import Race as _Race
-
         db = self._read_conn()
         cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
-            " FROM races WHERE date = ? ORDER BY start_utc ASC",
+            f"SELECT {self._RACE_COLS} FROM races WHERE date = ? ORDER BY start_utc ASC",
             (date_str,),
         )
         rows = await cur.fetchall()
-        return [
-            _Race(
-                id=row["id"],
-                name=row["name"],
-                event=row["event"],
-                race_num=row["race_num"],
-                date=row["date"],
-                start_utc=_datetime.fromisoformat(row["start_utc"]),
-                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
-                session_type=row["session_type"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_race(row) for row in rows]
 
     async def list_races_in_range(self, start_utc: datetime, end_utc: datetime) -> list[Race]:
         """Return all races whose time window overlaps ``[start_utc, end_utc]``."""
-        from datetime import datetime as _datetime
-
-        from helmlog.races import Race as _Race
-
         db = self._read_conn()
         cur = await db.execute(
-            "SELECT id, name, event, race_num, date, start_utc, end_utc, session_type"
+            f"SELECT {self._RACE_COLS}"
             " FROM races"
             " WHERE start_utc < ? AND (end_utc IS NULL OR end_utc > ?)"
             " ORDER BY start_utc ASC",
             (end_utc.isoformat(), start_utc.isoformat()),
         )
         rows = await cur.fetchall()
-        return [
-            _Race(
-                id=row["id"],
-                name=row["name"],
-                event=row["event"],
-                race_num=row["race_num"],
-                date=row["date"],
-                start_utc=_datetime.fromisoformat(row["start_utc"]),
-                end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
-                session_type=row["session_type"],
-            )
-            for row in rows
-        ]
+        return [self._row_to_race(row) for row in rows]
 
     async def count_sessions_for_date(self, date_str: str, session_type: str) -> int:
         """Return the count of sessions of the given type for a UTC date string."""
@@ -2757,6 +3016,7 @@ class Storage:
             where = "WHERE " + " AND ".join(race_where)
             parts.append(
                 f"SELECT r.id AS id, r.session_type AS type, r.name AS name,"
+                f" r.slug AS slug,"
                 f" r.event AS event, r.race_num AS race_num, r.date AS date,"
                 f" r.start_utc AS start_utc, r.end_utc AS end_utc,"
                 f" CASE WHEN a.id IS NOT NULL THEN 1 ELSE 0 END AS has_audio,"
@@ -2806,6 +3066,7 @@ class Storage:
             parts.append(
                 f"SELECT a.id AS id, 'debrief' AS type,"
                 f" COALESCE(a.name, a.file_path) AS name,"
+                f" NULL AS slug,"
                 f" COALESCE(r.event, '') AS event,"
                 f" r.race_num AS race_num,"
                 f" COALESCE(r.date, substr(a.start_utc, 1, 10)) AS date,"
