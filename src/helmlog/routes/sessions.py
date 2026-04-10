@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
 from helmlog.auth import require_auth, require_developer
@@ -620,66 +620,75 @@ async def api_session_maneuvers(
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """Return detected maneuvers for a session, with nearest GPS position."""
+    """Return detected maneuvers for a session with full per-maneuver metrics.
+
+    Each entry carries entry/exit state (BSP, TWA, TWS, HDG), min BSP during
+    the maneuver, turn angle and rate, distance-loss against an entry-vector
+    reference, nearest GPS position, a quartile rank (good/avg/bad), and a
+    ``youtube_url`` deep-link to the linked session video at the maneuver
+    timestamp when a video is linked.
+    """
     storage = get_storage(request)
-    import json as _json
+    from helmlog.analysis.maneuvers import enrich_session_maneuvers
 
-    rows = await storage.get_session_maneuvers(session_id)
-
-    # Enrich with nearest position so the front end can place map markers.
-    # Find the closest position by checking both before and after the
-    # maneuver timestamp and picking the one with the smallest time gap.
-    # Scope queries to the session's time range so positions from other
-    # sessions are never returned.
-    db = storage._conn()
-    race_cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
-    race_row = await race_cur.fetchone()
-    session_start = str(race_row["start_utc"])[:19] if race_row else None
-    session_end = str(race_row["end_utc"])[:19] if race_row else None
-
-    enriched = []
-    for row in rows:
-        d = dict(row)
-        ts_str = str(d["ts"])[:19]
-        # Position just before or at the maneuver time (within session)
-        before_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions"
-            " WHERE ts <= ? AND ts >= ? AND race_id = ?"
-            " ORDER BY ts DESC LIMIT 1",
-            (ts_str, session_start, session_id),
-        )
-        before = await before_cur.fetchone()
-        # Position just after the maneuver time (within session)
-        after_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions"
-            " WHERE ts > ? AND ts <= ? AND race_id = ?"
-            " ORDER BY ts LIMIT 1",
-            (ts_str, session_end, session_id),
-        )
-        after = await after_cur.fetchone()
-
-        # Pick the closer one by time delta
-        pos = None
-        if before and after:
-            from datetime import datetime as _dt
-
-            t_man = _dt.fromisoformat(ts_str)
-            t_before = _dt.fromisoformat(str(before["ts"])[:19])
-            t_after = _dt.fromisoformat(str(after["ts"])[:19])
-            pos = before if (t_man - t_before) <= (t_after - t_man) else after
-        else:
-            pos = before or after
-
-        d["lat"] = float(pos["latitude_deg"]) if pos else None
-        d["lon"] = float(pos["longitude_deg"]) if pos else None
-        if d.get("details") and isinstance(d["details"], str):
-            try:
-                d["details"] = _json.loads(d["details"])
-            except Exception:
-                d["details"] = {}
-        enriched.append(d)
-
+    enriched, _video_sync = await enrich_session_maneuvers(storage, session_id)
     return JSONResponse(enriched)
+
+
+_MANEUVER_CSV_COLUMNS = [
+    "ts",
+    "type",
+    "rank",
+    "duration_sec",
+    "entry_hdg",
+    "exit_hdg",
+    "turn_angle_deg",
+    "turn_rate_deg_s",
+    "entry_bsp",
+    "exit_bsp",
+    "min_bsp",
+    "loss_kts",
+    "distance_loss_m",
+    "entry_twa",
+    "exit_twa",
+    "entry_tws",
+    "exit_tws",
+    "time_to_recover_s",
+    "lat",
+    "lon",
+    "youtube_url",
+]
+
+
+@router.get("/api/sessions/{session_id}/maneuvers.csv")
+async def api_session_maneuvers_csv(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> Response:
+    """CSV export of the enriched maneuver list for a session."""
+    from helmlog.analysis.maneuvers import enrich_session_maneuvers
+
+    storage = get_storage(request)
+    enriched, _ = await enrich_session_maneuvers(storage, session_id)
+
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=_MANEUVER_CSV_COLUMNS, extrasaction="ignore")
+    writer.writeheader()
+    for m in enriched:
+        writer.writerow(
+            {k: m.get(k, "") if m.get(k) is not None else "" for k in _MANEUVER_CSV_COLUMNS}
+        )
+
+    filename = f"session_{session_id}_maneuvers.csv"
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)

@@ -1996,6 +1996,9 @@ function renderPolarHeatmap() {
 // ---------------------------------------------------------------------------
 
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
+const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
+let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
+let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
@@ -2003,6 +2006,41 @@ async function loadManeuvers() {
   _maneuvers = await r.json();
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
+}
+
+function _maneuverRows() {
+  const items = _maneuvers.filter(m => {
+    if (_maneuverFilter === 'all') return true;
+    if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
+    return m.type === _maneuverFilter;
+  });
+  const key = _maneuverSort.key, dir = _maneuverSort.dir;
+  items.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (key === 'ts') { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
+    if (key === 'type') return dir * String(av).localeCompare(String(bv));
+    return dir * (av - bv);
+  });
+  return items;
+}
+
+function setManeuverSort(key) {
+  if (_maneuverSort.key === key) _maneuverSort.dir *= -1;
+  else { _maneuverSort.key = key; _maneuverSort.dir = key === 'ts' ? 1 : -1; }
+  renderManeuverCard();
+}
+
+function setManeuverFilter(f) {
+  _maneuverFilter = f;
+  renderManeuverCard();
+}
+
+function _manHeader(label, key) {
+  const arrow = _maneuverSort.key === key ? (_maneuverSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  return '<th style="cursor:pointer" onclick="setManeuverSort(\'' + key + '\')">' + label + arrow + '</th>';
 }
 
 function renderManeuverCard() {
@@ -2018,32 +2056,91 @@ function renderManeuverCard() {
   const tacks = _maneuvers.filter(m => m.type === 'tack').length;
   const gybes = _maneuvers.filter(m => m.type === 'gybe').length;
   const roundings = _maneuvers.filter(m => m.type === 'rounding').length;
-  const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px">'
-    + tacks + ' tack' + (tacks !== 1 ? 's' : '')
-    + ' &middot; ' + gybes + ' gybe' + (gybes !== 1 ? 's' : '')
-    + ' &middot; ' + roundings + ' rounding' + (roundings !== 1 ? 's' : '')
+  const good = _maneuvers.filter(m => m.rank === 'good').length;
+  const bad = _maneuvers.filter(m => m.rank === 'bad').length;
+
+  const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
+    + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
+    + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
+    + '<span style="flex:1"></span>'
+    + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
-  let rows = _maneuvers.map((m, idx) => {
+  const filters = ['all', 'tack', 'gybe', 'rounding', 'good', 'bad'];
+  const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
+    + filters.map(f => {
+        const active = _maneuverFilter === f;
+        const style = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+          + (active ? 'var(--accent)' : 'transparent') + ';color:'
+          + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+        return '<button style="' + style + '" onclick="setManeuverFilter(\'' + f + '\')">' + f + '</button>';
+      }).join('')
+    + '</div>';
+
+  const items = _maneuverRows();
+  let rows = items.map((m) => {
+    const idx = _maneuvers.indexOf(m);
     const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
-    const typeBadge = '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
+    const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'transparent';
+    const rankDot = m.rank
+      ? '<span title="' + m.rank + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + rankColor + ';margin-right:4px"></span>'
+      : '';
+    const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
     const t = fmtTime(m.ts);
-    const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—';
-    const loss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
-    const cond = (m.twa_bin != null ? m.twa_bin + '° TWA' : '') + (m.tws_bin != null ? (m.twa_bin != null ? ', ' : '') + m.tws_bin + ' kt TWS' : '');
+    const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
+    const turn = m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—';
+    const bspLoss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
+    const distLoss = m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—';
+    const entry = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—');
+    const cond = (m.entry_tws != null ? m.entry_tws.toFixed(0) + ' kt' : '—');
+    const yt = m.youtube_url
+      ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
+      : '';
     return '<tr id="mrow-' + idx + '" style="cursor:pointer" onclick="highlightManeuver(' + idx + ')">'
       + '<td>' + typeBadge + '</td>'
       + '<td>' + t + '</td>'
       + '<td>' + dur + '</td>'
-      + '<td>' + loss + '</td>'
-      + '<td>' + esc(cond || '—') + '</td>'
+      + '<td>' + turn + '</td>'
+      + '<td>' + entry + '</td>'
+      + '<td>' + bspLoss + '</td>'
+      + '<td>' + distLoss + '</td>'
+      + '<td>' + esc(cond) + '</td>'
+      + '<td>' + yt + '</td>'
       + '</tr>';
   }).join('');
 
-  body.innerHTML = summary
+  body.innerHTML = summary + filterBar
     + '<table class="maneuver-table"><thead><tr>'
-    + '<th>Type</th><th>Time</th><th>Duration</th><th>BSP Loss</th><th>Conditions</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    + _manHeader('Type', 'type')
+    + _manHeader('Time', 'ts')
+    + _manHeader('Dur', 'duration_sec')
+    + _manHeader('Turn', 'turn_angle_deg')
+    + '<th>BSP in→out</th>'
+    + _manHeader('BSP loss', 'loss_kts')
+    + _manHeader('Dist loss', 'distance_loss_m')
+    + '<th>TWS</th><th></th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div id="maneuver-detail" style="margin-top:8px"></div>';
+}
+
+function _renderManeuverDetail(m) {
+  const el = document.getElementById('maneuver-detail');
+  if (!el) return;
+  if (!m) { el.innerHTML = ''; return; }
+  const rows = [
+    ['Entry HDG', m.entry_hdg != null ? m.entry_hdg.toFixed(0) + '°' : '—'],
+    ['Exit HDG', m.exit_hdg != null ? m.exit_hdg.toFixed(0) + '°' : '—'],
+    ['Turn rate', m.turn_rate_deg_s != null ? m.turn_rate_deg_s.toFixed(1) + '°/s' : '—'],
+    ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
+    ['Entry TWA', m.entry_twa != null ? m.entry_twa.toFixed(0) + '°' : '—'],
+    ['Exit TWA', m.exit_twa != null ? m.exit_twa.toFixed(0) + '°' : '—'],
+    ['Time to recover', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
+    ['Distance loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+  ];
+  el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
+    + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
+    + '</div>';
 }
 
 function _addManeuverMarkers() {
@@ -2081,11 +2178,20 @@ function highlightManeuver(idx) {
     row.classList.add('active-row');
     row.scrollIntoView({block: 'nearest'});
   }
-  // Move map cursor to maneuver position
   const m = _maneuvers[idx];
+  _renderManeuverDetail(m);
+  // Move map cursor to maneuver position
   if (m && _trackData) {
     const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
     setPosition(ts);
+  }
+  // Seek the embedded player to the maneuver moment if a video is loaded.
+  if (m && _videoSync && _videoSync.player) {
+    const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
+    const offset = _utcToVideoOffset(ts);
+    if (offset != null && offset >= 0 && _videoSync.player.seekTo) {
+      try { _videoSync.player.seekTo(offset, true); } catch (e) { /* ignore */ }
+    }
   }
   // Open the marker popup if available
   if (_maneuverMarkers[idx]) _maneuverMarkers[idx].openPopup();
