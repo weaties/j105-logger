@@ -10,6 +10,7 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+from helmlog import insta360
 from helmlog.insta360 import (
     InstaRecording,
     discover_recordings,
@@ -171,8 +172,11 @@ class TestDiscoverRecordings:
         assert recs[0].needs_stitching is False
         assert recs[0].segments[0].name == "VID_20260810_140530_00_001.mp4"
 
-    def test_mixed_insv_and_mp4(self, tmp_path: Path) -> None:
-        """SD card with both 360° and single-lens recordings."""
+    def test_mixed_insv_and_mp4(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SD card with both 360° and true single-lens recordings."""
+        # Force the .mp4 to look like a 1-stream single-lens file.
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: 1)
+
         cam = tmp_path / "DCIM" / "Camera01"
         cam.mkdir(parents=True)
         (cam / "VID_20260810_140530_00_000.insv").write_bytes(b"\x00" * 100)
@@ -184,6 +188,119 @@ class TestDiscoverRecordings:
         assert recs[0].needs_stitching is True
         assert recs[1].timestamp_str == "20260810_153000"
         assert recs[1].needs_stitching is False
+
+
+# ---------------------------------------------------------------------------
+# .mp4 → .insv promotion (X4 OSC startCapture writes dual-fisheye 360° content
+# but mislabels the file with a .mp4 extension; we detect and rename.)
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteMp4ToInsv:
+    def test_dual_stream_mp4_renamed_to_insv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An OSC-recorded .mp4 with 2 video streams must be renamed to .insv."""
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: 2)
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        src = cam / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
+        assert recs[0].needs_stitching is True
+        assert recs[0].segments[0].name == "VID_20260810_140530_00_000.insv"
+        # File on disk was actually renamed
+        assert not src.exists()
+        assert (cam / "VID_20260810_140530_00_000.insv").exists()
+
+    def test_single_stream_mp4_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A genuine single-lens .mp4 (1 video stream) must NOT be renamed."""
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: 1)
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        src = cam / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
+        assert recs[0].needs_stitching is False
+        assert recs[0].segments[0].name == "VID_20260810_140530_00_000.mp4"
+        assert src.exists()
+
+    def test_existing_insv_not_probed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A .insv file is trusted by extension; ffprobe should not be called."""
+        called = []
+        monkeypatch.setattr(
+            insta360,
+            "_count_video_streams",
+            lambda p: called.append(p) or 2,  # type: ignore[func-returns-value]
+        )
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        (cam / "VID_20260810_140530_00_000.insv").write_bytes(b"\x00" * 4096)
+
+        recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
+        assert recs[0].needs_stitching is True
+        assert called == []  # probe never invoked for already-correct extension
+
+    def test_idempotent_rescan(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Re-scanning the same directory yields stable results."""
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: 2)
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        (cam / "VID_20260810_140530_00_000.mp4").write_bytes(b"\x00" * 4096)
+
+        first = discover_recordings(tmp_path)
+        second = discover_recordings(tmp_path)
+        assert len(first) == 1
+        assert len(second) == 1
+        assert first[0].segments[0].name == second[0].segments[0].name
+        assert first[0].needs_stitching is second[0].needs_stitching is True
+
+    def test_ffprobe_unavailable_falls_back_to_extension(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """If ffprobe is missing or errors, .mp4 stays as .mp4 (legacy behavior)."""
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: None)
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        src = cam / "VID_20260810_140530_00_000.mp4"
+        src.write_bytes(b"\x00" * 4096)
+
+        recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
+        assert recs[0].needs_stitching is False
+        assert src.exists()  # not renamed
+
+    def test_promotes_all_segments_of_a_recording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All segments of a multi-segment OSC recording get promoted together."""
+        monkeypatch.setattr(insta360, "_count_video_streams", lambda _p: 2)
+
+        cam = tmp_path / "DCIM" / "Camera01"
+        cam.mkdir(parents=True)
+        (cam / "VID_20260810_140530_00_000.mp4").write_bytes(b"\x00" * 4096)
+        (cam / "VID_20260810_140530_00_001.mp4").write_bytes(b"\x00" * 4096)
+        (cam / "VID_20260810_140530_00_002.mp4").write_bytes(b"\x00" * 4096)
+
+        recs = discover_recordings(tmp_path)
+        assert len(recs) == 1
+        assert len(recs[0].segments) == 3
+        assert all(s.suffix == ".insv" for s in recs[0].segments)
+        assert recs[0].needs_stitching is True
 
 
 # ---------------------------------------------------------------------------

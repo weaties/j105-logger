@@ -119,89 +119,15 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
 
 
 async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
-    """Send ``camera.setOptions`` then ``camera.startCapture`` to a single camera.
-
-    The Insta360 X4 OSC layer has its own state that is independent of the
-    mode shown on the camera's touchscreen.  OSC ``startCapture`` without any
-    preceding ``setOptions`` always starts a single-lens recording and produces
-    ``.mp4`` files — it does not honour the camera's on-screen 360° setting.
-
-    To produce unstitched dual-fisheye ``.insv`` files (which retain the
-    gyroscope metadata required for horizon leveling) we must set **both**
-    options together:
-
-    * ``captureMode: "video"`` — puts the OSC layer into video-recording mode.
-      This is required; without it the ``videoStitching`` option is silently
-      ignored by the firmware.
-    * ``videoStitching: "none"`` — requests unstitched 360° output.  Combined
-      with ``captureMode: "video"``, this selects the dual-fisheye 360° mode
-      and produces ``.insv`` files.
-
-    The camera must have been set to **360° Video** mode at least once via the
-    touchscreen or Insta360 app so that the 360° hardware mode is active.
-
-    A ``getOptions`` call is made first solely for diagnostic logging — it
-    lets us confirm which mode the camera thinks it is in before we change
-    anything.
+    """Send ``camera.startCapture`` to a single camera.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
-    round-trip time of the HTTP requests (used as ``sync_offset_ms``).
+    round-trip time of the HTTP request (used as ``sync_offset_ms``).
     """
     timeout = timeout if timeout is not None else _default_timeout()
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
-            # Diagnostic: log the camera's current mode before changing anything.
-            # This runs at INFO level so it appears in the default log output.
-            # If videoStitching / videoStitchingSupport are absent from the
-            # response the X4 firmware does not support that option name and
-            # we need a different approach.
-            try:
-                get_opts_resp = await client.post(
-                    _osc_url(camera),
-                    headers=_OSC_HEADERS,
-                    json={
-                        "name": "camera.getOptions",
-                        "parameters": {
-                            "optionNames": [
-                                "captureMode",
-                                "captureStatus",
-                                "videoStitching",
-                                "videoStitchingSupport",
-                                "_videoType",
-                                "_videoTypeSupport",
-                                "fileFormat",
-                                "fileFormatSupport",
-                            ]
-                        },
-                    },
-                    timeout=timeout,
-                )
-                logger.info("Camera {} pre-start getOptions: {}", camera.name, get_opts_resp.text)
-            except (httpx.HTTPError, OSError) as exc:
-                logger.warning(
-                    "Camera {} pre-start getOptions failed (non-fatal): {}", camera.name, exc
-                )
-
-            # Set captureMode AND videoStitching together.  The firmware
-            # ignores videoStitching when captureMode is not explicitly "video".
-            set_opts_resp = await client.post(
-                _osc_url(camera),
-                headers=_OSC_HEADERS,
-                json={
-                    "name": "camera.setOptions",
-                    "parameters": {
-                        "options": {
-                            "captureMode": "video",
-                            "videoStitching": "none",
-                        }
-                    },
-                },
-                timeout=timeout,
-            )
-            set_opts_resp.raise_for_status()
-            logger.info("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
-
             resp = await client.post(
                 _osc_url(camera),
                 headers=_OSC_HEADERS,
@@ -210,7 +136,7 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
             )
             latency_ms = int((time.monotonic() - t0) * 1000)
             resp.raise_for_status()
-            logger.info("Camera {} startCapture response: {}", camera.name, resp.text)
+            logger.debug("Camera {} startCapture response: {}", camera.name, resp.text)
             return CameraStatus(
                 name=camera.name, ip=camera.ip, recording=True, latency_ms=latency_ms
             )

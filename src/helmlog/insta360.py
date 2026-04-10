@@ -15,11 +15,30 @@ File naming convention (Insta360 X4):
 
 Only ``_00_`` files are included in recording segments; for .insv the
 stitcher automatically pairs front+back.
+
+X4 OSC startCapture quirk
+-------------------------
+When the X4 is started via the OSC HTTP API (``camera.startCapture``)
+rather than the physical shutter button, the camera writes a *correct*
+dual-fisheye 360° recording — two HEVC video streams + audio + IMU
+trailer — but **labels the file with a ``.mp4`` extension** instead of
+``.insv``.  Insta360 Studio (and Pano2VR, the GoPro VR plugin, etc.)
+gate 360° processing on the ``.insv`` extension and treat ``.mp4`` as
+flat single-lens video, silently throwing away the second video stream
+and the gyroscope data needed for horizon-leveling.
+
+We work around this at scan time: each ``.mp4`` in the camera dir is
+probed with ffprobe; if it has two video streams it is renamed on disk
+to ``.insv`` so the rest of the pipeline (and external tools) sees it
+as the 360° recording it really is.  Genuine single-lens ``.mp4`` files
+(one video stream) are left untouched.
 """
 
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -88,6 +107,74 @@ class InstaRecording:
 
 
 # ---------------------------------------------------------------------------
+# .mp4 → .insv promotion (see module docstring)
+# ---------------------------------------------------------------------------
+
+
+def _count_video_streams(path: Path) -> int | None:
+    """Return the number of video streams in *path*, or ``None`` on probe failure.
+
+    Uses ffprobe.  Returns ``None`` if ffprobe is not installed or the file
+    cannot be parsed — callers should treat that as "unknown" and fall back
+    to extension-based classification rather than mutating the file.
+    """
+    if shutil.which("ffprobe") is None:
+        logger.warning("ffprobe not found on PATH; cannot probe {} for stream count", path.name)
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v",
+                "-show_entries",
+                "stream=index",
+                "-of",
+                "csv=p=0",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("ffprobe failed on {}: {}", path.name, exc)
+        return None
+    if result.returncode != 0:
+        logger.warning("ffprobe error on {}: {}", path.name, result.stderr.strip())
+        return None
+    return sum(1 for line in result.stdout.splitlines() if line.strip())
+
+
+def _promote_mp4_if_dual_stream(path: Path) -> Path:
+    """If *path* is a dual-fisheye .mp4, rename it on disk to .insv.
+
+    Returns the (possibly new) path.  No-op for files that are not ``.mp4``,
+    have only one video stream, or whose stream count cannot be determined.
+    Idempotent: if the .insv twin already exists, leaves *path* alone.
+    """
+    if path.suffix.lower() != ".mp4":
+        return path
+    streams = _count_video_streams(path)
+    if streams is None or streams < 2:
+        return path
+    target = path.with_suffix(".insv")
+    if target.exists():
+        logger.warning("Refusing to promote {} → {}: target already exists", path.name, target.name)
+        return path
+    path.rename(target)
+    logger.info(
+        "Promoted X4 OSC recording {} → {} ({} video streams — dual-fisheye 360°)",
+        path.name,
+        target.name,
+        streams,
+    )
+    return target
+
+
+# ---------------------------------------------------------------------------
 # Discovery
 # ---------------------------------------------------------------------------
 
@@ -98,6 +185,10 @@ def discover_recordings(mount_path: Path) -> list[InstaRecording]:
     Looks in ``<mount_path>/DCIM/Camera01/`` for VID_*.insv and VID_*.mp4,
     groups by recording timestamp, and returns them sorted chronologically.
     Only ``_00_`` (back/main lens) segments are included.
+
+    Each ``.mp4`` is probed with ffprobe before grouping; if it contains two
+    video streams it is renamed on disk to ``.insv`` (see module docstring
+    on the X4 OSC startCapture quirk).
 
     Args:
         mount_path: Root of the mounted SD card (e.g. ``/Volumes/Insta360 X4``).
@@ -110,13 +201,21 @@ def discover_recordings(mount_path: Path) -> list[InstaRecording]:
         logger.debug("No DCIM/Camera01 found at {}", mount_path)
         return []
 
-    # Collect main-lens segments grouped by timestamp + extension
+    # Collect main-lens segments grouped by timestamp + extension.
+    # Dual-fisheye .mp4 files are promoted to .insv on disk during this pass.
     groups: dict[str, list[tuple[int, Path]]] = {}
     extensions: dict[str, str] = {}  # timestamp → extension
     for f in camera_dir.iterdir():
         info = parse_insv_filename(f.name)
         if info is None or info.lens != "00":
             continue
+        if info.extension == "mp4":
+            promoted = _promote_mp4_if_dual_stream(f)
+            if promoted is not f:
+                f = promoted
+                info = parse_insv_filename(f.name)
+                if info is None:
+                    continue
         groups.setdefault(info.timestamp_str, []).append((info.segment, f))
         extensions[info.timestamp_str] = info.extension
 

@@ -19,65 +19,6 @@ from helmlog.cameras import (
 )
 
 # ---------------------------------------------------------------------------
-# setOptions called before startCapture (horizon metadata fix)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_start_camera_sends_set_options_then_start_capture() -> None:
-    """start_camera must send setOptions(captureMode=video, videoStitching=none)
-    followed by startCapture to produce .insv 360° recordings via OSC.
-
-    A pre-flight getOptions call is also made for diagnostic logging; its
-    failure is non-fatal and must not prevent recording from starting.
-
-    Background: the X4 OSC layer is independent of the on-screen mode setting.
-    Sending startCapture alone (no setOptions) defaults to single-lens mode and
-    produces .mp4.  Both captureMode AND videoStitching must be set together —
-    setting videoStitching alone without captureMode is silently ignored by the
-    firmware (confirmed: still produces .mp4)."""
-    cam = Camera(name="test", ip="192.168.42.1")
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.text = '{"state": "done"}'
-
-    mock_client = AsyncMock()
-    mock_client.post.return_value = mock_resp
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("httpx.AsyncClient", return_value=mock_client):
-        status = await start_camera(cam, timeout=5.0)
-
-    assert status.recording is True
-
-    calls = mock_client.post.call_args_list
-    sent_commands = [c.kwargs.get("json", {}).get("name") for c in calls]
-
-    # Must include setOptions and startCapture (getOptions may also be present)
-    assert "camera.setOptions" in sent_commands, f"camera.setOptions missing from {sent_commands}"
-    assert "camera.startCapture" in sent_commands, (
-        f"camera.startCapture missing from {sent_commands}"
-    )
-
-    set_options_idx = sent_commands.index("camera.setOptions")
-    start_capture_idx = sent_commands.index("camera.startCapture")
-    assert set_options_idx < start_capture_idx, "setOptions must come before startCapture"
-
-    # Verify captureMode AND videoStitching are set together
-    set_options_call = calls[set_options_idx]
-    options = set_options_call.kwargs.get("json", {}).get("parameters", {}).get("options", {})
-    assert options.get("captureMode") == "video", (
-        "captureMode must be 'video' to put the OSC layer into video-recording mode"
-    )
-    assert options.get("videoStitching") == "none", (
-        "videoStitching must be 'none' to request unstitched 360° .insv output"
-    )
-
-
-# ---------------------------------------------------------------------------
 # parse_cameras_config
 # ---------------------------------------------------------------------------
 
