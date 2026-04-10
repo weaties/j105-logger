@@ -119,24 +119,21 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
 
 
 async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
-    """Send ``camera.setOptions`` then ``camera.startCapture`` to a single camera.
+    """Send ``camera.startCapture`` to a single camera.
 
-    ``camera.setOptions`` is sent first with ``videoStitching: "none"`` to
-    request that the X4 saves unstitched dual-fisheye ``.insv`` files rather
-    than on-device-stitched ``.mp4``.  Unstitched files retain the gyroscope
-    metadata required for horizon leveling during post-processing.
+    No ``camera.setOptions`` is sent before ``startCapture``.  Testing on the
+    physical X4 showed that sending **any** ``setOptions`` call (including
+    ``videoStitching: "none"``) caused the camera to switch to single-lens mode
+    and produce ``.mp4`` files.  When ``startCapture`` is sent without prior
+    ``setOptions``, the X4 respects whatever recording mode is active on the
+    device — pressing the physical shutter button in 360° mode produces
+    ``.insv``, and OSC ``startCapture`` without ``setOptions`` behaves the
+    same way.
 
-    **Important:** ``videoStitching: "none"`` only produces ``.insv`` files
-    when the camera is already in **360° dual-fisheye mode**.  If the camera
-    is in single-lens (normal video) mode — shown as ``captureMode: "video"``
-    in ``getOptions`` — the stitching option has no effect and recordings will
-    still be saved as ``.mp4``.  Set the camera to **360° Video** mode via
-    the touchscreen or Insta360 app before starting a session.
-
-    ``captureMode`` is intentionally NOT set here — setting
-    ``captureMode: "video"`` via OSC switches the X4 *from* 360° mode *to*
-    single-lens mode, so we must not send it and risk overriding a correctly
-    configured camera.
+    The camera **must** be in **360° Video** mode (set via touchscreen or
+    Insta360 app) before starting a session.  In that mode the X4 saves
+    unstitched dual-fisheye ``.insv`` files by default, retaining the
+    gyroscope metadata required for horizon leveling during post-processing.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
     round-trip time of the HTTP request (used as ``sync_offset_ms``).
@@ -145,26 +142,6 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
-            # Request unstitched output to preserve gyroscope metadata for
-            # horizon leveling.  Do NOT set captureMode here: on the X4,
-            # captureMode="video" means single-lens mode and would switch the
-            # camera out of 360° mode, causing .mp4 output instead of .insv.
-            set_opts_resp = await client.post(
-                _osc_url(camera),
-                headers=_OSC_HEADERS,
-                json={
-                    "name": "camera.setOptions",
-                    "parameters": {
-                        "options": {
-                            "videoStitching": "none",
-                        }
-                    },
-                },
-                timeout=timeout,
-            )
-            set_opts_resp.raise_for_status()
-            logger.info("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
-
             resp = await client.post(
                 _osc_url(camera),
                 headers=_OSC_HEADERS,

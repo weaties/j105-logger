@@ -24,14 +24,13 @@ from helmlog.cameras import (
 
 
 @pytest.mark.asyncio
-async def test_start_camera_sends_set_options_before_start_capture() -> None:
-    """start_camera must call camera.setOptions with videoStitching=none
-    immediately before camera.startCapture so that the X4 records unstitched
-    .insv files that retain gyroscope horizon metadata.
+async def test_start_camera_sends_only_start_capture() -> None:
+    """start_camera must send ONLY camera.startCapture — no camera.setOptions.
 
-    captureMode must NOT be included in the setOptions payload: on the X4,
-    captureMode='video' means single-lens mode and would switch the camera out
-    of 360° mode, causing .mp4 output instead of .insv."""
+    Sending any setOptions before startCapture (including videoStitching='none')
+    causes the X4 to switch to single-lens mode and produce .mp4 files.
+    Without setOptions, the camera respects its on-device 360° mode setting
+    and records .insv files by default."""
     cam = Camera(name="test", ip="192.168.42.1")
 
     mock_resp = MagicMock()
@@ -49,26 +48,14 @@ async def test_start_camera_sends_set_options_before_start_capture() -> None:
 
     assert status.recording is True
 
-    # Collect all OSC command names sent in order
+    # Exactly one POST call — camera.startCapture only
     calls = mock_client.post.call_args_list
-    assert len(calls) >= 2, "Expected at least 2 POST calls (setOptions + startCapture)"
-
-    sent_commands = [call.kwargs.get("json", {}).get("name") for call in calls]
-    assert "camera.setOptions" in sent_commands, "camera.setOptions must be sent"
-    assert "camera.startCapture" in sent_commands, "camera.startCapture must be sent"
-
-    set_options_idx = sent_commands.index("camera.setOptions")
-    start_capture_idx = sent_commands.index("camera.startCapture")
-    assert set_options_idx < start_capture_idx, "setOptions must come before startCapture"
-
-    # Verify the required options are present and captureMode is NOT set
-    set_options_call = calls[set_options_idx]
-    options = set_options_call.kwargs.get("json", {}).get("parameters", {}).get("options", {})
-    assert options.get("videoStitching") == "none", "videoStitching must be 'none'"
-    assert "captureMode" not in options, (
-        "captureMode must NOT be set — on the X4 captureMode='video' switches "
-        "to single-lens mode, producing .mp4 instead of .insv"
+    assert len(calls) == 1, (
+        f"Expected exactly 1 POST call (startCapture only), got {len(calls)}: "
+        f"{[c.kwargs.get('json', {}).get('name') for c in calls]}"
     )
+    sent_name = calls[0].kwargs.get("json", {}).get("name")
+    assert sent_name == "camera.startCapture", f"Expected camera.startCapture, got {sent_name!r}"
 
 
 # ---------------------------------------------------------------------------
