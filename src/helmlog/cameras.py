@@ -119,7 +119,12 @@ def _error_msg(exc: Exception, camera: Camera, action: str) -> str:
 
 
 async def start_camera(camera: Camera, timeout: float | None = None) -> CameraStatus:
-    """Send ``camera.startCapture`` to a single camera.
+    """Send ``camera.setOptions`` then ``camera.startCapture`` to a single camera.
+
+    ``camera.setOptions`` is sent first to ensure the X4 records unstitched
+    ``.insv`` files (``videoStitching: none``) in video mode (``captureMode:
+    video``).  Unstitched files retain the gyroscope metadata required for
+    horizon leveling during post-processing.
 
     Returns a :class:`CameraStatus` with ``latency_ms`` measuring the
     round-trip time of the HTTP request (used as ``sync_offset_ms``).
@@ -128,6 +133,25 @@ async def start_camera(camera: Camera, timeout: float | None = None) -> CameraSt
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient() as client:
+            # Set recording options before starting: unstitched dual-lens video
+            # to preserve gyroscope metadata for horizon leveling.
+            set_opts_resp = await client.post(
+                _osc_url(camera),
+                headers=_OSC_HEADERS,
+                json={
+                    "name": "camera.setOptions",
+                    "parameters": {
+                        "options": {
+                            "captureMode": "video",
+                            "videoStitching": "none",
+                        }
+                    },
+                },
+                timeout=timeout,
+            )
+            set_opts_resp.raise_for_status()
+            logger.debug("Camera {} setOptions response: {}", camera.name, set_opts_resp.text)
+
             resp = await client.post(
                 _osc_url(camera),
                 headers=_OSC_HEADERS,

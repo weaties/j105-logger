@@ -19,6 +19,52 @@ from helmlog.cameras import (
 )
 
 # ---------------------------------------------------------------------------
+# setOptions called before startCapture (horizon metadata fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_camera_sends_set_options_before_start_capture() -> None:
+    """start_camera must call camera.setOptions with videoStitching=none and
+    captureMode=video immediately before camera.startCapture so that the X4
+    records unstitched .insv files that retain gyroscope horizon metadata."""
+    cam = Camera(name="test", ip="192.168.42.1")
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.text = '{"state": "done"}'
+
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("httpx.AsyncClient", return_value=mock_client):
+        status = await start_camera(cam, timeout=5.0)
+
+    assert status.recording is True
+
+    # Collect all OSC command names sent in order
+    calls = mock_client.post.call_args_list
+    assert len(calls) >= 2, "Expected at least 2 POST calls (setOptions + startCapture)"
+
+    sent_commands = [call.kwargs.get("json", {}).get("name") for call in calls]
+    assert "camera.setOptions" in sent_commands, "camera.setOptions must be sent"
+    assert "camera.startCapture" in sent_commands, "camera.startCapture must be sent"
+
+    set_options_idx = sent_commands.index("camera.setOptions")
+    start_capture_idx = sent_commands.index("camera.startCapture")
+    assert set_options_idx < start_capture_idx, "setOptions must come before startCapture"
+
+    # Verify the required options are present
+    set_options_call = calls[set_options_idx]
+    options = set_options_call.kwargs.get("json", {}).get("parameters", {}).get("options", {})
+    assert options.get("videoStitching") == "none", "videoStitching must be 'none'"
+    assert options.get("captureMode") == "video", "captureMode must be 'video'"
+
+
+# ---------------------------------------------------------------------------
 # parse_cameras_config
 # ---------------------------------------------------------------------------
 
