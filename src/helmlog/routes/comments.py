@@ -27,6 +27,7 @@ async def api_create_thread(
     title: str | None = body.get("title")
     from helmlog.storage import _MARK_REFERENCES  # noqa: PLC0415
 
+
     if mark_reference and mark_reference not in _MARK_REFERENCES:
         raise HTTPException(status_code=400, detail=f"Unknown mark reference: {mark_reference!r}")
     thread_id = await storage.create_comment_thread(
