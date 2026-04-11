@@ -1718,7 +1718,7 @@ class Storage:
             " JOIN races r ON r.id = rs.race_id"
             " WHERE r.start_utc IS NOT NULL"
         )
-        races = await cur.fetchall()
+        races = list(await cur.fetchall())
         for race in races:
             race_id = race["race_id"]
             ts = race["start_utc"]
@@ -1783,7 +1783,7 @@ class Storage:
         cur = await db.execute(
             "SELECT id, name, camera_id, marker_id_a, marker_id_b, tolerance_mm FROM aruco_controls"
         )
-        aruco_rows = await cur.fetchall()
+        aruco_rows = list(await cur.fetchall())
         for ac in aruco_rows:
             # Insert control if it doesn't already exist (e.g., "vang" already seeded)
             await db.execute(
@@ -4365,7 +4365,8 @@ class Storage:
                 " WHERE main_id = ? OR jib_id = ? OR spinnaker_id = ?",
                 (sid, sid, sid),
             )
-            sail["total_sessions"] = (await cur.fetchone())["cnt"]
+            cnt_row = await cur.fetchone()
+            sail["total_sessions"] = cnt_row["cnt"] if cnt_row else 0
 
             # Maneuver counts filtered by point_of_sail, attributed via sail_changes
             if pos == "upwind":
@@ -6290,6 +6291,7 @@ class Storage:
     async def list_boat_settings(self, race_id: int | None) -> list[dict[str, Any]]:
         """Return all boat settings for a race, ordered by timestamp."""
         db = self._read_conn()
+        params: tuple[Any, ...]
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:
@@ -6308,6 +6310,7 @@ class Storage:
         Uses a window function to pick the most recent entry per parameter.
         """
         db = self._read_conn()
+        params: tuple[Any, ...]
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:

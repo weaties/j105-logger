@@ -587,6 +587,7 @@ async def api_calibration_checkerboard(
 
     # Title text
     title = f"HelmLog Calibration Target — {cols}x{rows} inner corners, {square_mm}mm squares"
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont
     try:
         font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
     except OSError:

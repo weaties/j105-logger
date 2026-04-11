@@ -23,23 +23,25 @@ async def api_network_status(
     get_storage(request)
     import helmlog.network as net_mod
 
-    (
-        wlan_status,
-        interfaces,
-        internet,
-        tailscale,
-        cloudflare,
-        default_route,
-        dns,
-    ) = await asyncio.gather(
-        net_mod.get_wlan_status(),
-        net_mod.list_interfaces(),
-        net_mod.check_internet(),
-        net_mod.get_tailscale_status(),
-        net_mod.get_cloudflare_status(),
-        net_mod.get_default_route(),
-        net_mod.check_dns(),
-    )
+    # Kick off all probes concurrently. We await each task individually so
+    # mypy keeps the precise per-call return type instead of collapsing the
+    # asyncio.gather result into a union of all return types (the overloads
+    # stop at 6 awaitables, and we have 7).
+    wlan_task = asyncio.create_task(net_mod.get_wlan_status())
+    interfaces_task = asyncio.create_task(net_mod.list_interfaces())
+    internet_task = asyncio.create_task(net_mod.check_internet())
+    tailscale_task = asyncio.create_task(net_mod.get_tailscale_status())
+    cloudflare_task = asyncio.create_task(net_mod.get_cloudflare_status())
+    default_route_task = asyncio.create_task(net_mod.get_default_route())
+    dns_task = asyncio.create_task(net_mod.check_dns())
+
+    wlan_status = await wlan_task
+    interfaces = await interfaces_task
+    internet = await internet_task
+    tailscale = await tailscale_task
+    cloudflare = await cloudflare_task
+    default_route = await default_route_task
+    dns = await dns_task
     return JSONResponse(
         {
             "wlan": {
