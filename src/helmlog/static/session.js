@@ -2106,7 +2106,7 @@ function _trackBounds(tracks) {
 }
 
 function _renderTrackSvg(tracks, opts) {
-  // tracks: array of { points, color, label, highlight?, maneuverIdx? }
+  // tracks: array of { points, color, label, highlight?, maneuverIdx?, ghost? }
   opts = opts || {};
   const w = opts.width || 260;
   const h = opts.height || 200;
@@ -2114,7 +2114,12 @@ function _renderTrackSvg(tracks, opts) {
   const interactive = !!opts.interactive;
   const pointSets = tracks.map(t => t.points).filter(p => p && p.length);
   if (!pointSets.length) return '';
-  const b = _trackBounds(pointSets);
+  // Extend bounds so the ghost reference line (running along y) is visible
+  // even when it extends beyond the actual track.
+  const ghostYs = tracks.map(t => t.ghost).filter(v => v != null && !isNaN(v));
+  const extras = ghostYs.map(y => ({ x: 0, y }));
+  const allPoints = pointSets.concat([extras]);
+  const b = _trackBounds(allPoints);
   if (!b) return '';
   const sx = x => pad + (x - b.minX) / (b.maxX - b.minX) * (w - 2 * pad);
   const sy = y => (h - pad) - (y - b.minY) / (b.maxY - b.minY) * (h - 2 * pad);
@@ -2134,8 +2139,21 @@ function _renderTrackSvg(tracks, opts) {
     + '<line x1="' + originX + '" y1="' + (originY - 8) + '" x2="' + originX + '" y2="' + (originY + 8) + '" stroke="var(--accent)" stroke-width="0.6"/>'
     + '<line x1="' + (originX - 8) + '" y1="' + originY + '" x2="' + (originX + 8) + '" y2="' + originY + '" stroke="var(--accent)" stroke-width="0.6"/>';
 
-  const arrowY1 = sy(0), arrowY2 = sy(Math.min(b.maxY, scaleM * 0.25));
-  const entryArrow = '<line x1="' + originX + '" y1="' + arrowY1 + '" x2="' + originX + '" y2="' + arrowY2 + '" stroke="var(--accent)" stroke-width="1" stroke-dasharray="2,2"/>';
+  // Wind-up frame: +y = upwind. Label it so the orientation is unambiguous.
+  const windLabels = '<text x="' + (w / 2) + '" y="10" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↑ upwind</text>'
+    + '<text x="' + (w / 2) + '" y="' + (h - 12) + '" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↓ downwind</text>';
+
+  // "Climb the ladder" ghost references — dashed vertical segments from
+  // the origin to each track's idealized upwind-progress endpoint. Lets
+  // you see at a glance how far you *would* have made had the tack been
+  // a zero-loss instant turn.
+  const ghostLines = tracks.map(t => {
+    if (t.ghost == null || isNaN(t.ghost)) return '';
+    const gy1 = sy(0), gy2 = sy(t.ghost);
+    return '<line x1="' + originX + '" y1="' + gy1 + '" x2="' + originX + '" y2="' + gy2
+      + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>'
+      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2" fill="' + t.color + '" opacity="0.6"/>';
+  }).join('');
 
   const paths = tracks.map(t => {
     if (!t.points || !t.points.length) return '';
@@ -2144,9 +2162,10 @@ function _renderTrackSvg(tracks, opts) {
     const opacity = t.highlight ? 1 : 0.7;
     let attrs = 'fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '" stroke-linecap="round"';
     if (interactive && t.maneuverIdx != null) {
-      attrs += ' style="pointer-events:stroke;cursor:pointer"'
-        + ' onmousemove="showOverlayTip(event,' + t.maneuverIdx + ')"'
-        + ' onmouseleave="hideOverlayTip()"'
+      attrs += ' data-man-idx="' + t.maneuverIdx + '"'
+        + ' style="pointer-events:stroke;cursor:pointer"'
+        + ' onmouseenter="showOverlayTip(event,' + t.maneuverIdx + ')"'
+        + ' onmouseleave="scheduleOverlayTipHide()"'
         + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"';
     }
     return '<path d="' + d + '" ' + attrs + '/>';
@@ -2156,20 +2175,25 @@ function _renderTrackSvg(tracks, opts) {
   const hoverUnderlay = interactive ? tracks.map(t => {
     if (!t.points || !t.points.length || t.maneuverIdx == null) return '';
     const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
-    return '<path d="' + d + '" fill="none" stroke="rgba(0,0,0,0)" stroke-width="12"'
+    return '<path d="' + d + '" fill="none" stroke="rgba(0,0,0,0)" stroke-width="14"'
       + ' style="pointer-events:stroke;cursor:pointer"'
-      + ' onmousemove="showOverlayTip(event,' + t.maneuverIdx + ')"'
-      + ' onmouseleave="hideOverlayTip()"'
+      + ' onmouseenter="showOverlayTip(event,' + t.maneuverIdx + ')"'
+      + ' onmouseleave="scheduleOverlayTipHide()"'
       + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"/>';
   }).join('') : '';
 
   const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
 
   return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
-    + gridLines.join('') + entryArrow + hoverUnderlay + paths + crosshair + scaleLabel + '</svg>';
+    + gridLines.join('') + ghostLines + hoverUnderlay + paths + crosshair + windLabels + scaleLabel + '</svg>';
 }
 
-// Overlay tooltip for per-trace stats + YouTube link
+// Overlay tooltip — anchored on mouseenter, stays reachable by the mouse.
+// Hiding is delayed so the cursor can traverse from the trace to the tip;
+// entering the tip itself cancels the hide, so links inside are clickable.
+let _overlayTipHideTimer = null;
+let _overlayTipIdx = null;
+
 function _ensureOverlayTip() {
   let tip = document.getElementById('overlay-tip');
   if (!tip) {
@@ -2177,16 +2201,32 @@ function _ensureOverlayTip() {
     tip.id = 'overlay-tip';
     tip.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-primary);'
       + 'border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:.72rem;'
-      + 'box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:220px;display:none';
-    tip.onmouseleave = hideOverlayTip;
+      + 'box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;display:none';
+    tip.onmouseenter = cancelOverlayTipHide;
+    tip.onmouseleave = scheduleOverlayTipHide;
     document.body.appendChild(tip);
   }
   return tip;
 }
 
+function _highlightManeuverRow(idx, on) {
+  // Mirror the overlay hover on the table row so the two views stay linked.
+  document.querySelectorAll('.maneuver-table tr').forEach(r => r.classList.remove('hover-row'));
+  if (on && idx != null) {
+    const row = document.getElementById('mrow-' + idx);
+    if (row) {
+      row.classList.add('hover-row');
+      row.scrollIntoView({block: 'nearest'});
+    }
+  }
+}
+
 function showOverlayTip(ev, idx) {
+  cancelOverlayTipHide();
   const m = _maneuvers[idx];
   if (!m) return;
+  _overlayTipIdx = idx;
+  _highlightManeuverRow(idx, true);
   const tip = _ensureOverlayTip();
   const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
   const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'var(--text-secondary)';
@@ -2198,13 +2238,16 @@ function showOverlayTip(ev, idx) {
     ['Duration', m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—'],
     ['Turn', m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—'],
     ['BSP in→out', (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—')],
-    ['BSP loss', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
+    ['BSP dip', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
+    ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
     ['Dist loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
     ['TWS', twsStr],
+    ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
   ];
-  const header = '<div style="margin-bottom:4px">'
-    + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
-    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '')
+  const header = '<div style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px">'
+    + '<span><span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
+    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '') + '</span>'
+    + '<span style="color:var(--text-secondary);cursor:pointer;font-size:.8rem" onclick="hideOverlayTip()" title="Close">✕</span>'
     + '</div>';
   const grid = '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px">'
     + rows.map(([k, v]) => '<span style="color:var(--text-secondary)">' + k + '</span><b>' + esc(v) + '</b>').join('')
@@ -2214,19 +2257,43 @@ function showOverlayTip(ev, idx) {
     : '';
   tip.innerHTML = header + grid + yt;
   tip.style.display = 'block';
-  const margin = 12;
-  let x = ev.clientX + margin;
-  let y = ev.clientY + margin;
+
+  // Anchor the tooltip to the overlay SVG (top-right of the container) so
+  // it does not follow the cursor. This keeps the YouTube link reachable
+  // and prevents the "tooltip runs away" problem.
+  const svgContainer = document.querySelector('#maneuvers-body svg');
   const r = tip.getBoundingClientRect();
-  if (x + r.width > window.innerWidth) x = ev.clientX - r.width - margin;
-  if (y + r.height > window.innerHeight) y = ev.clientY - r.height - margin;
-  tip.style.left = Math.max(2, x) + 'px';
-  tip.style.top = Math.max(2, y) + 'px';
+  let x = ev.clientX + 14;
+  let y = ev.clientY + 14;
+  if (svgContainer) {
+    const box = svgContainer.getBoundingClientRect();
+    x = box.right + 8;
+    y = box.top;
+  }
+  if (x + r.width > window.innerWidth) x = Math.max(2, window.innerWidth - r.width - 4);
+  if (y + r.height > window.innerHeight) y = Math.max(2, window.innerHeight - r.height - 4);
+  tip.style.left = x + 'px';
+  tip.style.top = y + 'px';
+}
+
+function scheduleOverlayTipHide() {
+  cancelOverlayTipHide();
+  _overlayTipHideTimer = setTimeout(hideOverlayTip, 180);
+}
+
+function cancelOverlayTipHide() {
+  if (_overlayTipHideTimer) {
+    clearTimeout(_overlayTipHideTimer);
+    _overlayTipHideTimer = null;
+  }
 }
 
 function hideOverlayTip() {
+  cancelOverlayTipHide();
   const tip = document.getElementById('overlay-tip');
   if (tip) tip.style.display = 'none';
+  _highlightManeuverRow(_overlayTipIdx, false);
+  _overlayTipIdx = null;
 }
 
 function _renderOverlaySvg() {
@@ -2242,8 +2309,9 @@ function _renderOverlaySvg() {
     label: m.type,
     highlight: false,
     maneuverIdx: _maneuvers.indexOf(m),
+    ghost: m.ghost_m,
   }));
-  const svg = _renderTrackSvg(tracks, { width: 380, height: 300, interactive: true });
+  const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
     + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
@@ -2314,7 +2382,7 @@ function renderManeuverCard() {
     const t = fmtTime(m.ts);
     const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
     const turn = m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—';
-    const bspLoss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
+    const bspDip = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
     const distLoss = m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—';
     const entry = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—');
     // Fall back to the detector's stored tws_bin (integer kt) when the
@@ -2332,7 +2400,7 @@ function renderManeuverCard() {
       + '<td>' + dur + '</td>'
       + '<td>' + turn + '</td>'
       + '<td>' + entry + '</td>'
-      + '<td>' + bspLoss + '</td>'
+      + '<td title="BSP dip from pre-maneuver baseline to minimum BSP during the turn. Not exit−entry.">' + bspDip + '</td>'
       + '<td>' + distLoss + '</td>'
       + '<td>' + esc(cond) + '</td>'
       + '<td>' + yt + '</td>'
@@ -2360,7 +2428,7 @@ function renderManeuverCard() {
     + _manHeader('Dur', 'duration_sec')
     + _manHeader('Turn', 'turn_angle_deg')
     + '<th>BSP in→out</th>'
-    + _manHeader('BSP loss', 'loss_kts')
+    + '<th title="BSP dip: baseline − min BSP during the turn. Not exit−entry." onclick="setManeuverSort(\'loss_kts\')" style="cursor:pointer">BSP dip' + (_maneuverSort.key === 'loss_kts' ? (_maneuverSort.dir > 0 ? ' ▲' : ' ▼') : '') + '</th>'
     + _manHeader('Dist loss', 'distance_loss_m')
     + '<th>TWS</th><th></th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>'
@@ -2371,15 +2439,21 @@ function _renderManeuverDetail(m) {
   const el = document.getElementById('maneuver-detail');
   if (!el) return;
   if (!m) { el.innerHTML = ''; return; }
+  const bspDipLabel = m.loss_kts != null && m.entry_bsp != null && m.min_bsp != null
+    ? m.loss_kts.toFixed(2) + ' kt (' + m.entry_bsp.toFixed(1) + '→' + m.min_bsp.toFixed(1) + ')'
+    : (m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—');
   const rows = [
     ['Entry HDG', m.entry_hdg != null ? m.entry_hdg.toFixed(0) + '°' : '—'],
     ['Exit HDG', m.exit_hdg != null ? m.exit_hdg.toFixed(0) + '°' : '—'],
     ['Turn rate', m.turn_rate_deg_s != null ? m.turn_rate_deg_s.toFixed(1) + '°/s' : '—'],
     ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
+    ['BSP dip', bspDipLabel],
     ['Entry TWA', m.entry_twa != null ? m.entry_twa.toFixed(0) + '°' : '—'],
     ['Exit TWA', m.exit_twa != null ? m.exit_twa.toFixed(0) + '°' : '—'],
+    ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
     ['Time to recover', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
     ['Distance loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['Ghost upwind', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
   ];
   const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
@@ -2390,7 +2464,8 @@ function _renderManeuverDetail(m) {
         color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
         label: m.type,
         highlight: true,
-      }])
+        ghost: m.ghost_m,
+      }], { width: 300, height: 240 })
     : '';
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'

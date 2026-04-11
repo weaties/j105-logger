@@ -22,13 +22,17 @@ async def api_state(
     storage = get_storage(request)
     ss = request.app.state.session_state
     from helmlog.races import Race as _Race
-    from helmlog.races import configured_tz, default_event_for_date, local_today, local_weekday
+    from helmlog.races import default_event_for_date, local_today, local_weekday
+    from helmlog.routes._helpers import SETTINGS_BY_KEY
     from helmlog.storage import get_effective_setting
 
-    # Effective timezone: DB setting → env → "UTC". configured_tz() only
-    # reads env, so a settings.json / DB-configured timezone was invisible
-    # to the frontend. Resolve via the full settings chain here.
-    tz_name = await get_effective_setting(storage, "TIMEZONE", str(configured_tz()))
+    # Effective timezone: DB setting → env → SettingDef.default. The old
+    # code used configured_tz() which only reads the env var and silently
+    # falls back to "UTC", so DB-configured and UI-default timezones never
+    # reached the frontend on boats that hadn't set the env var.
+    tz_def = SETTINGS_BY_KEY.get("TIMEZONE")
+    tz_default = tz_def.default if tz_def else "UTC"
+    tz_name = await get_effective_setting(storage, "TIMEZONE", tz_default)
 
     now = datetime.now(UTC)
     today = local_today()

@@ -74,6 +74,22 @@ def _mean_in_range(
     return statistics.fmean(vals)
 
 
+def _circular_mean_deg(
+    series: list[tuple[datetime, float]], start: datetime, end: datetime
+) -> float | None:
+    """Mean of angular values in [start, end) in degrees, handling 0/360 wrap."""
+    if not series:
+        return None
+    vals = [v for ts, v in series if start <= ts < end]
+    if not vals:
+        return None
+    sx = sum(math.sin(math.radians(v)) for v in vals)
+    sy = sum(math.cos(math.radians(v)) for v in vals)
+    if sx == 0 and sy == 0:
+        return None
+    return (math.degrees(math.atan2(sx, sy)) + 360.0) % 360.0
+
+
 def _signed_heading_delta(h1: float, h2: float) -> float:
     """Shortest-arc signed delta from h1 to h2 in (−180, 180]."""
     diff = (h2 - h1 + 360.0) % 360.0
@@ -436,6 +452,10 @@ async def enrich_session_maneuvers(
 
     twa: list[tuple[datetime, float]] = []
     tws: list[tuple[datetime, float]] = []
+    # North-referenced true wind direction (TWD) per second. Used to
+    # rotate per-maneuver tracks into a wind-up frame and to compute the
+    # "climb the ladder" upwind-progress reference line.
+    twd: list[tuple[datetime, float]] = []
     for r in winds_raw:
         ref_raw = r.get("reference")
         if ref_raw is None:
@@ -450,13 +470,19 @@ async def enrich_session_maneuvers(
         ts = _ts_of(r)
         tws.append((ts, float(r["wind_speed_kts"])))
         if ref == 0:
-            raw = abs(float(r["wind_angle_deg"])) % 360.0
-            twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
-        else:
-            twd = float(r["wind_angle_deg"]) % 360.0
+            signed_twa = float(r["wind_angle_deg"])
+            folded = abs(signed_twa) % 360.0
+            twa.append((ts, folded if folded <= 180.0 else 360.0 - folded))
+            # TWD = heading + signed TWA (wind_angle_deg is positive-starboard).
             hv = hdg_by_sec.get(ts.isoformat()[:19])
             if hv is not None:
-                raw = (twd - hv + 360.0) % 360.0
+                twd.append((ts, (hv + signed_twa + 360.0) % 360.0))
+        else:
+            twd_val = float(r["wind_angle_deg"]) % 360.0
+            twd.append((ts, twd_val))
+            hv = hdg_by_sec.get(ts.isoformat()[:19])
+            if hv is not None:
+                raw = (twd_val - hv + 360.0) % 360.0
                 twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
 
     positions: list[tuple[datetime, float, float]] = [
@@ -467,6 +493,7 @@ async def enrich_session_maneuvers(
     bsp.sort(key=lambda p: p[0])
     twa.sort(key=lambda p: p[0])
     tws.sort(key=lambda p: p[0])
+    twd.sort(key=lambda p: p[0])
     positions.sort(key=lambda p: p[0])
 
     # Video sync for deep-links. Pick the first race video.
@@ -525,14 +552,43 @@ async def enrich_session_maneuvers(
         d["lat"] = pos[0] if pos else None
         d["lon"] = pos[1] if pos else None
 
-        # Local entry-aligned track for per-maneuver diagrams and overlay.
+        # Mean TWD around the maneuver (circular mean). The window spans
+        # the whole pre/post diagnostic range so we get a stable wind axis
+        # for rotating the overlay track into a wind-up frame.
+        twd_window_start = m_ts - timedelta(seconds=_TRACK_PRE_S)
+        twd_window_end = (exit_ts or m_ts) + timedelta(seconds=_TRACK_POST_S)
+        mean_twd = _circular_mean_deg(twd, twd_window_start, twd_window_end)
+        d["twd_deg"] = round(mean_twd, 1) if mean_twd is not None else None
+
+        # Local track rotated so TWD → +y (upwind up). Falls back to
+        # entry heading when TWD is unavailable.
+        rot_bearing = mean_twd if mean_twd is not None else metrics.entry_hdg
         d["track"] = extract_local_track(
             maneuver_ts=m_ts,
             exit_ts=exit_ts,
-            entry_bearing_deg=metrics.entry_hdg,
+            entry_bearing_deg=rot_bearing,
             positions=positions,
             bsp=bsp,
         )
+
+        # "Climb the ladder" reference: distance the boat would have made
+        # directly upwind if it had held VMG at entry SOG for the entire
+        # maneuver duration, signed positive for upwind tacks and negative
+        # for downwind gybes. With the wind-up rotation this becomes a
+        # simple vertical line the UI can draw from (0,0) to (0,ghost).
+        ghost: float | None = None
+        if (
+            metrics.duration_sec
+            and metrics.duration_sec > 0
+            and metrics.entry_sog is not None
+            and metrics.entry_twa is not None
+        ):
+            travelled_m = metrics.entry_sog * 0.514444 * metrics.duration_sec
+            twa_rad = math.radians(metrics.entry_twa)
+            ghost_mag = travelled_m * math.cos(twa_rad)
+            # Upwind (TWA < 90) → positive (toward +y == wind); downwind → negative.
+            ghost = ghost_mag if metrics.entry_twa < 90.0 else -ghost_mag
+        d["ghost_m"] = round(ghost, 2) if ghost is not None else None
 
         # Per-maneuver YouTube deep-link offset.
         if video_sync and video_sync_utc is not None:
