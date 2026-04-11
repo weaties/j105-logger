@@ -362,16 +362,20 @@ async function loadVakarosOverlay() {
     const latLng = [lp.latitude_deg, lp.longitude_deg];
     const color = lp.line_type === 'pin' ? pinColor : boatColor;
     const label = lp.line_type === 'pin' ? 'Pin' : 'Committee boat';
+    const tip = 'Vakaros ' + label + ' ping';
     L.circleMarker(latLng, {
       radius: 7, color: color, fillColor: color, fillOpacity: 1, weight: 2,
-    }).addTo(_map).bindPopup('Vakaros ' + label + ' ping');
+    }).addTo(_map).bindTooltip(tip).bindPopup(tip);
   }
 
   // Start line (dashed polyline between the most recent pin and boat pings).
   if (data.line) {
     L.polyline([data.line.pin, data.line.boat], {
       color: pinColor, weight: 3, dashArray: '6, 6', opacity: 0.9,
-    }).addTo(_map).bindPopup('Vakaros start line');
+    })
+      .addTo(_map)
+      .bindTooltip('Vakaros start line', {sticky: true})
+      .bindPopup('Vakaros start line');
 
     // Wind ticks: a short line from each line endpoint pointing UPWIND
     // at the moment of the start gun. Lets you eyeball the bias visually
@@ -386,14 +390,25 @@ async function loadVakarosOverlay() {
       const tws = ctx.tws_kts != null ? ctx.tws_kts.toFixed(1) + ' kt' : '?';
       const popup = 'Wind at gun: ' + twdLabel + ' \u00b7 ' + tws;
       L.polyline([data.line.pin, pinUp], {
-        color: vakarosTrackColor, weight: 2, opacity: 0.85,
-      }).addTo(_map).bindPopup(popup);
+        color: vakarosTrackColor, weight: 3, opacity: 0.9,
+      })
+        .addTo(_map)
+        .bindTooltip(popup, {sticky: true})
+        .bindPopup(popup);
       L.polyline([data.line.boat, boatUp], {
-        color: vakarosTrackColor, weight: 2, opacity: 0.85,
-      }).addTo(_map).bindPopup(popup);
-      // Small marker at each upwind tip so the direction reads cleanly.
-      L.circleMarker(pinUp, {radius: 3, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1}).addTo(_map);
-      L.circleMarker(boatUp, {radius: 3, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1}).addTo(_map);
+        color: vakarosTrackColor, weight: 3, opacity: 0.9,
+      })
+        .addTo(_map)
+        .bindTooltip(popup, {sticky: true})
+        .bindPopup(popup);
+      // Small marker at each upwind tip so the direction reads cleanly,
+      // and so there's a generous hover target at the end of each tick.
+      L.circleMarker(pinUp, {
+        radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
+      }).addTo(_map).bindTooltip(popup);
+      L.circleMarker(boatUp, {
+        radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
+      }).addTo(_map).bindTooltip(popup);
     }
 
     // Line info panel below the map.
@@ -458,9 +473,10 @@ async function loadVakarosOverlay() {
       if (d < minDelta) { minDelta = d; nearestIdx = i; }
     }
     const latLng = _trackData.latLngs[nearestIdx];
+    const startTip = 'Vakaros race start \u00b7 ' + startUtc.toISOString();
     L.circleMarker(latLng, {
       radius: 9, color: startColor, fillColor: startColor, fillOpacity: 1, weight: 2,
-    }).addTo(_map).bindPopup('Vakaros race start \u00b7 ' + startUtc.toISOString());
+    }).addTo(_map).bindTooltip(startTip).bindPopup(startTip);
 
     // Stash a synthetic "start" row so the maneuvers panel can show it.
     // loadManeuvers() reads this and merges it after fetching the API.
