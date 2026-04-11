@@ -120,28 +120,77 @@ if [ -d "$SNAP/grafana" ]; then
     "$PI:/tmp/grafana-restore/"
   ssh "$PI" "sudo rsync -a --delete --chown=grafana:grafana \
     /tmp/grafana-restore/ /var/lib/grafana/ && rm -rf /tmp/grafana-restore"
-  log "  grafana done"
+  log "  grafana data dir done"
 else
-  log "  WARNING: $SNAP/grafana not present; skipping"
+  log "  WARNING: $SNAP/grafana not present; skipping data dir"
+fi
+
+# /etc/grafana/provisioning holds the InfluxDB datasource yaml (with the
+# token). Without restoring this, Grafana keeps the target's old token —
+# which is invalidated by the InfluxDB --full restore in step 6 — and
+# dashboards show "No data".
+if [ -d "$SNAP/grafana-provisioning" ]; then
+  # shellcheck disable=SC2086
+  rsync -az --delete $RSYNC_PROGRESS \
+    "$SNAP/grafana-provisioning/" \
+    "$PI:/tmp/grafana-provisioning-restore/"
+  ssh "$PI" "sudo rsync -a --delete --chown=root:grafana \
+    /tmp/grafana-provisioning-restore/ /etc/grafana/provisioning/ && \
+    rm -rf /tmp/grafana-provisioning-restore"
+  log "  grafana provisioning done"
+else
+  log "  WARNING: $SNAP/grafana-provisioning not present; skipping (dashboards may show 'No data' until you re-run backup.sh against the source)"
 fi
 
 # ── 6. InfluxDB restore (full) ────────────────────────────────────────────────
 log "Step 6/7: Restoring InfluxDB (--full)"
-if [ -d "$SNAP/influxdb" ] && ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
+if [ -d "$SNAP/influxdb" ]; then
+  # Token chicken-and-egg: `influx restore --full` replaces all auth on the
+  # target, so after the first restore the target's $INFLUX_TOKEN_FILE is
+  # stale (it has the original target token, but the InfluxDB instance now
+  # holds the source's tokens). Try the target's local token first; if that
+  # 401s, fall back to the snapshot's captured source token.
   ssh "$PI" "rm -rf /tmp/influx-restore && mkdir -p /tmp/influx-restore"
   rsync -az "$SNAP/influxdb/" "$PI:/tmp/influx-restore/"
-  if ssh "$PI" "influx restore /tmp/influx-restore \
-      --host http://localhost:8086 \
-      --token \$(cat $INFLUX_TOKEN_FILE) \
-      --full"; then
-    log "  InfluxDB restore done"
-    log "  NOTE: $INFLUX_TOKEN_FILE on $PI may now be stale (auth was replaced)"
-  else
-    log "  WARNING: InfluxDB restore failed"
+
+  # Stage candidate tokens on the target (avoid embedding secrets in ssh args).
+  ssh "$PI" "rm -f /tmp/influx-token-target /tmp/influx-token-snap"
+  ssh "$PI" "test -f $INFLUX_TOKEN_FILE && cp $INFLUX_TOKEN_FILE /tmp/influx-token-target" \
+    2>/dev/null || true
+  if [ -f "$SNAP/config/influx-token.txt" ]; then
+    rsync -az "$SNAP/config/influx-token.txt" "$PI:/tmp/influx-token-snap"
   fi
-  ssh "$PI" "rm -rf /tmp/influx-restore"
+
+  RESTORE_OK=0
+  WORKING_TOKEN_FILE=""
+  for candidate in /tmp/influx-token-target /tmp/influx-token-snap; do
+    if ssh "$PI" "test -s $candidate" 2>/dev/null; then
+      if ssh "$PI" "influx restore /tmp/influx-restore \
+          --host http://localhost:8086 \
+          --token \$(cat $candidate) \
+          --full"; then
+        RESTORE_OK=1
+        WORKING_TOKEN_FILE="$candidate"
+        break
+      fi
+      log "  token at $candidate did not work; trying next"
+    fi
+  done
+
+  if [ "$RESTORE_OK" = "1" ]; then
+    log "  InfluxDB restore done (used $WORKING_TOKEN_FILE)"
+    # If we used the snapshot token, write it back to the canonical location
+    # so subsequent restores authenticate without falling back.
+    if [ "$WORKING_TOKEN_FILE" = "/tmp/influx-token-snap" ]; then
+      ssh "$PI" "cp /tmp/influx-token-snap $INFLUX_TOKEN_FILE && chmod 600 $INFLUX_TOKEN_FILE"
+      log "  Updated $INFLUX_TOKEN_FILE on $PI to match restored auth"
+    fi
+  else
+    log "  WARNING: InfluxDB restore failed (no working token)"
+  fi
+  ssh "$PI" "rm -rf /tmp/influx-restore /tmp/influx-token-target /tmp/influx-token-snap"
 else
-  log "  WARNING: $SNAP/influxdb missing or $INFLUX_TOKEN_FILE not on target; skipping"
+  log "  WARNING: $SNAP/influxdb missing; skipping"
 fi
 
 # ── 7. Identity wipe + service restart ────────────────────────────────────────
