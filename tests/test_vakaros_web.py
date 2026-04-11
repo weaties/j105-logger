@@ -1069,6 +1069,145 @@ async def test_vakaros_overlay_race_start_context_absent_when_no_sk_data(
 
 
 @pytest.mark.asyncio
+async def test_vakaros_overlay_trims_line_positions_to_pre_race(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """Pings set after this race's start belong to a later race and must
+    not leak into this race's overlay. Race 1 should NOT see the post-race
+    re-set that's used by race 2."""
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.vakaros import (
+        LinePosition,
+        LinePositionType,
+        PositionRow,
+        VakarosSession,
+    )
+    from helmlog.web import create_app
+
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    session = VakarosSession(
+        source_hash="dd" * 32,
+        source_file="trim_pings.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(minutes=60),
+        positions=(
+            PositionRow(
+                timestamp=t0,
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+            PositionRow(
+                timestamp=t0 + timedelta(minutes=60),
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+        ),
+        line_positions=(
+            # Race 1 line — pre-race
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=2),
+                line_type=LinePositionType.PIN,
+                latitude_deg=47.681,
+                longitude_deg=-122.420,
+            ),
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=3),
+                line_type=LinePositionType.BOAT,
+                latitude_deg=47.681,
+                longitude_deg=-122.416,
+            ),
+            # Race 2 line — set AFTER race 1 has started
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=20),
+                line_type=LinePositionType.PIN,
+                latitude_deg=47.690,
+                longitude_deg=-122.420,
+            ),
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=21),
+                line_type=LinePositionType.BOAT,
+                latitude_deg=47.690,
+                longitude_deg=-122.416,
+            ),
+        ),
+        race_events=(),
+        winds=(),
+    )
+    vakaros_id = await storage.store_vakaros_session(session)
+
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Race 1",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=5)).isoformat(),
+            (t0 + timedelta(minutes=15)).isoformat(),
+            "race",
+        ),
+    )
+    race1_id = cur.lastrowid
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Race 2",
+            "evt",
+            2,
+            "2026-04-09",
+            (t0 + timedelta(minutes=25)).isoformat(),
+            (t0 + timedelta(minutes=35)).isoformat(),
+            "race",
+        ),
+    )
+    race2_id = cur.lastrowid
+    await db.commit()
+    await storage.match_vakaros_session(vakaros_id)
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r1 = (await client.get(f"/api/sessions/{race1_id}/vakaros-overlay")).json()
+        r2 = (await client.get(f"/api/sessions/{race2_id}/vakaros-overlay")).json()
+
+    # Race 1 sees only the pre-race pings (one of each).
+    r1_pings = sorted(
+        [(lp["line_type"], round(lp["latitude_deg"], 3)) for lp in r1["line_positions"]]
+    )
+    assert r1_pings == [("boat", 47.681), ("pin", 47.681)]
+
+    # Race 2 sees both sets — pings on or before race 2's start at +25 min.
+    r2_pings = sorted(
+        [(lp["line_type"], round(lp["latitude_deg"], 3)) for lp in r2["line_positions"]]
+    )
+    assert r2_pings == [
+        ("boat", 47.681),
+        ("boat", 47.690),
+        ("pin", 47.681),
+        ("pin", 47.690),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_vakaros_overlay_trims_track_to_race_window(
     storage: Storage, inbox_path: Path
 ) -> None:

@@ -8116,6 +8116,26 @@ class Storage:
                 "boat_set_at": latest_boat["ts"],
             }
 
+        # Trim line_positions to pings relevant to *this* race: anything set
+        # at or before the race start. Pings from after the race belong to a
+        # later race and would otherwise leak into this race's overlay (and
+        # break the "latest = active" saturation rule on the frontend).
+        # Fallback: if no pre-race pings exist for a side but the line
+        # geometry above filled in from a post-race fallback, include those.
+        relevant_pings: list[dict[str, Any]] = [
+            lp for lp in line_positions if lp["ts"] <= race_start
+        ]
+        if line is not None:
+            for fallback in (latest_pin, latest_boat):
+                if fallback is None:
+                    continue
+                if not any(
+                    lp["ts"] == fallback["ts"] and lp["line_type"] == fallback["line_type"]
+                    for lp in relevant_pings
+                ):
+                    relevant_pings.append(fallback)
+            relevant_pings.sort(key=lambda lp: lp["ts"])
+
         race_start_context = await self._build_race_start_context(
             race_events=race_events, line=line
         )
@@ -8123,7 +8143,7 @@ class Storage:
         return {
             "vakaros_session_id": vakaros_id,
             "track": track,
-            "line_positions": line_positions,
+            "line_positions": relevant_pings,
             "race_events": race_events,
             "line": line,
             "race_start_context": race_start_context,
