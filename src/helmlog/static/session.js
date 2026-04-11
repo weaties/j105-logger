@@ -433,6 +433,12 @@ async function loadVakarosOverlay() {
       start_distance_to_line_m: ctx.distance_to_line_m != null ? ctx.distance_to_line_m : null,
       start_lat: ctx.latitude_deg != null ? ctx.latitude_deg : null,
       start_lon: ctx.longitude_deg != null ? ctx.longitude_deg : null,
+      start_tws_kts: ctx.tws_kts != null ? ctx.tws_kts : null,
+      start_twd_deg: ctx.twd_deg != null ? ctx.twd_deg : null,
+      start_twa_deg: ctx.twa_deg != null ? ctx.twa_deg : null,
+      start_polar_pct: ctx.polar_pct != null ? ctx.polar_pct : null,
+      start_line_bias_deg: ctx.line_bias_deg != null ? ctx.line_bias_deg : null,
+      start_favored_end: ctx.favored_end || null,
     };
     _injectVakarosStartIntoManeuvers();
   }
@@ -2731,11 +2737,21 @@ function _renderManeuverDetail(m) {
 
   // Special case: Vakaros-sourced race start has its own metric set.
   if (m.type === 'start' && m.source === 'vakaros') {
+    let biasLabel = '—';
+    if (m.start_line_bias_deg != null) {
+      const mag = Math.abs(m.start_line_bias_deg).toFixed(1);
+      const end = m.start_favored_end || 'square';
+      biasLabel = end === 'square' ? 'square' : (mag + '° favoring ' + end);
+    }
     const rows = [
       ['BSP at gun', m.entry_bsp != null ? m.entry_bsp.toFixed(2) + ' kt' : '—'],
       ['SOG at gun', m.start_sog_kts != null ? m.start_sog_kts.toFixed(2) + ' kt' : '—'],
       ['Distance to line', m.start_distance_to_line_m != null ? m.start_distance_to_line_m.toFixed(1) + ' m' : '—'],
-      ['Polar %', '— (tbd)'],
+      ['Polar %', m.start_polar_pct != null ? m.start_polar_pct.toFixed(0) + '%' : '—'],
+      ['TWS', m.start_tws_kts != null ? m.start_tws_kts.toFixed(1) + ' kt' : '—'],
+      ['TWD', m.start_twd_deg != null ? Math.round(m.start_twd_deg) + '°' : '—'],
+      ['TWA', m.start_twa_deg != null ? Math.round(m.start_twa_deg) + '°' : '—'],
+      ['Line bias', biasLabel],
     ];
     el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
       + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')

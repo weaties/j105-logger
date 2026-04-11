@@ -787,6 +787,189 @@ async def test_vakaros_overlay_race_start_context_includes_bsp_and_line_distance
 
 
 @pytest.mark.asyncio
+async def test_vakaros_overlay_race_start_context_includes_polar_pct_and_line_bias(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """Race start context should compute polar % and wind-relative line bias.
+
+    Wind comes in as north-referenced (reference=4 → wind_angle_deg IS TWD).
+    Polar baseline is seeded directly so the lookup hits a known cell.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.polar import _twa_bin, _tws_bin
+    from helmlog.vakaros import (
+        LinePosition,
+        LinePositionType,
+        PositionRow,
+        RaceTimerEvent,
+        RaceTimerEventType,
+        VakarosSession,
+    )
+    from helmlog.web import create_app
+
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    race_start_ts = t0 + timedelta(minutes=5)
+    session = VakarosSession(
+        source_hash="cc" * 32,
+        source_file="polar.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(minutes=30),
+        positions=(
+            PositionRow(
+                timestamp=t0,
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+            PositionRow(
+                timestamp=t0 + timedelta(minutes=30),
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+        ),
+        line_positions=(
+            # Line runs due east (pin west, boat east) — bearing 90° T.
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=1),
+                line_type=LinePositionType.PIN,
+                latitude_deg=47.687,
+                longitude_deg=-122.420,
+            ),
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=1),
+                line_type=LinePositionType.BOAT,
+                latitude_deg=47.687,
+                longitude_deg=-122.416,
+            ),
+        ),
+        race_events=(
+            RaceTimerEvent(
+                timestamp=race_start_ts,
+                event_type=RaceTimerEventType.RACE_START,
+                timer_value_s=0,
+            ),
+        ),
+        winds=(),
+    )
+    vakaros_id = await storage.store_vakaros_session(session)
+
+    db = storage._conn()
+    race_cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Polar test race",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=3)).isoformat(),
+            (t0 + timedelta(minutes=25)).isoformat(),
+            "race",
+        ),
+    )
+    race_id = race_cur.lastrowid
+    await db.commit()
+    await storage.match_vakaros_session(vakaros_id)
+
+    # Seed SK samples around race_start.
+    boat_lat = 47.687  # exactly on the line
+    boat_lon = -122.418
+    bsp_kts = 5.4
+    sog_kts = 5.6
+    heading_deg = 0.0  # boat pointing due north
+    twd_deg = 45.0  # wind from NE → TWD 45°
+    tws_kts = 12.0
+    for delta in (-2, -1, 0, 1, 2):
+        ts = (race_start_ts + timedelta(seconds=delta)).isoformat()
+        await db.execute(
+            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            (ts, 5, bsp_kts),
+        )
+        await db.execute(
+            "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
+            (ts, 5, 0.0, sog_kts),
+        )
+        await db.execute(
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg) "
+            "VALUES (?, ?, ?, ?)",
+            (ts, 5, boat_lat, boat_lon),
+        )
+        await db.execute(
+            "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+            (ts, 5, heading_deg),
+        )
+        # reference=4 → wind_angle_deg IS TWD (north-referenced)
+        await db.execute(
+            "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (ts, 5, tws_kts, twd_deg, 4),
+        )
+    await db.commit()
+
+    # Seed a polar baseline cell that matches the (TWS, TWA) bin we'll
+    # compute. heading=0, twd=45 → twa = 45 (boat is on starboard tack
+    # close-hauled on a 45° wind).
+    tws_bin = _tws_bin(tws_kts)
+    twa_bin = _twa_bin(45.0)
+    await storage.upsert_polar_baseline(
+        [
+            {
+                "tws_bin": tws_bin,
+                "twa_bin": twa_bin,
+                "mean_bsp": 5.0,
+                "p90_bsp": 6.0,  # target → polar % = 5.4 / 6.0 = 90%
+                "session_count": 5,
+                "sample_count": 100,
+            }
+        ],
+        built_at=t0.isoformat(),
+    )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
+
+    data = resp.json()
+    ctx = data["race_start_context"]
+    assert ctx is not None
+
+    # Wind context
+    assert ctx["tws_kts"] == pytest.approx(tws_kts)
+    assert ctx["twd_deg"] == pytest.approx(twd_deg)
+    assert ctx["twa_deg"] == pytest.approx(45.0)
+
+    # Polar %: 5.4 / 6.0 ≈ 90%
+    assert ctx["polar_pct"] == pytest.approx(90.0, abs=0.5)
+
+    # Wind-relative line bias.
+    # Line bearing pin → boat = 90° T (due east).
+    # Wind FROM 45° T means wind blows toward 225°.
+    # The "square" line is perpendicular to the wind direction. A line
+    # perpendicular to wind-from-45° has bearings 135° / 315°.
+    # Our line is 90°, which is 45° clockwise of the square (135°)... so
+    # the pin (west end) is favored relative to the boat end.
+    assert ctx["line_bias_deg"] is not None
+    assert ctx["favored_end"] in ("pin", "boat", "square")
+    assert ctx["favored_end"] == "pin"  # for this geometry
+
+
+@pytest.mark.asyncio
 async def test_vakaros_overlay_race_start_context_absent_when_no_sk_data(
     storage: Storage, inbox_path: Path
 ) -> None:
@@ -870,13 +1053,19 @@ async def test_vakaros_overlay_race_start_context_absent_when_no_sk_data(
         resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
 
     data = resp.json()
-    # No SK speeds/positions seeded → context is present but with nulls
-    # (race_start timestamp is still known even without BSP/pos).
+    # No SK speeds/positions/wind seeded → context is present but with nulls
+    # (race_start timestamp is still known even without instrument data).
     ctx = data.get("race_start_context")
     assert ctx is not None
     assert ctx["bsp_kts"] is None
     assert ctx["sog_kts"] is None
     assert ctx["distance_to_line_m"] is None  # no line endpoints anyway
+    assert ctx["tws_kts"] is None
+    assert ctx["twd_deg"] is None
+    assert ctx["twa_deg"] is None
+    assert ctx["polar_pct"] is None
+    assert ctx["line_bias_deg"] is None
+    assert ctx["favored_end"] is None
 
 
 @pytest.mark.asyncio

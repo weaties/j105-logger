@@ -8136,13 +8136,15 @@ class Storage:
     ) -> dict[str, Any] | None:
         """Build a per-race snapshot of the boat's state at the race-start gun.
 
-        Used by the session detail page to show boat speed and distance to
-        the start line at the moment the Vakaros race_start event fires.
-        Returns ``None`` if there's no race_start event at all; otherwise a
-        dict with the event ts and nullable bsp/sog/position/distance_to_line
-        so the UI can render partial data.
+        Used by the session detail page to show boat speed, distance to the
+        start line, polar %, and wind-relative line bias at the moment the
+        Vakaros race_start event fires.  Returns ``None`` if there's no
+        race_start event at all; otherwise a dict with the event ts and
+        nullable per-field values so the UI can render partial data.
         """
         import math
+
+        from helmlog.polar import _compute_twa, lookup_polar
 
         race_start_event: dict[str, Any] | None = None
         for e in race_events:
@@ -8170,16 +8172,42 @@ class Storage:
         speed_row = await _nearest("speeds", "ts, speed_kts")
         sog_row = await _nearest("cogsog", "ts, sog_kts")
         pos_row = await _nearest("positions", "ts, latitude_deg, longitude_deg")
+        head_row = await _nearest("headings", "ts, heading_deg")
+        wind_row = await _nearest("winds", "ts, wind_speed_kts, wind_angle_deg, reference")
 
         bsp_kts = float(speed_row["speed_kts"]) if speed_row else None
         sog_kts = float(sog_row["sog_kts"]) if sog_row else None
         lat = float(pos_row["latitude_deg"]) if pos_row else None
         lon = float(pos_row["longitude_deg"]) if pos_row else None
+        heading_deg = float(head_row["heading_deg"]) if head_row else None
 
+        # Wind: TWS, TWD (when north-referenced), and TWA via polar's helper.
+        tws_kts: float | None = None
+        twd_deg: float | None = None
+        twa_deg: float | None = None
+        if wind_row is not None:
+            tws_kts = float(wind_row["wind_speed_kts"])
+            wind_angle = float(wind_row["wind_angle_deg"])
+            wind_ref = int(wind_row["reference"])
+            twa_deg = _compute_twa(wind_angle, wind_ref, heading_deg)
+            # reference=4 → wind_angle IS TWD; reference=0 → derive from heading.
+            if wind_ref == 4:
+                twd_deg = wind_angle
+            elif wind_ref == 0 and heading_deg is not None:
+                twd_deg = (heading_deg + wind_angle) % 360.0
+
+        # Polar %: actual BSP / target BSP at the (TWS, TWA) cell.
+        polar_pct: float | None = None
+        if bsp_kts is not None and tws_kts is not None and twa_deg is not None:
+            polar_row = await lookup_polar(self, tws_kts, twa_deg)
+            if polar_row is not None:
+                target = float(polar_row["p90_bsp"])
+                if target > 0:
+                    polar_pct = round(bsp_kts / target * 100.0, 1)
+
+        # Distance to line: perpendicular from boat position to the line.
         distance_to_line_m: float | None = None
         if line is not None and lat is not None and lon is not None:
-            # Local equirectangular projection centered on the pin: small
-            # distances → ~meter accuracy, no great-circle nonsense.
             pin_lat, pin_lon = line["pin"]
             boat_end_lat, boat_end_lon = line["boat"]
             lat_rad = math.radians(pin_lat)
@@ -8191,9 +8219,43 @@ class Storage:
             py = (lat - pin_lat) * m_per_deg_lat
             seg_len = math.hypot(vx, vy)
             if seg_len > 0:
-                # Perpendicular distance from point to the infinite line
-                # through pin-boat. (Using |cross| / |v|.)
                 distance_to_line_m = round(abs(vx * py - vy * px) / seg_len, 1)
+
+        # Wind-relative line bias.
+        # The "square" line is perpendicular to the wind direction (TWD).
+        # We measure the line bearing pin→boat against TWD; the offset from
+        # square tells you which end is favoured.
+        #
+        # Convention here:
+        #   bias_deg = (line_bearing_pin_to_boat - TWD - 90) wrapped to [-90, 90]
+        #     0          → square (no bias)
+        #     positive   → boat end favoured (line tilted toward downwind on
+        #                  the boat side, so the boat end is closer to wind
+        #                  origin... actually depends; see below)
+        #
+        # Sign convention picked so positive == pin favoured, negative ==
+        # committee-boat favoured. Verified by the test fixture: line at 90°
+        # T, TWD 45° → bias = (90 - 45 - 90) = -45 → wrapped → +45 → pin.
+        line_bias_deg: float | None = None
+        favored_end: str | None = None
+        if line is not None and twd_deg is not None:
+            line_bearing = float(line["bearing_deg"])
+            raw = (line_bearing - twd_deg - 90.0) % 360.0
+            if raw > 180.0:
+                raw -= 360.0
+            # Bring into [-90, 90] (a 180° flip is the same line).
+            if raw > 90.0:
+                raw -= 180.0
+            elif raw < -90.0:
+                raw += 180.0
+            # Make positive == pin favoured.
+            line_bias_deg = round(-raw, 1)
+            if abs(line_bias_deg) < 1.0:
+                favored_end = "square"
+            elif line_bias_deg > 0:
+                favored_end = "pin"
+            else:
+                favored_end = "boat"
 
         return {
             "ts": ts,
@@ -8202,6 +8264,12 @@ class Storage:
             "latitude_deg": lat,
             "longitude_deg": lon,
             "distance_to_line_m": distance_to_line_m,
+            "tws_kts": tws_kts,
+            "twd_deg": twd_deg,
+            "twa_deg": round(twa_deg, 1) if twa_deg is not None else None,
+            "polar_pct": polar_pct,
+            "line_bias_deg": line_bias_deg,
+            "favored_end": favored_end,
         }
 
     async def list_vakaros_sessions(self) -> list[dict[str, Any]]:

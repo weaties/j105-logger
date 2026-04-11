@@ -466,9 +466,7 @@ async def admin_vakaros_rematch(
     from urllib.parse import quote
 
     msg = f"Rematched {session_count} sessions, linked {total_linked} races."
-    return RedirectResponse(
-        url="/admin/vakaros?flash_rematch=" + quote(msg), status_code=303
-    )
+    return RedirectResponse(url="/admin/vakaros?flash_rematch=" + quote(msg), status_code=303)
 
 
 @router.post("/admin/vakaros/ingest", include_in_schema=False)
