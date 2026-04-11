@@ -2143,16 +2143,54 @@ function _renderTrackSvg(tracks, opts) {
   const windLabels = '<text x="' + (w / 2) + '" y="10" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↑ upwind</text>'
     + '<text x="' + (w / 2) + '" y="' + (h - 12) + '" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↓ downwind</text>';
 
+  // For each trace, find the actual boat position at the same moment as
+  // the ghost endpoint (t = duration_sec) — that's where the boat was
+  // when a zero-loss tack would have put it at (0, ghost_m).
+  const actualAtDuration = tracks.map(t => {
+    if (!t.points || !t.points.length || t.durationSec == null) return null;
+    let best = null;
+    let bestDt = Infinity;
+    for (const p of t.points) {
+      const dt = Math.abs(p.t - t.durationSec);
+      if (dt < bestDt) { bestDt = dt; best = p; }
+    }
+    return best;
+  });
+
   // "Climb the ladder" ghost references — dashed vertical segments from
   // the origin to each track's idealized upwind-progress endpoint. Lets
   // you see at a glance how far you *would* have made had the tack been
-  // a zero-loss instant turn.
-  const ghostLines = tracks.map(t => {
+  // a zero-loss instant turn. Also draws a marker on the actual track at
+  // the same moment in time and connects them to show the upwind gap.
+  const ghostLines = tracks.map((t, i) => {
     if (t.ghost == null || isNaN(t.ghost)) return '';
     const gy1 = sy(0), gy2 = sy(t.ghost);
-    return '<line x1="' + originX + '" y1="' + gy1 + '" x2="' + originX + '" y2="' + gy2
-      + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>'
-      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2" fill="' + t.color + '" opacity="0.6"/>';
+    let out = '<line x1="' + originX + '" y1="' + gy1 + '" x2="' + originX + '" y2="' + gy2
+      + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>'
+      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2.5" fill="' + t.color + '" opacity="0.7"/>';
+
+    const actual = actualAtDuration[i];
+    if (actual) {
+      const ax = sx(actual.x), ay = sy(actual.y);
+      // Marker on the actual track at t = duration.
+      out += '<circle cx="' + ax + '" cy="' + ay + '" r="3" fill="' + t.color
+        + '" stroke="var(--bg-secondary)" stroke-width="1"/>';
+      // Dashed connector from actual point to ghost endpoint.
+      out += '<line x1="' + ax + '" y1="' + ay + '" x2="' + originX + '" y2="' + gy2
+        + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="1,2" opacity="0.6"/>';
+      // Delta label — only in single-track / highlighted mode to avoid
+      // clutter in the overlay.
+      if (t.highlight) {
+        const deltaM = t.ghost - actual.y;
+        const midX = (ax + originX) / 2;
+        const midY = (ay + gy2) / 2;
+        const label = (deltaM >= 0 ? '−' : '+') + Math.abs(deltaM).toFixed(1) + ' m';
+        out += '<text x="' + (midX + 4) + '" y="' + (midY - 2) + '" font-size="10" fill="' + t.color
+          + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:3px;stroke-linejoin:round">'
+          + label + '</text>';
+      }
+    }
+    return out;
   }).join('');
 
   const paths = tracks.map(t => {
@@ -2232,6 +2270,19 @@ function showOverlayTip(ev, idx) {
   const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'var(--text-secondary)';
   const twsVal = m.entry_tws != null ? m.entry_tws : (m.tws_bin != null ? m.tws_bin : null);
   const twsStr = twsVal != null ? ((twsVal.toFixed ? twsVal.toFixed(1) : twsVal) + ' kt') : '—';
+  // Actual upwind progress at t = duration, from the track points.
+  let ghostDelta = null;
+  if (m.track && m.track.length && m.duration_sec != null && m.ghost_m != null) {
+    let best = null, bestDt = Infinity;
+    for (const p of m.track) {
+      const dt = Math.abs(p.t - m.duration_sec);
+      if (dt < bestDt) { bestDt = dt; best = p; }
+    }
+    if (best) ghostDelta = m.ghost_m - best.y;
+  }
+  const ghostDeltaStr = ghostDelta != null
+    ? (ghostDelta >= 0 ? '−' : '+') + Math.abs(ghostDelta).toFixed(1) + ' m vs ghost'
+    : '—';
   const rows = [
     ['Elapsed', _fmtElapsed(m.ts)],
     ['Time', fmtTime(m.ts)],
@@ -2241,6 +2292,7 @@ function showOverlayTip(ev, idx) {
     ['BSP dip', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
     ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
     ['Dist loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['Ladder Δ', ghostDeltaStr],
     ['TWS', twsStr],
     ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
   ];
@@ -2310,6 +2362,7 @@ function _renderOverlaySvg() {
     highlight: false,
     maneuverIdx: _maneuvers.indexOf(m),
     ghost: m.ghost_m,
+    durationSec: m.duration_sec,
   }));
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
@@ -2465,6 +2518,7 @@ function _renderManeuverDetail(m) {
         label: m.type,
         highlight: true,
         ghost: m.ghost_m,
+        durationSec: m.duration_sec,
       }], { width: 300, height: 240 })
     : '';
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
