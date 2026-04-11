@@ -1,5 +1,85 @@
 # Release Notes
 
+## Sprint 7 — Vakaros Ingest, Maneuver Analysis & Diarized Playback (2026-04-11)
+
+Vakaros VKX watched-folder ingest with rich start-line overlays, a new
+maneuver-analysis package, diarized transcript playback with crew identification,
+multi-camera Insta360 pipeline, and a host of session-management fixes.
+
+### Vakaros VKX ingest ([#458](https://github.com/weaties/helmlog/issues/458), [#482](https://github.com/weaties/helmlog/pull/482))
+- **VKX parser** — pure-Python decoder for the public Vakaros VKX binary format
+  (positions, race-timer events, line pings, wind rows)
+- **Storage schema v59** — five new tables, content-hash dedupe, FK cascade to
+  matched races, and a `vakaros-ingest` CLI subcommand
+- **Watched inbox + admin page** — `/admin/vakaros` lists ingested sessions,
+  matches them to overlapping races (≥50% time overlap), and supports re-match
+- **Session-page overlays** — track selector, start-line geometry with hover
+  reveal, flag/boat icons for line pings with relative-time tooltips, wind-tick
+  visualization, polar % and wind-relative line bias at race start, boat speed
+  and distance-to-line readouts, and Vakaros race start surfaced in the
+  maneuvers panel
+- **Cross-surface playback fixes** — pause media on seek, transcript follow
+  toggle, true-wind-only nearest-lookup, and per-race line-ping trimming
+
+### Maneuver analysis ([#457](https://github.com/weaties/helmlog/pull/457))
+- **Maneuver analysis package** — entry/exit metrics, distance loss, ranking,
+  and YouTube deep-links for tacks and gybes
+- **Track diagrams** — per-maneuver charts with TWS overlay, ghost upwind/
+  perpendicular projections, actual boat position at the ghost timestamp, and
+  explicit Ladder ideal/Δ labels
+- **Overlay polish** — sticky tooltips, wind-up overlay, overlay checkbox
+  selection, elapsed-time column, and `TIMEZONE` resolved from DB settings
+
+### Diarized playback & session sync ([#443](https://github.com/weaties/helmlog/issues/443), [#446](https://github.com/weaties/helmlog/issues/446))
+- **Diarized transcript playback** — speaker-attributed transcript with crew
+  identification and per-voice learning, retranscribe button for undiarized
+  segments, and a new retranscribe endpoint
+- **Unified playback clock** — map, video, audio, and transcript share one
+  clock; transcript highlight is driven directly from `audio.timeupdate`
+- **360 video panning** — YouTube embed configured to allow 360° panning, with
+  a Watch-on-YouTube fallback link
+- **Remote transcribe robustness** — extended timeout, MPS for pyannote, always
+  request diarization when offloading, speaker picker reads from response
+  envelope
+- **Session page reorder** — video under track, audio above transcript
+
+### Multi-camera Insta360 pipeline ([#445](https://github.com/weaties/helmlog/issues/445), [#452](https://github.com/weaties/helmlog/pull/452), [#455](https://github.com/weaties/helmlog/pull/455))
+- **Multi-camera pipeline** — import/upload/backup lifecycle, dual-fisheye
+  `.mp4` → `.insv` rename during import-matched, 360° detection fixes, and
+  local-timezone titles
+- **SD-mount auto-import** — launchd agent runs `import-matched` on Insta360
+  SD card mount; `fswatch -E` fix so regex quantifiers actually match
+- **Watch-on-YouTube link** follows the current video and playhead; static
+  assets cache-busted by git SHA
+
+### Session rename + URL slugs ([#449](https://github.com/weaties/helmlog/issues/449))
+- **Human-readable URLs** — session rename with stable session id alongside
+  the slug, debrief and missing-slug URL resolution, and a v58 backfill
+
+### Backup & restore
+- **Backup improvements** ([#461](https://github.com/weaties/helmlog/pull/461))
+  — first-run handling, `.env` capture, and broader Signal K coverage
+- **Restore script** ([#463](https://github.com/weaties/helmlog/pull/463)) —
+  `restore.sh` pulls a snapshot back onto a target Pi; backup now captures
+  Grafana provisioning and Influx token with rotation handling
+
+### Bug fixes
+- **Session deletion FKs** ([#434](https://github.com/weaties/helmlog/pull/434),
+  [#436](https://github.com/weaties/helmlog/pull/436)) — delete `camera_sessions`,
+  `sensor_readings`, and `extraction_runs` before parent rows to avoid FK errors
+- **Session start timestamp** ([#437](https://github.com/weaties/helmlog/pull/437))
+  — captured just before DB insert
+- **SK auth password file** ([#438](https://github.com/weaties/helmlog/pull/438))
+  — works when the helmlog service runs with a different `HOME`
+- **Grafana AWA units** ([#439](https://github.com/weaties/helmlog/pull/439)) —
+  Apparent Wind split into separate AWS and AWA panels; AWA shows degrees
+- **Photo upload limit** ([#441](https://github.com/weaties/helmlog/pull/441))
+  — raise nginx body-size limit above the 1 MB default
+- **Crew selector** ([#435](https://github.com/weaties/helmlog/pull/435)) —
+  show invited-but-not-accepted users
+- **mypy clean** ([#483](https://github.com/weaties/helmlog/pull/483)) — clear
+  remaining mypy errors across `src/`
+
 ## Sprint 6 — Rudder Angle & Signal K Security (2026-04-05)
 
 Rudder angle instrument support and Signal K authentication hardening.
