@@ -83,6 +83,116 @@ function _stopPlayTick() {
 
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
+let _vakarosSyntheticStart = null; // {ts, source} placeholder injected from VKX
+
+// Cross-surface seek behaviour: if a render() call moves the playhead by more
+// than this many seconds, treat it as a user-initiated jump and pause any
+// currently-playing media. Small deltas (playback ticks) keep the media
+// running.
+const _LARGE_JUMP_SEC = 2.0;
+
+// Project a (lat, lon) point along a true-north bearing for a given distance
+// in meters. Equirectangular approximation — accurate to ~1 m at race scale.
+function _offsetPoint(lat, lon, bearingDeg, distM) {
+  const br = bearingDeg * Math.PI / 180;
+  const dy = distM * Math.cos(br);
+  const dx = distM * Math.sin(br);
+  const newLat = lat + dy / 111320;
+  const newLon = lon + dx / (111320 * Math.cos(lat * Math.PI / 180));
+  return [newLat, newLon];
+}
+
+// Format milliseconds relative to a reference (positive after, negative
+// before) as e.g. "T-5:30" or "T+0:42". Used for line-ping tooltips so the
+// crew can see how long before the gun each end was set.
+function _fmtRelativeToStart(deltaMs) {
+  const sign = deltaMs >= 0 ? '+' : '-';
+  const absS = Math.round(Math.abs(deltaMs) / 1000);
+  const mm = Math.floor(absS / 60);
+  const ss = absS % 60;
+  return 'T' + sign + mm + ':' + String(ss).padStart(2, '0');
+}
+
+// Build a small SVG-based Leaflet divIcon. `opacity` controls the visual
+// saturation/strength so older pings can be drawn dimmer than the active
+// (most recent) one without changing the color hue.
+function _vakarosFlagIcon(color, opacity) {
+  const html = '<div style="opacity:' + opacity + ';transform:translate(-4px,-22px);filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5))">'
+    + '<svg viewBox="0 0 24 26" width="24" height="26" xmlns="http://www.w3.org/2000/svg">'
+    + '<line x1="4" y1="3" x2="4" y2="24" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>'
+    + '<path d="M4 3 L20 8 L4 13 Z" fill="' + color + '" stroke="#fff" stroke-width="1"/>'
+    + '</svg></div>';
+  return L.divIcon({className: 'vakaros-flag', html: html, iconSize: [24, 26], iconAnchor: [4, 22]});
+}
+
+function _vakarosBoatIcon(color, opacity) {
+  const html = '<div style="opacity:' + opacity + ';transform:translate(-14px,-12px);filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5))">'
+    + '<svg viewBox="0 0 28 22" width="28" height="22" xmlns="http://www.w3.org/2000/svg">'
+    + '<line x1="14" y1="12" x2="14" y2="2" stroke="#fff" stroke-width="1.6"/>'
+    + '<path d="M14 4 L22 12 L14 12 Z" fill="' + color + '" stroke="#fff" stroke-width="0.8"/>'
+    + '<path d="M2 12 L26 12 L22 19 L6 19 Z" fill="' + color + '" stroke="#fff" stroke-width="1"/>'
+    + '</svg></div>';
+  return L.divIcon({className: 'vakaros-boat', html: html, iconSize: [28, 22], iconAnchor: [14, 12]});
+}
+
+// Transcript auto-follow state. The transcript container scrolls itself to
+// keep the active segment visible, but if the user scrolls manually we
+// disable that until they click a segment (which re-anchors).
+let _transcriptFollow = true;
+let _lastTranscriptProgrammaticScrollAt = 0;
+
+// Scroll the transcript container so the active segment is visible — without
+// ever calling scrollIntoView() (which can jerk the whole page when the
+// container itself isn't fully in view). Returns true if a scroll happened.
+function _scrollTranscriptSegmentIntoView(container, el) {
+  if (!_transcriptFollow) return false;
+  const margin = 4;
+  const top = el.offsetTop - margin;
+  const bottom = el.offsetTop + el.offsetHeight + margin;
+  let target = null;
+  if (top < container.scrollTop) {
+    target = top;
+  } else if (bottom > container.scrollTop + container.clientHeight) {
+    target = bottom - container.clientHeight;
+  }
+  if (target == null) return false;
+  _lastTranscriptProgrammaticScrollAt = Date.now();
+  container.scrollTop = Math.max(0, target);
+  return true;
+}
+
+function _wireTranscriptScrollListener() {
+  const container = document.getElementById('transcript-segments');
+  if (!container || container._scrollWired) return;
+  container._scrollWired = true;
+  container.addEventListener('scroll', function() {
+    // Ignore the scroll events we triggered ourselves.
+    if (Date.now() - _lastTranscriptProgrammaticScrollAt < 400) return;
+    if (_transcriptFollow) {
+      _transcriptFollow = false;
+      _renderTranscriptFollowBadge();
+    }
+  });
+}
+
+function _renderTranscriptFollowBadge() {
+  const btn = document.getElementById('transcript-follow-btn');
+  if (!btn) return;
+  if (_transcriptFollow) {
+    btn.textContent = '\u25C9 Follow';
+    btn.style.opacity = '1';
+    btn.title = 'Auto-scrolling to active segment. Click to pause.';
+  } else {
+    btn.textContent = '\u25CB Follow';
+    btn.style.opacity = '0.55';
+    btn.title = 'Auto-scroll paused (you scrolled manually). Click to resume.';
+  }
+}
+
+function toggleTranscriptFollow() {
+  _transcriptFollow = !_transcriptFollow;
+  _renderTranscriptFollowBadge();
+}
 let _transcriptId = null; // transcript ID for tuning extraction
 let _tuningSegmentAudio = null; // shared <audio> for segment playback
 let _tuningSegmentTimer = null; // timeupdate stop timer
@@ -259,6 +369,210 @@ async function loadTrack() {
 
   _map.fitBounds(line.getBounds(), {padding: [20, 20]});
   document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a discussion at that point';
+
+  // #458 — if a matched Vakaros session exists, overlay start line, line pings,
+  // and race-start marker on top of the SK track.
+  try {
+    await loadVakarosOverlay();
+  } catch (err) {
+    console.warn('Vakaros overlay failed to load:', err);
+  }
+}
+
+async function loadVakarosOverlay() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/vakaros-overlay');
+  if (!r.ok) return;
+  const data = await r.json();
+  if (!data || !data.matched) return;
+
+  const pinColor = cssVar('--warning') || '#f59e0b';
+  const boatColor = cssVar('--accent-strong') || '#60a5fa';
+  const startColor = cssVar('--success') || '#34d399';
+  const vakarosTrackColor = cssVar('--accent') || '#8b5cf6';
+
+  // Line-position markers (pin = flag, committee boat = boat icon).
+  // Group by type so we can saturate the most recent of each type at full
+  // strength and dim earlier pings.
+  const linePings = data.line_positions || [];
+  const raceStartCtx = data.race_start_context;
+  const raceStartMs = raceStartCtx && raceStartCtx.ts
+    ? new Date(raceStartCtx.ts.endsWith('Z') || raceStartCtx.ts.includes('+') ? raceStartCtx.ts : raceStartCtx.ts + 'Z').getTime()
+    : null;
+  const byType = {pin: [], boat: []};
+  for (const lp of linePings) {
+    if (byType[lp.line_type]) byType[lp.line_type].push(lp);
+  }
+  ['pin', 'boat'].forEach(function(type) {
+    const pings = byType[type];
+    pings.forEach(function(lp, idx) {
+      const isLatest = idx === pings.length - 1;
+      const opacity = isLatest ? 1.0 : 0.4;
+      const color = type === 'pin' ? pinColor : boatColor;
+      const label = type === 'pin' ? 'Pin' : 'Committee boat';
+      const icon = type === 'pin'
+        ? _vakarosFlagIcon(color, opacity)
+        : _vakarosBoatIcon(color, opacity);
+      // Tooltip + popup: when this ping was set, relative to race start.
+      const lpMs = new Date(lp.ts.endsWith('Z') || lp.ts.includes('+') ? lp.ts : lp.ts + 'Z').getTime();
+      let tip = 'Vakaros ' + label + ' ping';
+      if (raceStartMs != null) {
+        tip += ' \u00b7 ' + _fmtRelativeToStart(lpMs - raceStartMs);
+      }
+      if (!isLatest) tip += ' (earlier)';
+      const marker = L.marker([lp.latitude_deg, lp.longitude_deg], {icon: icon})
+        .addTo(_map)
+        .bindTooltip(tip)
+        .bindPopup(tip);
+      // Push the active (latest) ping to the top of the z-order.
+      if (isLatest && marker.setZIndexOffset) marker.setZIndexOffset(500);
+    });
+  });
+
+  // Start line (dashed polyline between the most recent pin and boat pings).
+  if (data.line) {
+    L.polyline([data.line.pin, data.line.boat], {
+      color: pinColor, weight: 3, dashArray: '6, 6', opacity: 0.9,
+    })
+      .addTo(_map)
+      .bindTooltip('Vakaros start line', {sticky: true})
+      .bindPopup('Vakaros start line');
+
+    // Wind ticks: a short line from each line endpoint pointing UPWIND
+    // at the moment of the start gun. Lets you eyeball the bias visually
+    // — if both ticks make the same angle with the start line, the line
+    // is square; otherwise the more-perpendicular end is favoured.
+    const ctx = data.race_start_context;
+    if (ctx && ctx.twd_deg != null) {
+      const tickLen = Math.max(60, (data.line.length_m || 0) * 0.6);
+      const pinUp = _offsetPoint(data.line.pin[0], data.line.pin[1], ctx.twd_deg, tickLen);
+      const boatUp = _offsetPoint(data.line.boat[0], data.line.boat[1], ctx.twd_deg, tickLen);
+      const twdLabel = Math.round(ctx.twd_deg) + '\u00b0';
+      const tws = ctx.tws_kts != null ? ctx.tws_kts.toFixed(1) + ' kt' : '?';
+      const popup = 'Wind at gun: ' + twdLabel + ' \u00b7 ' + tws;
+      L.polyline([data.line.pin, pinUp], {
+        color: vakarosTrackColor, weight: 3, opacity: 0.9,
+      })
+        .addTo(_map)
+        .bindTooltip(popup, {sticky: true})
+        .bindPopup(popup);
+      L.polyline([data.line.boat, boatUp], {
+        color: vakarosTrackColor, weight: 3, opacity: 0.9,
+      })
+        .addTo(_map)
+        .bindTooltip(popup, {sticky: true})
+        .bindPopup(popup);
+      // Small marker at each upwind tip so the direction reads cleanly,
+      // and so there's a generous hover target at the end of each tick.
+      L.circleMarker(pinUp, {
+        radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
+      }).addTo(_map).bindTooltip(popup);
+      L.circleMarker(boatUp, {
+        radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
+      }).addTo(_map).bindTooltip(popup);
+    }
+
+    // Line info panel below the map.
+    const infoEl = document.getElementById('vakaros-line-info');
+    if (infoEl) {
+      const bearing = data.line.bearing_deg.toFixed(1).padStart(5, '0');
+      let txt = 'Start line: ' + data.line.length_m.toFixed(1) + ' m \u00b7 ' +
+        bearing + '\u00b0 T (pin \u2192 boat)';
+      if (ctx && ctx.twd_deg != null) {
+        txt += ' \u00b7 wind ' + Math.round(ctx.twd_deg) + '\u00b0 T';
+      }
+      if (ctx && ctx.line_bias_deg != null && ctx.favored_end) {
+        if (ctx.favored_end === 'square') {
+          txt += ' \u00b7 square';
+        } else {
+          txt += ' \u00b7 ' + Math.abs(ctx.line_bias_deg).toFixed(1) +
+            '\u00b0 favoring ' + ctx.favored_end;
+        }
+      }
+      infoEl.textContent = txt;
+      infoEl.style.display = '';
+    }
+  }
+
+  // Vakaros track polyline — drawn but hidden by default.  A checkbox above
+  // the map lets the user toggle SK vs Vakaros track independently.
+  let vakarosLine = null;
+  if (data.track && data.track.geometry && data.track.geometry.coordinates.length) {
+    const vakLatLngs = data.track.geometry.coordinates.map(c => [c[1], c[0]]);
+    vakarosLine = L.polyline(vakLatLngs, {
+      color: vakarosTrackColor, weight: 3, opacity: 0.85, dashArray: '2, 4',
+    }).bindPopup('Vakaros track');
+    // Reveal the selector now that there's something to toggle.
+    const selector = document.getElementById('vakaros-track-toggle');
+    if (selector) selector.style.display = '';
+    const vkBox = document.getElementById('toggle-vakaros-track');
+    const skBox = document.getElementById('toggle-sk-track');
+    if (vkBox) {
+      vkBox.addEventListener('change', function() {
+        if (vkBox.checked) { vakarosLine.addTo(_map); }
+        else { _map.removeLayer(vakarosLine); }
+      });
+    }
+    if (skBox && _trackData && _trackData.line) {
+      skBox.addEventListener('change', function() {
+        if (skBox.checked) { _trackData.line.addTo(_map); }
+        else { _map.removeLayer(_trackData.line); }
+      });
+    }
+  }
+
+  // Race-start marker on the SK track, positioned at the point closest in time
+  // to the RACE_START event. Also inject a synthetic "start" entry into the
+  // maneuvers panel so the race start shows up in the event list.
+  const raceStart = (data.race_events || []).find(e => e.event_type === 'race_start');
+  if (raceStart && _trackData && _trackData.timestamps.length) {
+    const startUtc = new Date(raceStart.ts.endsWith('Z') || raceStart.ts.includes('+') ? raceStart.ts : raceStart.ts + 'Z');
+    let nearestIdx = 0;
+    let minDelta = Infinity;
+    for (let i = 0; i < _trackData.timestamps.length; i++) {
+      const d = Math.abs(_trackData.timestamps[i] - startUtc);
+      if (d < minDelta) { minDelta = d; nearestIdx = i; }
+    }
+    const latLng = _trackData.latLngs[nearestIdx];
+    const startTip = 'Vakaros race start \u00b7 ' + startUtc.toISOString();
+    L.circleMarker(latLng, {
+      radius: 9, color: startColor, fillColor: startColor, fillOpacity: 1, weight: 2,
+    }).addTo(_map).bindTooltip(startTip).bindPopup(startTip);
+
+    // Stash a synthetic "start" row so the maneuvers panel can show it.
+    // loadManeuvers() reads this and merges it after fetching the API.
+    const ctx = data.race_start_context || {};
+    _vakarosSyntheticStart = {
+      id: 'vakaros-race-start',
+      type: 'start',
+      ts: startUtc.toISOString(),
+      source: 'vakaros',
+      // Surface BSP in the "BSP in→out" column — start has no exit, so the
+      // entry_bsp alone is shown.
+      entry_bsp: ctx.bsp_kts != null ? ctx.bsp_kts : null,
+      // Extras for the detail panel below the table.
+      start_sog_kts: ctx.sog_kts != null ? ctx.sog_kts : null,
+      start_distance_to_line_m: ctx.distance_to_line_m != null ? ctx.distance_to_line_m : null,
+      start_lat: ctx.latitude_deg != null ? ctx.latitude_deg : null,
+      start_lon: ctx.longitude_deg != null ? ctx.longitude_deg : null,
+      start_tws_kts: ctx.tws_kts != null ? ctx.tws_kts : null,
+      start_twd_deg: ctx.twd_deg != null ? ctx.twd_deg : null,
+      start_twa_deg: ctx.twa_deg != null ? ctx.twa_deg : null,
+      start_polar_pct: ctx.polar_pct != null ? ctx.polar_pct : null,
+      start_line_bias_deg: ctx.line_bias_deg != null ? ctx.line_bias_deg : null,
+      start_favored_end: ctx.favored_end || null,
+    };
+    _injectVakarosStartIntoManeuvers();
+  }
+}
+
+function _injectVakarosStartIntoManeuvers() {
+  if (!_vakarosSyntheticStart) return;
+  const existing = _maneuvers.find(m => m.id === 'vakaros-race-start');
+  if (existing) return;
+  _maneuvers.push(_vakarosSyntheticStart);
+  _maneuverSelected.add('vakaros-race-start');
+  // Re-sort so the start lands in chronological order.
+  if (typeof renderManeuverCard === 'function') renderManeuverCard();
 }
 
 function _nearestIndex(latlng) {
@@ -402,12 +716,31 @@ function _openWatchOnYoutube(ev) {
 }
 
 function _onVideoReady() {
-  // Video is a consumer: seek to the requested UTC if it's within range
+  // Video is a consumer: seek to the requested UTC if it's within range.
+  // Large jumps (>2 s) pause the player so audio doesn't keep playing from
+  // wherever the user just clicked. Small deltas (playback ticks) don't
+  // touch playback state.
   registerSurface('video', function(utc) {
     if (!_videoSync || !_videoSync.player || !_videoSync.player.seekTo) return;
     const offset = _utcToVideoOffset(utc);
     if (offset === null || offset < 0) return;
     if (_videoSync.durationS && offset > _videoSync.durationS) return;
+    let currentOffset = null;
+    try {
+      if (typeof _videoSync.player.getCurrentTime === 'function') {
+        currentOffset = _videoSync.player.getCurrentTime();
+      }
+    } catch (e) { /* swallow */ }
+    if (currentOffset != null && Math.abs(currentOffset - offset) > _LARGE_JUMP_SEC) {
+      try {
+        const state = typeof _videoSync.player.getPlayerState === 'function'
+          ? _videoSync.player.getPlayerState() : -1;
+        // YT.PlayerState.PLAYING = 1
+        if (state === 1 && typeof _videoSync.player.pauseVideo === 'function') {
+          _videoSync.player.pauseVideo();
+        }
+      } catch (e) { /* swallow */ }
+    }
     _videoSync.player.seekTo(offset, true);
   });
 }
@@ -1129,7 +1462,13 @@ function _renderDiarizedTranscript(body, t) {
     return rawLabel;
   };
 
-  body.innerHTML = '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
+  body.innerHTML = ''
+    + '<div style="display:flex;justify-content:flex-end;margin-bottom:6px">'
+    + '<button id="transcript-follow-btn" type="button" onclick="toggleTranscriptFollow()" '
+    + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" '
+    + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
+    + '</div>'
+    + '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
     + blocks.map((b, i) =>
       '<div class="transcript-seg" data-idx="' + i + '" style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
       + '<span class="transcript-speaker" data-speaker="' + esc(b.speaker) + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" title="Click to assign crew">' + esc(displayName(b.speaker)) + '</span>'
@@ -1142,6 +1481,8 @@ function _renderDiarizedTranscript(body, t) {
   // Register the diarized transcript as a playback-clock surface so it
   // highlights the active segment in sync with audio/video/map (#446).
   _registerTranscriptSurface();
+  _wireTranscriptScrollListener();
+  _renderTranscriptFollowBadge();
 }
 
 let _transcriptSurfaceRegistered = false;
@@ -1165,9 +1506,7 @@ function _registerTranscriptSurface() {
       if (local >= b.start && local <= b.end) {
         el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
         const container = document.getElementById('transcript-segments');
-        if (container && (el.offsetTop < container.scrollTop || el.offsetTop + el.offsetHeight > container.scrollTop + container.clientHeight)) {
-          el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-        }
+        if (container) _scrollTranscriptSegmentIntoView(container, el);
       } else {
         el.style.background = '';
       }
@@ -1178,6 +1517,12 @@ function _registerTranscriptSurface() {
 function playTranscriptSegment(idx) {
   const b = _transcriptBlocks[idx];
   if (!b) return;
+  // Clicking a segment is a strong "I want to follow this" signal —
+  // re-enable auto-scroll if the user had paused it.
+  if (!_transcriptFollow) {
+    _transcriptFollow = true;
+    _renderTranscriptFollowBadge();
+  }
   // Route through the playback clock so video and map follow too.
   if (_session && _session.audio_start_utc) {
     const audioStart = new Date(
@@ -1297,11 +1642,18 @@ function loadAudio() {
   const audioLocalToUtc = s => new Date(audioStart.getTime() + s * 1000);
   const utcToAudioLocal = utc => (utc.getTime() - audioStart.getTime()) / 1000;
 
-  // Audio is a consumer — seek to the requested UTC if it's within range
+  // Audio is a consumer — seek to the requested UTC if it's within range.
+  // A "large jump" (>2 s away) is treated as a user click, so we pause any
+  // currently-playing audio: it's distracting to have audio keep going from
+  // a new spot just because the user clicked somewhere on the page.
   registerSurface('audio', function(utc) {
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
-    if (Math.abs(el.currentTime - local) < 0.15) return; // already there
+    const delta = Math.abs(el.currentTime - local);
+    if (delta < 0.15) return; // already there
+    if (delta > _LARGE_JUMP_SEC && !el.paused) {
+      try { el.pause(); } catch (e) { /* swallow */ }
+    }
     try { el.currentTime = local; } catch (e) { /* not seekable yet */ }
   });
 
@@ -1346,10 +1698,7 @@ function _highlightTranscriptFromAudio(ev) {
     if (i === activeIdx) {
       segEl.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
       const container = document.getElementById('transcript-segments');
-      if (container && (segEl.offsetTop < container.scrollTop
-          || segEl.offsetTop + segEl.offsetHeight > container.scrollTop + container.clientHeight)) {
-        segEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-      }
+      if (container) _scrollTranscriptSegmentIntoView(container, segEl);
     } else {
       segEl.style.background = '';
     }
@@ -1995,7 +2344,7 @@ function renderPolarHeatmap() {
 // Maneuvers
 // ---------------------------------------------------------------------------
 
-const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
+const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
 const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
@@ -2026,6 +2375,8 @@ async function loadManeuvers() {
   _maneuvers = await r.json();
   // Default: select all maneuvers for overlay when a new list arrives.
   _maneuverSelected = new Set(_maneuvers.map((m, i) => m.id != null ? m.id : i));
+  // Re-inject the Vakaros race start if the overlay already stashed one.
+  _injectVakarosStartIntoManeuvers();
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
 }
@@ -2504,6 +2855,31 @@ function _renderManeuverDetail(m) {
   const el = document.getElementById('maneuver-detail');
   if (!el) return;
   if (!m) { el.innerHTML = ''; return; }
+
+  // Special case: Vakaros-sourced race start has its own metric set.
+  if (m.type === 'start' && m.source === 'vakaros') {
+    let biasLabel = '—';
+    if (m.start_line_bias_deg != null) {
+      const mag = Math.abs(m.start_line_bias_deg).toFixed(1);
+      const end = m.start_favored_end || 'square';
+      biasLabel = end === 'square' ? 'square' : (mag + '° favoring ' + end);
+    }
+    const rows = [
+      ['BSP at gun', m.entry_bsp != null ? m.entry_bsp.toFixed(2) + ' kt' : '—'],
+      ['SOG at gun', m.start_sog_kts != null ? m.start_sog_kts.toFixed(2) + ' kt' : '—'],
+      ['Distance to line', m.start_distance_to_line_m != null ? m.start_distance_to_line_m.toFixed(1) + ' m' : '—'],
+      ['Polar %', m.start_polar_pct != null ? m.start_polar_pct.toFixed(0) + '%' : '—'],
+      ['TWS', m.start_tws_kts != null ? m.start_tws_kts.toFixed(1) + ' kt' : '—'],
+      ['TWD', m.start_twd_deg != null ? Math.round(m.start_twd_deg) + '°' : '—'],
+      ['TWA', m.start_twa_deg != null ? Math.round(m.start_twa_deg) + '°' : '—'],
+      ['Line bias', biasLabel],
+    ];
+    el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
+      + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
+      + '</div>';
+    return;
+  }
+
   const bspDipLabel = m.loss_kts != null && m.entry_bsp != null && m.min_bsp != null
     ? m.loss_kts.toFixed(2) + ' kt (' + m.entry_bsp.toFixed(1) + '→' + m.min_bsp.toFixed(1) + ')'
     : (m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—');
