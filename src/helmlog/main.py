@@ -581,10 +581,19 @@ async def _vakaros_ingest(path_str: str) -> None:
 
         db = storage._conn()
         cur = await db.execute(
-            "SELECT source_hash, start_utc, end_utc FROM vakaros_sessions WHERE id = ?",
+            "SELECT source_hash, start_utc, end_utc, matched_race_id "
+            "FROM vakaros_sessions WHERE id = ?",
             (session_id,),
         )
         row = await cur.fetchone()
+        matched_race_name: str | None = None
+        if row is not None and row["matched_race_id"] is not None:
+            name_cur = await db.execute(
+                "SELECT name FROM races WHERE id = ?", (row["matched_race_id"],)
+            )
+            name_row = await name_cur.fetchone()
+            if name_row is not None:
+                matched_race_name = str(name_row["name"])
         counts: dict[str, int] = {}
         for label, table in (
             ("positions", "vakaros_positions"),
@@ -608,6 +617,11 @@ async def _vakaros_ingest(path_str: str) -> None:
         print(f"  source hash  : {row['source_hash']}")
         print(f"  start  (UTC) : {row['start_utc']}")
         print(f"  end    (UTC) : {row['end_utc']}")
+        if row["matched_race_id"] is not None:
+            label = matched_race_name or f"id={row['matched_race_id']}"
+            print(f"  matched race : {label} (id={row['matched_race_id']})")
+        else:
+            print("  matched race : (none — no overlapping SK race >= 50% time overlap)")
     print(f"  positions    : {counts['positions']}")
     print(f"  line pings   : {counts['line_positions']}")
     print(f"  race events  : {counts['race_events']}")

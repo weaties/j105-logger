@@ -7966,6 +7966,68 @@ class Storage:
         await db.execute("DELETE FROM vakaros_sessions WHERE id = ?", (session_id,))
         await db.commit()
 
+    async def match_vakaros_session_to_race(self, session_id: int) -> int | None:
+        """Link a Vakaros session to an overlapping race.
+
+        Rule (from the spec): match when time windows overlap by at least
+        50% of the shorter session's duration. Races still in progress
+        (end_utc IS NULL) are never matched.  When multiple races overlap,
+        the one with the highest overlap ratio wins.
+
+        Returns the linked race id, or None if no race qualifies.  The
+        `vakaros_sessions.matched_race_id` column is updated as a side
+        effect so subsequent calls are idempotent.
+        """
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT start_utc, end_utc FROM vakaros_sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        v_start = _datetime.fromisoformat(row["start_utc"])
+        v_end = _datetime.fromisoformat(row["end_utc"])
+        v_duration = (v_end - v_start).total_seconds()
+        if v_duration <= 0:
+            return None
+
+        cur = await db.execute(
+            "SELECT id, start_utc, end_utc FROM races "
+            "WHERE end_utc IS NOT NULL "
+            "  AND start_utc < ? AND end_utc > ?",
+            (v_end.isoformat(), v_start.isoformat()),
+        )
+        candidates = await cur.fetchall()
+
+        best_race_id: int | None = None
+        best_ratio: float = 0.0
+        for cand in candidates:
+            r_start = _datetime.fromisoformat(cand["start_utc"])
+            r_end = _datetime.fromisoformat(cand["end_utc"])
+            r_duration = (r_end - r_start).total_seconds()
+            if r_duration <= 0:
+                continue
+            overlap_start = max(v_start, r_start)
+            overlap_end = min(v_end, r_end)
+            overlap_s = (overlap_end - overlap_start).total_seconds()
+            if overlap_s <= 0:
+                continue
+            shorter = min(v_duration, r_duration)
+            ratio = overlap_s / shorter
+            if ratio >= 0.5 and ratio > best_ratio:
+                best_ratio = ratio
+                best_race_id = int(cand["id"])
+
+        await db.execute(
+            "UPDATE vakaros_sessions SET matched_race_id = ? WHERE id = ?",
+            (best_race_id, session_id),
+        )
+        await db.commit()
+        return best_race_id
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
