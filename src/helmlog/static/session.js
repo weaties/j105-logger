@@ -278,9 +278,9 @@ async function loadVakarosOverlay() {
   const pinColor = cssVar('--warning') || '#f59e0b';
   const boatColor = cssVar('--accent-strong') || '#60a5fa';
   const startColor = cssVar('--success') || '#34d399';
+  const vakarosTrackColor = cssVar('--accent') || '#8b5cf6';
 
   // Line-position markers (pin + committee boat pings).
-  const linePoints = {};  // keyed by line_type
   for (const lp of (data.line_positions || [])) {
     const latLng = [lp.latitude_deg, lp.longitude_deg];
     const color = lp.line_type === 'pin' ? pinColor : boatColor;
@@ -288,15 +288,50 @@ async function loadVakarosOverlay() {
     L.circleMarker(latLng, {
       radius: 7, color: color, fillColor: color, fillOpacity: 1, weight: 2,
     }).addTo(_map).bindPopup('Vakaros ' + label + ' ping');
-    // Keep only the most recent ping of each type for drawing the line.
-    linePoints[lp.line_type] = latLng;
   }
 
-  // Start line (dashed polyline between pin and boat).
-  if (linePoints.pin && linePoints.boat) {
-    L.polyline([linePoints.pin, linePoints.boat], {
+  // Start line (dashed polyline between the most recent pin and boat pings).
+  if (data.line) {
+    L.polyline([data.line.pin, data.line.boat], {
       color: pinColor, weight: 3, dashArray: '6, 6', opacity: 0.9,
     }).addTo(_map).bindPopup('Vakaros start line');
+
+    // Line info panel below the map.
+    const infoEl = document.getElementById('vakaros-line-info');
+    if (infoEl) {
+      const bearing = data.line.bearing_deg.toFixed(1).padStart(5, '0');
+      infoEl.textContent =
+        'Start line: ' + data.line.length_m.toFixed(1) + ' m \u00b7 ' +
+        bearing + '\u00b0 T (pin \u2192 boat)';
+      infoEl.style.display = '';
+    }
+  }
+
+  // Vakaros track polyline — drawn but hidden by default.  A checkbox above
+  // the map lets the user toggle SK vs Vakaros track independently.
+  let vakarosLine = null;
+  if (data.track && data.track.geometry && data.track.geometry.coordinates.length) {
+    const vakLatLngs = data.track.geometry.coordinates.map(c => [c[1], c[0]]);
+    vakarosLine = L.polyline(vakLatLngs, {
+      color: vakarosTrackColor, weight: 3, opacity: 0.85, dashArray: '2, 4',
+    }).bindPopup('Vakaros track');
+    // Reveal the selector now that there's something to toggle.
+    const selector = document.getElementById('vakaros-track-toggle');
+    if (selector) selector.style.display = '';
+    const vkBox = document.getElementById('toggle-vakaros-track');
+    const skBox = document.getElementById('toggle-sk-track');
+    if (vkBox) {
+      vkBox.addEventListener('change', function() {
+        if (vkBox.checked) { vakarosLine.addTo(_map); }
+        else { _map.removeLayer(vakarosLine); }
+      });
+    }
+    if (skBox && _trackData && _trackData.line) {
+      skBox.addEventListener('change', function() {
+        if (skBox.checked) { _trackData.line.addTo(_map); }
+        else { _map.removeLayer(_trackData.line); }
+      });
+    }
   }
 
   // Race-start marker on the SK track, positioned at the point closest in time

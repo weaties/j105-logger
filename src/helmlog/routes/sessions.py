@@ -364,6 +364,7 @@ async def api_session_vakaros_overlay(
                 "track": None,
                 "line_positions": [],
                 "race_events": [],
+                "line": None,
             }
         )
     return JSONResponse({"matched": True, **overlay})

@@ -7975,8 +7975,16 @@ class Storage:
                 "track": GeoJSON Feature (LineString, [lon, lat] order) | None,
                 "line_positions": [{"line_type": "pin"|"boat", ...}, ...],
                 "race_events": [{"ts", "event_type", "timer_value_s"}, ...],
+                "line": {"pin": [lat, lon], "boat": [lat, lon],
+                         "length_m": float, "bearing_deg": float} | None,
             }
+
+        `line` is computed from the most recent pin + boat pings and is
+        ``None`` when either endpoint is missing.  Bearing is the compass
+        bearing from pin to boat in degrees true [0, 360).
         """
+        import math
+
         db = self._read_conn()
         cur = await db.execute(
             "SELECT id FROM vakaros_sessions WHERE matched_race_id = ? LIMIT 1",
@@ -8022,11 +8030,45 @@ class Storage:
         )
         race_events = [dict(r) for r in await evt_cur.fetchall()]
 
+        # Compute the current line from the most recent pin + boat pings.
+        latest_pin: dict[str, Any] | None = None
+        latest_boat: dict[str, Any] | None = None
+        for lp in line_positions:  # already ordered by ts ascending
+            if lp["line_type"] == "pin":
+                latest_pin = lp
+            elif lp["line_type"] == "boat":
+                latest_boat = lp
+
+        line: dict[str, Any] | None = None
+        if latest_pin is not None and latest_boat is not None:
+            lat1 = math.radians(latest_pin["latitude_deg"])
+            lon1 = math.radians(latest_pin["longitude_deg"])
+            lat2 = math.radians(latest_boat["latitude_deg"])
+            lon2 = math.radians(latest_boat["longitude_deg"])
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            # Haversine
+            a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+            length_m = 2 * 6371000.0 * math.asin(math.sqrt(a))
+            # Initial bearing pin -> boat
+            y = math.sin(dlon) * math.cos(lat2)
+            x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+            bearing_deg = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+            line = {
+                "pin": [latest_pin["latitude_deg"], latest_pin["longitude_deg"]],
+                "boat": [latest_boat["latitude_deg"], latest_boat["longitude_deg"]],
+                "length_m": round(length_m, 1),
+                "bearing_deg": round(bearing_deg, 1),
+                "pin_set_at": latest_pin["ts"],
+                "boat_set_at": latest_boat["ts"],
+            }
+
         return {
             "vakaros_session_id": vakaros_id,
             "track": track,
             "line_positions": line_positions,
             "race_events": race_events,
+            "line": line,
         }
 
     async def list_vakaros_sessions(self) -> list[dict[str, Any]]:
