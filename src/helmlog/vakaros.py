@@ -304,5 +304,5 @@ async def ingest_vkx_file(storage: Storage, path: Path) -> tuple[int, bool]:
     session = parse_vkx_session(buf, source_file=path.name)
     before_id = await storage.find_vakaros_session_by_hash(session.source_hash)
     session_id = await storage.store_vakaros_session(session)
-    await storage.match_vakaros_session_to_race(session_id)
+    await storage.match_vakaros_session(session_id)
     return session_id, before_id is not None

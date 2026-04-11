@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 59
+_CURRENT_VERSION: int = 60
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1362,6 +1362,12 @@ _MIGRATIONS: dict[int, str] = {
             speed_mps      REAL    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_vakaros_winds_session ON vakaros_winds(session_id, ts);
+    """,
+    60: """
+        ALTER TABLE races ADD COLUMN vakaros_session_id INTEGER
+            REFERENCES vakaros_sessions(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_races_vakaros_session
+            ON races(vakaros_session_id);
     """,
 }
 
@@ -7967,7 +7973,7 @@ class Storage:
         await db.commit()
 
     async def get_vakaros_overlay_for_race(self, race_id: int) -> dict[str, Any] | None:
-        """Return the Vakaros overlay payload for a race, or None if unmatched.
+        """Return the Vakaros overlay payload for a race, or None if unlinked.
 
         Payload shape:
             {
@@ -7979,27 +7985,42 @@ class Storage:
                          "length_m": float, "bearing_deg": float} | None,
             }
 
-        `line` is computed from the most recent pin + boat pings and is
-        ``None`` when either endpoint is missing.  Bearing is the compass
-        bearing from pin to boat in degrees true [0, 360).
+        The track is **trimmed to the race's time window** so a short race
+        that shares a Vakaros file with other races doesn't display 2 hours
+        of track. ``line`` is computed from the most recent pin + boat
+        pings (across the whole Vakaros session, not just the race window,
+        so a line set during pre-start is still shown). ``None`` when
+        either endpoint is missing.
         """
         import math
 
         db = self._read_conn()
         cur = await db.execute(
-            "SELECT id FROM vakaros_sessions WHERE matched_race_id = ? LIMIT 1",
+            "SELECT vakaros_session_id, start_utc, end_utc FROM races WHERE id = ?",
             (race_id,),
         )
         row = await cur.fetchone()
-        if row is None:
+        if row is None or row["vakaros_session_id"] is None:
             return None
-        vakaros_id = int(row["id"])
+        vakaros_id = int(row["vakaros_session_id"])
+        race_start = row["start_utc"]
+        race_end = row["end_utc"]
 
-        pos_cur = await db.execute(
-            "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
-            "FROM vakaros_positions WHERE session_id = ? ORDER BY ts",
-            (vakaros_id,),
-        )
+        if race_end is None:
+            # Race still in progress — show everything up to now.
+            pos_cur = await db.execute(
+                "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
+                "FROM vakaros_positions WHERE session_id = ? AND ts >= ? "
+                "ORDER BY ts",
+                (vakaros_id, race_start),
+            )
+        else:
+            pos_cur = await db.execute(
+                "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
+                "FROM vakaros_positions WHERE session_id = ? "
+                "  AND ts >= ? AND ts <= ? ORDER BY ts",
+                (vakaros_id, race_start, race_end),
+            )
         positions = await pos_cur.fetchall()
         track: dict[str, Any] | None = None
         if positions:
@@ -8016,6 +8037,8 @@ class Storage:
                 },
             }
 
+        # Line positions: pull *all* pings (not trimmed to race window) so the
+        # UI can show every line-set event during the Vakaros session.
         line_cur = await db.execute(
             "SELECT ts, line_type, latitude_deg, longitude_deg "
             "FROM vakaros_line_positions WHERE session_id = ? ORDER BY ts",
@@ -8023,21 +8046,51 @@ class Storage:
         )
         line_positions = [dict(r) for r in await line_cur.fetchall()]
 
-        evt_cur = await db.execute(
-            "SELECT ts, event_type, timer_value_s "
-            "FROM vakaros_race_events WHERE session_id = ? ORDER BY ts",
-            (vakaros_id,),
-        )
+        # Race events: trim to the race's window with a 60s buffer on each
+        # side so the RACE_START event (which typically fires at the start
+        # boundary) is included for this race and not the adjacent one.
+        from datetime import datetime as _datetime
+        from datetime import timedelta as _timedelta
+
+        if race_end is not None:
+            evt_start = (_datetime.fromisoformat(race_start) - _timedelta(seconds=60)).isoformat()
+            evt_end = (_datetime.fromisoformat(race_end) + _timedelta(seconds=60)).isoformat()
+            evt_cur = await db.execute(
+                "SELECT ts, event_type, timer_value_s "
+                "FROM vakaros_race_events WHERE session_id = ? "
+                "  AND ts >= ? AND ts <= ? ORDER BY ts",
+                (vakaros_id, evt_start, evt_end),
+            )
+        else:
+            evt_cur = await db.execute(
+                "SELECT ts, event_type, timer_value_s "
+                "FROM vakaros_race_events WHERE session_id = ? AND ts >= ? "
+                "ORDER BY ts",
+                (vakaros_id, race_start),
+            )
         race_events = [dict(r) for r in await evt_cur.fetchall()]
 
-        # Compute the current line from the most recent pin + boat pings.
-        latest_pin: dict[str, Any] | None = None
-        latest_boat: dict[str, Any] | None = None
-        for lp in line_positions:  # already ordered by ts ascending
-            if lp["line_type"] == "pin":
-                latest_pin = lp
-            elif lp["line_type"] == "boat":
-                latest_boat = lp
+        # Line geometry: "the line that was active at the start of this
+        # race" — latest pin + boat pings on or before the race start.
+        # If no pre-race ping exists for a side, fall back to the earliest
+        # post-race ping so the user still sees a line.
+        pre_pin: dict[str, Any] | None = None
+        pre_boat: dict[str, Any] | None = None
+        post_pin: dict[str, Any] | None = None
+        post_boat: dict[str, Any] | None = None
+        for lp in line_positions:  # ordered by ts ascending
+            is_pin = lp["line_type"] == "pin"
+            if lp["ts"] <= race_start:
+                if is_pin:
+                    pre_pin = lp
+                else:
+                    pre_boat = lp
+            elif is_pin and post_pin is None:
+                post_pin = lp
+            elif not is_pin and post_boat is None:
+                post_boat = lp
+        latest_pin = pre_pin or post_pin
+        latest_boat = pre_boat or post_boat
 
         line: dict[str, Any] | None = None
         if latest_pin is not None and latest_boat is not None:
@@ -8072,9 +8125,12 @@ class Storage:
         }
 
     async def list_vakaros_sessions(self) -> list[dict[str, Any]]:
-        """Return all Vakaros sessions with row counts and matched-race name.
+        """Return all Vakaros sessions with row counts and matched races.
 
-        Intended for the admin listing page.  Ordered newest first.
+        Each session carries a ``matched_races`` list: zero or more
+        ``{id, name, start_utc}`` dicts for the races currently linked to
+        it via ``races.vakaros_session_id``.  Ordered newest Vakaros
+        session first.
         """
         db = self._read_conn()
         cur = await db.execute(
@@ -8086,8 +8142,6 @@ class Storage:
                 vs.start_utc,
                 vs.end_utc,
                 vs.ingested_at,
-                vs.matched_race_id,
-                r.name AS matched_race_name,
                 (SELECT COUNT(*) FROM vakaros_positions WHERE session_id = vs.id)
                     AS position_count,
                 (SELECT COUNT(*) FROM vakaros_line_positions WHERE session_id = vs.id)
@@ -8095,24 +8149,46 @@ class Storage:
                 (SELECT COUNT(*) FROM vakaros_race_events WHERE session_id = vs.id)
                     AS event_count
             FROM vakaros_sessions vs
-            LEFT JOIN races r ON r.id = vs.matched_race_id
             ORDER BY vs.start_utc DESC
             """
         )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        sessions = [dict(r) for r in await cur.fetchall()]
 
-    async def match_vakaros_session_to_race(self, session_id: int) -> int | None:
-        """Link a Vakaros session to an overlapping race.
+        # One extra query to collect matched race names per session.
+        match_cur = await db.execute(
+            "SELECT id, name, start_utc, vakaros_session_id FROM races "
+            "WHERE vakaros_session_id IS NOT NULL ORDER BY start_utc"
+        )
+        matches_by_session: dict[int, list[dict[str, Any]]] = {}
+        for row in await match_cur.fetchall():
+            sid = int(row["vakaros_session_id"])
+            matches_by_session.setdefault(sid, []).append(
+                {
+                    "id": int(row["id"]),
+                    "name": row["name"],
+                    "start_utc": row["start_utc"],
+                }
+            )
+        for s in sessions:
+            s["matched_races"] = matches_by_session.get(int(s["id"]), [])
+        return sessions
 
-        Rule (from the spec): match when time windows overlap by at least
-        50% of the shorter session's duration. Races still in progress
-        (end_utc IS NULL) are never matched.  When multiple races overlap,
-        the one with the highest overlap ratio wins.
+    async def match_vakaros_session(self, session_id: int) -> list[int]:
+        """Link a Vakaros session to *all* overlapping races.
 
-        Returns the linked race id, or None if no race qualifies.  The
-        `vakaros_sessions.matched_race_id` column is updated as a side
-        effect so subsequent calls are idempotent.
+        Rule (from the spec): a race matches when its time window overlaps
+        the Vakaros session by at least 50% of the shorter duration. A
+        single VKX file typically contains a full race day — multiple
+        races plus practice — so each qualifying race on the races table
+        gets its own ``vakaros_session_id`` link.
+
+        Races still in progress (``end_utc IS NULL``) are never matched.
+        Races that already point at a different Vakaros session are not
+        overwritten — the first matcher to claim a race wins.  Re-running
+        the matcher on the same Vakaros session is idempotent.
+
+        Returns the list of race ids that now point at this session,
+        ordered by race ``start_utc``.
         """
         from datetime import datetime as _datetime
 
@@ -8123,23 +8199,23 @@ class Storage:
         )
         row = await cur.fetchone()
         if row is None:
-            return None
+            return []
         v_start = _datetime.fromisoformat(row["start_utc"])
         v_end = _datetime.fromisoformat(row["end_utc"])
         v_duration = (v_end - v_start).total_seconds()
         if v_duration <= 0:
-            return None
+            return []
 
         cur = await db.execute(
-            "SELECT id, start_utc, end_utc FROM races "
+            "SELECT id, start_utc, end_utc, vakaros_session_id FROM races "
             "WHERE end_utc IS NOT NULL "
-            "  AND start_utc < ? AND end_utc > ?",
+            "  AND start_utc < ? AND end_utc > ? "
+            "ORDER BY start_utc",
             (v_end.isoformat(), v_start.isoformat()),
         )
         candidates = await cur.fetchall()
 
-        best_race_id: int | None = None
-        best_ratio: float = 0.0
+        linked: list[int] = []
         for cand in candidates:
             r_start = _datetime.fromisoformat(cand["start_utc"])
             r_end = _datetime.fromisoformat(cand["end_utc"])
@@ -8153,16 +8229,37 @@ class Storage:
                 continue
             shorter = min(v_duration, r_duration)
             ratio = overlap_s / shorter
-            if ratio >= 0.5 and ratio > best_ratio:
-                best_ratio = ratio
-                best_race_id = int(cand["id"])
+            if ratio < 0.5:
+                continue
+            existing = cand["vakaros_session_id"]
+            if existing is not None and int(existing) != session_id:
+                # Don't steal a race that's already claimed by a different
+                # Vakaros session — leaves room for future manual override.
+                continue
+            await db.execute(
+                "UPDATE races SET vakaros_session_id = ? WHERE id = ?",
+                (session_id, int(cand["id"])),
+            )
+            linked.append(int(cand["id"]))
 
-        await db.execute(
-            "UPDATE vakaros_sessions SET matched_race_id = ? WHERE id = ?",
-            (best_race_id, session_id),
-        )
         await db.commit()
-        return best_race_id
+        return linked
+
+    async def rematch_all_vakaros_sessions(self) -> dict[int, list[int]]:
+        """Re-run matching for every stored Vakaros session.
+
+        Intended for historical data ingested before the matcher existed
+        or when matching rules change.  Returns a mapping from Vakaros
+        session id to the list of race ids that now link to it.
+        """
+        db = self._read_conn()
+        cur = await db.execute("SELECT id FROM vakaros_sessions ORDER BY id")
+        rows = await cur.fetchall()
+        results: dict[int, list[int]] = {}
+        for r in rows:
+            sid = int(r["id"])
+            results[sid] = await self.match_vakaros_session(sid)
+        return results
 
     # ------------------------------------------------------------------
     # Helpers

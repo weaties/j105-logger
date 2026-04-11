@@ -427,6 +427,7 @@ async def admin_vakaros_page(
     flash_filename = request.query_params.get("flash_filename")
     flash_status = request.query_params.get("flash_status")
     flash_error = request.query_params.get("flash_error")
+    flash_rematch = request.query_params.get("flash_rematch")
     return templates.TemplateResponse(
         request,
         "admin/vakaros.html",
@@ -439,7 +440,34 @@ async def admin_vakaros_page(
             flash_filename=flash_filename,
             flash_status=flash_status,
             flash_error=flash_error,
+            flash_rematch=flash_rematch,
         ),
+    )
+
+
+@router.post("/admin/vakaros/rematch", include_in_schema=False)
+async def admin_vakaros_rematch(
+    request: Request,
+    user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    """Re-run matching for every stored Vakaros session (#458)."""
+    from fastapi.responses import RedirectResponse
+
+    storage = get_storage(request)
+    results = await storage.rematch_all_vakaros_sessions()
+    total_linked = sum(len(v) for v in results.values())
+    session_count = len(results)
+    await audit(
+        request,
+        "vakaros_rematch",
+        detail=f"{session_count} sessions, {total_linked} race links",
+        user=user,
+    )
+    from urllib.parse import quote
+
+    msg = f"Rematched {session_count} sessions, linked {total_linked} races."
+    return RedirectResponse(
+        url="/admin/vakaros?flash_rematch=" + quote(msg), status_code=303
     )
 
 

@@ -41,6 +41,10 @@ table.list tr:last-child td{border-bottom:none}
   {% endif %}
 {% endif %}
 
+{% if flash_rematch %}
+  <div class="flash flash-ok">{{ flash_rematch }}</div>
+{% endif %}
+
 <div class="card">
   <h2>Inbox</h2>
   <div class="sub">{{ inbox_dir }}</div>
@@ -69,8 +73,15 @@ table.list tr:last-child td{border-bottom:none}
 </div>
 
 <div class="card">
-  <h2>Ingested sessions</h2>
-  <div class="sub">vakaros_sessions</div>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:4px">
+    <div>
+      <h2 style="margin:0">Ingested sessions</h2>
+      <div class="sub">vakaros_sessions</div>
+    </div>
+    <form method="post" action="/admin/vakaros/rematch" style="margin:0">
+      <button class="btn" type="submit" title="Re-run matching for every stored Vakaros session against the current races table.">Rematch all</button>
+    </form>
+  </div>
   {% if sessions %}
   <table class="list">
     <thead>
@@ -82,7 +93,7 @@ table.list tr:last-child td{border-bottom:none}
         <th>Positions</th>
         <th>Lines</th>
         <th>Events</th>
-        <th>Matched race</th>
+        <th>Matched races</th>
       </tr>
     </thead>
     <tbody>
@@ -96,8 +107,10 @@ table.list tr:last-child td{border-bottom:none}
         <td class="mono">{{ s.line_count }}</td>
         <td class="mono">{{ s.event_count }}</td>
         <td>
-          {% if s.matched_race_name %}
-            <span class="badge badge-ok">{{ s.matched_race_name }}</span>
+          {% if s.matched_races %}
+            {% for r in s.matched_races %}
+              <span class="badge badge-ok" style="margin-right:4px">{{ r.name }}</span>
+            {% endfor %}
           {% else %}
             <span class="badge badge-muted">unmatched</span>
           {% endif %}

@@ -294,8 +294,8 @@ async def test_vakaros_overlay_returns_full_payload_when_matched(
     await db.commit()
     race_id = cur.lastrowid
     assert race_id is not None
-    matched = await storage.match_vakaros_session_to_race(vakaros_id)
-    assert matched == race_id
+    linked = await storage.match_vakaros_session(vakaros_id)
+    assert linked == [race_id]
 
     app = create_app(storage)
     async with httpx.AsyncClient(
@@ -308,13 +308,15 @@ async def test_vakaros_overlay_returns_full_payload_when_matched(
     assert data["matched"] is True
     assert data["vakaros_session_id"] == vakaros_id
 
-    # Track is a GeoJSON-ish LineString with 3 points.
+    # Track is trimmed to the race window (03:00 - 27:00 inside a session
+    # with positions at 00:00, 15:00, 30:00), so only the middle point is
+    # inside — a single-coord LineString.
     assert data["track"] is not None
     assert data["track"]["type"] == "Feature"
     assert data["track"]["geometry"]["type"] == "LineString"
-    assert len(data["track"]["geometry"]["coordinates"]) == 3
+    assert len(data["track"]["geometry"]["coordinates"]) == 1
     # [lon, lat] GeoJSON order
-    assert data["track"]["geometry"]["coordinates"][0] == [-122.41, 47.68]
+    assert data["track"]["geometry"]["coordinates"][0] == [-122.411, 47.681]
 
     # Line positions: one pin, one boat.
     lines_by_type = {lp["line_type"]: lp for lp in data["line_positions"]}
@@ -339,10 +341,15 @@ async def test_vakaros_overlay_returns_full_payload_when_matched(
 
 
 @pytest.mark.asyncio
-async def test_vakaros_overlay_line_uses_most_recent_pings(
+async def test_vakaros_overlay_line_uses_line_active_at_race_start(
     storage: Storage, inbox_path: Path
 ) -> None:
-    """When the line was re-set, the overlay reports the most recent endpoints."""
+    """When the line was re-set, each race gets the line active at its start.
+
+    Two races share a Vakaros file with an early line and a re-set line.
+    The race that starts *before* the re-set sees the early line; the
+    race that starts *after* the re-set sees the late line.
+    """
     from datetime import UTC, datetime, timedelta
 
     from helmlog.vakaros import (
@@ -419,34 +426,56 @@ async def test_vakaros_overlay_line_uses_most_recent_pings(
     vakaros_id = await storage.store_vakaros_session(session)
 
     db = storage._conn()
+    # Race 1 starts BEFORE the re-set (at minute 5) — should see the early line.
     cur = await db.execute(
         "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (
-            "Re-set line race",
+            "Race 1",
             "evt",
             1,
             "2026-04-09",
+            (t0 + timedelta(minutes=5)).isoformat(),
             (t0 + timedelta(minutes=10)).isoformat(),
-            (t0 + timedelta(minutes=25)).isoformat(),
             "race",
         ),
     )
+    race1_id = cur.lastrowid
+    # Race 2 starts AFTER the re-set (at minute 20) — should see the late line.
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Race 2",
+            "evt",
+            2,
+            "2026-04-09",
+            (t0 + timedelta(minutes=20)).isoformat(),
+            (t0 + timedelta(minutes=28)).isoformat(),
+            "race",
+        ),
+    )
+    race2_id = cur.lastrowid
     await db.commit()
-    race_id = cur.lastrowid
-    await storage.match_vakaros_session_to_race(vakaros_id)
+    linked = await storage.match_vakaros_session(vakaros_id)
+    assert set(linked) == {race1_id, race2_id}
 
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
+        r1_resp = await client.get(f"/api/sessions/{race1_id}/vakaros-overlay")
+        r2_resp = await client.get(f"/api/sessions/{race2_id}/vakaros-overlay")
 
-    data = resp.json()
-    assert data["line"] is not None
-    # Most recent pings, not the early ones.
-    assert data["line"]["pin"] == [47.690, -122.420]
-    assert data["line"]["boat"] == [47.690, -122.416]
+    r1 = r1_resp.json()
+    assert r1["line"] is not None
+    assert r1["line"]["pin"] == [47.680, -122.420]
+    assert r1["line"]["boat"] == [47.680, -122.416]
+
+    r2 = r2_resp.json()
+    assert r2["line"] is not None
+    assert r2["line"]["pin"] == [47.690, -122.420]
+    assert r2["line"]["boat"] == [47.690, -122.416]
 
 
 @pytest.mark.asyncio
@@ -525,7 +554,7 @@ async def test_vakaros_overlay_line_is_none_when_only_one_endpoint(
     )
     await db.commit()
     race_id = cur.lastrowid
-    await storage.match_vakaros_session_to_race(vakaros_id)
+    await storage.match_vakaros_session(vakaros_id)
 
     app = create_app(storage)
     async with httpx.AsyncClient(
@@ -537,6 +566,156 @@ async def test_vakaros_overlay_line_is_none_when_only_one_endpoint(
     assert data["line"] is None
     # line_positions still includes the single pin so the UI can render it.
     assert len(data["line_positions"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_admin_vakaros_rematch_links_existing_sessions(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """POST /admin/vakaros/rematch should run matching across all stored sessions."""
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.vakaros import PositionRow, VakarosSession
+    from helmlog.web import create_app
+
+    # Insert a Vakaros session directly (bypassing ingest_vkx_file so its
+    # auto-match path does NOT run — simulating historical data).
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    session = VakarosSession(
+        source_hash="99" * 32,
+        source_file="historical.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(hours=2),
+        positions=(
+            PositionRow(
+                timestamp=t0,
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+            PositionRow(
+                timestamp=t0 + timedelta(hours=2),
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+        ),
+        line_positions=(),
+        race_events=(),
+        winds=(),
+    )
+    await storage.store_vakaros_session(session)
+
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Late race",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=30)).isoformat(),
+            (t0 + timedelta(minutes=90)).isoformat(),
+            "race",
+        ),
+    )
+    await db.commit()
+    race_id = cur.lastrowid
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.post("/admin/vakaros/rematch", follow_redirects=False)
+
+    assert resp.status_code in (302, 303)
+    cur = await db.execute("SELECT vakaros_session_id FROM races WHERE id = ?", (race_id,))
+    row = await cur.fetchone()
+    assert row["vakaros_session_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_vakaros_overlay_trims_track_to_race_window(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """Overlay track contains only positions inside the race's time window."""
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.vakaros import PositionRow, VakarosSession
+    from helmlog.web import create_app
+
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    positions = tuple(
+        PositionRow(
+            timestamp=t0 + timedelta(minutes=i * 30),
+            latitude_deg=47.68 + i * 0.001,
+            longitude_deg=-122.41,
+            sog_mps=1.0,
+            cog_deg=0.0,
+            altitude_m=0.0,
+            quat_w=1.0,
+            quat_x=0.0,
+            quat_y=0.0,
+            quat_z=0.0,
+        )
+        for i in range(5)
+    )
+    session = VakarosSession(
+        source_hash="77" * 32,
+        source_file="trim.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(hours=2),
+        positions=positions,
+        line_positions=(),
+        race_events=(),
+        winds=(),
+    )
+    vakaros_id = await storage.store_vakaros_session(session)
+
+    # Race from t0+75m to t0+105m — only the position at t0+90m is inside.
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Trimmed race",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=75)).isoformat(),
+            (t0 + timedelta(minutes=105)).isoformat(),
+            "race",
+        ),
+    )
+    await db.commit()
+    race_id = cur.lastrowid
+    linked = await storage.match_vakaros_session(vakaros_id)
+    assert race_id in linked
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
+
+    data = resp.json()
+    assert data["matched"] is True
+    assert data["track"] is not None
+    coords = data["track"]["geometry"]["coordinates"]
+    assert len(coords) == 1
 
 
 @pytest.mark.asyncio

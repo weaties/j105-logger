@@ -1,8 +1,10 @@
 """Tests for Vakaros -> races session matching (#458).
 
-Rule (from the spec): a Vakaros session matches an SK race when their
-time windows overlap by at least 50% of the shorter session's duration.
-Races still in progress (end_utc IS NULL) are never matched.
+Model: one Vakaros session can link to *many* races. For each race whose
+time window overlaps the Vakaros session by at least 50% of the shorter
+duration, ``races.vakaros_session_id`` is set to the Vakaros session id.
+Races still in progress (end_utc IS NULL) are never matched. Races that
+already point at a different Vakaros session are left alone.
 """
 
 from __future__ import annotations
@@ -24,7 +26,6 @@ async def _insert_race(
     start: datetime,
     end: datetime | None,
 ) -> int:
-    """Raw-SQL insert a race for testing (bypasses slug/validation)."""
     db = storage._conn()
     cur = await db.execute(
         "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
@@ -42,6 +43,14 @@ async def _insert_race(
     await db.commit()
     assert cur.lastrowid is not None
     return int(cur.lastrowid)
+
+
+async def _race_vakaros_link(storage: Storage, race_id: int) -> int | None:
+    """Look up a race's vakaros_session_id directly."""
+    db = storage._conn()
+    cur = await db.execute("SELECT vakaros_session_id FROM races WHERE id = ?", (race_id,))
+    row = await cur.fetchone()
+    return int(row["vakaros_session_id"]) if row and row["vakaros_session_id"] else None
 
 
 def _make_vakaros_session(
@@ -85,70 +94,73 @@ def _make_vakaros_session(
 
 
 @pytest.mark.asyncio
-async def test_match_returns_none_when_no_races_exist(storage: Storage) -> None:
+async def test_match_returns_empty_list_when_no_races_exist(storage: Storage) -> None:
     t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
     session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
     session_id = await storage.store_vakaros_session(session)
 
-    matched = await storage.match_vakaros_session_to_race(session_id)
-    assert matched is None
-
-    db = storage._conn()
-    cur = await db.execute(
-        "SELECT matched_race_id FROM vakaros_sessions WHERE id = ?", (session_id,)
-    )
-    row = await cur.fetchone()
-    assert row["matched_race_id"] is None
+    linked = await storage.match_vakaros_session(session_id)
+    assert linked == []
 
 
 @pytest.mark.asyncio
 async def test_match_links_race_that_is_fully_inside_vakaros_window(
     storage: Storage,
 ) -> None:
-    # Vakaros session: 12:00 - 14:00 (2 hours)
-    # Race          : 12:30 - 13:30 (1 hour, fully inside)
-    # Shorter duration = race (60 min). Overlap = 60 min. Ratio = 1.0 >= 0.5.
     t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
     session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
     session_id = await storage.store_vakaros_session(session)
 
     race_id = await _insert_race(
-        storage,
-        "Race 1",
-        t0 + timedelta(minutes=30),
-        t0 + timedelta(minutes=90),
+        storage, "Race 1", t0 + timedelta(minutes=30), t0 + timedelta(minutes=90)
     )
 
-    matched = await storage.match_vakaros_session_to_race(session_id)
-    assert matched == race_id
+    linked = await storage.match_vakaros_session(session_id)
+    assert linked == [race_id]
+    assert await _race_vakaros_link(storage, race_id) == session_id
 
-    db = storage._conn()
-    cur = await db.execute(
-        "SELECT matched_race_id FROM vakaros_sessions WHERE id = ?", (session_id,)
+
+@pytest.mark.asyncio
+async def test_match_links_all_overlapping_races_in_one_vakaros_session(
+    storage: Storage,
+) -> None:
+    """Real-world case: one VKX file spans multiple races + practice."""
+    t0 = datetime(2026, 4, 9, 0, 42, 0, tzinfo=UTC)
+    session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
+    session_id = await storage.store_vakaros_session(session)
+
+    practice_id = await _insert_race(
+        storage, "Practice", t0 + timedelta(minutes=13), t0 + timedelta(minutes=27)
     )
-    row = await cur.fetchone()
-    assert row["matched_race_id"] == race_id
+    race1_id = await _insert_race(
+        storage, "Race 1", t0 + timedelta(minutes=48), t0 + timedelta(minutes=85)
+    )
+    race2_id = await _insert_race(
+        storage, "Race 2", t0 + timedelta(minutes=90), t0 + timedelta(minutes=113)
+    )
+
+    linked = await storage.match_vakaros_session(session_id)
+    assert set(linked) == {practice_id, race1_id, race2_id}
+
+    for rid in (practice_id, race1_id, race2_id):
+        assert await _race_vakaros_link(storage, rid) == session_id
 
 
 @pytest.mark.asyncio
 async def test_match_rejects_race_with_less_than_50_percent_overlap(
     storage: Storage,
 ) -> None:
-    # Vakaros: 12:00 - 13:00 (60 min)
-    # Race   : 12:50 - 13:50 (60 min, overlaps only 10 min = 16.7%)
     t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
     session = _make_vakaros_session(t0, t0 + timedelta(hours=1))
     session_id = await storage.store_vakaros_session(session)
 
-    await _insert_race(
-        storage,
-        "Race far",
-        t0 + timedelta(minutes=50),
-        t0 + timedelta(minutes=110),
+    race_id = await _insert_race(
+        storage, "Race far", t0 + timedelta(minutes=50), t0 + timedelta(minutes=110)
     )
 
-    matched = await storage.match_vakaros_session_to_race(session_id)
-    assert matched is None
+    linked = await storage.match_vakaros_session(session_id)
+    assert linked == []
+    assert await _race_vakaros_link(storage, race_id) is None
 
 
 @pytest.mark.asyncio
@@ -157,44 +169,86 @@ async def test_match_ignores_race_with_null_end_utc(storage: Storage) -> None:
     session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
     session_id = await storage.store_vakaros_session(session)
 
-    await _insert_race(storage, "In-progress race", t0 + timedelta(minutes=10), None)
+    race_id = await _insert_race(storage, "In-progress race", t0 + timedelta(minutes=10), None)
 
-    matched = await storage.match_vakaros_session_to_race(session_id)
-    assert matched is None
+    linked = await storage.match_vakaros_session(session_id)
+    assert linked == []
+    assert await _race_vakaros_link(storage, race_id) is None
 
 
 @pytest.mark.asyncio
-async def test_match_picks_race_with_highest_overlap_ratio(storage: Storage) -> None:
-    # Vakaros: 12:00 - 13:00 (60 min)
-    # Race A : 12:00 - 12:40 (40 min, overlap 40 min, ratio = 40/40 = 1.0)
-    # Race B : 12:30 - 13:30 (60 min, overlap 30 min, ratio = 30/60 = 0.5)
-    # Race A wins.
+async def test_match_does_not_steal_race_from_other_session(
+    storage: Storage,
+) -> None:
+    """A race already linked to a different Vakaros session is left alone."""
     t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
-    session = _make_vakaros_session(t0, t0 + timedelta(hours=1))
-    session_id = await storage.store_vakaros_session(session)
+    session_a = _make_vakaros_session(t0, t0 + timedelta(hours=2), source_hash="a" * 64)
+    session_b = _make_vakaros_session(t0, t0 + timedelta(hours=2), source_hash="b" * 64)
+    id_a = await storage.store_vakaros_session(session_a)
+    id_b = await storage.store_vakaros_session(session_b)
 
-    race_a = await _insert_race(storage, "Race A", t0, t0 + timedelta(minutes=40))
-    await _insert_race(
-        storage,
-        "Race B",
-        t0 + timedelta(minutes=30),
-        t0 + timedelta(minutes=90),
+    race_id = await _insert_race(
+        storage, "Race", t0 + timedelta(minutes=30), t0 + timedelta(minutes=90)
     )
 
-    matched = await storage.match_vakaros_session_to_race(session_id)
-    assert matched == race_a
+    assert await storage.match_vakaros_session(id_a) == [race_id]
+    assert await storage.match_vakaros_session(id_b) == []
+    assert await _race_vakaros_link(storage, race_id) == id_a
 
 
 @pytest.mark.asyncio
-async def test_ingest_vkx_file_auto_matches_to_race(storage: Storage, tmp_path: object) -> None:
-    """`ingest_vkx_file` should link a session to any overlapping race."""
+async def test_match_is_idempotent(storage: Storage) -> None:
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
+    session_id = await storage.store_vakaros_session(session)
+
+    race_id = await _insert_race(
+        storage, "Race", t0 + timedelta(minutes=30), t0 + timedelta(minutes=90)
+    )
+
+    first = await storage.match_vakaros_session(session_id)
+    second = await storage.match_vakaros_session(session_id)
+    assert first == second == [race_id]
+
+
+@pytest.mark.asyncio
+async def test_rematch_all_vakaros_sessions_links_everything(
+    storage: Storage,
+) -> None:
+    """Historical sessions ingested before the matcher can be linked with one call."""
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    a = _make_vakaros_session(t0, t0 + timedelta(hours=1), source_hash="1" * 64)
+    b = _make_vakaros_session(
+        t0 + timedelta(hours=2), t0 + timedelta(hours=3), source_hash="2" * 64
+    )
+    id_a = await storage.store_vakaros_session(a)
+    id_b = await storage.store_vakaros_session(b)
+
+    race_a = await _insert_race(
+        storage, "Race A", t0 + timedelta(minutes=10), t0 + timedelta(minutes=50)
+    )
+    race_b = await _insert_race(
+        storage,
+        "Race B",
+        t0 + timedelta(hours=2, minutes=10),
+        t0 + timedelta(hours=2, minutes=50),
+    )
+
+    results = await storage.rematch_all_vakaros_sessions()
+    assert results == {id_a: [race_a], id_b: [race_b]}
+
+
+@pytest.mark.asyncio
+async def test_ingest_vkx_file_auto_links_overlapping_race(
+    storage: Storage, tmp_path: object
+) -> None:
+    """`ingest_vkx_file` should link any overlapping race(s) to the session."""
     import math
     import struct
     from pathlib import Path
 
     from helmlog.vakaros import ingest_vkx_file
 
-    # Build a 60-second VKX with two position rows, on a known race day.
     header = bytes([0xFF, 0x05, 0, 0, 0, 0, 0, 0])
     t0_ms = int(datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC).timestamp() * 1000)
     t1_ms = t0_ms + 60_000
@@ -223,7 +277,6 @@ async def test_ingest_vkx_file_auto_matches_to_race(storage: Storage, tmp_path: 
     vkx_path = tmp_path / "auto_match.vkx"
     vkx_path.write_bytes(buf)
 
-    # Race that fully contains the Vakaros 60-second window.
     race_id = await _insert_race(
         storage,
         "Race for auto-match",
@@ -233,26 +286,4 @@ async def test_ingest_vkx_file_auto_matches_to_race(storage: Storage, tmp_path: 
 
     session_id, was_duplicate = await ingest_vkx_file(storage, vkx_path)
     assert was_duplicate is False
-
-    db = storage._conn()
-    cur = await db.execute(
-        "SELECT matched_race_id FROM vakaros_sessions WHERE id = ?", (session_id,)
-    )
-    row = await cur.fetchone()
-    assert row["matched_race_id"] == race_id
-
-
-@pytest.mark.asyncio
-async def test_match_is_idempotent_and_updates_link(storage: Storage) -> None:
-    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
-    session = _make_vakaros_session(t0, t0 + timedelta(hours=2))
-    session_id = await storage.store_vakaros_session(session)
-
-    race_id = await _insert_race(
-        storage, "Race", t0 + timedelta(minutes=30), t0 + timedelta(minutes=90)
-    )
-
-    # Running twice should yield the same link.
-    first = await storage.match_vakaros_session_to_race(session_id)
-    second = await storage.match_vakaros_session_to_race(session_id)
-    assert first == second == race_id
+    assert await _race_vakaros_link(storage, race_id) == session_id
