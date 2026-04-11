@@ -84,6 +84,71 @@ function _stopPlayTick() {
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
 let _vakarosSyntheticStart = null; // {ts, source} placeholder injected from VKX
+
+// Cross-surface seek behaviour: if a render() call moves the playhead by more
+// than this many seconds, treat it as a user-initiated jump and pause any
+// currently-playing media. Small deltas (playback ticks) keep the media
+// running.
+const _LARGE_JUMP_SEC = 2.0;
+
+// Transcript auto-follow state. The transcript container scrolls itself to
+// keep the active segment visible, but if the user scrolls manually we
+// disable that until they click a segment (which re-anchors).
+let _transcriptFollow = true;
+let _lastTranscriptProgrammaticScrollAt = 0;
+
+// Scroll the transcript container so the active segment is visible — without
+// ever calling scrollIntoView() (which can jerk the whole page when the
+// container itself isn't fully in view). Returns true if a scroll happened.
+function _scrollTranscriptSegmentIntoView(container, el) {
+  if (!_transcriptFollow) return false;
+  const margin = 4;
+  const top = el.offsetTop - margin;
+  const bottom = el.offsetTop + el.offsetHeight + margin;
+  let target = null;
+  if (top < container.scrollTop) {
+    target = top;
+  } else if (bottom > container.scrollTop + container.clientHeight) {
+    target = bottom - container.clientHeight;
+  }
+  if (target == null) return false;
+  _lastTranscriptProgrammaticScrollAt = Date.now();
+  container.scrollTop = Math.max(0, target);
+  return true;
+}
+
+function _wireTranscriptScrollListener() {
+  const container = document.getElementById('transcript-segments');
+  if (!container || container._scrollWired) return;
+  container._scrollWired = true;
+  container.addEventListener('scroll', function() {
+    // Ignore the scroll events we triggered ourselves.
+    if (Date.now() - _lastTranscriptProgrammaticScrollAt < 400) return;
+    if (_transcriptFollow) {
+      _transcriptFollow = false;
+      _renderTranscriptFollowBadge();
+    }
+  });
+}
+
+function _renderTranscriptFollowBadge() {
+  const btn = document.getElementById('transcript-follow-btn');
+  if (!btn) return;
+  if (_transcriptFollow) {
+    btn.textContent = '\u25C9 Follow';
+    btn.style.opacity = '1';
+    btn.title = 'Auto-scrolling to active segment. Click to pause.';
+  } else {
+    btn.textContent = '\u25CB Follow';
+    btn.style.opacity = '0.55';
+    btn.title = 'Auto-scroll paused (you scrolled manually). Click to resume.';
+  }
+}
+
+function toggleTranscriptFollow() {
+  _transcriptFollow = !_transcriptFollow;
+  _renderTranscriptFollowBadge();
+}
 let _transcriptId = null; // transcript ID for tuning extraction
 let _tuningSegmentAudio = null; // shared <audio> for segment playback
 let _tuningSegmentTimer = null; // timeupdate stop timer
@@ -524,12 +589,31 @@ function _openWatchOnYoutube(ev) {
 }
 
 function _onVideoReady() {
-  // Video is a consumer: seek to the requested UTC if it's within range
+  // Video is a consumer: seek to the requested UTC if it's within range.
+  // Large jumps (>2 s) pause the player so audio doesn't keep playing from
+  // wherever the user just clicked. Small deltas (playback ticks) don't
+  // touch playback state.
   registerSurface('video', function(utc) {
     if (!_videoSync || !_videoSync.player || !_videoSync.player.seekTo) return;
     const offset = _utcToVideoOffset(utc);
     if (offset === null || offset < 0) return;
     if (_videoSync.durationS && offset > _videoSync.durationS) return;
+    let currentOffset = null;
+    try {
+      if (typeof _videoSync.player.getCurrentTime === 'function') {
+        currentOffset = _videoSync.player.getCurrentTime();
+      }
+    } catch (e) { /* swallow */ }
+    if (currentOffset != null && Math.abs(currentOffset - offset) > _LARGE_JUMP_SEC) {
+      try {
+        const state = typeof _videoSync.player.getPlayerState === 'function'
+          ? _videoSync.player.getPlayerState() : -1;
+        // YT.PlayerState.PLAYING = 1
+        if (state === 1 && typeof _videoSync.player.pauseVideo === 'function') {
+          _videoSync.player.pauseVideo();
+        }
+      } catch (e) { /* swallow */ }
+    }
     _videoSync.player.seekTo(offset, true);
   });
 }
@@ -1251,7 +1335,13 @@ function _renderDiarizedTranscript(body, t) {
     return rawLabel;
   };
 
-  body.innerHTML = '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
+  body.innerHTML = ''
+    + '<div style="display:flex;justify-content:flex-end;margin-bottom:6px">'
+    + '<button id="transcript-follow-btn" type="button" onclick="toggleTranscriptFollow()" '
+    + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" '
+    + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
+    + '</div>'
+    + '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
     + blocks.map((b, i) =>
       '<div class="transcript-seg" data-idx="' + i + '" style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
       + '<span class="transcript-speaker" data-speaker="' + esc(b.speaker) + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" title="Click to assign crew">' + esc(displayName(b.speaker)) + '</span>'
@@ -1264,6 +1354,8 @@ function _renderDiarizedTranscript(body, t) {
   // Register the diarized transcript as a playback-clock surface so it
   // highlights the active segment in sync with audio/video/map (#446).
   _registerTranscriptSurface();
+  _wireTranscriptScrollListener();
+  _renderTranscriptFollowBadge();
 }
 
 let _transcriptSurfaceRegistered = false;
@@ -1287,9 +1379,7 @@ function _registerTranscriptSurface() {
       if (local >= b.start && local <= b.end) {
         el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
         const container = document.getElementById('transcript-segments');
-        if (container && (el.offsetTop < container.scrollTop || el.offsetTop + el.offsetHeight > container.scrollTop + container.clientHeight)) {
-          el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-        }
+        if (container) _scrollTranscriptSegmentIntoView(container, el);
       } else {
         el.style.background = '';
       }
@@ -1300,6 +1390,12 @@ function _registerTranscriptSurface() {
 function playTranscriptSegment(idx) {
   const b = _transcriptBlocks[idx];
   if (!b) return;
+  // Clicking a segment is a strong "I want to follow this" signal —
+  // re-enable auto-scroll if the user had paused it.
+  if (!_transcriptFollow) {
+    _transcriptFollow = true;
+    _renderTranscriptFollowBadge();
+  }
   // Route through the playback clock so video and map follow too.
   if (_session && _session.audio_start_utc) {
     const audioStart = new Date(
@@ -1419,11 +1515,18 @@ function loadAudio() {
   const audioLocalToUtc = s => new Date(audioStart.getTime() + s * 1000);
   const utcToAudioLocal = utc => (utc.getTime() - audioStart.getTime()) / 1000;
 
-  // Audio is a consumer — seek to the requested UTC if it's within range
+  // Audio is a consumer — seek to the requested UTC if it's within range.
+  // A "large jump" (>2 s away) is treated as a user click, so we pause any
+  // currently-playing audio: it's distracting to have audio keep going from
+  // a new spot just because the user clicked somewhere on the page.
   registerSurface('audio', function(utc) {
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
-    if (Math.abs(el.currentTime - local) < 0.15) return; // already there
+    const delta = Math.abs(el.currentTime - local);
+    if (delta < 0.15) return; // already there
+    if (delta > _LARGE_JUMP_SEC && !el.paused) {
+      try { el.pause(); } catch (e) { /* swallow */ }
+    }
     try { el.currentTime = local; } catch (e) { /* not seekable yet */ }
   });
 
@@ -1468,10 +1571,7 @@ function _highlightTranscriptFromAudio(ev) {
     if (i === activeIdx) {
       segEl.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
       const container = document.getElementById('transcript-segments');
-      if (container && (segEl.offsetTop < container.scrollTop
-          || segEl.offsetTop + segEl.offsetHeight > container.scrollTop + container.clientHeight)) {
-        segEl.scrollIntoView({behavior: 'smooth', block: 'nearest'});
-      }
+      if (container) _scrollTranscriptSegmentIntoView(container, segEl);
     } else {
       segEl.style.background = '';
     }
