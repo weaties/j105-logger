@@ -131,7 +131,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 58
+_CURRENT_VERSION: int = 59
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1303,6 +1303,67 @@ _MIGRATIONS: dict[int, str] = {
             retired_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_race_slug_history_race ON race_slug_history(race_id);
+    """,
+    59: """
+        -- Imported race results from external providers (#459): Clubspot, STYC, ...
+        -- Additive only. No existing column is dropped, renamed, or retyped.
+
+        CREATE TABLE IF NOT EXISTS regattas (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source          TEXT    NOT NULL,
+            source_id       TEXT    NOT NULL,
+            name            TEXT    NOT NULL,
+            start_date      TEXT,
+            end_date        TEXT,
+            url             TEXT,
+            default_class   TEXT,
+            last_fetched_at TEXT,
+            created_at      TEXT    NOT NULL,
+            UNIQUE(source, source_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_regattas_source ON regattas(source);
+
+        CREATE TABLE IF NOT EXISTS series_results (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            regatta_id      INTEGER NOT NULL REFERENCES regattas(id) ON DELETE CASCADE,
+            boat_id         INTEGER NOT NULL REFERENCES boats(id) ON DELETE CASCADE,
+            class           TEXT,
+            total_points    REAL,
+            net_points      REAL,
+            place_in_class  INTEGER,
+            place_overall   INTEGER,
+            updated_at      TEXT    NOT NULL,
+            UNIQUE(regatta_id, boat_id, class)
+        );
+        CREATE INDEX IF NOT EXISTS idx_series_results_regatta ON series_results(regatta_id);
+        CREATE INDEX IF NOT EXISTS idx_series_results_boat    ON series_results(boat_id);
+
+        ALTER TABLE boats ADD COLUMN skipper TEXT;
+        ALTER TABLE boats ADD COLUMN boat_type TEXT;
+        ALTER TABLE boats ADD COLUMN phrf_rating INTEGER;
+        ALTER TABLE boats ADD COLUMN yacht_club TEXT;
+        ALTER TABLE boats ADD COLUMN owner_email TEXT;
+
+        ALTER TABLE race_results ADD COLUMN start_time TEXT;
+        ALTER TABLE race_results ADD COLUMN elapsed_seconds INTEGER;
+        ALTER TABLE race_results ADD COLUMN corrected_seconds INTEGER;
+        ALTER TABLE race_results ADD COLUMN points REAL;
+        ALTER TABLE race_results ADD COLUMN points_throwout INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE race_results ADD COLUMN status_code TEXT;
+        ALTER TABLE race_results ADD COLUMN division TEXT;
+        ALTER TABLE race_results ADD COLUMN fleet TEXT;
+
+        ALTER TABLE races ADD COLUMN regatta_id INTEGER
+            REFERENCES regattas(id) ON DELETE SET NULL;
+        ALTER TABLE races ADD COLUMN local_session_id INTEGER
+            REFERENCES races(id) ON DELETE SET NULL;
+        ALTER TABLE races ADD COLUMN source TEXT;
+        ALTER TABLE races ADD COLUMN source_id TEXT;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_races_source ON races(source, source_id)
+            WHERE source IS NOT NULL AND source_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_races_regatta ON races(regatta_id);
+        CREATE INDEX IF NOT EXISTS idx_races_local_session ON races(local_session_id);
     """,
 }
 
