@@ -354,11 +354,20 @@ async function loadVakarosOverlay() {
 
     // Stash a synthetic "start" row so the maneuvers panel can show it.
     // loadManeuvers() reads this and merges it after fetching the API.
+    const ctx = data.race_start_context || {};
     _vakarosSyntheticStart = {
       id: 'vakaros-race-start',
       type: 'start',
       ts: startUtc.toISOString(),
       source: 'vakaros',
+      // Surface BSP in the "BSP in→out" column — start has no exit, so the
+      // entry_bsp alone is shown.
+      entry_bsp: ctx.bsp_kts != null ? ctx.bsp_kts : null,
+      // Extras for the detail panel below the table.
+      start_sog_kts: ctx.sog_kts != null ? ctx.sog_kts : null,
+      start_distance_to_line_m: ctx.distance_to_line_m != null ? ctx.distance_to_line_m : null,
+      start_lat: ctx.latitude_deg != null ? ctx.latitude_deg : null,
+      start_lon: ctx.longitude_deg != null ? ctx.longitude_deg : null,
     };
     _injectVakarosStartIntoManeuvers();
   }
@@ -2619,6 +2628,21 @@ function _renderManeuverDetail(m) {
   const el = document.getElementById('maneuver-detail');
   if (!el) return;
   if (!m) { el.innerHTML = ''; return; }
+
+  // Special case: Vakaros-sourced race start has its own metric set.
+  if (m.type === 'start' && m.source === 'vakaros') {
+    const rows = [
+      ['BSP at gun', m.entry_bsp != null ? m.entry_bsp.toFixed(2) + ' kt' : '—'],
+      ['SOG at gun', m.start_sog_kts != null ? m.start_sog_kts.toFixed(2) + ' kt' : '—'],
+      ['Distance to line', m.start_distance_to_line_m != null ? m.start_distance_to_line_m.toFixed(1) + ' m' : '—'],
+      ['Polar %', '— (tbd)'],
+    ];
+    el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
+      + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
+      + '</div>';
+    return;
+  }
+
   const bspDipLabel = m.loss_kts != null && m.entry_bsp != null && m.min_bsp != null
     ? m.loss_kts.toFixed(2) + ' kt (' + m.entry_bsp.toFixed(1) + '→' + m.min_bsp.toFixed(1) + ')'
     : (m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—');

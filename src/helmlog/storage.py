@@ -8116,12 +8116,92 @@ class Storage:
                 "boat_set_at": latest_boat["ts"],
             }
 
+        race_start_context = await self._build_race_start_context(
+            race_events=race_events, line=line
+        )
+
         return {
             "vakaros_session_id": vakaros_id,
             "track": track,
             "line_positions": line_positions,
             "race_events": race_events,
             "line": line,
+            "race_start_context": race_start_context,
+        }
+
+    async def _build_race_start_context(
+        self,
+        race_events: list[dict[str, Any]],
+        line: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Build a per-race snapshot of the boat's state at the race-start gun.
+
+        Used by the session detail page to show boat speed and distance to
+        the start line at the moment the Vakaros race_start event fires.
+        Returns ``None`` if there's no race_start event at all; otherwise a
+        dict with the event ts and nullable bsp/sog/position/distance_to_line
+        so the UI can render partial data.
+        """
+        import math
+
+        race_start_event: dict[str, Any] | None = None
+        for e in race_events:
+            if e["event_type"] == "race_start":
+                race_start_event = e
+                break
+        if race_start_event is None:
+            return None
+
+        ts = race_start_event["ts"]
+        db = self._read_conn()
+
+        # Nearest SK sample within ±5 seconds of the race start.
+        async def _nearest(table: str, columns: str) -> dict[str, Any] | None:
+            cur = await db.execute(
+                f"SELECT {columns} FROM {table} "
+                "WHERE ABS(strftime('%s', ts) - strftime('%s', ?)) <= 5 "
+                "ORDER BY ABS(strftime('%s', ts) - strftime('%s', ?)) ASC "
+                "LIMIT 1",
+                (ts, ts),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row is not None else None
+
+        speed_row = await _nearest("speeds", "ts, speed_kts")
+        sog_row = await _nearest("cogsog", "ts, sog_kts")
+        pos_row = await _nearest("positions", "ts, latitude_deg, longitude_deg")
+
+        bsp_kts = float(speed_row["speed_kts"]) if speed_row else None
+        sog_kts = float(sog_row["sog_kts"]) if sog_row else None
+        lat = float(pos_row["latitude_deg"]) if pos_row else None
+        lon = float(pos_row["longitude_deg"]) if pos_row else None
+
+        distance_to_line_m: float | None = None
+        if line is not None and lat is not None and lon is not None:
+            # Local equirectangular projection centered on the pin: small
+            # distances → ~meter accuracy, no great-circle nonsense.
+            pin_lat, pin_lon = line["pin"]
+            boat_end_lat, boat_end_lon = line["boat"]
+            lat_rad = math.radians(pin_lat)
+            m_per_deg_lat = 111320.0
+            m_per_deg_lon = 111320.0 * math.cos(lat_rad)
+            vx = (boat_end_lon - pin_lon) * m_per_deg_lon
+            vy = (boat_end_lat - pin_lat) * m_per_deg_lat
+            px = (lon - pin_lon) * m_per_deg_lon
+            py = (lat - pin_lat) * m_per_deg_lat
+            seg_len = math.hypot(vx, vy)
+            if seg_len > 0:
+                # Perpendicular distance from point to the infinite line
+                # through pin-boat. (Using |cross| / |v|.)
+                distance_to_line_m = round(abs(vx * py - vy * px) / seg_len, 1)
+
+        return {
+            "ts": ts,
+            "bsp_kts": bsp_kts,
+            "sog_kts": sog_kts,
+            "latitude_deg": lat,
+            "longitude_deg": lon,
+            "distance_to_line_m": distance_to_line_m,
         }
 
     async def list_vakaros_sessions(self) -> list[dict[str, Any]]:

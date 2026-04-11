@@ -648,6 +648,238 @@ async def test_admin_vakaros_rematch_links_existing_sessions(
 
 
 @pytest.mark.asyncio
+async def test_vakaros_overlay_race_start_context_includes_bsp_and_line_distance(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """Overlay payload should surface boat speed + distance-to-line at race start."""
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.vakaros import (
+        LinePosition,
+        LinePositionType,
+        PositionRow,
+        RaceTimerEvent,
+        RaceTimerEventType,
+        VakarosSession,
+    )
+    from helmlog.web import create_app
+
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    race_start_ts = t0 + timedelta(minutes=5)  # race_start event
+    session = VakarosSession(
+        source_hash="aa" * 32,
+        source_file="context.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(minutes=30),
+        positions=(
+            PositionRow(
+                timestamp=t0,
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+            PositionRow(
+                timestamp=t0 + timedelta(minutes=30),
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+        ),
+        line_positions=(
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=1),
+                line_type=LinePositionType.PIN,
+                latitude_deg=47.687,
+                longitude_deg=-122.420,
+            ),
+            LinePosition(
+                timestamp=t0 + timedelta(minutes=1),
+                line_type=LinePositionType.BOAT,
+                latitude_deg=47.687,
+                longitude_deg=-122.416,
+            ),
+        ),
+        race_events=(
+            RaceTimerEvent(
+                timestamp=race_start_ts,
+                event_type=RaceTimerEventType.RACE_START,
+                timer_value_s=0,
+            ),
+        ),
+        winds=(),
+    )
+    vakaros_id = await storage.store_vakaros_session(session)
+
+    # Insert an SK race that overlaps the Vakaros window.
+    db = storage._conn()
+    race_cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "Start ctx race",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=3)).isoformat(),
+            (t0 + timedelta(minutes=25)).isoformat(),
+            "race",
+        ),
+    )
+    race_id = race_cur.lastrowid
+    await db.commit()
+    await storage.match_vakaros_session(vakaros_id)
+
+    # Seed SK instrument samples right around race_start.
+    # BSP 5.4 kt, SOG 5.6 kt, position mid-way between pin and boat but 20 m behind.
+    # Pin: 47.687, -122.420    Boat: 47.687, -122.416 (line runs due east)
+    # Boat behind the line means 20 m *south* of the line (lat < 47.687).
+    # 20 m south ≈ 20 / 111320 degrees latitude.
+    boat_lat = 47.687 - (20.0 / 111320.0)
+    boat_lon = -122.418  # midway between -122.420 and -122.416
+    for delta in (-2, -1, 0, 1, 2):
+        ts = (race_start_ts + timedelta(seconds=delta)).isoformat()
+        await db.execute(
+            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            (ts, 5, 5.4),
+        )
+        await db.execute(
+            "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
+            (ts, 5, 0.0, 5.6),
+        )
+        await db.execute(
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg) "
+            "VALUES (?, ?, ?, ?)",
+            (ts, 5, boat_lat, boat_lon),
+        )
+    await db.commit()
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
+
+    data = resp.json()
+    assert data["matched"] is True
+    ctx = data.get("race_start_context")
+    assert ctx is not None, "overlay should include race_start_context"
+    assert ctx["ts"] == race_start_ts.isoformat()
+    # Boat speed at the start — within 0.1 kt of the seeded value.
+    assert 5.3 <= ctx["bsp_kts"] <= 5.5
+    assert 5.5 <= ctx["sog_kts"] <= 5.7
+    # Boat position at the start.
+    assert ctx["latitude_deg"] == pytest.approx(boat_lat, abs=1e-6)
+    assert ctx["longitude_deg"] == pytest.approx(boat_lon, abs=1e-6)
+    # Perpendicular distance to the start line — we set the boat 20 m behind.
+    assert 18.0 <= ctx["distance_to_line_m"] <= 22.0
+
+
+@pytest.mark.asyncio
+async def test_vakaros_overlay_race_start_context_absent_when_no_sk_data(
+    storage: Storage, inbox_path: Path
+) -> None:
+    """If there's no SK data around the race_start event, ctx is None."""
+    from datetime import UTC, datetime, timedelta
+
+    from helmlog.vakaros import (
+        PositionRow,
+        RaceTimerEvent,
+        RaceTimerEventType,
+        VakarosSession,
+    )
+    from helmlog.web import create_app
+
+    t0 = datetime(2026, 4, 9, 12, 0, 0, tzinfo=UTC)
+    session = VakarosSession(
+        source_hash="bb" * 32,
+        source_file="no_sk.vkx",
+        start_utc=t0,
+        end_utc=t0 + timedelta(minutes=30),
+        positions=(
+            PositionRow(
+                timestamp=t0,
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+            PositionRow(
+                timestamp=t0 + timedelta(minutes=30),
+                latitude_deg=47.68,
+                longitude_deg=-122.41,
+                sog_mps=1.0,
+                cog_deg=0.0,
+                altitude_m=0.0,
+                quat_w=1.0,
+                quat_x=0.0,
+                quat_y=0.0,
+                quat_z=0.0,
+            ),
+        ),
+        line_positions=(),
+        race_events=(
+            RaceTimerEvent(
+                timestamp=t0 + timedelta(minutes=5),
+                event_type=RaceTimerEventType.RACE_START,
+                timer_value_s=0,
+            ),
+        ),
+        winds=(),
+    )
+    vakaros_id = await storage.store_vakaros_session(session)
+
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, session_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "No-SK race",
+            "evt",
+            1,
+            "2026-04-09",
+            (t0 + timedelta(minutes=3)).isoformat(),
+            (t0 + timedelta(minutes=25)).isoformat(),
+            "race",
+        ),
+    )
+    race_id = cur.lastrowid
+    await db.commit()
+    await storage.match_vakaros_session(vakaros_id)
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/vakaros-overlay")
+
+    data = resp.json()
+    # No SK speeds/positions seeded → context is present but with nulls
+    # (race_start timestamp is still known even without BSP/pos).
+    ctx = data.get("race_start_context")
+    assert ctx is not None
+    assert ctx["bsp_kts"] is None
+    assert ctx["sog_kts"] is None
+    assert ctx["distance_to_line_m"] is None  # no line endpoints anyway
+
+
+@pytest.mark.asyncio
 async def test_vakaros_overlay_trims_track_to_race_window(
     storage: Storage, inbox_path: Path
 ) -> None:
