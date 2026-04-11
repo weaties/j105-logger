@@ -132,6 +132,24 @@ class WindRow:
     speed_mps: float
 
 
+@dataclass(frozen=True)
+class VakarosSession:
+    """An assembled Vakaros session ready for storage.
+
+    `source_hash` is the SHA-256 hex digest of the raw VKX bytes — used
+    as the dedupe key because VKX does not include a device ID.
+    """
+
+    source_hash: str
+    source_file: str
+    start_utc: datetime
+    end_utc: datetime
+    positions: tuple[PositionRow, ...]
+    line_positions: tuple[LinePosition, ...]
+    race_events: tuple[RaceTimerEvent, ...]
+    winds: tuple[WindRow, ...]
+
+
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
@@ -202,6 +220,41 @@ def _decode_wind(payload: bytes) -> WindRow:
 
 # Decoded-row union type. Internal/unknown rows are skipped (no dataclass).
 DecodedRow = PositionRow | RaceTimerEvent | LinePosition | WindRow
+
+
+def parse_vkx_session(buf: bytes, source_file: str) -> VakarosSession:
+    """Parse a VKX buffer into an assembled VakarosSession.
+
+    Raises VKXParseError if the buffer has no Position rows (a session
+    with no GPS track is not useful and cannot have a time window).
+    """
+    import hashlib
+
+    positions: list[PositionRow] = []
+    line_positions: list[LinePosition] = []
+    race_events: list[RaceTimerEvent] = []
+    winds: list[WindRow] = []
+    for row in parse_vkx(buf):
+        if isinstance(row, PositionRow):
+            positions.append(row)
+        elif isinstance(row, LinePosition):
+            line_positions.append(row)
+        elif isinstance(row, RaceTimerEvent):
+            race_events.append(row)
+        elif isinstance(row, WindRow):
+            winds.append(row)
+    if not positions:
+        raise VKXParseError("VKX file contains no Position rows")
+    return VakarosSession(
+        source_hash=hashlib.sha256(buf).hexdigest(),
+        source_file=source_file,
+        start_utc=positions[0].timestamp,
+        end_utc=positions[-1].timestamp,
+        positions=tuple(positions),
+        line_positions=tuple(line_positions),
+        race_events=tuple(race_events),
+        winds=tuple(winds),
+    )
 
 
 def parse_vkx(buf: bytes) -> Iterator[DecodedRow]:

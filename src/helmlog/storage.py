@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from helmlog.audio import AudioSession
     from helmlog.external import TideReading, WeatherReading
     from helmlog.races import Race
+    from helmlog.vakaros import VakarosSession
 
 from helmlog.nmea2000 import (
     COGSOGRecord,
@@ -131,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 58
+_CURRENT_VERSION: int = 59
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1303,6 +1304,64 @@ _MIGRATIONS: dict[int, str] = {
             retired_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_race_slug_history_race ON race_slug_history(race_id);
+    """,
+    59: """
+        -- Vakaros VKX ingest (#458).  Sessions sourced from a Vakaros Atlas
+        -- via the watched-folder ingest path.  Kept in parallel with races(),
+        -- linked via matched_race_id when session matching finds an overlap.
+        CREATE TABLE IF NOT EXISTS vakaros_sessions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_hash     TEXT    NOT NULL UNIQUE,
+            source_file     TEXT    NOT NULL,
+            start_utc       TEXT    NOT NULL,
+            end_utc         TEXT    NOT NULL,
+            ingested_at     TEXT    NOT NULL,
+            matched_race_id INTEGER REFERENCES races(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_sessions_start ON vakaros_sessions(start_utc);
+        CREATE INDEX IF NOT EXISTS idx_vakaros_sessions_match ON vakaros_sessions(matched_race_id);
+
+        CREATE TABLE IF NOT EXISTS vakaros_positions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts            TEXT    NOT NULL,
+            latitude_deg  REAL    NOT NULL,
+            longitude_deg REAL    NOT NULL,
+            sog_mps       REAL    NOT NULL,
+            cog_deg       REAL    NOT NULL,
+            altitude_m    REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_positions_session
+            ON vakaros_positions(session_id, ts);
+
+        CREATE TABLE IF NOT EXISTS vakaros_line_positions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts            TEXT    NOT NULL,
+            line_type     TEXT    NOT NULL,  -- 'pin' or 'boat'
+            latitude_deg  REAL    NOT NULL,
+            longitude_deg REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_line_session ON vakaros_line_positions(session_id);
+
+        CREATE TABLE IF NOT EXISTS vakaros_race_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts             TEXT    NOT NULL,
+            event_type     TEXT    NOT NULL,  -- 'reset'|'start'|'sync'|'race_start'|'race_end'
+            timer_value_s  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_events_session
+            ON vakaros_race_events(session_id, ts);
+
+        CREATE TABLE IF NOT EXISTS vakaros_winds (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts             TEXT    NOT NULL,
+            direction_deg  REAL    NOT NULL,
+            speed_mps      REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_winds_session ON vakaros_winds(session_id, ts);
     """,
 }
 
@@ -7784,6 +7843,118 @@ class Storage:
                 return float(ctrl["tolerance_mm"])
         val = await self.get_aruco_setting("tolerance_mm_default")
         return float(val) if val else 5.0
+
+    # ------------------------------------------------------------------
+    # Vakaros VKX ingest (#458)
+    # ------------------------------------------------------------------
+
+    async def store_vakaros_session(self, session: VakarosSession) -> int:
+        """Insert a parsed Vakaros session and all its child rows.
+
+        Idempotent on `source_hash` — if a session with the same hash
+        already exists, returns that session's id without reinserting.
+        Writes session + children in a single transaction.
+        """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id FROM vakaros_sessions WHERE source_hash = ?",
+            (session.source_hash,),
+        )
+        existing = await cur.fetchone()
+        if existing is not None:
+            return int(existing["id"])
+
+        ingested_at = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO vakaros_sessions "
+            "(source_hash, source_file, start_utc, end_utc, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                session.source_hash,
+                session.source_file,
+                session.start_utc.isoformat(),
+                session.end_utc.isoformat(),
+                ingested_at,
+            ),
+        )
+        session_id = cur.lastrowid
+        if session_id is None:
+            await db.rollback()
+            raise RuntimeError("Failed to insert vakaros_sessions row")
+
+        if session.positions:
+            await db.executemany(
+                "INSERT INTO vakaros_positions "
+                "(session_id, ts, latitude_deg, longitude_deg, sog_mps, cog_deg, altitude_m) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        p.timestamp.isoformat(),
+                        p.latitude_deg,
+                        p.longitude_deg,
+                        p.sog_mps,
+                        p.cog_deg,
+                        p.altitude_m,
+                    )
+                    for p in session.positions
+                ],
+            )
+        if session.line_positions:
+            await db.executemany(
+                "INSERT INTO vakaros_line_positions "
+                "(session_id, ts, line_type, latitude_deg, longitude_deg) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        lp.timestamp.isoformat(),
+                        lp.line_type.name.lower(),
+                        lp.latitude_deg,
+                        lp.longitude_deg,
+                    )
+                    for lp in session.line_positions
+                ],
+            )
+        if session.race_events:
+            await db.executemany(
+                "INSERT INTO vakaros_race_events "
+                "(session_id, ts, event_type, timer_value_s) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        e.timestamp.isoformat(),
+                        e.event_type.name.lower(),
+                        e.timer_value_s,
+                    )
+                    for e in session.race_events
+                ],
+            )
+        if session.winds:
+            await db.executemany(
+                "INSERT INTO vakaros_winds "
+                "(session_id, ts, direction_deg, speed_mps) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        w.timestamp.isoformat(),
+                        w.direction_deg,
+                        w.speed_mps,
+                    )
+                    for w in session.winds
+                ],
+            )
+        await db.commit()
+        return int(session_id)
+
+    async def delete_vakaros_session(self, session_id: int) -> None:
+        """Delete a Vakaros session and all its child rows (cascade)."""
+        db = self._conn()
+        await db.execute("DELETE FROM vakaros_sessions WHERE id = ?", (session_id,))
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Helpers
