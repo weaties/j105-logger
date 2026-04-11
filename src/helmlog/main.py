@@ -554,6 +554,67 @@ async def _status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# vakaros-ingest (#458)
+# ---------------------------------------------------------------------------
+
+
+async def _vakaros_ingest(path_str: str) -> None:
+    """Parse and store a single Vakaros VKX log file."""
+    from pathlib import Path
+
+    from helmlog.storage import Storage, StorageConfig
+    from helmlog.vakaros import VKXParseError, ingest_vkx_file
+
+    path = Path(path_str).expanduser().resolve()
+    if not path.is_file():
+        logger.error("Not a file: {}", path)
+        sys.exit(1)
+
+    storage = Storage(StorageConfig())
+    await storage.connect()
+    try:
+        try:
+            session_id, was_duplicate = await ingest_vkx_file(storage, path)
+        except VKXParseError as exc:
+            logger.error("VKX parse failed: {}", exc)
+            sys.exit(1)
+
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT source_hash, start_utc, end_utc FROM vakaros_sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        counts: dict[str, int] = {}
+        for label, table in (
+            ("positions", "vakaros_positions"),
+            ("line_positions", "vakaros_line_positions"),
+            ("race_events", "vakaros_race_events"),
+            ("winds", "vakaros_winds"),
+        ):
+            c = await db.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE session_id = ?",
+                (session_id,),
+            )
+            r = await c.fetchone()
+            counts[label] = int(r["n"]) if r is not None else 0
+    finally:
+        await storage.close()
+
+    state = "duplicate (no-op)" if was_duplicate else "ingested"
+    print(f"Vakaros session {session_id}  [{state}]")
+    print(f"  source file  : {path.name}")
+    if row is not None:
+        print(f"  source hash  : {row['source_hash']}")
+        print(f"  start  (UTC) : {row['start_utc']}")
+        print(f"  end    (UTC) : {row['end_utc']}")
+    print(f"  positions    : {counts['positions']}")
+    print(f"  line pings   : {counts['line_positions']}")
+    print(f"  race events  : {counts['race_events']}")
+    print(f"  wind samples : {counts['winds']}")
+
+
+# ---------------------------------------------------------------------------
 # link-video
 # ---------------------------------------------------------------------------
 
@@ -1608,6 +1669,13 @@ def _build_parser() -> argparse.ArgumentParser:
     st_target.add_argument("--session", type=int, metavar="ID", help="Audio session ID to scan")
     st_target.add_argument("--all", action="store_true", help="Scan all sessions with transcripts")
 
+    # -- Vakaros VKX ingest (#458) --------------------------------------
+    vk = sub.add_parser(
+        "vakaros-ingest",
+        help="Parse and ingest a Vakaros VKX log file",
+    )
+    vk.add_argument("path", help="Path to a .vkx file")
+
     # -- Federation: identity -------------------------------------------
     id_parser = sub.add_parser("identity", help="Manage boat identity")
     id_sub = id_parser.add_subparsers(dest="identity_command", required=True)
@@ -1702,6 +1770,8 @@ def main() -> None:
                 asyncio.run(_detect_maneuvers(args.session, getattr(args, "all", False)))
             case "scan-transcript":
                 asyncio.run(_scan_transcript(args.session, getattr(args, "all", False)))
+            case "vakaros-ingest":
+                asyncio.run(_vakaros_ingest(args.path))
             case "identity":
                 match args.identity_command:
                     case "init":

@@ -175,6 +175,50 @@ async def test_store_vakaros_session_is_idempotent_on_source_hash(storage: Stora
 
 
 @pytest.mark.asyncio
+async def test_ingest_vkx_file_parses_stores_and_detects_duplicates(
+    storage: Storage, tmp_path: object
+) -> None:
+    import math
+    import struct
+    from pathlib import Path
+
+    from helmlog.vakaros import ingest_vkx_file
+
+    # Hand-built minimal VKX: page header + one Position row + page terminator.
+    header = bytes([0xFF, 0x05, 0, 0, 0, 0, 0, 0])
+    ts_ms = 1_700_000_000_000
+    payload = struct.pack(
+        "<Qiifffffff",
+        ts_ms,
+        round(37.8044 / 1e-7),
+        round(-122.2712 / 1e-7),
+        3.5,
+        math.radians(45.0),
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    row = bytes([0x02]) + payload
+    terminator = bytes([0xFE]) + struct.pack("<H", len(row))
+    buf = header + row + terminator
+
+    assert isinstance(tmp_path, Path)
+    vkx_path = tmp_path / "session_001.vkx"
+    vkx_path.write_bytes(buf)
+
+    session_id, was_duplicate = await ingest_vkx_file(storage, vkx_path)
+    assert session_id > 0
+    assert was_duplicate is False
+
+    # Second ingest of the same file is a no-op dedupe hit.
+    session_id_2, was_duplicate_2 = await ingest_vkx_file(storage, vkx_path)
+    assert session_id_2 == session_id
+    assert was_duplicate_2 is True
+
+
+@pytest.mark.asyncio
 async def test_delete_vakaros_session_cascades(storage: Storage) -> None:
     session = _make_session(source_hash="c" * 64)
     session_id = await storage.store_vakaros_session(session)

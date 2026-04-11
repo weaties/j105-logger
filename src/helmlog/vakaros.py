@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
+
+    from helmlog.storage import Storage
 
 # ---------------------------------------------------------------------------
 # Row keys
@@ -286,3 +289,17 @@ def parse_vkx(buf: bytes) -> Iterator[DecodedRow]:
             yield _decode_wind(payload)
         # All other keys (page header/terminator, internal, not-yet-decoded) skip.
         pos = end
+
+
+async def ingest_vkx_file(storage: Storage, path: Path) -> tuple[int, bool]:
+    """Read, parse, and store a single VKX file.
+
+    Returns (session_id, was_duplicate). `was_duplicate` is True when a
+    session with the same SHA-256 content hash already exists in the
+    database — in that case no new rows are written.
+    """
+    buf = path.read_bytes()
+    session = parse_vkx_session(buf, source_file=path.name)
+    before_id = await storage.find_vakaros_session_by_hash(session.source_hash)
+    session_id = await storage.store_vakaros_session(session)
+    return session_id, before_id is not None

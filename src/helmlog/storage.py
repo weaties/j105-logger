@@ -7848,6 +7848,16 @@ class Storage:
     # Vakaros VKX ingest (#458)
     # ------------------------------------------------------------------
 
+    async def find_vakaros_session_by_hash(self, source_hash: str) -> int | None:
+        """Return the id of a stored Vakaros session with this hash, or None."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id FROM vakaros_sessions WHERE source_hash = ?",
+            (source_hash,),
+        )
+        row = await cur.fetchone()
+        return int(row["id"]) if row is not None else None
+
     async def store_vakaros_session(self, session: VakarosSession) -> int:
         """Insert a parsed Vakaros session and all its child rows.
 
