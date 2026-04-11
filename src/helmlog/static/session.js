@@ -91,6 +91,17 @@ let _vakarosSyntheticStart = null; // {ts, source} placeholder injected from VKX
 // running.
 const _LARGE_JUMP_SEC = 2.0;
 
+// Project a (lat, lon) point along a true-north bearing for a given distance
+// in meters. Equirectangular approximation — accurate to ~1 m at race scale.
+function _offsetPoint(lat, lon, bearingDeg, distM) {
+  const br = bearingDeg * Math.PI / 180;
+  const dy = distM * Math.cos(br);
+  const dx = distM * Math.sin(br);
+  const newLat = lat + dy / 111320;
+  const newLon = lon + dx / (111320 * Math.cos(lat * Math.PI / 180));
+  return [newLat, newLon];
+}
+
 // Transcript auto-follow state. The transcript container scrolls itself to
 // keep the active segment visible, but if the user scrolls manually we
 // disable that until they click a segment (which re-anchors).
@@ -362,13 +373,47 @@ async function loadVakarosOverlay() {
       color: pinColor, weight: 3, dashArray: '6, 6', opacity: 0.9,
     }).addTo(_map).bindPopup('Vakaros start line');
 
+    // Wind ticks: a short line from each line endpoint pointing UPWIND
+    // at the moment of the start gun. Lets you eyeball the bias visually
+    // — if both ticks make the same angle with the start line, the line
+    // is square; otherwise the more-perpendicular end is favoured.
+    const ctx = data.race_start_context;
+    if (ctx && ctx.twd_deg != null) {
+      const tickLen = Math.max(60, (data.line.length_m || 0) * 0.6);
+      const pinUp = _offsetPoint(data.line.pin[0], data.line.pin[1], ctx.twd_deg, tickLen);
+      const boatUp = _offsetPoint(data.line.boat[0], data.line.boat[1], ctx.twd_deg, tickLen);
+      const twdLabel = Math.round(ctx.twd_deg) + '\u00b0';
+      const tws = ctx.tws_kts != null ? ctx.tws_kts.toFixed(1) + ' kt' : '?';
+      const popup = 'Wind at gun: ' + twdLabel + ' \u00b7 ' + tws;
+      L.polyline([data.line.pin, pinUp], {
+        color: vakarosTrackColor, weight: 2, opacity: 0.85,
+      }).addTo(_map).bindPopup(popup);
+      L.polyline([data.line.boat, boatUp], {
+        color: vakarosTrackColor, weight: 2, opacity: 0.85,
+      }).addTo(_map).bindPopup(popup);
+      // Small marker at each upwind tip so the direction reads cleanly.
+      L.circleMarker(pinUp, {radius: 3, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1}).addTo(_map);
+      L.circleMarker(boatUp, {radius: 3, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1}).addTo(_map);
+    }
+
     // Line info panel below the map.
     const infoEl = document.getElementById('vakaros-line-info');
     if (infoEl) {
       const bearing = data.line.bearing_deg.toFixed(1).padStart(5, '0');
-      infoEl.textContent =
-        'Start line: ' + data.line.length_m.toFixed(1) + ' m \u00b7 ' +
+      let txt = 'Start line: ' + data.line.length_m.toFixed(1) + ' m \u00b7 ' +
         bearing + '\u00b0 T (pin \u2192 boat)';
+      if (ctx && ctx.twd_deg != null) {
+        txt += ' \u00b7 wind ' + Math.round(ctx.twd_deg) + '\u00b0 T';
+      }
+      if (ctx && ctx.line_bias_deg != null && ctx.favored_end) {
+        if (ctx.favored_end === 'square') {
+          txt += ' \u00b7 square';
+        } else {
+          txt += ' \u00b7 ' + Math.abs(ctx.line_bias_deg).toFixed(1) +
+            '\u00b0 favoring ' + ctx.favored_end;
+        }
+      }
+      infoEl.textContent = txt;
       infoEl.style.display = '';
     }
   }
