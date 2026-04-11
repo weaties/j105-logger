@@ -380,14 +380,14 @@ def extract_local_track(
         forward = ny * cos_b + ex * sin_b
         cross = ex * cos_b - ny * sin_b
         t_rel = (ts - maneuver_ts).total_seconds()
-        bv = bsp_by_sec.get(ts.isoformat()[:19])
+        bv_opt = bsp_by_sec.get(ts.isoformat()[:19])
         pt: dict[str, float] = {
             "t": round(t_rel, 1),
             "x": round(cross, 2),
             "y": round(forward, 2),
         }
-        if bv is not None:
-            pt["bsp"] = round(bv, 2)
+        if bv_opt is not None:
+            pt["bsp"] = round(bv_opt, 2)
         out.append(pt)
     return out
 
@@ -474,15 +474,15 @@ async def enrich_session_maneuvers(
             folded = abs(signed_twa) % 360.0
             twa.append((ts, folded if folded <= 180.0 else 360.0 - folded))
             # TWD = heading + signed TWA (wind_angle_deg is positive-starboard).
-            hv = hdg_by_sec.get(ts.isoformat()[:19])
-            if hv is not None:
-                twd.append((ts, (hv + signed_twa + 360.0) % 360.0))
+            hv_opt = hdg_by_sec.get(ts.isoformat()[:19])
+            if hv_opt is not None:
+                twd.append((ts, (hv_opt + signed_twa + 360.0) % 360.0))
         else:
             twd_val = float(r["wind_angle_deg"]) % 360.0
             twd.append((ts, twd_val))
-            hv = hdg_by_sec.get(ts.isoformat()[:19])
-            if hv is not None:
-                raw = (twd_val - hv + 360.0) % 360.0
+            hv_opt = hdg_by_sec.get(ts.isoformat()[:19])
+            if hv_opt is not None:
+                raw = (twd_val - hv_opt + 360.0) % 360.0
                 twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
 
     positions: list[tuple[datetime, float, float]] = [
