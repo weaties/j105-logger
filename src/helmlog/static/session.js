@@ -83,6 +83,7 @@ function _stopPlayTick() {
 
 let _maneuvers = []; // loaded maneuver list
 let _maneuverMarkers = []; // Leaflet markers for maneuvers
+let _vakarosSyntheticStart = null; // {ts, source} placeholder injected from VKX
 let _transcriptId = null; // transcript ID for tuning extraction
 let _tuningSegmentAudio = null; // shared <audio> for segment playback
 let _tuningSegmentTimer = null; // timeupdate stop timer
@@ -335,7 +336,8 @@ async function loadVakarosOverlay() {
   }
 
   // Race-start marker on the SK track, positioned at the point closest in time
-  // to the RACE_START event.
+  // to the RACE_START event. Also inject a synthetic "start" entry into the
+  // maneuvers panel so the race start shows up in the event list.
   const raceStart = (data.race_events || []).find(e => e.event_type === 'race_start');
   if (raceStart && _trackData && _trackData.timestamps.length) {
     const startUtc = new Date(raceStart.ts.endsWith('Z') || raceStart.ts.includes('+') ? raceStart.ts : raceStart.ts + 'Z');
@@ -349,7 +351,27 @@ async function loadVakarosOverlay() {
     L.circleMarker(latLng, {
       radius: 9, color: startColor, fillColor: startColor, fillOpacity: 1, weight: 2,
     }).addTo(_map).bindPopup('Vakaros race start \u00b7 ' + startUtc.toISOString());
+
+    // Stash a synthetic "start" row so the maneuvers panel can show it.
+    // loadManeuvers() reads this and merges it after fetching the API.
+    _vakarosSyntheticStart = {
+      id: 'vakaros-race-start',
+      type: 'start',
+      ts: startUtc.toISOString(),
+      source: 'vakaros',
+    };
+    _injectVakarosStartIntoManeuvers();
   }
+}
+
+function _injectVakarosStartIntoManeuvers() {
+  if (!_vakarosSyntheticStart) return;
+  const existing = _maneuvers.find(m => m.id === 'vakaros-race-start');
+  if (existing) return;
+  _maneuvers.push(_vakarosSyntheticStart);
+  _maneuverSelected.add('vakaros-race-start');
+  // Re-sort so the start lands in chronological order.
+  if (typeof renderManeuverCard === 'function') renderManeuverCard();
 }
 
 function _nearestIndex(latlng) {
@@ -2086,7 +2108,7 @@ function renderPolarHeatmap() {
 // Maneuvers
 // ---------------------------------------------------------------------------
 
-const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
+const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
 const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
@@ -2117,6 +2139,8 @@ async function loadManeuvers() {
   _maneuvers = await r.json();
   // Default: select all maneuvers for overlay when a new list arrives.
   _maneuverSelected = new Set(_maneuvers.map((m, i) => m.id != null ? m.id : i));
+  // Re-inject the Vakaros race start if the overlay already stashed one.
+  _injectVakarosStartIntoManeuvers();
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
 }
