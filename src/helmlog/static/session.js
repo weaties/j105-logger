@@ -102,6 +102,39 @@ function _offsetPoint(lat, lon, bearingDeg, distM) {
   return [newLat, newLon];
 }
 
+// Format milliseconds relative to a reference (positive after, negative
+// before) as e.g. "T-5:30" or "T+0:42". Used for line-ping tooltips so the
+// crew can see how long before the gun each end was set.
+function _fmtRelativeToStart(deltaMs) {
+  const sign = deltaMs >= 0 ? '+' : '-';
+  const absS = Math.round(Math.abs(deltaMs) / 1000);
+  const mm = Math.floor(absS / 60);
+  const ss = absS % 60;
+  return 'T' + sign + mm + ':' + String(ss).padStart(2, '0');
+}
+
+// Build a small SVG-based Leaflet divIcon. `opacity` controls the visual
+// saturation/strength so older pings can be drawn dimmer than the active
+// (most recent) one without changing the color hue.
+function _vakarosFlagIcon(color, opacity) {
+  const html = '<div style="opacity:' + opacity + ';transform:translate(-4px,-22px);filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5))">'
+    + '<svg viewBox="0 0 24 26" width="24" height="26" xmlns="http://www.w3.org/2000/svg">'
+    + '<line x1="4" y1="3" x2="4" y2="24" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>'
+    + '<path d="M4 3 L20 8 L4 13 Z" fill="' + color + '" stroke="#fff" stroke-width="1"/>'
+    + '</svg></div>';
+  return L.divIcon({className: 'vakaros-flag', html: html, iconSize: [24, 26], iconAnchor: [4, 22]});
+}
+
+function _vakarosBoatIcon(color, opacity) {
+  const html = '<div style="opacity:' + opacity + ';transform:translate(-14px,-12px);filter:drop-shadow(0 1px 1px rgba(0,0,0,0.5))">'
+    + '<svg viewBox="0 0 28 22" width="28" height="22" xmlns="http://www.w3.org/2000/svg">'
+    + '<line x1="14" y1="12" x2="14" y2="2" stroke="#fff" stroke-width="1.6"/>'
+    + '<path d="M14 4 L22 12 L14 12 Z" fill="' + color + '" stroke="#fff" stroke-width="0.8"/>'
+    + '<path d="M2 12 L26 12 L22 19 L6 19 Z" fill="' + color + '" stroke="#fff" stroke-width="1"/>'
+    + '</svg></div>';
+  return L.divIcon({className: 'vakaros-boat', html: html, iconSize: [28, 22], iconAnchor: [14, 12]});
+}
+
 // Transcript auto-follow state. The transcript container scrolls itself to
 // keep the active segment visible, but if the user scrolls manually we
 // disable that until they click a segment (which re-anchors).
@@ -357,16 +390,43 @@ async function loadVakarosOverlay() {
   const startColor = cssVar('--success') || '#34d399';
   const vakarosTrackColor = cssVar('--accent') || '#8b5cf6';
 
-  // Line-position markers (pin + committee boat pings).
-  for (const lp of (data.line_positions || [])) {
-    const latLng = [lp.latitude_deg, lp.longitude_deg];
-    const color = lp.line_type === 'pin' ? pinColor : boatColor;
-    const label = lp.line_type === 'pin' ? 'Pin' : 'Committee boat';
-    const tip = 'Vakaros ' + label + ' ping';
-    L.circleMarker(latLng, {
-      radius: 7, color: color, fillColor: color, fillOpacity: 1, weight: 2,
-    }).addTo(_map).bindTooltip(tip).bindPopup(tip);
+  // Line-position markers (pin = flag, committee boat = boat icon).
+  // Group by type so we can saturate the most recent of each type at full
+  // strength and dim earlier pings.
+  const linePings = data.line_positions || [];
+  const raceStartCtx = data.race_start_context;
+  const raceStartMs = raceStartCtx && raceStartCtx.ts
+    ? new Date(raceStartCtx.ts.endsWith('Z') || raceStartCtx.ts.includes('+') ? raceStartCtx.ts : raceStartCtx.ts + 'Z').getTime()
+    : null;
+  const byType = {pin: [], boat: []};
+  for (const lp of linePings) {
+    if (byType[lp.line_type]) byType[lp.line_type].push(lp);
   }
+  ['pin', 'boat'].forEach(function(type) {
+    const pings = byType[type];
+    pings.forEach(function(lp, idx) {
+      const isLatest = idx === pings.length - 1;
+      const opacity = isLatest ? 1.0 : 0.4;
+      const color = type === 'pin' ? pinColor : boatColor;
+      const label = type === 'pin' ? 'Pin' : 'Committee boat';
+      const icon = type === 'pin'
+        ? _vakarosFlagIcon(color, opacity)
+        : _vakarosBoatIcon(color, opacity);
+      // Tooltip + popup: when this ping was set, relative to race start.
+      const lpMs = new Date(lp.ts.endsWith('Z') || lp.ts.includes('+') ? lp.ts : lp.ts + 'Z').getTime();
+      let tip = 'Vakaros ' + label + ' ping';
+      if (raceStartMs != null) {
+        tip += ' \u00b7 ' + _fmtRelativeToStart(lpMs - raceStartMs);
+      }
+      if (!isLatest) tip += ' (earlier)';
+      const marker = L.marker([lp.latitude_deg, lp.longitude_deg], {icon: icon})
+        .addTo(_map)
+        .bindTooltip(tip)
+        .bindPopup(tip);
+      // Push the active (latest) ping to the top of the z-order.
+      if (isLatest && marker.setZIndexOffset) marker.setZIndexOffset(500);
+    });
+  });
 
   // Start line (dashed polyline between the most recent pin and boat pings).
   if (data.line) {
