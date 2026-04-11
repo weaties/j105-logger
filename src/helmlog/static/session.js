@@ -2157,35 +2157,46 @@ function _renderTrackSvg(tracks, opts) {
     return best;
   });
 
-  // "Climb the ladder" ghost references — dashed vertical segments from
-  // the origin to each track's idealized upwind-progress endpoint. Lets
-  // you see at a glance how far you *would* have made had the tack been
-  // a zero-loss instant turn. Also draws a marker on the actual track at
-  // the same moment in time and connects them to show the upwind gap.
+  // "Climb the ladder" ghost references. In the wind-up frame the ghost
+  // is a dashed vertical segment from the origin to (0, ghost_m) — that
+  // is where a zero-loss instant-turn boat would be sitting at t=duration.
+  //
+  // To show the upwind gap against the actual track we:
+  //   1. Mark the actual boat position at t=duration (filled circle).
+  //   2. Drop a horizontal ("perpendicular to the wind") dashed line
+  //      from that point onto the wind axis — this is the projection
+  //      of the actual position onto the ladder.
+  //   3. Draw a vertical gap segment from the projection up to the
+  //      ghost endpoint. Its length is the upwind loss vs the ghost.
+  //   4. Label only the vertical gap so the number matches the shape.
   const ghostLines = tracks.map((t, i) => {
     if (t.ghost == null || isNaN(t.ghost)) return '';
     const gy1 = sy(0), gy2 = sy(t.ghost);
     let out = '<line x1="' + originX + '" y1="' + gy1 + '" x2="' + originX + '" y2="' + gy2
       + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>'
-      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2.5" fill="' + t.color + '" opacity="0.7"/>';
+      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2.5" fill="none" stroke="' + t.color
+      + '" stroke-width="1.2" opacity="0.8"/>';
 
     const actual = actualAtDuration[i];
     if (actual) {
       const ax = sx(actual.x), ay = sy(actual.y);
+      const projY = ay;  // projection onto x=0 keeps the same y (wind component).
       // Marker on the actual track at t = duration.
       out += '<circle cx="' + ax + '" cy="' + ay + '" r="3" fill="' + t.color
         + '" stroke="var(--bg-secondary)" stroke-width="1"/>';
-      // Dashed connector from actual point to ghost endpoint.
-      out += '<line x1="' + ax + '" y1="' + ay + '" x2="' + originX + '" y2="' + gy2
-        + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="1,2" opacity="0.6"/>';
-      // Delta label — only in single-track / highlighted mode to avoid
+      // Horizontal ("perpendicular to wind") projection from actual onto wind axis.
+      out += '<line x1="' + ax + '" y1="' + ay + '" x2="' + originX + '" y2="' + projY
+        + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="1,2" opacity="0.55"/>';
+      // Vertical gap segment from projection up to ghost endpoint.
+      out += '<line x1="' + originX + '" y1="' + projY + '" x2="' + originX + '" y2="' + gy2
+        + '" stroke="' + t.color + '" stroke-width="2.5" opacity="0.9"/>';
+      // Gap label — only in single-track / highlighted mode to avoid
       // clutter in the overlay.
       if (t.highlight) {
         const deltaM = t.ghost - actual.y;
-        const midX = (ax + originX) / 2;
-        const midY = (ay + gy2) / 2;
+        const midY = (projY + gy2) / 2;
         const label = (deltaM >= 0 ? '−' : '+') + Math.abs(deltaM).toFixed(1) + ' m';
-        out += '<text x="' + (midX + 4) + '" y="' + (midY - 2) + '" font-size="10" fill="' + t.color
+        out += '<text x="' + (originX + 6) + '" y="' + (midY + 3) + '" font-size="10" fill="' + t.color
           + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:3px;stroke-linejoin:round">'
           + label + '</text>';
       }
@@ -2292,6 +2303,7 @@ function showOverlayTip(ev, idx) {
     ['BSP dip', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
     ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
     ['Dist loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['Ladder ideal', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
     ['Ladder Δ', ghostDeltaStr],
     ['TWS', twsStr],
     ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
@@ -2506,7 +2518,18 @@ function _renderManeuverDetail(m) {
     ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
     ['Time to recover', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
     ['Distance loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
-    ['Ghost upwind', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
+    ['Ladder ideal', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
+    ['Ladder Δ', (() => {
+      if (!m.track || !m.track.length || m.duration_sec == null || m.ghost_m == null) return '—';
+      let best = null, bestDt = Infinity;
+      for (const p of m.track) {
+        const dt = Math.abs(p.t - m.duration_sec);
+        if (dt < bestDt) { bestDt = dt; best = p; }
+      }
+      if (!best) return '—';
+      const d = m.ghost_m - best.y;
+      return (d >= 0 ? '−' : '+') + Math.abs(d).toFixed(1) + ' m';
+    })()],
   ];
   const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
