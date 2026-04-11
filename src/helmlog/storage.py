@@ -8173,7 +8173,20 @@ class Storage:
         sog_row = await _nearest("cogsog", "ts, sog_kts")
         pos_row = await _nearest("positions", "ts, latitude_deg, longitude_deg")
         head_row = await _nearest("headings", "ts, heading_deg")
-        wind_row = await _nearest("winds", "ts, wind_speed_kts, wind_angle_deg, reference")
+
+        # Wind: only consider true-wind references (boat-referenced TWA = 0,
+        # north-referenced TWD = 4). Apparent wind (reference = 2) is useless
+        # for polar lookup or wind-relative line bias and would otherwise
+        # poison the nearest-sample query when AWA samples are denser.
+        wind_cur = await db.execute(
+            "SELECT ts, wind_speed_kts, wind_angle_deg, reference FROM winds "
+            "WHERE reference IN (0, 4) "
+            "  AND ABS(strftime('%s', ts) - strftime('%s', ?)) <= 5 "
+            "ORDER BY ABS(strftime('%s', ts) - strftime('%s', ?)) ASC LIMIT 1",
+            (ts, ts),
+        )
+        wind_row_raw = await wind_cur.fetchone()
+        wind_row = dict(wind_row_raw) if wind_row_raw is not None else None
 
         bsp_kts = float(speed_row["speed_kts"]) if speed_row else None
         sog_kts = float(sog_row["sog_kts"]) if sog_row else None
