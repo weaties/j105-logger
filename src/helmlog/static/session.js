@@ -1996,13 +1996,400 @@ function renderPolarHeatmap() {
 // ---------------------------------------------------------------------------
 
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success') };
+const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
+let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
+let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
+let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
+let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
+
+function _parseUtc(iso) {
+  if (!iso) return null;
+  const s = (iso.endsWith('Z') || iso.includes('+')) ? iso : iso + 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function _fmtElapsed(iso) {
+  const t = _parseUtc(iso);
+  if (!t || !_session || !_session.start_utc) return '\u2014';
+  const start = _parseUtc(_session.start_utc);
+  if (!start) return '\u2014';
+  const secs = Math.max(0, Math.round((t.getTime() - start.getTime()) / 1000));
+  const mm = Math.floor(secs / 60);
+  const ss = secs % 60;
+  return '+' + String(mm).padStart(2, '0') + ':' + String(ss).padStart(2, '0');
+}
 
 async function loadManeuvers() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/maneuvers');
   if (!r.ok) return;
   _maneuvers = await r.json();
+  // Default: select all maneuvers for overlay when a new list arrives.
+  _maneuverSelected = new Set(_maneuvers.map((m, i) => m.id != null ? m.id : i));
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
+}
+
+function _manKey(m, idx) {
+  return m.id != null ? m.id : idx;
+}
+
+function toggleManeuverSelected(keyStr) {
+  // keyStr may be a number-as-string; normalise
+  const key = isNaN(Number(keyStr)) ? keyStr : Number(keyStr);
+  if (_maneuverSelected.has(key)) _maneuverSelected.delete(key);
+  else _maneuverSelected.add(key);
+  if (_maneuverOverlay) renderManeuverCard();
+}
+
+function setManeuverSelectAll(mode) {
+  if (mode === 'all') {
+    _maneuverSelected = new Set(_maneuvers.map((m, i) => _manKey(m, i)));
+  } else if (mode === 'none') {
+    _maneuverSelected = new Set();
+  } else if (mode === 'filtered') {
+    _maneuverSelected = new Set(_maneuverRows().map((m) => _manKey(m, _maneuvers.indexOf(m))));
+  }
+  renderManeuverCard();
+}
+
+function _maneuverRows() {
+  const items = _maneuvers.filter(m => {
+    if (_maneuverFilter === 'all') return true;
+    if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
+    return m.type === _maneuverFilter;
+  });
+  const key = _maneuverSort.key, dir = _maneuverSort.dir;
+  items.sort((a, b) => {
+    let av = a[key], bv = b[key];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    if (key === 'ts') { av = new Date(av).getTime(); bv = new Date(bv).getTime(); }
+    if (key === 'type') return dir * String(av).localeCompare(String(bv));
+    return dir * (av - bv);
+  });
+  return items;
+}
+
+function setManeuverSort(key) {
+  if (_maneuverSort.key === key) _maneuverSort.dir *= -1;
+  else { _maneuverSort.key = key; _maneuverSort.dir = key === 'ts' ? 1 : -1; }
+  renderManeuverCard();
+}
+
+function setManeuverFilter(f) {
+  _maneuverFilter = f;
+  renderManeuverCard();
+}
+
+function toggleManeuverOverlay() {
+  _maneuverOverlay = !_maneuverOverlay;
+  renderManeuverCard();
+}
+
+// ---------- Tack diagram rendering (SVG) ----------
+
+function _trackBounds(tracks) {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  tracks.forEach(tr => tr.forEach(p => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }));
+  if (!isFinite(minX)) return null;
+  // Square-ish bounds with a bit of padding.
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(10, Math.max(maxX - minX, maxY - minY) / 2 + 5);
+  return { minX: cx - half, maxX: cx + half, minY: cy - half, maxY: cy + half };
+}
+
+function _renderTrackSvg(tracks, opts) {
+  // tracks: array of { points, color, label, highlight?, maneuverIdx?, ghost? }
+  opts = opts || {};
+  const w = opts.width || 260;
+  const h = opts.height || 200;
+  const pad = 12;
+  const interactive = !!opts.interactive;
+  const pointSets = tracks.map(t => t.points).filter(p => p && p.length);
+  if (!pointSets.length) return '';
+  // Extend bounds so the ghost reference line (running along y) is visible
+  // even when it extends beyond the actual track.
+  const ghostYs = tracks.map(t => t.ghost).filter(v => v != null && !isNaN(v));
+  const extras = ghostYs.map(y => ({ x: 0, y }));
+  const allPoints = pointSets.concat([extras]);
+  const b = _trackBounds(allPoints);
+  if (!b) return '';
+  const sx = x => pad + (x - b.minX) / (b.maxX - b.minX) * (w - 2 * pad);
+  const sy = y => (h - pad) - (y - b.minY) / (b.maxY - b.minY) * (h - 2 * pad);
+
+  const scaleM = (b.maxX - b.minX);
+  const gridStep = scaleM > 200 ? 50 : scaleM > 80 ? 20 : 10;
+  const gridLines = [];
+  for (let gx = Math.ceil(b.minX / gridStep) * gridStep; gx <= b.maxX; gx += gridStep) {
+    gridLines.push('<line x1="' + sx(gx) + '" y1="' + pad + '" x2="' + sx(gx) + '" y2="' + (h - pad) + '" stroke="var(--border)" stroke-width="0.5"/>');
+  }
+  for (let gy = Math.ceil(b.minY / gridStep) * gridStep; gy <= b.maxY; gy += gridStep) {
+    gridLines.push('<line x1="' + pad + '" y1="' + sy(gy) + '" x2="' + (w - pad) + '" y2="' + sy(gy) + '" stroke="var(--border)" stroke-width="0.5"/>');
+  }
+
+  const originX = sx(0), originY = sy(0);
+  const crosshair = '<circle cx="' + originX + '" cy="' + originY + '" r="3" fill="var(--accent)"/>'
+    + '<line x1="' + originX + '" y1="' + (originY - 8) + '" x2="' + originX + '" y2="' + (originY + 8) + '" stroke="var(--accent)" stroke-width="0.6"/>'
+    + '<line x1="' + (originX - 8) + '" y1="' + originY + '" x2="' + (originX + 8) + '" y2="' + originY + '" stroke="var(--accent)" stroke-width="0.6"/>';
+
+  // Wind-up frame: +y = upwind. Label it so the orientation is unambiguous.
+  const windLabels = '<text x="' + (w / 2) + '" y="10" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↑ upwind</text>'
+    + '<text x="' + (w / 2) + '" y="' + (h - 12) + '" text-anchor="middle" font-size="9" fill="var(--text-secondary)">↓ downwind</text>';
+
+  // For each trace, find the actual boat position at the same moment as
+  // the ghost endpoint (t = duration_sec) — that's where the boat was
+  // when a zero-loss tack would have put it at (0, ghost_m).
+  const actualAtDuration = tracks.map(t => {
+    if (!t.points || !t.points.length || t.durationSec == null) return null;
+    let best = null;
+    let bestDt = Infinity;
+    for (const p of t.points) {
+      const dt = Math.abs(p.t - t.durationSec);
+      if (dt < bestDt) { bestDt = dt; best = p; }
+    }
+    return best;
+  });
+
+  // "Climb the ladder" ghost references. In the wind-up frame the ghost
+  // is a dashed vertical segment from the origin to (0, ghost_m) — that
+  // is where a zero-loss instant-turn boat would be sitting at t=duration.
+  //
+  // To show the upwind gap against the actual track we:
+  //   1. Mark the actual boat position at t=duration (filled circle).
+  //   2. Drop a horizontal ("perpendicular to the wind") dashed line
+  //      from that point onto the wind axis — this is the projection
+  //      of the actual position onto the ladder.
+  //   3. Draw a vertical gap segment from the projection up to the
+  //      ghost endpoint. Its length is the upwind loss vs the ghost.
+  //   4. Label only the vertical gap so the number matches the shape.
+  const ghostLines = tracks.map((t, i) => {
+    if (t.ghost == null || isNaN(t.ghost)) return '';
+    const gy1 = sy(0), gy2 = sy(t.ghost);
+    let out = '<line x1="' + originX + '" y1="' + gy1 + '" x2="' + originX + '" y2="' + gy2
+      + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>'
+      + '<circle cx="' + originX + '" cy="' + gy2 + '" r="2.5" fill="none" stroke="' + t.color
+      + '" stroke-width="1.2" opacity="0.8"/>';
+
+    const actual = actualAtDuration[i];
+    if (actual) {
+      const ax = sx(actual.x), ay = sy(actual.y);
+      const projY = ay;  // projection onto x=0 keeps the same y (wind component).
+      // Marker on the actual track at t = duration.
+      out += '<circle cx="' + ax + '" cy="' + ay + '" r="3" fill="' + t.color
+        + '" stroke="var(--bg-secondary)" stroke-width="1"/>';
+      // Horizontal ("perpendicular to wind") projection from actual onto wind axis.
+      out += '<line x1="' + ax + '" y1="' + ay + '" x2="' + originX + '" y2="' + projY
+        + '" stroke="' + t.color + '" stroke-width="1" stroke-dasharray="1,2" opacity="0.55"/>';
+      // Vertical gap segment from projection up to ghost endpoint.
+      out += '<line x1="' + originX + '" y1="' + projY + '" x2="' + originX + '" y2="' + gy2
+        + '" stroke="' + t.color + '" stroke-width="2.5" opacity="0.9"/>';
+      // Gap label — only in single-track / highlighted mode to avoid
+      // clutter in the overlay.
+      if (t.highlight) {
+        const deltaM = t.ghost - actual.y;
+        const midY = (projY + gy2) / 2;
+        const label = (deltaM >= 0 ? '−' : '+') + Math.abs(deltaM).toFixed(1) + ' m';
+        out += '<text x="' + (originX + 6) + '" y="' + (midY + 3) + '" font-size="10" fill="' + t.color
+          + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:3px;stroke-linejoin:round">'
+          + label + '</text>';
+      }
+    }
+    return out;
+  }).join('');
+
+  const paths = tracks.map(t => {
+    if (!t.points || !t.points.length) return '';
+    const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
+    const width = t.highlight ? 2.5 : 1.4;
+    const opacity = t.highlight ? 1 : 0.7;
+    let attrs = 'fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '" stroke-linecap="round"';
+    if (interactive && t.maneuverIdx != null) {
+      attrs += ' data-man-idx="' + t.maneuverIdx + '"'
+        + ' style="pointer-events:stroke;cursor:pointer"'
+        + ' onmouseenter="showOverlayTip(event,' + t.maneuverIdx + ')"'
+        + ' onmouseleave="scheduleOverlayTipHide()"'
+        + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"';
+    }
+    return '<path d="' + d + '" ' + attrs + '/>';
+  }).join('');
+
+  // Invisible fat underlay to widen hover hit-target.
+  const hoverUnderlay = interactive ? tracks.map(t => {
+    if (!t.points || !t.points.length || t.maneuverIdx == null) return '';
+    const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
+    return '<path d="' + d + '" fill="none" stroke="rgba(0,0,0,0)" stroke-width="14"'
+      + ' style="pointer-events:stroke;cursor:pointer"'
+      + ' onmouseenter="showOverlayTip(event,' + t.maneuverIdx + ')"'
+      + ' onmouseleave="scheduleOverlayTipHide()"'
+      + ' onclick="highlightManeuver(' + t.maneuverIdx + ')"/>';
+  }).join('') : '';
+
+  const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
+
+  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
+    + gridLines.join('') + ghostLines + hoverUnderlay + paths + crosshair + windLabels + scaleLabel + '</svg>';
+}
+
+// Overlay tooltip — anchored on mouseenter, stays reachable by the mouse.
+// Hiding is delayed so the cursor can traverse from the trace to the tip;
+// entering the tip itself cancels the hide, so links inside are clickable.
+let _overlayTipHideTimer = null;
+let _overlayTipIdx = null;
+
+function _ensureOverlayTip() {
+  let tip = document.getElementById('overlay-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'overlay-tip';
+    tip.style.cssText = 'position:fixed;z-index:9999;background:var(--bg-primary);'
+      + 'border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:.72rem;'
+      + 'box-shadow:0 4px 12px rgba(0,0,0,0.3);max-width:240px;display:none';
+    tip.onmouseenter = cancelOverlayTipHide;
+    tip.onmouseleave = scheduleOverlayTipHide;
+    document.body.appendChild(tip);
+  }
+  return tip;
+}
+
+function _highlightManeuverRow(idx, on) {
+  // Mirror the overlay hover on the table row so the two views stay linked.
+  document.querySelectorAll('.maneuver-table tr').forEach(r => r.classList.remove('hover-row'));
+  if (on && idx != null) {
+    const row = document.getElementById('mrow-' + idx);
+    if (row) {
+      row.classList.add('hover-row');
+      row.scrollIntoView({block: 'nearest'});
+    }
+  }
+}
+
+function showOverlayTip(ev, idx) {
+  cancelOverlayTipHide();
+  const m = _maneuvers[idx];
+  if (!m) return;
+  _overlayTipIdx = idx;
+  _highlightManeuverRow(idx, true);
+  const tip = _ensureOverlayTip();
+  const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'var(--text-secondary)';
+  const twsVal = m.entry_tws != null ? m.entry_tws : (m.tws_bin != null ? m.tws_bin : null);
+  const twsStr = twsVal != null ? ((twsVal.toFixed ? twsVal.toFixed(1) : twsVal) + ' kt') : '—';
+  // Actual upwind progress at t = duration, from the track points.
+  let ghostDelta = null;
+  if (m.track && m.track.length && m.duration_sec != null && m.ghost_m != null) {
+    let best = null, bestDt = Infinity;
+    for (const p of m.track) {
+      const dt = Math.abs(p.t - m.duration_sec);
+      if (dt < bestDt) { bestDt = dt; best = p; }
+    }
+    if (best) ghostDelta = m.ghost_m - best.y;
+  }
+  const ghostDeltaStr = ghostDelta != null
+    ? (ghostDelta >= 0 ? '−' : '+') + Math.abs(ghostDelta).toFixed(1) + ' m vs ghost'
+    : '—';
+  const rows = [
+    ['Elapsed', _fmtElapsed(m.ts)],
+    ['Time', fmtTime(m.ts)],
+    ['Duration', m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—'],
+    ['Turn', m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—'],
+    ['BSP in→out', (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—')],
+    ['BSP dip', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
+    ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
+    ['Dist loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['Ladder ideal', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
+    ['Ladder Δ', ghostDeltaStr],
+    ['TWS', twsStr],
+    ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
+  ];
+  const header = '<div style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px">'
+    + '<span><span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
+    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '') + '</span>'
+    + '<span style="color:var(--text-secondary);cursor:pointer;font-size:.8rem" onclick="hideOverlayTip()" title="Close">✕</span>'
+    + '</div>';
+  const grid = '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px">'
+    + rows.map(([k, v]) => '<span style="color:var(--text-secondary)">' + k + '</span><b>' + esc(v) + '</b>').join('')
+    + '</div>';
+  const yt = m.youtube_url
+    ? '<div style="margin-top:6px"><a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none">&#9654; Watch on YouTube &#8599;</a></div>'
+    : '';
+  tip.innerHTML = header + grid + yt;
+  tip.style.display = 'block';
+
+  // Anchor the tooltip to the overlay SVG (top-right of the container) so
+  // it does not follow the cursor. This keeps the YouTube link reachable
+  // and prevents the "tooltip runs away" problem.
+  const svgContainer = document.querySelector('#maneuvers-body svg');
+  const r = tip.getBoundingClientRect();
+  let x = ev.clientX + 14;
+  let y = ev.clientY + 14;
+  if (svgContainer) {
+    const box = svgContainer.getBoundingClientRect();
+    x = box.right + 8;
+    y = box.top;
+  }
+  if (x + r.width > window.innerWidth) x = Math.max(2, window.innerWidth - r.width - 4);
+  if (y + r.height > window.innerHeight) y = Math.max(2, window.innerHeight - r.height - 4);
+  tip.style.left = x + 'px';
+  tip.style.top = y + 'px';
+}
+
+function scheduleOverlayTipHide() {
+  cancelOverlayTipHide();
+  _overlayTipHideTimer = setTimeout(hideOverlayTip, 180);
+}
+
+function cancelOverlayTipHide() {
+  if (_overlayTipHideTimer) {
+    clearTimeout(_overlayTipHideTimer);
+    _overlayTipHideTimer = null;
+  }
+}
+
+function hideOverlayTip() {
+  cancelOverlayTipHide();
+  const tip = document.getElementById('overlay-tip');
+  if (tip) tip.style.display = 'none';
+  _highlightManeuverRow(_overlayTipIdx, false);
+  _overlayTipIdx = null;
+}
+
+function _renderOverlaySvg() {
+  const items = _maneuvers
+    .filter((m, i) => _maneuverSelected.has(_manKey(m, i)))
+    .filter(m => m.track && m.track.length);
+  if (!items.length) {
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers selected for overlay. Tick rows below to include them.</div>';
+  }
+  const tracks = items.map(m => ({
+    points: m.track,
+    color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)',
+    label: m.type,
+    highlight: false,
+    maneuverIdx: _maneuvers.indexOf(m),
+    ghost: m.ghost_m,
+    durationSec: m.duration_sec,
+  }));
+  const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
+  const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
+    + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
+    + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
+    + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
+    + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
+    + 'Entry at origin (+), entry direction ↑. Hover a trace for stats &amp; video.'
+    + '</div>';
+  return svg + legend;
+}
+
+function _manHeader(label, key) {
+  const arrow = _maneuverSort.key === key ? (_maneuverSort.dir > 0 ? ' ▲' : ' ▼') : '';
+  return '<th style="cursor:pointer" onclick="setManeuverSort(\'' + key + '\')">' + label + arrow + '</th>';
 }
 
 function renderManeuverCard() {
@@ -2018,32 +2405,149 @@ function renderManeuverCard() {
   const tacks = _maneuvers.filter(m => m.type === 'tack').length;
   const gybes = _maneuvers.filter(m => m.type === 'gybe').length;
   const roundings = _maneuvers.filter(m => m.type === 'rounding').length;
-  const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px">'
-    + tacks + ' tack' + (tacks !== 1 ? 's' : '')
-    + ' &middot; ' + gybes + ' gybe' + (gybes !== 1 ? 's' : '')
-    + ' &middot; ' + roundings + ' rounding' + (roundings !== 1 ? 's' : '')
+  const good = _maneuvers.filter(m => m.rank === 'good').length;
+  const bad = _maneuvers.filter(m => m.rank === 'bad').length;
+
+  const overlayBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverOverlay ? 'var(--accent)' : 'transparent') + ';color:'
+    + (_maneuverOverlay ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+    + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
+    + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
+    + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
+    + '<span style="flex:1"></span>'
+    + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
+    + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
-  let rows = _maneuvers.map((m, idx) => {
+  const filters = ['all', 'tack', 'gybe', 'rounding', 'good', 'bad'];
+  const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
+    + filters.map(f => {
+        const active = _maneuverFilter === f;
+        const style = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+          + (active ? 'var(--accent)' : 'transparent') + ';color:'
+          + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+        return '<button style="' + style + '" onclick="setManeuverFilter(\'' + f + '\')">' + f + '</button>';
+      }).join('')
+    + '</div>';
+
+  const items = _maneuverRows();
+  let rows = items.map((m) => {
+    const idx = _maneuvers.indexOf(m);
+    const key = _manKey(m, idx);
     const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
-    const typeBadge = '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
+    const rankColor = m.rank ? _RANK_COLORS[m.rank] : 'transparent';
+    const rankDot = m.rank
+      ? '<span title="' + m.rank + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + rankColor + ';margin-right:4px"></span>'
+      : '';
+    const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
+    const selected = _maneuverSelected.has(key);
+    const cbox = '<input type="checkbox" ' + (selected ? 'checked ' : '') + 'onclick="event.stopPropagation();toggleManeuverSelected(\'' + key + '\')" title="Include in overlay">';
+    const elapsed = _fmtElapsed(m.ts);
     const t = fmtTime(m.ts);
-    const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—';
-    const loss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
-    const cond = (m.twa_bin != null ? m.twa_bin + '° TWA' : '') + (m.tws_bin != null ? (m.twa_bin != null ? ', ' : '') + m.tws_bin + ' kt TWS' : '');
+    const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
+    const turn = m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—';
+    const bspDip = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—';
+    const distLoss = m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—';
+    const entry = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—');
+    // Fall back to the detector's stored tws_bin (integer kt) when the
+    // averaged entry window didn't hit any wind samples.
+    const twsVal = m.entry_tws != null ? m.entry_tws : (m.tws_bin != null ? m.tws_bin : null);
+    const cond = twsVal != null ? (twsVal.toFixed ? twsVal.toFixed(0) : twsVal) + ' kt' : '—';
+    const yt = m.youtube_url
+      ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
+      : '';
     return '<tr id="mrow-' + idx + '" style="cursor:pointer" onclick="highlightManeuver(' + idx + ')">'
+      + '<td>' + cbox + '</td>'
       + '<td>' + typeBadge + '</td>'
+      + '<td style="font-variant-numeric:tabular-nums">' + elapsed + '</td>'
       + '<td>' + t + '</td>'
       + '<td>' + dur + '</td>'
-      + '<td>' + loss + '</td>'
-      + '<td>' + esc(cond || '—') + '</td>'
+      + '<td>' + turn + '</td>'
+      + '<td>' + entry + '</td>'
+      + '<td title="BSP dip from pre-maneuver baseline to minimum BSP during the turn. Not exit−entry.">' + bspDip + '</td>'
+      + '<td>' + distLoss + '</td>'
+      + '<td>' + esc(cond) + '</td>'
+      + '<td>' + yt + '</td>'
       + '</tr>';
   }).join('');
 
-  body.innerHTML = summary
+  const overlayBlock = _maneuverOverlay
+    ? '<div style="margin-bottom:8px">' + _renderOverlaySvg() + '</div>'
+    : '';
+
+  const selCount = _maneuverSelected.size;
+  const selectBar = '<div style="font-size:.7rem;color:var(--text-secondary);margin:4px 0;display:flex;gap:6px;align-items:center">'
+    + '<span>Overlay: ' + selCount + ' selected</span>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'none\')">none</button>'
+    + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'filtered\')">match filter</button>'
+    + '</div>';
+
+  body.innerHTML = summary + filterBar + overlayBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
-    + '<th>Type</th><th>Time</th><th>Duration</th><th>BSP Loss</th><th>Conditions</th>'
-    + '</tr></thead><tbody>' + rows + '</tbody></table>';
+    + '<th title="Include in overlay"></th>'
+    + _manHeader('Type', 'type')
+    + '<th>Elapsed</th>'
+    + _manHeader('Time', 'ts')
+    + _manHeader('Dur', 'duration_sec')
+    + _manHeader('Turn', 'turn_angle_deg')
+    + '<th>BSP in→out</th>'
+    + '<th title="BSP dip: baseline − min BSP during the turn. Not exit−entry." onclick="setManeuverSort(\'loss_kts\')" style="cursor:pointer">BSP dip' + (_maneuverSort.key === 'loss_kts' ? (_maneuverSort.dir > 0 ? ' ▲' : ' ▼') : '') + '</th>'
+    + _manHeader('Dist loss', 'distance_loss_m')
+    + '<th>TWS</th><th></th>'
+    + '</tr></thead><tbody>' + rows + '</tbody></table>'
+    + '<div id="maneuver-detail" style="margin-top:8px"></div>';
+}
+
+function _renderManeuverDetail(m) {
+  const el = document.getElementById('maneuver-detail');
+  if (!el) return;
+  if (!m) { el.innerHTML = ''; return; }
+  const bspDipLabel = m.loss_kts != null && m.entry_bsp != null && m.min_bsp != null
+    ? m.loss_kts.toFixed(2) + ' kt (' + m.entry_bsp.toFixed(1) + '→' + m.min_bsp.toFixed(1) + ')'
+    : (m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—');
+  const rows = [
+    ['Entry HDG', m.entry_hdg != null ? m.entry_hdg.toFixed(0) + '°' : '—'],
+    ['Exit HDG', m.exit_hdg != null ? m.exit_hdg.toFixed(0) + '°' : '—'],
+    ['Turn rate', m.turn_rate_deg_s != null ? m.turn_rate_deg_s.toFixed(1) + '°/s' : '—'],
+    ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
+    ['BSP dip', bspDipLabel],
+    ['Entry TWA', m.entry_twa != null ? m.entry_twa.toFixed(0) + '°' : '—'],
+    ['Exit TWA', m.exit_twa != null ? m.exit_twa.toFixed(0) + '°' : '—'],
+    ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
+    ['Time to recover', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
+    ['Distance loss', m.distance_loss_m != null ? m.distance_loss_m.toFixed(1) + ' m' : '—'],
+    ['Ladder ideal', m.ghost_m != null ? m.ghost_m.toFixed(1) + ' m' : '—'],
+    ['Ladder Δ', (() => {
+      if (!m.track || !m.track.length || m.duration_sec == null || m.ghost_m == null) return '—';
+      let best = null, bestDt = Infinity;
+      for (const p of m.track) {
+        const dt = Math.abs(p.t - m.duration_sec);
+        if (dt < bestDt) { bestDt = dt; best = p; }
+      }
+      if (!best) return '—';
+      const d = m.ghost_m - best.y;
+      return (d >= 0 ? '−' : '+') + Math.abs(d).toFixed(1) + ' m';
+    })()],
+  ];
+  const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
+    + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
+    + '</div>';
+  const diagram = (m.track && m.track.length)
+    ? _renderTrackSvg([{
+        points: m.track,
+        color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
+        label: m.type,
+        highlight: true,
+        ghost: m.ghost_m,
+        durationSec: m.duration_sec,
+      }], { width: 300, height: 240 })
+    : '';
+  el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
+    + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
+    + (diagram ? '<div>' + diagram + '</div>' : '')
+    + '</div>';
 }
 
 function _addManeuverMarkers() {
@@ -2081,11 +2585,20 @@ function highlightManeuver(idx) {
     row.classList.add('active-row');
     row.scrollIntoView({block: 'nearest'});
   }
-  // Move map cursor to maneuver position
   const m = _maneuvers[idx];
+  _renderManeuverDetail(m);
+  // Move map cursor to maneuver position
   if (m && _trackData) {
     const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
     setPosition(ts);
+  }
+  // Seek the embedded player to the maneuver moment if a video is loaded.
+  if (m && _videoSync && _videoSync.player) {
+    const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
+    const offset = _utcToVideoOffset(ts);
+    if (offset != null && offset >= 0 && _videoSync.player.seekTo) {
+      try { _videoSync.player.seekTo(offset, true); } catch (e) { /* ignore */ }
+    }
   }
   // Open the marker popup if available
   if (_maneuverMarkers[idx]) _maneuverMarkers[idx].openPopup();
