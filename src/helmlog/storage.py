@@ -7966,6 +7966,69 @@ class Storage:
         await db.execute("DELETE FROM vakaros_sessions WHERE id = ?", (session_id,))
         await db.commit()
 
+    async def get_vakaros_overlay_for_race(self, race_id: int) -> dict[str, Any] | None:
+        """Return the Vakaros overlay payload for a race, or None if unmatched.
+
+        Payload shape:
+            {
+                "vakaros_session_id": int,
+                "track": GeoJSON Feature (LineString, [lon, lat] order) | None,
+                "line_positions": [{"line_type": "pin"|"boat", ...}, ...],
+                "race_events": [{"ts", "event_type", "timer_value_s"}, ...],
+            }
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id FROM vakaros_sessions WHERE matched_race_id = ? LIMIT 1",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        vakaros_id = int(row["id"])
+
+        pos_cur = await db.execute(
+            "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
+            "FROM vakaros_positions WHERE session_id = ? ORDER BY ts",
+            (vakaros_id,),
+        )
+        positions = await pos_cur.fetchall()
+        track: dict[str, Any] | None = None
+        if positions:
+            coords = [[p["longitude_deg"], p["latitude_deg"]] for p in positions]
+            track = {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "vakaros_session_id": vakaros_id,
+                    "points": len(coords),
+                    "timestamps": [p["ts"] for p in positions],
+                    "sog_mps": [p["sog_mps"] for p in positions],
+                    "cog_deg": [p["cog_deg"] for p in positions],
+                },
+            }
+
+        line_cur = await db.execute(
+            "SELECT ts, line_type, latitude_deg, longitude_deg "
+            "FROM vakaros_line_positions WHERE session_id = ? ORDER BY ts",
+            (vakaros_id,),
+        )
+        line_positions = [dict(r) for r in await line_cur.fetchall()]
+
+        evt_cur = await db.execute(
+            "SELECT ts, event_type, timer_value_s "
+            "FROM vakaros_race_events WHERE session_id = ? ORDER BY ts",
+            (vakaros_id,),
+        )
+        race_events = [dict(r) for r in await evt_cur.fetchall()]
+
+        return {
+            "vakaros_session_id": vakaros_id,
+            "track": track,
+            "line_positions": line_positions,
+            "race_events": race_events,
+        }
+
     async def list_vakaros_sessions(self) -> list[dict[str, Any]]:
         """Return all Vakaros sessions with row counts and matched-race name.
 

@@ -335,6 +335,40 @@ async def api_session_track(
     return JSONResponse({"type": "FeatureCollection", "features": [feature]})
 
 
+@router.get("/api/sessions/{session_id}/vakaros-overlay")
+@limiter.limit("30/minute")
+async def api_session_vakaros_overlay(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return Vakaros overlay data (track, start line, race events) for a race (#458).
+
+    Used by the session detail page to augment the SK track with Vakaros-native
+    overlays when a matched Vakaros session exists. Returns ``matched: false``
+    with empty collections when the race is valid but has no matched session,
+    and 404 when the race itself does not exist.
+    """
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+
+    overlay = await storage.get_vakaros_overlay_for_race(session_id)
+    if overlay is None:
+        return JSONResponse(
+            {
+                "matched": False,
+                "vakaros_session_id": None,
+                "track": None,
+                "line_positions": [],
+                "race_events": [],
+            }
+        )
+    return JSONResponse({"matched": True, **overlay})
+
+
 @router.get("/api/sessions/{session_id}/detail")
 async def api_session_detail(
     request: Request,

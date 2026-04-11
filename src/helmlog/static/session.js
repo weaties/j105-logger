@@ -259,6 +259,62 @@ async function loadTrack() {
 
   _map.fitBounds(line.getBounds(), {padding: [20, 20]});
   document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a discussion at that point';
+
+  // #458 — if a matched Vakaros session exists, overlay start line, line pings,
+  // and race-start marker on top of the SK track.
+  try {
+    await loadVakarosOverlay();
+  } catch (err) {
+    console.warn('Vakaros overlay failed to load:', err);
+  }
+}
+
+async function loadVakarosOverlay() {
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/vakaros-overlay');
+  if (!r.ok) return;
+  const data = await r.json();
+  if (!data || !data.matched) return;
+
+  const pinColor = cssVar('--warning') || '#f59e0b';
+  const boatColor = cssVar('--accent-strong') || '#60a5fa';
+  const startColor = cssVar('--success') || '#34d399';
+
+  // Line-position markers (pin + committee boat pings).
+  const linePoints = {};  // keyed by line_type
+  for (const lp of (data.line_positions || [])) {
+    const latLng = [lp.latitude_deg, lp.longitude_deg];
+    const color = lp.line_type === 'pin' ? pinColor : boatColor;
+    const label = lp.line_type === 'pin' ? 'Pin' : 'Committee boat';
+    L.circleMarker(latLng, {
+      radius: 7, color: color, fillColor: color, fillOpacity: 1, weight: 2,
+    }).addTo(_map).bindPopup('Vakaros ' + label + ' ping');
+    // Keep only the most recent ping of each type for drawing the line.
+    linePoints[lp.line_type] = latLng;
+  }
+
+  // Start line (dashed polyline between pin and boat).
+  if (linePoints.pin && linePoints.boat) {
+    L.polyline([linePoints.pin, linePoints.boat], {
+      color: pinColor, weight: 3, dashArray: '6, 6', opacity: 0.9,
+    }).addTo(_map).bindPopup('Vakaros start line');
+  }
+
+  // Race-start marker on the SK track, positioned at the point closest in time
+  // to the RACE_START event.
+  const raceStart = (data.race_events || []).find(e => e.event_type === 'race_start');
+  if (raceStart && _trackData && _trackData.timestamps.length) {
+    const startUtc = new Date(raceStart.ts.endsWith('Z') || raceStart.ts.includes('+') ? raceStart.ts : raceStart.ts + 'Z');
+    let nearestIdx = 0;
+    let minDelta = Infinity;
+    for (let i = 0; i < _trackData.timestamps.length; i++) {
+      const d = Math.abs(_trackData.timestamps[i] - startUtc);
+      if (d < minDelta) { minDelta = d; nearestIdx = i; }
+    }
+    const latLng = _trackData.latLngs[nearestIdx];
+    L.circleMarker(latLng, {
+      radius: 9, color: startColor, fillColor: startColor, fillOpacity: 1, weight: 2,
+    }).addTo(_map).bindPopup('Vakaros race start \u00b7 ' + startUtc.toISOString());
+  }
 }
 
 function _nearestIndex(latlng) {
