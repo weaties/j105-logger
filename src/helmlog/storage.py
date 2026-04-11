@@ -7966,6 +7966,37 @@ class Storage:
         await db.execute("DELETE FROM vakaros_sessions WHERE id = ?", (session_id,))
         await db.commit()
 
+    async def list_vakaros_sessions(self) -> list[dict[str, Any]]:
+        """Return all Vakaros sessions with row counts and matched-race name.
+
+        Intended for the admin listing page.  Ordered newest first.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            """
+            SELECT
+                vs.id,
+                vs.source_file,
+                vs.source_hash,
+                vs.start_utc,
+                vs.end_utc,
+                vs.ingested_at,
+                vs.matched_race_id,
+                r.name AS matched_race_name,
+                (SELECT COUNT(*) FROM vakaros_positions WHERE session_id = vs.id)
+                    AS position_count,
+                (SELECT COUNT(*) FROM vakaros_line_positions WHERE session_id = vs.id)
+                    AS line_count,
+                (SELECT COUNT(*) FROM vakaros_race_events WHERE session_id = vs.id)
+                    AS event_count
+            FROM vakaros_sessions vs
+            LEFT JOIN races r ON r.id = vs.matched_race_id
+            ORDER BY vs.start_utc DESC
+            """
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
     async def match_vakaros_session_to_race(self, session_id: int) -> int | None:
         """Link a Vakaros session to an overlapping race.
 
