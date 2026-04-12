@@ -76,6 +76,13 @@ class AudioSession:
     sample_rate: int
     channels: int
     channel_map: dict[int, str] | None = None
+    # USB device identity for multi-channel playback (#494). Zero / empty
+    # when the device is not a known USB sound card (built-in mic on dev,
+    # mono fallback path).
+    vendor_id: int = 0
+    product_id: int = 0
+    serial: str = ""
+    usb_port_path: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -138,11 +145,22 @@ class AudioRecorder:
         """True if a recording is currently in progress."""
         return self._session is not None
 
-    async def start(self, config: AudioConfig, name: str | None = None) -> AudioSession:
+    async def start(
+        self,
+        config: AudioConfig,
+        name: str | None = None,
+        *,
+        detected: Any = None,  # noqa: ANN401 — DetectedDevice; loose to avoid hard import
+    ) -> AudioSession:
         """Open the audio stream and start recording to a WAV file.
 
         If *name* is provided the file is saved as ``{output_dir}/{name}.wav``.
         Otherwise the filename defaults to ``audio_YYYYMMDD_HHMMSS.wav``.
+
+        If *detected* is a ``DetectedDevice`` from ``usb_audio.detect_*`` it
+        overrides ``config.device``/``config.channels`` and persists the USB
+        identity tuple onto the returned session. Otherwise we fall back to
+        the legacy mono path driven by ``config``.
 
         Returns an AudioSession with start_utc set (end_utc is None until
         stop() is called).
@@ -152,14 +170,14 @@ class AudioRecorder:
         import sounddevice as sd
         import soundfile as sf
 
-        device_index, device_name = _resolve_device(config.device)
+        if detected is not None:
+            device_index = int(detected.sounddevice_index)
+            device_name = str(detected.name)
+            max_ch = int(detected.max_channels)
+        else:
+            device_index, device_name, max_ch = _resolve_device(config.device)
 
-        # Detect channels — if config says 1 but device supports 4 and
-        # AUTO_DETECT is on (or if we just want to be smart), we can upgrade.
-        # For now, we trust config.channels but we'll validate.
-        dev_info = sd.query_devices(device_index, "input")
-        max_ch = int(dev_info["max_input_channels"])
-        requested_ch = config.channels
+        requested_ch = max_ch if detected is not None else config.channels
 
         if requested_ch > max_ch:
             logger.warning(
@@ -232,6 +250,10 @@ class AudioRecorder:
             sample_rate=config.sample_rate,
             channels=requested_ch,
             channel_map=channel_map,
+            vendor_id=getattr(detected, "vendor_id", 0) if detected else 0,
+            product_id=getattr(detected, "product_id", 0) if detected else 0,
+            serial=getattr(detected, "serial", "") if detected else "",
+            usb_port_path=getattr(detected, "usb_port_path", "") if detected else "",
         )
 
         logger.debug(
@@ -308,8 +330,8 @@ class AudioRecorder:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_device(spec: str | int | None) -> tuple[int, str]:
-    """Resolve a device spec (name substring, index, or None) to (index, name).
+def _resolve_device(spec: str | int | None) -> tuple[int, str, int]:
+    """Resolve a device spec to ``(index, name, max_input_channels)``.
 
     Raises AudioDeviceNotFoundError if no matching input device is found.
     """
@@ -321,7 +343,7 @@ def _resolve_device(spec: str | int | None) -> tuple[int, str]:
         # Auto-detect: first device with input channels
         for idx, dev in enumerate(devices):
             if dev["max_input_channels"] > 0:
-                return idx, str(dev["name"])
+                return idx, str(dev["name"]), int(dev["max_input_channels"])
         raise AudioDeviceNotFoundError("No audio input devices found")
 
     if isinstance(spec, int):
@@ -330,13 +352,13 @@ def _resolve_device(spec: str | int | None) -> tuple[int, str]:
         dev = devices[spec]
         if dev["max_input_channels"] == 0:
             raise AudioDeviceNotFoundError(f"Device {spec} ({dev['name']!r}) has no input channels")
-        return spec, str(dev["name"])
+        return spec, str(dev["name"]), int(dev["max_input_channels"])
 
     # Name substring match (case-insensitive)
     spec_lower = spec.lower()
     for idx, dev in enumerate(devices):
         if spec_lower in str(dev["name"]).lower() and dev["max_input_channels"] > 0:
-            return idx, str(dev["name"])
+            return idx, str(dev["name"]), int(dev["max_input_channels"])
     raise AudioDeviceNotFoundError(
         f"No audio input device matching {spec!r}. "
         "Run `helmlog list-devices` to see available devices."

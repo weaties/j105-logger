@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 63
+_CURRENT_VERSION: int = 64
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1473,6 +1473,16 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_transcript_segments_channel
             ON transcript_segments(transcript_id, channel_index);
     """,
+    64: """
+        -- Multi-channel audio: persist active USB device identity onto each
+        -- audio_sessions row so playback knows which channel_map to load
+        -- (#462 pt.2 / #494). The tuple matches the channel_map composite
+        -- key from v63.
+        ALTER TABLE audio_sessions ADD COLUMN vendor_id INTEGER;
+        ALTER TABLE audio_sessions ADD COLUMN product_id INTEGER;
+        ALTER TABLE audio_sessions ADD COLUMN serial TEXT;
+        ALTER TABLE audio_sessions ADD COLUMN usb_port_path TEXT;
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -2509,6 +2519,47 @@ class Storage:
         logger.debug("Audio session stored: id={} file={}", cur.lastrowid, session.file_path)
         return cur.lastrowid
 
+    async def set_audio_session_device(
+        self,
+        session_id: int,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+    ) -> None:
+        """Persist the active USB device identity for an audio session (#494)."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE audio_sessions"
+            " SET vendor_id=?, product_id=?, serial=?, usb_port_path=?"
+            " WHERE id=?",
+            (vendor_id, product_id, serial, usb_port_path, session_id),
+        )
+        await db.commit()
+
+    async def get_channel_map_for_audio_session(self, session_id: int) -> dict[int, str]:
+        """Return the channel→position map for an audio session.
+
+        Looks up the session's stored device identity then chains through
+        ``get_channel_map`` so the per-session override (if any) takes
+        precedence over the admin default.
+        """
+        row = await self.get_audio_session_row(session_id)
+        if not row:
+            return {}
+        vendor_id = row.get("vendor_id")
+        product_id = row.get("product_id")
+        if vendor_id is None or product_id is None:
+            return {}
+        return await self.get_channel_map(
+            vendor_id=int(vendor_id),
+            product_id=int(product_id),
+            serial=row.get("serial") or "",
+            usb_port_path=row.get("usb_port_path") or "",
+            audio_session_id=session_id,
+        )
+
     async def update_audio_session_end(self, session_id: int, end_utc: datetime) -> None:
         """Set the end_utc for an existing audio session row."""
         db = self._conn()
@@ -2523,7 +2574,8 @@ class Storage:
         """Return a single audio_sessions row as a dict, or None if not found."""
         cur = await self._read_conn().execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            " race_id, session_type, name, channel_map"
+            " race_id, session_type, name, channel_map,"
+            " vendor_id, product_id, serial, usb_port_path"
             " FROM audio_sessions WHERE id = ?",
             (session_id,),
         )

@@ -215,6 +215,75 @@ class TestTranscriptSegments:
 # ---------------------------------------------------------------------------
 
 
+class TestAudioSessionDeviceIdentity:
+    """v64: vendor/product/serial/usb_port_path columns on audio_sessions."""
+
+    async def test_audio_sessions_has_device_identity_columns(self, storage: Storage) -> None:
+        db = storage._conn()
+        cur = await db.execute("PRAGMA table_info(audio_sessions)")
+        cols = {row[1] for row in await cur.fetchall()}
+        assert "vendor_id" in cols
+        assert "product_id" in cols
+        assert "serial" in cols
+        assert "usb_port_path" in cols
+
+    async def test_set_and_read_device_identity(self, storage: Storage) -> None:
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        db = storage._conn()
+        cur = await db.execute(
+            "INSERT INTO audio_sessions"
+            " (file_path, device_name, start_utc, sample_rate, channels)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("/tmp/x.wav", "Lavalier4", _dt.now(UTC).isoformat(), 48000, 4),
+        )
+        await db.commit()
+        session_id = cur.lastrowid
+        assert session_id is not None
+
+        await storage.set_audio_session_device(
+            session_id,
+            vendor_id=0x1234,
+            product_id=0x5678,
+            serial="ABC",
+            usb_port_path="1-1.2",
+        )
+        row = await storage.get_audio_session_row(session_id)
+        assert row is not None
+        assert row["vendor_id"] == 0x1234
+        assert row["product_id"] == 0x5678
+        assert row["serial"] == "ABC"
+        assert row["usb_port_path"] == "1-1.2"
+
+    async def test_get_channel_map_via_session_device(self, storage: Storage) -> None:
+        """Once a session has identity, channel_map lookup chains through it."""
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        device = {
+            "vendor_id": 0x1234,
+            "product_id": 0x5678,
+            "serial": "ABC",
+            "usb_port_path": "1-1.2",
+        }
+        await storage.set_channel_map(**device, mapping={0: "helm", 1: "trim"})
+
+        db = storage._conn()
+        cur = await db.execute(
+            "INSERT INTO audio_sessions"
+            " (file_path, device_name, start_utc, sample_rate, channels)"
+            " VALUES (?, ?, ?, ?, ?)",
+            ("/tmp/x.wav", "Lavalier4", _dt.now(UTC).isoformat(), 48000, 4),
+        )
+        await db.commit()
+        session_id = cur.lastrowid
+        await storage.set_audio_session_device(session_id, **device)  # type: ignore[arg-type]
+
+        result = await storage.get_channel_map_for_audio_session(session_id)
+        assert result == {0: "helm", 1: "trim"}
+
+
 class TestVoiceConsentAudit:
     async def test_log_voice_consent_writes_audit_entry(self, storage: Storage) -> None:
         await storage.log_voice_consent_ack(

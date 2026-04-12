@@ -46,6 +46,7 @@ dependencies = [
     # ArUco marker detection (optional at runtime — only runs when cameras are configured)
     "opencv-contrib-python-headless>=4.8.0",
     "selectolax>=0.4.7",
+    "pyudev>=0.24.4 ; sys_platform == 'linux'",
 ]
 
 [project.scripts]

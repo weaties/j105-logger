@@ -234,19 +234,21 @@ def test_no_device_name_match_raises() -> None:
 def test_resolve_device_by_index() -> None:
     """Resolving by integer index works correctly."""
     with patch("sounddevice.query_devices", return_value=_FAKE_DEVICES):
-        idx, name = _resolve_device(0)
+        idx, name, max_ch = _resolve_device(0)
 
     assert idx == 0
     assert name == "Built-in Microphone"
+    assert max_ch == 2
 
 
 def test_resolve_device_by_name_substring() -> None:
     """Case-insensitive substring match selects the correct device."""
     with patch("sounddevice.query_devices", return_value=_FAKE_DEVICES):
-        idx, name = _resolve_device("gordik")
+        idx, name, max_ch = _resolve_device("gordik")
 
     assert idx == 1
     assert "Gordik" in name
+    assert max_ch == 1
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +292,73 @@ def test_is_recording_true_after_start(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # test_start_with_custom_name
 # ---------------------------------------------------------------------------
+
+
+def test_start_with_detected_device_uses_multichannel(tmp_path: Path) -> None:
+    """A DetectedDevice overrides config and stamps identity onto the session."""
+    import asyncio
+
+    from helmlog.usb_audio import DetectedDevice
+
+    detected = DetectedDevice(
+        vendor_id=0x1234,
+        product_id=0x5678,
+        serial="ABC",
+        usb_port_path="1-1.2",
+        max_channels=4,
+        sounddevice_index=1,
+        name="Lavalier 4-ch USB",
+    )
+    mock_stream = MagicMock()
+    mock_sf = MagicMock()
+
+    with (
+        patch("sounddevice.InputStream", return_value=mock_stream),
+        patch("soundfile.SoundFile", return_value=mock_sf),
+    ):
+        config = AudioConfig(
+            device=None,
+            sample_rate=48000,
+            channels=1,  # ignored: detected.max_channels wins
+            output_dir=str(tmp_path),
+        )
+        recorder = AudioRecorder()
+        session = asyncio.run(recorder.start(config, detected=detected))
+
+    assert session.channels == 4
+    assert session.device_name == "Lavalier 4-ch USB"
+    assert session.vendor_id == 0x1234
+    assert session.product_id == 0x5678
+    assert session.serial == "ABC"
+    assert session.usb_port_path == "1-1.2"
+
+
+def test_start_mono_fallback_has_zero_identity(tmp_path: Path) -> None:
+    """Without a DetectedDevice, identity fields stay zero/empty."""
+    import asyncio
+
+    mock_stream = MagicMock()
+    mock_sf = MagicMock()
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_DEVICES),
+        patch("sounddevice.InputStream", return_value=mock_stream),
+        patch("soundfile.SoundFile", return_value=mock_sf),
+    ):
+        config = AudioConfig(
+            device=None,
+            sample_rate=48000,
+            channels=1,
+            output_dir=str(tmp_path),
+        )
+        recorder = AudioRecorder()
+        session = asyncio.run(recorder.start(config))
+
+    assert session.channels == 1
+    assert session.vendor_id == 0
+    assert session.product_id == 0
+    assert session.serial == ""
+    assert session.usb_port_path == ""
 
 
 def test_start_with_custom_name(tmp_path: Path) -> None:
