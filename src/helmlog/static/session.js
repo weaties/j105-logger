@@ -923,9 +923,26 @@ async function loadResults() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/results');
   const results = await r.json();
 
+  const imported = results.length > 0 && results[0].imported;
   let html = '<div id="results-list">';
+  if (imported) {
+    html += '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:6px">Imported from race results</div>';
+  }
   html += results.map(res => {
-    const name = esc(res.sail_number + (res.boat_name ? ' — ' + res.boat_name : ''));
+    const name = esc(res.sail_number + (res.boat_name ? ' \u2014 ' + res.boat_name : ''));
+    if (imported) {
+      const pts = res.points != null ? res.points : '';
+      const status = res.status_code || '';
+      const isSelf = res.sail_number === (document.body.dataset.sailNumber || '');
+      const cls = isSelf ? ' style="background:var(--accent-strong);color:#fff;border-radius:4px;padding:2px 4px"' : '';
+      return '<div class="results-row"' + cls + '>'
+        + '<span class="results-place">' + res.place + '.</span>'
+        + '<span class="results-boat">' + name + '</span>'
+        + '<span style="margin-left:auto;font-size:.82rem;color:var(--text-secondary)">'
+        + (status ? '<span style="color:var(--danger)">' + esc(status) + '</span> ' : '')
+        + pts + ' pts</span>'
+        + '</div>';
+    }
     const dnfCls = res.dnf ? ' active-dnf' : '';
     const dnsCls = res.dns ? ' active-dns' : '';
     return '<div class="results-row">'
@@ -940,14 +957,16 @@ async function loadResults() {
   }).join('');
   html += '</div>';
 
-  const nextPlace = results.length + 1;
-  html += '<div class="results-row" style="border-bottom:none;margin-top:4px">'
-    + '<span class="results-place">' + nextPlace + '.</span>'
-    + '<div style="position:relative;flex:1">'
-    + '<input class="boat-picker-input" id="picker-input" placeholder="Search boat\u2026" autocomplete="off"'
-    + ' oninput="filterBoats(this.value)" onfocus="openPicker()" onblur="closePicker()"/>'
-    + '<div class="boat-dropdown" id="picker-dropdown" style="display:none"></div>'
-    + '</div></div>';
+  if (!imported) {
+    const nextPlace = results.length + 1;
+    html += '<div class="results-row" style="border-bottom:none;margin-top:4px">'
+      + '<span class="results-place">' + nextPlace + '.</span>'
+      + '<div style="position:relative;flex:1">'
+      + '<input class="boat-picker-input" id="picker-input" placeholder="Search boat\u2026" autocomplete="off"'
+      + ' oninput="filterBoats(this.value)" onfocus="openPicker()" onblur="closePicker()"/>'
+      + '<div class="boat-dropdown" id="picker-dropdown" style="display:none"></div>'
+      + '</div></div>';
+  }
 
   body.innerHTML = html;
 }

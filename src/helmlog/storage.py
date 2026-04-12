@@ -3682,17 +3682,31 @@ class Storage:
         return cur.lastrowid
 
     async def list_race_results(self, race_id: int) -> list[dict[str, Any]]:
-        """Return results for *race_id* ordered by place."""
+        """Return results for *race_id* ordered by place.
+
+        If an imported race is linked to this session via
+        ``local_session_id``, its results are returned instead — they are
+        typically more complete (full fleet from the scoring system vs
+        manually entered finishes).
+        """
         db = self._read_conn()
+        imported_cur = await db.execute(
+            "SELECT id FROM races WHERE local_session_id = ? AND source IS NOT NULL",
+            (race_id,),
+        )
+        imported = await imported_cur.fetchone()
+        effective_id = imported["id"] if imported else race_id
+
         cur = await db.execute(
             "SELECT rr.id, rr.race_id, rr.place, rr.boat_id,"
             " b.sail_number, b.name AS boat_name, b.class AS boat_class,"
-            " rr.finish_time, rr.dnf, rr.dns, rr.notes, rr.created_at"
+            " rr.finish_time, rr.dnf, rr.dns, rr.notes, rr.created_at,"
+            " rr.points, rr.status_code, rr.elapsed_seconds, rr.corrected_seconds"
             " FROM race_results rr"
             " JOIN boats b ON b.id = rr.boat_id"
             " WHERE rr.race_id = ?"
             " ORDER BY rr.place ASC",
-            (race_id,),
+            (effective_id,),
         )
         rows = await cur.fetchall()
         return [
@@ -3709,6 +3723,11 @@ class Storage:
                 "dns": bool(row["dns"]),
                 "notes": row["notes"],
                 "created_at": row["created_at"],
+                "points": row["points"],
+                "status_code": row["status_code"],
+                "elapsed_seconds": row["elapsed_seconds"],
+                "corrected_seconds": row["corrected_seconds"],
+                "imported": effective_id != race_id,
             }
             for row in rows
         ]
