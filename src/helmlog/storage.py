@@ -3129,6 +3129,7 @@ class Storage:
                 race_params.append(session_type)
             else:
                 race_where.append("r.session_type IN ('race', 'practice', 'synthesized')")
+            race_where.append("r.source IS NULL")
             if q:
                 race_where.append("(r.name LIKE ? OR r.event LIKE ?)")
                 like = f"%{q}%"
