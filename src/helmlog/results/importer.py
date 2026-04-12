@@ -28,23 +28,23 @@ if TYPE_CHECKING:
 
 
 def _assign_places(finishes: tuple[BoatFinish, ...]) -> list[tuple[int, BoatFinish]]:
-    """Assign 1-based place numbers from points (lower is better).
+    """Assign unique 1-based place numbers.
 
-    Finishes that already have an explicit ``place`` keep it.  Otherwise
-    place is derived from ascending ``points`` order.  Status-code boats
-    (DNF/DNS/etc.) sort after clean finishes.
+    Uses the source-provided ``place`` as the primary sort key (so
+    finishes stay in the order the scoring system intended) but always
+    assigns a sequential 1-based integer to guarantee the
+    ``UNIQUE(race_id, place)`` constraint is satisfied.  Multiple DNC
+    boats sharing the same nominal place get consecutive numbers.
     """
 
-    def _sort_key(f: BoatFinish) -> tuple[int, float, str]:
+    def _sort_key(f: BoatFinish) -> tuple[int, int, float, str]:
         has_status = 1 if f.status_code else 0
-        return (has_status, f.points if f.points is not None else 999.0, f.sail_number)
+        source_place = f.place if f.place is not None else 999
+        pts = f.points if f.points is not None else 999.0
+        return (has_status, source_place, pts, f.sail_number)
 
     ordered = sorted(finishes, key=_sort_key)
-    result: list[tuple[int, BoatFinish]] = []
-    for i, f in enumerate(ordered, 1):
-        place = f.place if f.place is not None else i
-        result.append((place, f))
-    return result
+    return [(i, f) for i, f in enumerate(ordered, 1)]
 
 
 async def import_results(
@@ -184,7 +184,7 @@ async def _upsert_race(
         "session_type, regatta_id, source, source_id) "
         "VALUES (?, ?, ?, ?, ?, 'race', ?, ?, ?)",
         (
-            race.name,
+            f"{race.name} - {race.class_name}" if race.class_name else race.name,
             race.class_name,
             race.race_number,
             race.date,
