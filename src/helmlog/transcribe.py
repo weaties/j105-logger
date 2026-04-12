@@ -180,16 +180,13 @@ async def transcribe_session(
 
             for i in range(channels):
                 # Channel indexing in channel_map is 1-based per config
-                pos_name = channel_map.get(i + 1, f"CH{i+1}")
+                pos_name = channel_map.get(i + 1, f"CH{i + 1}")
                 logger.debug("Transcribing channel {} (position={})", i + 1, pos_name)
 
                 # Extract mono channel to temp WAV (faster-whisper/remote worker need a path)
                 with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                     tmp_path = tmp.name
-                    if data.ndim > 1:
-                        ch_data = data[:, i]
-                    else:
-                        ch_data = data  # should not happen if channels > 1
+                    ch_data = data[:, i] if data.ndim > 1 else data
                     sf.write(tmp_path, ch_data, samplerate)
 
                 try:

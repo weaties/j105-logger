@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 62
+_CURRENT_VERSION: int = 63
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1434,6 +1434,45 @@ _MIGRATIONS: dict[int, str] = {
         -- Multi-channel audio recording and isolation (#462)
         ALTER TABLE audio_sessions ADD COLUMN channel_map TEXT;
     """,
+    63: """
+        -- Multi-channel audio: relational channel_map + per-segment channel
+        -- tagging foundation (#462 pt.1 / #493).
+        CREATE TABLE IF NOT EXISTS channel_map (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id        INTEGER NOT NULL,
+            product_id       INTEGER NOT NULL,
+            serial           TEXT    NOT NULL DEFAULT '',
+            usb_port_path    TEXT    NOT NULL,
+            channel_index    INTEGER NOT NULL,
+            position_name    TEXT    NOT NULL,
+            audio_session_id INTEGER REFERENCES audio_sessions(id) ON DELETE CASCADE,
+            created_utc      TEXT    NOT NULL,
+            created_by       INTEGER REFERENCES users(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_map_unique
+            ON channel_map(
+                vendor_id, product_id, serial, usb_port_path,
+                channel_index, IFNULL(audio_session_id, -1)
+            );
+        CREATE INDEX IF NOT EXISTS idx_channel_map_session
+            ON channel_map(audio_session_id);
+
+        CREATE TABLE IF NOT EXISTS transcript_segments (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            transcript_id INTEGER NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+            segment_index INTEGER NOT NULL,
+            start_time    REAL    NOT NULL,
+            end_time      REAL    NOT NULL,
+            text          TEXT    NOT NULL,
+            speaker       TEXT,
+            channel_index INTEGER,
+            position_name TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_transcript_segments_transcript
+            ON transcript_segments(transcript_id);
+        CREATE INDEX IF NOT EXISTS idx_transcript_segments_channel
+            ON transcript_segments(transcript_id, channel_index);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -2494,7 +2533,6 @@ class Storage:
         res = dict(row)
         if res.get("channel_map"):
             try:
-                # Convert keys back to int if they were stored as strings (JSON keys must be strings)
                 cmap = json.loads(res["channel_map"])
                 res["channel_map"] = {int(k): v for k, v in cmap.items()}
             except (json.JSONDecodeError, ValueError):
@@ -5235,6 +5273,153 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Multi-channel audio: channel_map + transcript_segments (#462 pt.1)
+    # ------------------------------------------------------------------
+
+    async def set_channel_map(
+        self,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+        mapping: dict[int, str],
+        audio_session_id: int | None = None,
+        created_by: int | None = None,
+    ) -> None:
+        """Replace the channel→position map for a USB device.
+
+        ``audio_session_id=None`` writes the admin default; passing a session id
+        writes a per-session override that takes precedence over the default
+        when read with the same session id.
+        """
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        now = _dt.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "DELETE FROM channel_map"
+            " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+            " AND IFNULL(audio_session_id, -1) = IFNULL(?, -1)",
+            (vendor_id, product_id, serial, usb_port_path, audio_session_id),
+        )
+        for ch_idx, position in mapping.items():
+            await db.execute(
+                "INSERT INTO channel_map"
+                " (vendor_id, product_id, serial, usb_port_path,"
+                "  channel_index, position_name, audio_session_id,"
+                "  created_utc, created_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    vendor_id,
+                    product_id,
+                    serial,
+                    usb_port_path,
+                    ch_idx,
+                    position,
+                    audio_session_id,
+                    now,
+                    created_by,
+                ),
+            )
+        await db.commit()
+
+    async def get_channel_map(
+        self,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+        audio_session_id: int | None = None,
+    ) -> dict[int, str]:
+        """Return the channel→position map for a device.
+
+        If ``audio_session_id`` is given and a per-session override exists,
+        return it; otherwise fall back to the admin default. Empty dict if
+        neither is set.
+        """
+        db = self._read_conn()
+        if audio_session_id is not None:
+            cur = await db.execute(
+                "SELECT channel_index, position_name FROM channel_map"
+                " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+                " AND audio_session_id=?",
+                (vendor_id, product_id, serial, usb_port_path, audio_session_id),
+            )
+            rows = await cur.fetchall()
+            if rows:
+                return {r["channel_index"]: r["position_name"] for r in rows}
+        cur = await db.execute(
+            "SELECT channel_index, position_name FROM channel_map"
+            " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+            " AND audio_session_id IS NULL",
+            (vendor_id, product_id, serial, usb_port_path),
+        )
+        return {r["channel_index"]: r["position_name"] for r in await cur.fetchall()}
+
+    async def insert_transcript_segments(
+        self, transcript_id: int, segments: list[dict[str, Any]]
+    ) -> None:
+        """Bulk-insert relational transcript segments with channel tags."""
+        db = self._conn()
+        for seg in segments:
+            await db.execute(
+                "INSERT INTO transcript_segments"
+                " (transcript_id, segment_index, start_time, end_time,"
+                "  text, speaker, channel_index, position_name)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    transcript_id,
+                    seg["segment_index"],
+                    seg["start_time"],
+                    seg["end_time"],
+                    seg["text"],
+                    seg.get("speaker"),
+                    seg.get("channel_index"),
+                    seg.get("position_name"),
+                ),
+            )
+        await db.commit()
+
+    async def list_transcript_segments(self, transcript_id: int) -> list[dict[str, Any]]:
+        """Return relational transcript segments for a transcript, ordered."""
+        cur = await self._read_conn().execute(
+            "SELECT id, transcript_id, segment_index, start_time, end_time,"
+            " text, speaker, channel_index, position_name"
+            " FROM transcript_segments WHERE transcript_id=?"
+            " ORDER BY segment_index",
+            (transcript_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def log_voice_consent_ack(
+        self,
+        *,
+        user_id: int | None,
+        position_name: str,
+        device: dict[str, Any] | None = None,
+    ) -> int:
+        """Record that a user acknowledged voice-biometric consent for a position.
+
+        Writes a structured entry into the existing audit_log under the
+        ``voice_consent_ack`` action so the data licensing review trail covers
+        per-position diarisation. ``device`` may carry vendor/product/serial/
+        port_path so the acknowledgement can be tied to a physical mic.
+        """
+        import json as _json
+
+        payload: dict[str, Any] = {"position": position_name}
+        if device is not None:
+            payload["device"] = device
+        return await self.log_action(
+            "voice_consent_ack",
+            detail=_json.dumps(payload, sort_keys=True),
+            user_id=user_id,
+        )
 
     # ------------------------------------------------------------------
     # Device API keys (#423)
