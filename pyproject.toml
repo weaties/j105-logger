@@ -16,7 +16,7 @@ dependencies = [
     # Logging
     "loguru>=0.7.2",
     # Environment / config
-    "python-dotenv>=1.0.1",
+    "python-dotenv>=1.2.2",
     "aiosqlite>=0.22.1",
     # Signal K WebSocket client
     "websockets>=14.0",
