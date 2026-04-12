@@ -75,6 +75,7 @@ class AudioSession:
     end_utc: datetime | None
     sample_rate: int
     channels: int
+    channel_map: dict[int, str] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +154,32 @@ class AudioRecorder:
 
         device_index, device_name = _resolve_device(config.device)
 
+        # Detect channels — if config says 1 but device supports 4 and
+        # AUTO_DETECT is on (or if we just want to be smart), we can upgrade.
+        # For now, we trust config.channels but we'll validate.
+        dev_info = sd.query_devices(device_index, "input")
+        max_ch = int(dev_info["max_input_channels"])
+        requested_ch = config.channels
+
+        if requested_ch > max_ch:
+            logger.warning(
+                "Requested {} channels but device {!r} only supports {}. Falling back to {}.",
+                requested_ch,
+                device_name,
+                max_ch,
+                max_ch,
+            )
+            requested_ch = max_ch
+
+        # Resolve channel map from environment/settings
+        channel_map = None
+        if requested_ch >= 2:
+            channel_map = {}
+            for i in range(1, requested_ch + 1):
+                pos = os.environ.get(f"AUDIO_CH{i}_POS")
+                if pos:
+                    channel_map[i] = pos
+
         # Ensure output directory exists
         Path(config.output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -169,7 +196,7 @@ class AudioRecorder:
             file_path,
             mode="w",
             samplerate=config.sample_rate,
-            channels=config.channels,
+            channels=requested_ch,
             format="WAV",
             subtype="PCM_16",
         )
@@ -191,7 +218,7 @@ class AudioRecorder:
         self._stream = sd.InputStream(
             device=device_index,
             samplerate=config.sample_rate,
-            channels=config.channels,
+            channels=requested_ch,
             dtype="int16",
             callback=self._audio_callback,
         )
@@ -203,7 +230,8 @@ class AudioRecorder:
             start_utc=start_utc,
             end_utc=None,
             sample_rate=config.sample_rate,
-            channels=config.channels,
+            channels=requested_ch,
+            channel_map=channel_map,
         )
 
         logger.debug(
@@ -211,7 +239,7 @@ class AudioRecorder:
             device_name,
             file_path,
             config.sample_rate,
-            config.channels,
+            requested_ch,
         )
         return self._session
 

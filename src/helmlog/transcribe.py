@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -91,6 +92,36 @@ async def _try_remote_transcribe(
         return None
 
 
+async def _transcribe_one_channel(
+    file_path: str,
+    model_size: str,
+    diarize: bool,
+    *,
+    transcribe_url: str = "",
+) -> tuple[str, list[dict[str, object]]]:
+    """Helper: transcribe a single channel (local or remote)."""
+    # 1. Try remote
+    remote = await _try_remote_transcribe(
+        file_path, model_size, diarize, transcribe_url=transcribe_url
+    )
+    if remote is not None:
+        return remote
+
+    # 2. Try local
+    if diarize and _pyannote_available() and bool(os.environ.get("HF_TOKEN")):
+        text, segments_json_str = await asyncio.to_thread(
+            _run_with_diarization, file_path=file_path, model_size=model_size
+        )
+        return text, json.loads(segments_json_str)
+    else:
+        raw_segs = await asyncio.to_thread(
+            _run_whisper_segments, file_path=file_path, model_size=model_size
+        )
+        text = " ".join(t for _, _, t in raw_segs).strip()
+        segments = [{"start": s, "end": e, "text": t} for s, e, t in raw_segs]
+        return text, segments
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -129,9 +160,74 @@ async def transcribe_session(
 
     await storage.update_transcript(transcript_id, status="running")
     file_path: str = row["file_path"]
-    use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
+    channels: int = row.get("channels", 1)
+    channel_map: dict[int, str] = row.get("channel_map") or {}
 
     try:
+        # ----- Multi-channel Isolation Mode (#462) -----
+        if channels > 1:
+            import soundfile as sf
+
+            logger.info(
+                "Multi-channel isolation: transcribing {} channels for audio_session_id={}",
+                channels,
+                audio_session_id,
+            )
+            all_segments: list[dict[str, object]] = []
+
+            # Read the multi-channel file once
+            data, samplerate = sf.read(file_path)
+
+            for i in range(channels):
+                # Channel indexing in channel_map is 1-based per config
+                pos_name = channel_map.get(i + 1, f"CH{i+1}")
+                logger.debug("Transcribing channel {} (position={})", i + 1, pos_name)
+
+                # Extract mono channel to temp WAV (faster-whisper/remote worker need a path)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                    tmp_path = tmp.name
+                    if data.ndim > 1:
+                        ch_data = data[:, i]
+                    else:
+                        ch_data = data  # should not happen if channels > 1
+                    sf.write(tmp_path, ch_data, samplerate)
+
+                try:
+                    # Diarize=False because we have hardware isolation per channel
+                    text, segments = await _transcribe_one_channel(
+                        tmp_path, model_size, diarize=False, transcribe_url=transcribe_url
+                    )
+                    # Tag segments with the position from channel_map
+                    for seg in segments:
+                        seg["channel"] = i + 1
+                        seg["position"] = pos_name
+                        # Use position as speaker for UI compatibility
+                        seg["speaker"] = pos_name
+                    all_segments.extend(segments)
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+
+            # Merge and timestamp-sort
+            all_segments.sort(key=lambda x: float(str(x.get("start", 0))))
+            merged_text = " ".join(str(s.get("text", "")).strip() for s in all_segments).strip()
+            segments_json_str = json.dumps(all_segments)
+
+            await storage.update_transcript(
+                transcript_id, status="done", text=merged_text, segments_json=segments_json_str
+            )
+            logger.info(
+                "Multi-channel transcription done: audio_session_id={} channels={} segments={}",
+                audio_session_id,
+                channels,
+                len(all_segments),
+            )
+            await _run_trigger_scan(storage, audio_session_id, row, all_segments)
+            return
+
+        # ----- Single-channel mode (Existing logic) -----
+        use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
+
         # ----- Remote offload (preferred when TRANSCRIBE_URL is set) -----
         remote = await _try_remote_transcribe(
             file_path, model_size, diarize, transcribe_url=transcribe_url

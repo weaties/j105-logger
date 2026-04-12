@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 61
+_CURRENT_VERSION: int = 62
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1430,6 +1430,10 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_races_regatta ON races(regatta_id);
         CREATE INDEX IF NOT EXISTS idx_races_local_session ON races(local_session_id);
     """,
+    62: """
+        -- Multi-channel audio recording and isolation (#462)
+        ALTER TABLE audio_sessions ADD COLUMN channel_map TEXT;
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -2446,8 +2450,8 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO audio_sessions"
             " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            "  race_id, session_type, name)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  race_id, session_type, name, channel_map)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.file_path,
                 session.device_name,
@@ -2458,6 +2462,7 @@ class Storage:
                 race_id,
                 session_type,
                 name,
+                json.dumps(session.channel_map) if session.channel_map else None,
             ),
         )
         await db.commit()
@@ -2479,12 +2484,22 @@ class Storage:
         """Return a single audio_sessions row as a dict, or None if not found."""
         cur = await self._read_conn().execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            " race_id, session_type, name"
+            " race_id, session_type, name, channel_map"
             " FROM audio_sessions WHERE id = ?",
             (session_id,),
         )
         row = await cur.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        res = dict(row)
+        if res.get("channel_map"):
+            try:
+                # Convert keys back to int if they were stored as strings (JSON keys must be strings)
+                cmap = json.loads(res["channel_map"])
+                res["channel_map"] = {int(k): v for k, v in cmap.items()}
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return res
 
     async def list_audio_sessions(self) -> list[AudioSession]:
         """Return all audio sessions ordered by start_utc descending."""

@@ -1482,7 +1482,8 @@ function _renderDiarizedTranscript(body, t) {
   };
 
   body.innerHTML = ''
-    + '<div style="display:flex;justify-content:flex-end;margin-bottom:6px">'
+    + '<div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:6px;gap:8px">'
+    + (_session.channels > 1 ? _renderIsolationToggle() : '')
     + '<button id="transcript-follow-btn" type="button" onclick="toggleTranscriptFollow()" '
     + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" '
     + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
@@ -4213,7 +4214,120 @@ function playSegmentAudio(start, end) {
 }
 
 // ---------------------------------------------------------------------------
+// Isolation Mode (Web Audio API)
+// ---------------------------------------------------------------------------
+
+let _isolationMode = false;
+let _audioCtx = null;
+let _audioSource = null;
+let _splitter = null;
+let _merger = null;
+let _gains = [];
+
+function _renderIsolationToggle() {
+  const active = _isolationMode ? 'background:var(--accent);color:white;border-color:var(--accent)' : 'background:transparent;color:var(--text-secondary);border-color:var(--border)';
+  return '<button id="isolation-toggle" type="button" onclick="toggleIsolationMode()" '
+    + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);cursor:pointer;border-radius:3px;' + active + '" '
+    + 'title="Isolation Mode: solo the active speaker\'s microphone channel during playback.">Isolation</button>';
+}
+
+function toggleIsolationMode() {
+  _isolationMode = !_isolationMode;
+  const btn = document.getElementById('isolation-toggle');
+  if (btn) {
+    if (_isolationMode) {
+      btn.style.background = 'var(--accent)';
+      btn.style.color = 'white';
+      btn.style.borderColor = 'var(--accent)';
+    } else {
+      btn.style.background = 'transparent';
+      btn.style.color = 'var(--text-secondary)';
+      btn.style.borderColor = 'var(--border)';
+    }
+  }
+
+  if (_isolationMode) {
+    _setupAudioIsolation();
+  } else {
+    _resetAudioIsolation();
+  }
+}
+
+function _setupAudioIsolation() {
+  const audio = document.getElementById('session-audio');
+  if (!audio) return;
+
+  if (!_audioCtx) {
+    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    _audioSource = _audioCtx.createMediaElementSource(audio);
+
+    const channels = _session.channels || 1;
+    _splitter = _audioCtx.createChannelSplitter(channels);
+    _merger = _audioCtx.createChannelMerger(channels);
+
+    _audioSource.connect(_splitter);
+
+    for (let i = 0; i < channels; i++) {
+      const g = _audioCtx.createGain();
+      _gains.push(g);
+      _splitter.connect(g, i);
+      // Connect each gain node to ALL merger inputs (mono solo) or
+      // to its respective channel (pass-through).
+      // For isolation mode, we'll route the soloed channel to both L/R if stereo.
+      g.connect(_merger, 0, 0);
+      if (channels > 1) g.connect(_merger, 0, 1);
+    }
+    _merger.connect(_audioCtx.destination);
+  }
+
+  if (_audioCtx.state === 'suspended') {
+    _audioCtx.resume();
+  }
+
+  _updateIsolationGains();
+}
+
+function _resetAudioIsolation() {
+  if (!_gains.length) return;
+  _gains.forEach(g => { g.gain.value = 1.0; });
+}
+
+function _updateIsolationGains() {
+  if (!_isolationMode || !_gains.length) return;
+
+  const audio = document.getElementById('session-audio');
+  if (!audio) return;
+
+  const now = audio.currentTime;
+  // Find the segment containing 'now'
+  const activeSeg = (_transcriptBlocks || []).find(b => now >= b.start && now <= b.end);
+
+  if (activeSeg && activeSeg.channel) {
+    const soloIdx = activeSeg.channel - 1;
+    _gains.forEach((g, i) => {
+      // Use setTargetAtTime for smooth transitions
+      g.gain.setTargetAtTime(i === soloIdx ? 1.0 : 0.05, _audioCtx.currentTime, 0.05);
+    });
+  } else {
+    // No active segment, play all channels at low volume or full volume?
+    // Let's go full volume if no one is talking.
+    _gains.forEach(g => {
+      g.gain.setTargetAtTime(1.0, _audioCtx.currentTime, 0.05);
+    });
+  }
+}
+
+// Wire _updateIsolationGains into the audio timeupdate loop
+function _wireIsolationGains() {
+  const audio = document.getElementById('session-audio');
+  if (audio) {
+    audio.addEventListener('timeupdate', _updateIsolationGains);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Go
 // ---------------------------------------------------------------------------
 
 init();
+_wireIsolationGains();
