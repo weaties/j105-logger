@@ -5413,6 +5413,40 @@ class Storage:
         )
         return {r["channel_index"]: r["position_name"] for r in await cur.fetchall()}
 
+    async def list_channel_map_devices(self) -> list[dict[str, Any]]:
+        """Return one row per device that has an admin-default channel map.
+
+        Each entry has the v63 identity tuple, the current ``mapping`` dict
+        (channel_index → position_name), and ``last_updated_utc``. Used by
+        the admin UI in #496 to render the device list.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT vendor_id, product_id, serial, usb_port_path,"
+            " channel_index, position_name, created_utc"
+            " FROM channel_map"
+            " WHERE audio_session_id IS NULL"
+            " ORDER BY vendor_id, product_id, serial, usb_port_path, channel_index"
+        )
+        rows = await cur.fetchall()
+        grouped: dict[tuple[int, int, str, str], dict[str, Any]] = {}
+        for r in rows:
+            key = (r["vendor_id"], r["product_id"], r["serial"], r["usb_port_path"])
+            entry = grouped.setdefault(
+                key,
+                {
+                    "vendor_id": r["vendor_id"],
+                    "product_id": r["product_id"],
+                    "serial": r["serial"],
+                    "usb_port_path": r["usb_port_path"],
+                    "mapping": {},
+                    "last_updated_utc": r["created_utc"],
+                },
+            )
+            entry["mapping"][r["channel_index"]] = r["position_name"]
+            if r["created_utc"] > entry["last_updated_utc"]:
+                entry["last_updated_utc"] = r["created_utc"]
+        return list(grouped.values())
+
     async def insert_transcript_segments(
         self, transcript_id: int, segments: list[dict[str, Any]]
     ) -> None:

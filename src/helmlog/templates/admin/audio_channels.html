@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}Audio Channels — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+.device-id{font-family:monospace;font-size:.78rem;color:var(--text-secondary)}
+table{width:100%;border-collapse:collapse;font-size:.87rem;margin-top:8px}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+input[type=text]{padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem;width:140px}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-save{color:var(--success);border-color:var(--success)}
+.btn-refresh{color:var(--accent);border-color:var(--accent-strong)}
+.consent-note{font-size:.78rem;color:var(--text-secondary);background:var(--bg-input);border-left:3px solid var(--warning);padding:8px 10px;margin:10px 0;border-radius:4px}
+.err{color:var(--danger);font-size:.8rem;margin-top:6px}
+.ok{color:var(--success);font-size:.8rem;margin-top:6px}
+</style>
+{% endblock %}
+{% block content %}
+<h1>Audio Channels</h1>
+
+<div class="consent-note">
+<strong>Voice biometric consent</strong> — per the data licensing policy, audio is PII
+and per-channel attribution names individuals. Each position must have its consent
+acknowledgement ticked before the mapping can be saved. The acknowledgement is
+written to the audit log alongside the saved map.
+</div>
+
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center">
+<div class="label">USB Multi-Channel Devices</div>
+<button class="btn-sm btn-refresh" onclick="loadDevices()">&#x21bb; Refresh</button>
+</div>
+<div id="devices">Loading…</div>
+</div>
+
+<script>
+function fmtId(d){
+  const v=d.vendor_id.toString(16).padStart(4,'0');
+  const p=d.product_id.toString(16).padStart(4,'0');
+  return `${v}:${p} · serial=${d.serial||'(none)'} · port=${d.usb_port_path||'(unknown)'}`;
+}
+
+async function loadDevices(){
+  const el=document.getElementById('devices');
+  el.textContent='Loading…';
+  try{
+    const r=await fetch('/api/audio-channels/devices');
+    if(!r.ok){el.textContent='Error: '+r.status;return;}
+    const list=await r.json();
+    if(!list.length){el.innerHTML='<p>No multi-channel devices saved or attached.</p>';return;}
+    el.innerHTML='';
+    list.forEach((d,i)=>el.appendChild(renderDevice(d,i)));
+  }catch(e){el.textContent='Error: '+e;}
+}
+
+function renderDevice(d, idx){
+  const channels=Math.max(d.max_channels||0, ...Object.keys(d.mapping||{}).map(Number).map(n=>n+1), 4);
+  const wrap=document.createElement('div');
+  wrap.style.marginTop='14px';
+  wrap.innerHTML=`<div class="device-id">${fmtId(d)}${d.attached?' · <em>attached</em>':''}</div>`;
+  const tbl=document.createElement('table');
+  tbl.innerHTML='<thead><tr><th>Channel</th><th>Position</th><th>Voice consent ack</th></tr></thead>';
+  const tb=document.createElement('tbody');
+  for(let i=0;i<channels;i++){
+    const tr=document.createElement('tr');
+    const pos=(d.mapping&&d.mapping[i])||'';
+    tr.innerHTML=`<td>CH${i}</td>`+
+      `<td><input type="text" data-ch="${i}" data-dev="${idx}" value="${pos}" placeholder="(unmapped)"></td>`+
+      `<td><label><input type="checkbox" data-ack="${i}" data-dev="${idx}"> acknowledged</label></td>`;
+    tb.appendChild(tr);
+  }
+  tbl.appendChild(tb);
+  wrap.appendChild(tbl);
+  const btn=document.createElement('button');
+  btn.className='btn-sm btn-save';
+  btn.textContent='Save mapping';
+  btn.style.marginTop='8px';
+  btn.onclick=()=>saveDevice(d, idx);
+  wrap.appendChild(btn);
+  const status=document.createElement('div');
+  status.id=`status-${idx}`;
+  wrap.appendChild(status);
+  return wrap;
+}
+
+async function saveDevice(d, idx){
+  const status=document.getElementById(`status-${idx}`);
+  status.className='';status.textContent='';
+  const mapping={}; const acks=new Set();
+  document.querySelectorAll(`input[data-dev="${idx}"][type="text"]`).forEach(i=>{
+    const v=i.value.trim();
+    if(v) mapping[parseInt(i.dataset.ch,10)]=v;
+  });
+  document.querySelectorAll(`input[data-dev="${idx}"][type="checkbox"]`).forEach(c=>{
+    if(c.checked){
+      const ch=parseInt(c.dataset.ack,10);
+      const pos=mapping[ch];
+      if(pos) acks.add(pos);
+    }
+  });
+  if(!Object.keys(mapping).length){
+    status.className='err';status.textContent='Add at least one position before saving.';return;
+  }
+  const body={
+    vendor_id:d.vendor_id, product_id:d.product_id,
+    serial:d.serial||'', usb_port_path:d.usb_port_path||'',
+    mapping, consent_acks:[...acks],
+  };
+  const r=await fetch('/api/audio-channels/save',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body),
+  });
+  if(r.status===204){status.className='ok';status.textContent='Saved.';loadDevices();}
+  else{const t=await r.text();status.className='err';status.textContent='Error: '+t;}
+}
+
+loadDevices();
+</script>
+{% endblock %}
