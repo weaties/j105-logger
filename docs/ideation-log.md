@@ -2268,3 +2268,52 @@ the local name. Estimate: 1–2 days of work to a first cut.
   [Patrick Chwalek — BLE Control of Insta360 Cameras](https://medium.com/@patrickchwalek/ble-control-of-insta360-cameras-7bf6894648a4),
   [btittelbach ESPHome X4 config](https://github.com/btittelbach/esphome_config_examples/blob/main/insta360_ble_remote_waveshare_touch169_esp32s3.yaml),
   [Hackaday: X3 BLE remote with ESP32](https://hackaday.io/project/188975-insta360-x3-ble-remote-control-with-esp32).
+
+---
+
+## IDX-036: Time-series foundation models (TimesFM) for predictive sailing analytics
+
+- **Date captured:** 2026-04-12
+- **Origin:** Discussion about [google-research/timesfm](https://github.com/google-research/timesfm) as a zero-shot forecaster for instrument data
+- **Status:** `raw`
+- **Related:** `src/helmlog/analysis/`, `src/helmlog/polar.py/`, `src/helmlog/external.py/`, IDX-012 (GRIB forecasts), IDX-031 (pluggable AI providers)
+
+**Description:**
+Integrate Google's Time-series Foundation Model (TimesFM) to provide zero-shot
+forecasting, anomaly detection, and missing-value imputation for 1Hz sailing
+instrument data. Unlike traditional ARIMA or RNN models, TimesFM is pre-trained
+on billions of time-points and can generalize to new time-series (like boat
+speed or wind direction) without per-boat training.
+
+**Killer use cases for HelmLog:**
+
+1. **Short-term tactical wind forecasting:** Analyze the True Wind Direction (TWD)
+   time-series to forecast the next 5-15 minutes of shifts (oscillations). This
+   provides a high-resolution, local tactical advantage that GRIB-based models
+   (IDX-012) cannot match.
+2. **Current vector forecasting:** Forecast the local current for the next 30-60
+   minutes by projecting the observed current vector time-series (SOG/COG vs
+   BSP/HDG) forward, potentially constrained by tide predictions from `external.py`.
+3. **Performance anomaly detection:** Use TimesFM to forecast expected boat speed
+   (BSP) based on current conditions (TWS, TWA) and compare it to real-time
+   performance. Large deviations could trigger alerts for weed on the keel, sail
+   trim issues, or sensor calibration drift.
+4. **Maneuver recovery modeling:** Model the velocity recovery curve during tacks
+   and gybes to predict "time to full recovery" more accurately than simple
+   linear assumptions in `maneuvers.py`.
+
+**Architecture:**
+Since TimesFM is a transformer-based model, it is likely too heavy for the Pi 5's
+CPU during active racing. The implementation should leverage the **IDX-031
+Pluggable AI Provider** architecture:
+- **On-water (Offline):** Fall back to simpler heuristic models or wait for
+  connectivity.
+- **Post-sail (Debrief):** Offload the time-series forecasting to a local Mac
+  or a cloud-hosted TimesFM instance over Tailscale/WiFi.
+
+**Notes:**
+- *2026-04-12:* Initial capture. TimesFM's zero-shot capability is the key
+  enabler here — it avoids the "cold start" problem where a new boat has no
+  history to train on. The model's ability to handle noisy 1Hz data with
+  varying frequencies makes it well-suited for the intermittent nature of
+  sailing instrument logs.
