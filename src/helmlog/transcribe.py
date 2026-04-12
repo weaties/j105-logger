@@ -122,6 +122,58 @@ async def _transcribe_one_channel(
         return text, segments
 
 
+async def _transcribe_multi_channel(
+    file_path: str,
+    *,
+    channels: int,
+    channel_map: dict[int, str],
+    model_size: str,
+    transcribe_url: str = "",
+) -> list[dict[str, object]]:
+    """Split a multi-channel WAV and transcribe each channel independently.
+
+    Channel indices are 0-based to match sounddevice / numpy and the v63
+    ``channel_map`` table. ``channel_map[i]`` resolves to the configured
+    position name (e.g. "helm"); unmapped channels fall back to ``CH{i}``.
+
+    Pyannote diarisation is intentionally **skipped** because hardware
+    isolation already ties each channel to a person — running diarisation
+    would be redundant and slow per the issue spec.
+
+    Returns a single list of segments sorted by ``start``, each tagged with
+    ``channel_index``, ``position_name``, and ``speaker`` (= position).
+    """
+    import soundfile as sf
+
+    logger.info("Multi-channel isolation: transcribing {} channels for {}", channels, file_path)
+    data, samplerate = sf.read(file_path)
+
+    all_segments: list[dict[str, object]] = []
+    for i in range(channels):
+        position = channel_map.get(i, f"CH{i}")
+        logger.debug("Transcribing channel {} (position={})", i, position)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+            ch_data = data[:, i] if data.ndim > 1 else data
+            sf.write(tmp_path, ch_data, samplerate)
+        try:
+            _text, segments = await _transcribe_one_channel(
+                tmp_path, model_size, diarize=False, transcribe_url=transcribe_url
+            )
+            for seg in segments:
+                seg["channel_index"] = i
+                seg["position_name"] = position
+                seg["speaker"] = position
+            all_segments.extend(segments)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    all_segments.sort(key=lambda x: float(str(x.get("start", 0))))
+    return all_segments
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -161,54 +213,38 @@ async def transcribe_session(
     await storage.update_transcript(transcript_id, status="running")
     file_path: str = row["file_path"]
     channels: int = row.get("channels", 1)
-    channel_map: dict[int, str] = row.get("channel_map") or {}
 
     try:
-        # ----- Multi-channel Isolation Mode (#462) -----
+        # ----- Multi-channel Isolation Mode (#462 pt.3) -----
         if channels > 1:
-            import soundfile as sf
-
-            logger.info(
-                "Multi-channel isolation: transcribing {} channels for audio_session_id={}",
-                channels,
-                audio_session_id,
+            # Look up the active channel→position map via the v63/v64 chain:
+            # session identity → channel_map override → admin default. 0-based.
+            channel_map = await storage.get_channel_map_for_audio_session(audio_session_id)
+            all_segments = await _transcribe_multi_channel(
+                file_path,
+                channels=channels,
+                channel_map=channel_map,
+                model_size=model_size,
+                transcribe_url=transcribe_url,
             )
-            all_segments: list[dict[str, object]] = []
-
-            # Read the multi-channel file once
-            data, samplerate = sf.read(file_path)
-
-            for i in range(channels):
-                # Channel indexing in channel_map is 1-based per config
-                pos_name = channel_map.get(i + 1, f"CH{i + 1}")
-                logger.debug("Transcribing channel {} (position={})", i + 1, pos_name)
-
-                # Extract mono channel to temp WAV (faster-whisper/remote worker need a path)
-                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                    tmp_path = tmp.name
-                    ch_data = data[:, i] if data.ndim > 1 else data
-                    sf.write(tmp_path, ch_data, samplerate)
-
-                try:
-                    # Diarize=False because we have hardware isolation per channel
-                    text, segments = await _transcribe_one_channel(
-                        tmp_path, model_size, diarize=False, transcribe_url=transcribe_url
-                    )
-                    # Tag segments with the position from channel_map
-                    for seg in segments:
-                        seg["channel"] = i + 1
-                        seg["position"] = pos_name
-                        # Use position as speaker for UI compatibility
-                        seg["speaker"] = pos_name
-                    all_segments.extend(segments)
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-
-            # Merge and timestamp-sort
-            all_segments.sort(key=lambda x: float(str(x.get("start", 0))))
             merged_text = " ".join(str(s.get("text", "")).strip() for s in all_segments).strip()
             segments_json_str = json.dumps(all_segments)
+
+            # Relational persistence (#493) — populate transcript_segments so
+            # downstream sub-issues (#496–#499) don't re-parse JSON.
+            relational = [
+                {
+                    "segment_index": idx,
+                    "start_time": float(seg.get("start", 0.0)),  # type: ignore[arg-type]
+                    "end_time": float(seg.get("end", 0.0)),  # type: ignore[arg-type]
+                    "text": str(seg.get("text", "")),
+                    "speaker": seg.get("speaker"),
+                    "channel_index": seg.get("channel_index"),
+                    "position_name": seg.get("position_name"),
+                }
+                for idx, seg in enumerate(all_segments)
+            ]
+            await storage.insert_transcript_segments(transcript_id, relational)
 
             await storage.update_transcript(
                 transcript_id, status="done", text=merged_text, segments_json=segments_json_str
