@@ -60,6 +60,13 @@ class ClubspotProvider:
             )
 
         class_ids = [c.strip() for c in regatta.default_class.split(",") if c.strip()]
+        for cid in class_ids:
+            if " " in cid or "/" in cid:
+                raise ValueError(
+                    f"Clubspot class ID {cid!r} looks like a class name, not an objectId. "
+                    f"Use the Clubspot objectId (e.g. 7q1o9ikhPH), not 'J/105'."
+                )
+
         all_races: dict[str, RaceData] = {}
         standings_by_key: dict[tuple[str, str], SeriesStanding] = {}
 
