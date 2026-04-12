@@ -253,6 +253,30 @@
   <div id="synth-result" style="margin-top:8px;font-size:.85rem;color:var(--warning);display:none"></div>
 </div>
 
+<!-- Multi-channel audio mapping (#462 pt.5) — only visible when an active
+     audio session has a recorded device identity. -->
+<div id="audio-channels-card" class="card hidden">
+  <div class="label">Audio channel mapping</div>
+  <div id="audio-channels-summary" style="font-size:.85rem;color:var(--text-secondary)"></div>
+  <button class="btn-sm" id="audio-channels-edit" style="margin-top:6px" onclick="openAudioChannelsDialog()">Edit for this session…</button>
+</div>
+
+<dialog id="audio-channels-dialog" style="background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:480px;width:90%">
+  <h3 style="margin:0 0 8px 0">Override channel mapping for this session</h3>
+  <div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:10px">
+    The override applies only to this audio session. Per the data licensing
+    policy, voice biometric consent must be acknowledged for every named
+    position before the override can be saved.
+  </div>
+  <div id="audio-channels-rows"></div>
+  <div id="audio-channels-err" style="color:var(--danger);font-size:.8rem;margin-top:6px"></div>
+  <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end">
+    <button class="btn-sm" onclick="document.getElementById('audio-channels-dialog').close()">Cancel</button>
+    <button class="btn-sm btn-save" onclick="clearAudioChannelOverride()">Revert to default</button>
+    <button class="btn-sm btn-save" onclick="saveAudioChannelOverride()">Save override</button>
+  </div>
+</dialog>
+
 <div id="today-summary" class="card hidden" style="text-align:center">
   <div style="font-size:.85rem;color:var(--text-secondary)" id="today-summary-text"></div>
   <a href="/history" style="font-size:.8rem;color:var(--accent);text-decoration:none;margin-top:4px;display:inline-block">View history &rarr;</a>

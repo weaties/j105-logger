@@ -197,6 +197,162 @@ async def test_save_rejects_empty_mapping(admin_client: httpx.AsyncClient) -> No
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Per-session override (#497 / pt.5)
+# ---------------------------------------------------------------------------
+
+
+async def _make_audio_session(storage: Storage) -> int:
+    from datetime import UTC
+    from datetime import datetime as _dt
+
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO audio_sessions"
+        " (file_path, device_name, start_utc, sample_rate, channels)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("/tmp/x.wav", "Lavalier4", _dt.now(UTC).isoformat(), 48000, 4),
+    )
+    await db.commit()
+    sid = cur.lastrowid
+    assert sid is not None
+    await storage.set_audio_session_device(
+        sid,
+        vendor_id=0x1234,
+        product_id=0x5678,
+        serial="ABC",
+        usb_port_path="1-1.2",
+    )
+    return sid
+
+
+@pytest.mark.asyncio
+async def test_get_session_map_falls_back_to_default(
+    admin_client: httpx.AsyncClient, storage: Storage
+) -> None:
+    await storage.set_channel_map(
+        vendor_id=0x1234,
+        product_id=0x5678,
+        serial="ABC",
+        usb_port_path="1-1.2",
+        mapping={0: "helm", 1: "trim"},
+    )
+    sid = await _make_audio_session(storage)
+    resp = await admin_client.get(f"/api/audio-channels/sessions/{sid}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["audio_session_id"] == sid
+    assert body["mapping"] == {"0": "helm", "1": "trim"}
+
+
+@pytest.mark.asyncio
+async def test_session_override_persists_only_for_its_session(
+    admin_client: httpx.AsyncClient, storage: Storage
+) -> None:
+    await storage.set_channel_map(
+        vendor_id=0x1234,
+        product_id=0x5678,
+        serial="ABC",
+        usb_port_path="1-1.2",
+        mapping={0: "helm", 1: "trim"},
+    )
+    sid_a = await _make_audio_session(storage)
+    sid_b = await _make_audio_session(storage)
+
+    resp = await admin_client.post(
+        f"/api/audio-channels/sessions/{sid_a}/override",
+        json={
+            "vendor_id": 0x1234,
+            "product_id": 0x5678,
+            "serial": "ABC",
+            "usb_port_path": "1-1.2",
+            "mapping": {"0": "tactician", "1": "bow"},
+            "consent_acks": ["tactician", "bow"],
+        },
+    )
+    assert resp.status_code == 204
+
+    a = (await admin_client.get(f"/api/audio-channels/sessions/{sid_a}")).json()
+    assert a["mapping"] == {"0": "tactician", "1": "bow"}
+
+    b = (await admin_client.get(f"/api/audio-channels/sessions/{sid_b}")).json()
+    assert b["mapping"] == {"0": "helm", "1": "trim"}
+
+    default = await storage.get_channel_map(
+        vendor_id=0x1234, product_id=0x5678, serial="ABC", usb_port_path="1-1.2"
+    )
+    assert default == {0: "helm", 1: "trim"}
+
+
+@pytest.mark.asyncio
+async def test_session_override_consent_gate(
+    admin_client: httpx.AsyncClient, storage: Storage
+) -> None:
+    sid = await _make_audio_session(storage)
+    resp = await admin_client.post(
+        f"/api/audio-channels/sessions/{sid}/override",
+        json={
+            "vendor_id": 0x1234,
+            "product_id": 0x5678,
+            "serial": "ABC",
+            "usb_port_path": "1-1.2",
+            "mapping": {"0": "helm", "1": "tactician"},
+            "consent_acks": ["helm"],
+        },
+    )
+    assert resp.status_code == 400
+    assert "tactician" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_session_override_clear_reverts_to_default(
+    admin_client: httpx.AsyncClient, storage: Storage
+) -> None:
+    await storage.set_channel_map(
+        vendor_id=0x1234,
+        product_id=0x5678,
+        serial="ABC",
+        usb_port_path="1-1.2",
+        mapping={0: "helm"},
+    )
+    sid = await _make_audio_session(storage)
+    set_resp = await admin_client.post(
+        f"/api/audio-channels/sessions/{sid}/override",
+        json={
+            "vendor_id": 0x1234,
+            "product_id": 0x5678,
+            "serial": "ABC",
+            "usb_port_path": "1-1.2",
+            "mapping": {"0": "bow"},
+            "consent_acks": ["bow"],
+        },
+    )
+    assert set_resp.status_code == 204
+    clear_resp = await admin_client.delete(f"/api/audio-channels/sessions/{sid}/override")
+    assert clear_resp.status_code == 204
+
+    after = (await admin_client.get(f"/api/audio-channels/sessions/{sid}")).json()
+    assert after["mapping"] == {"0": "helm"}
+
+
+@pytest.mark.asyncio
+async def test_session_override_404_for_unknown_session(
+    admin_client: httpx.AsyncClient,
+) -> None:
+    resp = await admin_client.post(
+        "/api/audio-channels/sessions/9999/override",
+        json={
+            "vendor_id": 1,
+            "product_id": 2,
+            "serial": "",
+            "usb_port_path": "x",
+            "mapping": {"0": "helm"},
+            "consent_acks": ["helm"],
+        },
+    )
+    assert resp.status_code == 404
+
+
 @pytest.mark.asyncio
 async def test_save_denied_for_non_admin(viewer_client: httpx.AsyncClient) -> None:
     resp = await viewer_client.post(

@@ -110,9 +110,113 @@ async def api_save_audio_channel_map(
     mapping is written and one structured ``voice_consent_ack`` audit entry
     is recorded per position.
     """
-    storage = get_storage(request)
     body = await request.json()
+    await _persist_channel_map(request, _user, body, audio_session_id=None)
+    return Response(status_code=204)
 
+
+# ---------------------------------------------------------------------------
+# Per-session override (#497 / pt.5)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/audio-channels/sessions/{audio_session_id}")
+async def api_get_session_channel_map(
+    request: Request,
+    audio_session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> JSONResponse:
+    """Return the active channel→position map for an audio session.
+
+    Chains override → admin default. Empty dict if neither is set or if
+    the session has no recorded device identity yet.
+    """
+    storage = get_storage(request)
+    row = await storage.get_audio_session_row(audio_session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="audio session not found")
+    mapping = await storage.get_channel_map_for_audio_session(audio_session_id)
+    return JSONResponse(
+        {
+            "audio_session_id": audio_session_id,
+            "vendor_id": row.get("vendor_id"),
+            "product_id": row.get("product_id"),
+            "serial": row.get("serial"),
+            "usb_port_path": row.get("usb_port_path"),
+            "mapping": mapping,
+        }
+    )
+
+
+@router.post("/api/audio-channels/sessions/{audio_session_id}/override", status_code=204)
+async def api_set_session_override(
+    request: Request,
+    audio_session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> Response:
+    """Persist a per-session override of the admin default channel map.
+
+    Body schema is identical to ``/api/audio-channels/save`` but the
+    ``audio_session_id`` is taken from the URL — the rows are written into
+    the per-session scope of the v63 channel_map table so the admin default
+    is left untouched. Subsequent sessions on the same device revert to the
+    default automatically.
+    """
+    storage = get_storage(request)
+    if await storage.get_audio_session_row(audio_session_id) is None:
+        raise HTTPException(status_code=404, detail="audio session not found")
+    body = await request.json()
+    await _persist_channel_map(request, _user, body, audio_session_id=audio_session_id)
+    return Response(status_code=204)
+
+
+@router.delete("/api/audio-channels/sessions/{audio_session_id}/override", status_code=204)
+async def api_clear_session_override(
+    request: Request,
+    audio_session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> Response:
+    """Clear the per-session override; reverts to the admin default."""
+    storage = get_storage(request)
+    row = await storage.get_audio_session_row(audio_session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="audio session not found")
+    vendor_id = row.get("vendor_id")
+    product_id = row.get("product_id")
+    if vendor_id is None or product_id is None:
+        # No identity → nothing to clear; treat as no-op success
+        return Response(status_code=204)
+    await storage.set_channel_map(
+        vendor_id=int(vendor_id),
+        product_id=int(product_id),
+        serial=row.get("serial") or "",
+        usb_port_path=row.get("usb_port_path") or "",
+        mapping={},
+        audio_session_id=audio_session_id,
+    )
+    await audit(
+        request,
+        "audio_channel_session_override_cleared",
+        detail=f"audio_session_id={audio_session_id}",
+        user=_user if isinstance(_user, dict) else None,
+    )
+    return Response(status_code=204)
+
+
+# ---------------------------------------------------------------------------
+# Shared persistence helper
+# ---------------------------------------------------------------------------
+
+
+async def _persist_channel_map(
+    request: Request,
+    user: dict[str, Any] | None,
+    body: dict[str, Any],
+    *,
+    audio_session_id: int | None,
+) -> None:
+    """Validate, consent-gate, and persist a channel map at admin or session scope."""
+    storage = get_storage(request)
     try:
         vendor_id = int(body["vendor_id"])
         product_id = int(body["product_id"])
@@ -126,13 +230,11 @@ async def api_save_audio_channel_map(
     if not mapping_raw:
         raise HTTPException(status_code=400, detail="mapping is empty")
 
-    # Coerce keys to int (JSON object keys are always strings)
     try:
         mapping = {int(k): str(v) for k, v in mapping_raw.items()}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"non-integer channel index: {exc}") from exc
 
-    # Enforce per-position voice biometric consent acknowledgement
     missing = sorted({pos for pos in mapping.values() if pos not in consent_acks})
     if missing:
         raise HTTPException(
@@ -140,15 +242,14 @@ async def api_save_audio_channel_map(
             detail=f"missing consent acknowledgement for: {', '.join(missing)}",
         )
 
-    user_id = _user.get("id") if isinstance(_user, dict) else None
-
-    # Persist the mapping (admin default — audio_session_id=None)
+    user_id = user.get("id") if isinstance(user, dict) else None
     await storage.set_channel_map(
         vendor_id=vendor_id,
         product_id=product_id,
         serial=serial,
         usb_port_path=usb_port_path,
         mapping=mapping,
+        audio_session_id=audio_session_id,
         created_by=user_id if isinstance(user_id, int) else None,
     )
 
@@ -165,14 +266,14 @@ async def api_save_audio_channel_map(
             device=device_identity,
         )
 
+    scope = "default" if audio_session_id is None else f"session={audio_session_id}"
     await audit(
         request,
         "audio_channel_map_saved",
         detail=(
-            f"device={vendor_id:04x}:{product_id:04x} serial={serial} "
-            f"port={usb_port_path} positions={sorted(set(mapping.values()))}"
+            f"scope={scope} device={vendor_id:04x}:{product_id:04x} "
+            f"serial={serial} port={usb_port_path} "
+            f"positions={sorted(set(mapping.values()))}"
         ),
-        user=_user if isinstance(_user, dict) else None,
+        user=user if isinstance(user, dict) else None,
     )
-
-    return Response(status_code=204)

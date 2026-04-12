@@ -17,7 +17,113 @@ async function loadState() {
     if (!r.ok) { console.error('state fetch failed:', r.status); return; }
     state = await r.json();
     render(state);
+    refreshAudioChannelsCard(state);
   } catch(e) { console.error('state error', e); }
+}
+
+// ---- Multi-channel audio mapping (#462 pt.5) ----
+let _activeAudioSessionId = null;
+let _activeAudioMap = null;
+
+async function refreshAudioChannelsCard(s) {
+  const card = document.getElementById('audio-channels-card');
+  if (!card) return;
+  const aid = (s && s.current_race && s.current_race.audio_session_id) || null;
+  if (!aid) {
+    card.classList.add('hidden');
+    _activeAudioSessionId = null;
+    return;
+  }
+  try {
+    const r = await fetch(`/api/audio-channels/sessions/${aid}`);
+    if (!r.ok) { card.classList.add('hidden'); return; }
+    const body = await r.json();
+    if (!body.vendor_id && !body.product_id) {
+      card.classList.add('hidden');
+      return;
+    }
+    _activeAudioSessionId = aid;
+    _activeAudioMap = body;
+    const summary = document.getElementById('audio-channels-summary');
+    const entries = Object.entries(body.mapping || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+    summary.textContent = entries.length
+      ? entries.map(([ch, pos]) => `CH${ch}=${pos}`).join('  ')
+      : '(no mapping yet — using device default)';
+    card.classList.remove('hidden');
+  } catch (e) {
+    console.error('audio-channels refresh failed', e);
+    card.classList.add('hidden');
+  }
+}
+
+function openAudioChannelsDialog() {
+  if (!_activeAudioSessionId || !_activeAudioMap) return;
+  const dlg = document.getElementById('audio-channels-dialog');
+  const rows = document.getElementById('audio-channels-rows');
+  rows.innerHTML = '';
+  document.getElementById('audio-channels-err').textContent = '';
+  // Render 4 channel rows by default; preserve existing values from the map
+  for (let i = 0; i < 4; i++) {
+    const pos = (_activeAudioMap.mapping && _activeAudioMap.mapping[String(i)]) || '';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;align-items:center;margin:4px 0;font-size:.85rem';
+    row.innerHTML = `<span style="width:36px">CH${i}</span>` +
+      `<input type="text" data-ch="${i}" value="${pos}" placeholder="(unmapped)" ` +
+      `style="flex:1;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary)">` +
+      `<label style="font-size:.78rem"><input type="checkbox" data-ack="${i}"> consent</label>`;
+    rows.appendChild(row);
+  }
+  dlg.showModal();
+}
+
+async function saveAudioChannelOverride() {
+  if (!_activeAudioSessionId || !_activeAudioMap) return;
+  const errEl = document.getElementById('audio-channels-err');
+  errEl.textContent = '';
+  const mapping = {};
+  const acks = new Set();
+  document.querySelectorAll('#audio-channels-rows input[type=text]').forEach(i => {
+    const v = i.value.trim();
+    if (v) mapping[parseInt(i.dataset.ch, 10)] = v;
+  });
+  document.querySelectorAll('#audio-channels-rows input[type=checkbox]').forEach(c => {
+    if (c.checked) {
+      const pos = mapping[parseInt(c.dataset.ack, 10)];
+      if (pos) acks.add(pos);
+    }
+  });
+  if (!Object.keys(mapping).length) { errEl.textContent = 'Add at least one position.'; return; }
+  const body = {
+    vendor_id: _activeAudioMap.vendor_id,
+    product_id: _activeAudioMap.product_id,
+    serial: _activeAudioMap.serial || '',
+    usb_port_path: _activeAudioMap.usb_port_path || '',
+    mapping,
+    consent_acks: [...acks],
+  };
+  const r = await fetch(
+    `/api/audio-channels/sessions/${_activeAudioSessionId}/override`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+  if (r.status === 204) {
+    document.getElementById('audio-channels-dialog').close();
+    await loadState();
+  } else {
+    const t = await r.text();
+    errEl.textContent = 'Error: ' + t;
+  }
+}
+
+async function clearAudioChannelOverride() {
+  if (!_activeAudioSessionId) return;
+  const r = await fetch(
+    `/api/audio-channels/sessions/${_activeAudioSessionId}/override`,
+    { method: 'DELETE' }
+  );
+  if (r.status === 204) {
+    document.getElementById('audio-channels-dialog').close();
+    await loadState();
+  }
 }
 
 function render(s) {
