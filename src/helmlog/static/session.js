@@ -1458,7 +1458,12 @@ function _renderDiarizedTranscript(body, t) {
   const blocks = [];
   for (const seg of t.segments) {
     const last = blocks[blocks.length - 1];
-    if (last && last.speaker === seg.speaker) {
+    // Group by both speaker and channel so multi-channel sessions don't
+    // collapse adjacent same-speaker utterances from different mics.
+    const sameBlock = last
+      && last.speaker === seg.speaker
+      && last.channel_index === seg.channel_index;
+    if (sameBlock) {
       last.text += ' ' + seg.text; last.end = seg.end;
     } else { blocks.push({...seg}); }
   }
@@ -1483,7 +1488,7 @@ function _renderDiarizedTranscript(body, t) {
 
   body.innerHTML = ''
     + '<div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:6px;gap:8px">'
-    + (_session.channels > 1 ? _renderIsolationToggle() : '')
+    + (_session.audio_channels > 1 ? _renderIsolationToggle() : '')
     + '<button id="transcript-follow-btn" type="button" onclick="toggleTranscriptFollow()" '
     + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" '
     + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
@@ -1551,6 +1556,15 @@ function playTranscriptSegment(idx) {
         : _session.audio_start_utc + 'Z'
     );
     setPosition(new Date(audioStart.getTime() + b.start * 1000), {source: 'transcript'});
+  }
+  // Multi-channel sessions use the Web Audio path; route the click through
+  // _mcOnSegmentClick so the listener gets channel isolation for the segment.
+  if ((_session.audio_channels || 1) > 1) {
+    const ch = (b.channel_index !== undefined && b.channel_index !== null)
+      ? b.channel_index
+      : null;
+    _mcOnSegmentClick(ch, b.start, b.end);
+    return;
   }
   const audioEl = document.getElementById('session-audio')
     || document.querySelector('#audio-body audio');
@@ -1641,6 +1655,12 @@ async function retranscribe() {
 function loadAudio() {
   const card = document.getElementById('audio-card');
   card.style.display = '';
+  // Multi-channel sessions use the Web Audio path so transcript clicks can
+  // isolate a single channel without re-fetching audio (#462 pt.6).
+  if ((_session.audio_channels || 1) > 1) {
+    loadMultiChannelAudio();
+    return;
+  }
   document.getElementById('audio-body').innerHTML =
     '<audio id="session-audio" controls style="width:100%">'
     + '<source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav">'
@@ -1697,6 +1717,231 @@ function loadAudio() {
   el.addEventListener('pause', function() {
     _stopPlayTick();
   });
+}
+
+// ---------------------------------------------------------------------------
+// Multi-channel Web Audio playback (#462 pt.6)
+//
+// Pipeline:
+//   fetch WAV → AudioContext.decodeAudioData → AudioBufferSourceNode →
+//   ChannelSplitterNode → per-channel GainNodes → ChannelMergerNode → destination
+//
+// All channels are audible by default. Clicking a transcript segment mutes
+// the other channels for the duration of that segment, then resumes the
+// mixed playback. The "sticky" toggle locks isolation until released.
+// ---------------------------------------------------------------------------
+
+let _mcCtx = null;
+let _mcBuffer = null;
+let _mcSource = null;
+let _mcSplitter = null;
+let _mcMerger = null;
+let _mcGains = [];
+let _mcStartTime = 0;        // AudioContext.currentTime when playback started
+let _mcStartOffset = 0;       // buffer offset (seconds) when playback started
+let _mcIsPlaying = false;
+let _mcIsolatedChannel = null;
+let _mcIsolationTimer = null;
+let _mcSticky = false;
+let _mcRafHandle = null;
+
+function _mcCurrentTime() {
+  if (!_mcCtx || !_mcBuffer) return 0;
+  if (!_mcIsPlaying) return _mcStartOffset;
+  return _mcStartOffset + (_mcCtx.currentTime - _mcStartTime);
+}
+
+function _mcSetIsolation(channelIndex) {
+  // null = mixed (all gains 1); otherwise mute every other channel
+  _mcIsolatedChannel = channelIndex;
+  if (!_mcGains.length) return;
+  _mcGains.forEach((g, i) => {
+    g.gain.value = (channelIndex === null || i === channelIndex) ? 1 : 0;
+  });
+  const ind = document.getElementById('mc-isolation-indicator');
+  if (ind) {
+    ind.textContent = channelIndex === null
+      ? 'mixed'
+      : `isolated: CH${channelIndex}`;
+  }
+}
+
+function _mcClearTimer() {
+  if (_mcIsolationTimer !== null) {
+    clearTimeout(_mcIsolationTimer);
+    _mcIsolationTimer = null;
+  }
+}
+
+function _mcRebuildSource(offsetSeconds) {
+  // AudioBufferSourceNode is single-use: every play/seek requires a fresh one.
+  if (_mcSource) {
+    try { _mcSource.stop(); } catch (e) { /* not started */ }
+    try { _mcSource.disconnect(); } catch (e) { /* swallow */ }
+  }
+  _mcSource = _mcCtx.createBufferSource();
+  _mcSource.buffer = _mcBuffer;
+  _mcSource.connect(_mcSplitter);
+  _mcSource.onended = () => {
+    if (!_mcSource) return;
+    // Distinguish a natural end-of-buffer from a manual stop() during seek
+    if (_mcCurrentTime() >= _mcBuffer.duration - 0.05) {
+      _mcIsPlaying = false;
+      _mcStartOffset = 0;
+      _mcUpdateButtons();
+    }
+  };
+  _mcSource.start(0, offsetSeconds);
+  _mcStartTime = _mcCtx.currentTime;
+  _mcStartOffset = offsetSeconds;
+  _mcIsPlaying = true;
+  _mcUpdateButtons();
+}
+
+function _mcPlay() {
+  if (!_mcCtx || !_mcBuffer) return;
+  if (_mcCtx.state === 'suspended') _mcCtx.resume();
+  _mcRebuildSource(_mcStartOffset);
+  _mcStartProgressTick();
+}
+
+function _mcPause() {
+  if (!_mcSource || !_mcIsPlaying) return;
+  _mcStartOffset = _mcCurrentTime();
+  try { _mcSource.stop(); } catch (e) { /* already stopped */ }
+  _mcIsPlaying = false;
+  _mcUpdateButtons();
+  _mcStopProgressTick();
+}
+
+function _mcSeek(toSeconds) {
+  if (!_mcCtx || !_mcBuffer) return;
+  const clamped = Math.max(0, Math.min(_mcBuffer.duration, toSeconds));
+  if (_mcIsPlaying) {
+    _mcRebuildSource(clamped);
+  } else {
+    _mcStartOffset = clamped;
+  }
+  _mcUpdateProgress();
+}
+
+function _mcUpdateButtons() {
+  const btn = document.getElementById('mc-playpause');
+  if (btn) btn.textContent = _mcIsPlaying ? '⏸' : '▶';
+}
+
+function _mcUpdateProgress() {
+  const seek = document.getElementById('mc-seek');
+  const time = document.getElementById('mc-time');
+  if (!seek || !time || !_mcBuffer) return;
+  const t = _mcCurrentTime();
+  seek.value = String((t / _mcBuffer.duration) * 1000);
+  const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  time.textContent = `${fmt(t)} / ${fmt(_mcBuffer.duration)}`;
+}
+
+function _mcStartProgressTick() {
+  _mcStopProgressTick();
+  const tick = () => {
+    _mcUpdateProgress();
+    if (_mcIsPlaying) _mcRafHandle = requestAnimationFrame(tick);
+  };
+  _mcRafHandle = requestAnimationFrame(tick);
+}
+
+function _mcStopProgressTick() {
+  if (_mcRafHandle !== null) {
+    cancelAnimationFrame(_mcRafHandle);
+    _mcRafHandle = null;
+  }
+}
+
+async function loadMultiChannelAudio() {
+  const body = document.getElementById('audio-body');
+  body.innerHTML =
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">' +
+    '<button id="mc-playpause" class="btn-sm" onclick="_mcTogglePlay()" style="font-size:1.1rem;padding:4px 12px">▶</button>' +
+    '<input id="mc-seek" type="range" min="0" max="1000" value="0" style="flex:1;min-width:160px" oninput="_mcSeekFromSlider(this.value)">' +
+    '<span id="mc-time" style="font-size:.78rem;color:var(--text-secondary);min-width:80px;text-align:right">0:00 / 0:00</span>' +
+    '</div>' +
+    '<div style="display:flex;align-items:center;gap:10px;margin-top:6px;font-size:.78rem;color:var(--text-secondary)">' +
+    '<label><input id="mc-sticky" type="checkbox" onchange="_mcToggleSticky(this.checked)"> Sticky isolation</label>' +
+    '<button class="btn-sm" onclick="_mcSetIsolation(null)">All channels</button>' +
+    '<span id="mc-isolation-indicator">mixed</span>' +
+    '</div>' +
+    '<div id="mc-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:4px">Loading audio…</div>';
+
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      document.getElementById('mc-status').textContent =
+        'Web Audio API not supported in this browser.';
+      return;
+    }
+    _mcCtx = new Ctx();
+    const r = await fetch('/api/audio/' + _session.audio_session_id + '/stream');
+    if (!r.ok) throw new Error('audio fetch failed: ' + r.status);
+    const buf = await r.arrayBuffer();
+    _mcBuffer = await _mcCtx.decodeAudioData(buf);
+    const channels = _mcBuffer.numberOfChannels;
+    _mcSplitter = _mcCtx.createChannelSplitter(channels);
+    _mcMerger = _mcCtx.createChannelMerger(1);
+    _mcGains = [];
+    for (let i = 0; i < channels; i++) {
+      const g = _mcCtx.createGain();
+      g.gain.value = 1;
+      _mcSplitter.connect(g, i);
+      // Mix every channel down to mono so isolation works regardless of
+      // device output count. Per CLAUDE.md the lavalier device exposes one
+      // mic per channel — mono playback is what the listener wants.
+      g.connect(_mcMerger, 0, 0);
+      _mcGains.push(g);
+    }
+    _mcMerger.connect(_mcCtx.destination);
+    document.getElementById('mc-status').textContent =
+      `${channels}-channel session — click a transcript segment to isolate that channel.`;
+    _mcUpdateProgress();
+  } catch (e) {
+    console.error('multi-channel audio load failed', e);
+    document.getElementById('mc-status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function _mcTogglePlay() {
+  if (!_mcCtx || !_mcBuffer) return;
+  if (_mcIsPlaying) _mcPause();
+  else _mcPlay();
+}
+
+function _mcSeekFromSlider(val) {
+  if (!_mcBuffer) return;
+  _mcSeek((Number(val) / 1000) * _mcBuffer.duration);
+}
+
+function _mcToggleSticky(on) {
+  _mcSticky = !!on;
+  if (!_mcSticky) {
+    _mcClearTimer();
+    _mcSetIsolation(null);
+  }
+}
+
+// Called by transcript-segment click handlers (see playTranscriptSegment).
+// channelIndex may be undefined for single-channel sessions; in that case
+// no isolation is applied.
+function _mcOnSegmentClick(channelIndex, startSec, endSec) {
+  if (!_mcCtx || !_mcBuffer) return;
+  _mcSeek(startSec);
+  if (!_mcIsPlaying) _mcPlay();
+  if (channelIndex === undefined || channelIndex === null) return;
+  _mcClearTimer();
+  _mcSetIsolation(channelIndex);
+  if (_mcSticky) return;  // sticky mode keeps isolation until released
+  const durationMs = Math.max(0, (endSec - startSec) * 1000);
+  _mcIsolationTimer = setTimeout(() => {
+    _mcSetIsolation(null);
+    _mcIsolationTimer = null;
+  }, durationMs);
 }
 
 // Direct transcript highlighter — follows audio.currentTime regardless of
@@ -4214,115 +4459,17 @@ function playSegmentAudio(start, end) {
 }
 
 // ---------------------------------------------------------------------------
-// Isolation Mode (Web Audio API)
+// Isolation toggle stub — kept so the diarized transcript header can call
+// _renderIsolationToggle() without an undefined-function crash. The real
+// per-segment isolation now lives in the _mc* Web Audio path above (#462
+// pt.6); the toggle just exposes the sticky-isolation control for the
+// multi-channel session.
 // ---------------------------------------------------------------------------
 
-let _isolationMode = false;
-let _audioCtx = null;
-let _audioSource = null;
-let _splitter = null;
-let _merger = null;
-let _gains = [];
-
 function _renderIsolationToggle() {
-  const active = _isolationMode ? 'background:var(--accent);color:white;border-color:var(--accent)' : 'background:transparent;color:var(--text-secondary);border-color:var(--border)';
-  return '<button id="isolation-toggle" type="button" onclick="toggleIsolationMode()" '
-    + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);cursor:pointer;border-radius:3px;' + active + '" '
-    + 'title="Isolation Mode: solo the active speaker\'s microphone channel during playback.">Isolation</button>';
-}
-
-function toggleIsolationMode() {
-  _isolationMode = !_isolationMode;
-  const btn = document.getElementById('isolation-toggle');
-  if (btn) {
-    if (_isolationMode) {
-      btn.style.background = 'var(--accent)';
-      btn.style.color = 'white';
-      btn.style.borderColor = 'var(--accent)';
-    } else {
-      btn.style.background = 'transparent';
-      btn.style.color = 'var(--text-secondary)';
-      btn.style.borderColor = 'var(--border)';
-    }
-  }
-
-  if (_isolationMode) {
-    _setupAudioIsolation();
-  } else {
-    _resetAudioIsolation();
-  }
-}
-
-function _setupAudioIsolation() {
-  const audio = document.getElementById('session-audio');
-  if (!audio) return;
-
-  if (!_audioCtx) {
-    _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    _audioSource = _audioCtx.createMediaElementSource(audio);
-
-    const channels = _session.channels || 1;
-    _splitter = _audioCtx.createChannelSplitter(channels);
-    _merger = _audioCtx.createChannelMerger(channels);
-
-    _audioSource.connect(_splitter);
-
-    for (let i = 0; i < channels; i++) {
-      const g = _audioCtx.createGain();
-      _gains.push(g);
-      _splitter.connect(g, i);
-      // Connect each gain node to ALL merger inputs (mono solo) or
-      // to its respective channel (pass-through).
-      // For isolation mode, we'll route the soloed channel to both L/R if stereo.
-      g.connect(_merger, 0, 0);
-      if (channels > 1) g.connect(_merger, 0, 1);
-    }
-    _merger.connect(_audioCtx.destination);
-  }
-
-  if (_audioCtx.state === 'suspended') {
-    _audioCtx.resume();
-  }
-
-  _updateIsolationGains();
-}
-
-function _resetAudioIsolation() {
-  if (!_gains.length) return;
-  _gains.forEach(g => { g.gain.value = 1.0; });
-}
-
-function _updateIsolationGains() {
-  if (!_isolationMode || !_gains.length) return;
-
-  const audio = document.getElementById('session-audio');
-  if (!audio) return;
-
-  const now = audio.currentTime;
-  // Find the segment containing 'now'
-  const activeSeg = (_transcriptBlocks || []).find(b => now >= b.start && now <= b.end);
-
-  if (activeSeg && activeSeg.channel) {
-    const soloIdx = activeSeg.channel - 1;
-    _gains.forEach((g, i) => {
-      // Use setTargetAtTime for smooth transitions
-      g.gain.setTargetAtTime(i === soloIdx ? 1.0 : 0.05, _audioCtx.currentTime, 0.05);
-    });
-  } else {
-    // No active segment, play all channels at low volume or full volume?
-    // Let's go full volume if no one is talking.
-    _gains.forEach(g => {
-      g.gain.setTargetAtTime(1.0, _audioCtx.currentTime, 0.05);
-    });
-  }
-}
-
-// Wire _updateIsolationGains into the audio timeupdate loop
-function _wireIsolationGains() {
-  const audio = document.getElementById('session-audio');
-  if (audio) {
-    audio.addEventListener('timeupdate', _updateIsolationGains);
-  }
+  // The multi-channel audio card already renders its own sticky-isolation
+  // checkbox; nothing to add to the transcript header.
+  return '';
 }
 
 // ---------------------------------------------------------------------------
@@ -4330,4 +4477,3 @@ function _wireIsolationGains() {
 // ---------------------------------------------------------------------------
 
 init();
-_wireIsolationGains();

@@ -403,7 +403,7 @@ async def api_session_detail(
 
     # Check for audio
     acur = await db.execute(
-        "SELECT id, start_utc FROM audio_sessions"
+        "SELECT id, start_utc, channels FROM audio_sessions"
         " WHERE race_id = ? AND session_type IN ('race','practice')",
         (session_id,),
     )
@@ -434,6 +434,7 @@ async def api_session_detail(
             "audio_start_utc": (
                 datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
             ),
+            "audio_channels": arow["channels"] if arow else None,
             "peer_fingerprint": row["peer_fingerprint"],
             "has_wind_field": has_wind_field,
             "shared_name": row["shared_name"],
