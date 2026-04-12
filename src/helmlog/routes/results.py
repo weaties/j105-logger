@@ -184,8 +184,11 @@ async def api_list_results(
     cur = await db.execute(
         f"SELECT r.id, r.name, r.date, r.event AS class_name, r.race_num, "  # noqa: S608
         f"r.regatta_id, r.local_session_id, "
+        f"ls.slug AS session_slug, ls.name AS session_name, "
         f"(SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.id) AS result_count "
-        f"FROM races r WHERE {where_sql} AND r.source IS NOT NULL "
+        f"FROM races r "
+        f"LEFT JOIN races ls ON ls.id = r.local_session_id "
+        f"WHERE {where_sql} AND r.source IS NOT NULL "
         f"ORDER BY r.date DESC, r.race_num, r.event",
         params,
     )

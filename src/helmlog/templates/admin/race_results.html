@@ -78,6 +78,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <div class="tab" data-tab="series" onclick="switchTab('series')">Series</div>
 </div>
 <div id="tab-races">
+<div id="race-session-link" style="display:none;margin-bottom:6px"></div>
 <table id="race-results-tbl">
 <thead><tr><th>Place</th><th>Sail</th><th>Boat</th><th>Skipper</th><th>Club</th><th>Points</th><th>Status</th></tr></thead>
 <tbody></tbody>
@@ -174,19 +175,37 @@ async function loadResults(){
   const nav=document.getElementById('race-nav');
   nav.innerHTML='';
   races.forEach((rc,i)=>{
+    const wrap=document.createElement('span');
+    wrap.style.display='inline-flex';wrap.style.alignItems='center';wrap.style.gap='3px';
     const b=document.createElement('button');
     b.className='btn-sm'+(i===0?' btn-fetch':'');
     b.textContent=rc.name.replace(/ - .*/,'');
-    b.onclick=()=>loadRace(rc.id,b);
-    nav.appendChild(b);
+    b.onclick=()=>loadRace(rc.id,b,rc);
+    wrap.appendChild(b);
+    if(rc.local_session_id){
+      const a=document.createElement('a');
+      const href=rc.session_slug?'/session/'+rc.session_slug:'/session/'+rc.local_session_id;
+      a.href=href;a.title=rc.session_name||'Session';
+      a.textContent='\u2197';a.style.fontSize='.75rem';a.style.textDecoration='none';
+      wrap.appendChild(a);
+    }
+    nav.appendChild(wrap);
   });
-  if(races.length)loadRace(races[0].id,nav.firstChild);
+  if(races.length)loadRace(races[0].id,nav.querySelector('button'),races[0]);
   loadSeries();
 }
 
-async function loadRace(raceId,btn){
+async function loadRace(raceId,btn,rc){
   document.querySelectorAll('#race-nav button').forEach(b=>b.classList.remove('btn-fetch'));
   if(btn)btn.classList.add('btn-fetch');
+  const linkEl=document.getElementById('race-session-link');
+  if(rc&&rc.local_session_id){
+    const href=rc.session_slug?'/session/'+rc.session_slug:'/session/'+rc.local_session_id;
+    linkEl.innerHTML='<a href="'+href+'" style="font-size:.82rem">View session: '+(rc.session_name||'Session')+ ' \u2197</a>';
+    linkEl.style.display='';
+  }else{
+    linkEl.style.display='none';linkEl.innerHTML='';
+  }
   const r=await fetch('/api/results/races/'+raceId+'/results');
   const rows=await r.json();
   const tb=document.querySelector('#race-results-tbl tbody');
