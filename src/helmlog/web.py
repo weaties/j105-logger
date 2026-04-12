@@ -212,6 +212,7 @@ def create_app(
         pages,
         polar,
         races,
+        results,
         sails,
         sessions,
         settings,
@@ -246,12 +247,21 @@ def create_app(
         settings,
         deployment,
         federation,
+        results,
         analysis,
         notifications,
         visualizations,
         ws,
     ):
         app.include_router(module.router)
+
+    # -- Register results providers (#459) --
+    from helmlog.results.base import register_provider
+    from helmlog.results.clubspot import ClubspotProvider
+    from helmlog.results.styc import StycProvider
+
+    register_provider(ClubspotProvider())
+    register_provider(StycProvider())
 
     # -- Wire WebSocket broadcast to storage live updates --
     import asyncio as _asyncio

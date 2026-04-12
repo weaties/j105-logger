@@ -132,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 60
+_CURRENT_VERSION: int = 61
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1368,6 +1368,67 @@ _MIGRATIONS: dict[int, str] = {
             REFERENCES vakaros_sessions(id) ON DELETE SET NULL;
         CREATE INDEX IF NOT EXISTS idx_races_vakaros_session
             ON races(vakaros_session_id);
+    """,
+    61: """
+        -- Imported race results from external providers (#459): Clubspot, STYC, ...
+        -- Additive only. No existing column is dropped, renamed, or retyped.
+
+        CREATE TABLE IF NOT EXISTS regattas (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source          TEXT    NOT NULL,
+            source_id       TEXT    NOT NULL,
+            name            TEXT    NOT NULL,
+            start_date      TEXT,
+            end_date        TEXT,
+            url             TEXT,
+            default_class   TEXT,
+            last_fetched_at TEXT,
+            created_at      TEXT    NOT NULL,
+            UNIQUE(source, source_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_regattas_source ON regattas(source);
+
+        CREATE TABLE IF NOT EXISTS series_results (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            regatta_id      INTEGER NOT NULL REFERENCES regattas(id) ON DELETE CASCADE,
+            boat_id         INTEGER NOT NULL REFERENCES boats(id) ON DELETE CASCADE,
+            class           TEXT,
+            total_points    REAL,
+            net_points      REAL,
+            place_in_class  INTEGER,
+            place_overall   INTEGER,
+            updated_at      TEXT    NOT NULL,
+            UNIQUE(regatta_id, boat_id, class)
+        );
+        CREATE INDEX IF NOT EXISTS idx_series_results_regatta ON series_results(regatta_id);
+        CREATE INDEX IF NOT EXISTS idx_series_results_boat    ON series_results(boat_id);
+
+        ALTER TABLE boats ADD COLUMN skipper TEXT;
+        ALTER TABLE boats ADD COLUMN boat_type TEXT;
+        ALTER TABLE boats ADD COLUMN phrf_rating INTEGER;
+        ALTER TABLE boats ADD COLUMN yacht_club TEXT;
+        ALTER TABLE boats ADD COLUMN owner_email TEXT;
+
+        ALTER TABLE race_results ADD COLUMN start_time TEXT;
+        ALTER TABLE race_results ADD COLUMN elapsed_seconds INTEGER;
+        ALTER TABLE race_results ADD COLUMN corrected_seconds INTEGER;
+        ALTER TABLE race_results ADD COLUMN points REAL;
+        ALTER TABLE race_results ADD COLUMN points_throwout INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE race_results ADD COLUMN status_code TEXT;
+        ALTER TABLE race_results ADD COLUMN division TEXT;
+        ALTER TABLE race_results ADD COLUMN fleet TEXT;
+
+        ALTER TABLE races ADD COLUMN regatta_id INTEGER
+            REFERENCES regattas(id) ON DELETE SET NULL;
+        ALTER TABLE races ADD COLUMN local_session_id INTEGER
+            REFERENCES races(id) ON DELETE SET NULL;
+        ALTER TABLE races ADD COLUMN source TEXT;
+        ALTER TABLE races ADD COLUMN source_id TEXT;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_races_source ON races(source, source_id)
+            WHERE source IS NOT NULL AND source_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_races_regatta ON races(regatta_id);
+        CREATE INDEX IF NOT EXISTS idx_races_local_session ON races(local_session_id);
     """,
 }
 
@@ -3068,6 +3129,7 @@ class Storage:
                 race_params.append(session_type)
             else:
                 race_where.append("r.session_type IN ('race', 'practice', 'synthesized')")
+            race_where.append("(r.source IS NULL OR r.source = 'live')")
             if q:
                 race_where.append("(r.name LIKE ? OR r.event LIKE ?)")
                 like = f"%{q}%"
@@ -3621,17 +3683,31 @@ class Storage:
         return cur.lastrowid
 
     async def list_race_results(self, race_id: int) -> list[dict[str, Any]]:
-        """Return results for *race_id* ordered by place."""
+        """Return results for *race_id* ordered by place.
+
+        If an imported race is linked to this session via
+        ``local_session_id``, its results are returned instead — they are
+        typically more complete (full fleet from the scoring system vs
+        manually entered finishes).
+        """
         db = self._read_conn()
+        imported_cur = await db.execute(
+            "SELECT id FROM races WHERE local_session_id = ? AND source IS NOT NULL",
+            (race_id,),
+        )
+        imported = await imported_cur.fetchone()
+        effective_id = imported["id"] if imported else race_id
+
         cur = await db.execute(
             "SELECT rr.id, rr.race_id, rr.place, rr.boat_id,"
             " b.sail_number, b.name AS boat_name, b.class AS boat_class,"
-            " rr.finish_time, rr.dnf, rr.dns, rr.notes, rr.created_at"
+            " rr.finish_time, rr.dnf, rr.dns, rr.notes, rr.created_at,"
+            " rr.points, rr.status_code, rr.elapsed_seconds, rr.corrected_seconds"
             " FROM race_results rr"
             " JOIN boats b ON b.id = rr.boat_id"
             " WHERE rr.race_id = ?"
             " ORDER BY rr.place ASC",
-            (race_id,),
+            (effective_id,),
         )
         rows = await cur.fetchall()
         return [
@@ -3648,6 +3724,11 @@ class Storage:
                 "dns": bool(row["dns"]),
                 "notes": row["notes"],
                 "created_at": row["created_at"],
+                "points": row["points"],
+                "status_code": row["status_code"],
+                "elapsed_seconds": row["elapsed_seconds"],
+                "corrected_seconds": row["corrected_seconds"],
+                "imported": effective_id != race_id,
             }
             for row in rows
         ]
