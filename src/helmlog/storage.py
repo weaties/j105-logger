@@ -7,10 +7,12 @@ all logged data.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiosqlite
@@ -6056,6 +6058,125 @@ class Storage:
         await db.commit()
         logger.info("Audio session {} deleted", audio_session_id)
         return file_path
+
+    # ------------------------------------------------------------------
+    # Per-channel audio deletion (#462 pt.7 / #499)
+    # ------------------------------------------------------------------
+
+    async def delete_audio_channel(
+        self,
+        audio_session_id: int,
+        *,
+        channel_index: int,
+        user_id: int | None = None,
+        reason: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        """Atomically delete one channel's audio + transcript + channel_map.
+
+        Executes the per-channel data-licensing deletion right for a single
+        position in a multi-channel recording:
+
+        * Zero out ``channel_index`` in the WAV on disk (preserves channel
+          count so remaining channels keep their indices).
+        * Delete all ``transcript_segments`` rows tagged with that channel
+          for this session's transcript(s).
+        * Delete the matching ``channel_map`` row(s) for this session.
+        * Write an ``audio_channel_delete`` audit log entry.
+
+        The WAV rewrite is staged via a sibling ``.tmpNNN`` file and swapped
+        with ``os.replace`` only after all DB mutations succeed; any failure
+        rolls back the DB and leaves the original WAV untouched.
+        """
+        import os
+        import tempfile
+
+        import soundfile as sf
+
+        row = await self.get_audio_session_row(audio_session_id)
+        if row is None:
+            raise ValueError(f"audio session {audio_session_id} not found")
+        channels = int(row.get("channels") or 0)
+        if channel_index < 0 or channel_index >= channels:
+            raise ValueError(
+                f"channel_index {channel_index} out of range for {channels}-channel session"
+            )
+        wav_path = Path(row["file_path"])
+        if not wav_path.exists():
+            raise FileNotFoundError(f"audio file missing: {wav_path}")
+
+        # Stage the zeroed WAV into a sibling tmp file. soundfile preserves
+        # samplerate/subtype via sf.info.
+        data, sr = sf.read(str(wav_path), always_2d=True)
+        info = sf.info(str(wav_path))
+        if data.shape[1] != channels:
+            raise RuntimeError(f"WAV channel count {data.shape[1]} != DB channels {channels}")
+        data[:, channel_index] = 0
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=wav_path.name + ".", suffix=".tmp", dir=str(wav_path.parent)
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            sf.write(str(tmp_path), data, sr, format=info.format, subtype=info.subtype)
+
+            db = self._conn()
+            try:
+                await db.execute(
+                    "DELETE FROM transcript_segments"
+                    " WHERE channel_index = ?"
+                    "   AND transcript_id IN"
+                    "       (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+                    (channel_index, audio_session_id),
+                )
+                await db.execute(
+                    "DELETE FROM channel_map WHERE audio_session_id = ? AND channel_index = ?",
+                    (audio_session_id, channel_index),
+                )
+                detail = json.dumps(
+                    {
+                        "audio_session_id": audio_session_id,
+                        "channel_index": channel_index,
+                        "position_name": (
+                            await self._channel_position_name(audio_session_id, channel_index)
+                        ),
+                        "reason": reason,
+                    }
+                )
+                await self.log_action(
+                    "audio_channel_delete",
+                    detail=detail,
+                    user_id=user_id,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                os.replace(str(tmp_path), str(wav_path))
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        except Exception:
+            if tmp_path.exists():
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+            raise
+        logger.info(
+            "Audio channel deleted: session={} channel={}",
+            audio_session_id,
+            channel_index,
+        )
+
+    async def _channel_position_name(self, audio_session_id: int, channel_index: int) -> str | None:
+        """Look up the stored position name for a channel (may be None)."""
+        cur = await self._read_conn().execute(
+            "SELECT position_name FROM channel_map"
+            " WHERE audio_session_id = ? AND channel_index = ?",
+            (audio_session_id, channel_index),
+        )
+        r = await cur.fetchone()
+        return r["position_name"] if r else None
 
     # ------------------------------------------------------------------
     # Photo cleanup on note deletion (#205)
