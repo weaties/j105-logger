@@ -49,7 +49,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <tbody>
 {% for r in regattas %}
 <tr data-id="{{ r.id }}" data-source="{{ r.source }}">
-<td>{{ r.name }}</td>
+<td>{% if r.url %}<a href="{{ r.url }}" target="_blank" rel="noopener">{{ r.name }} ↗</a>{% else %}{{ r.name }}{% endif %}</td>
 <td>{{ r.source }}</td>
 <td>{{ r.race_count }}</td>
 <td>{{ r.result_count }}</td>
