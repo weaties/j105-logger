@@ -1,0 +1,234 @@
+{% extends "base.html" %}
+{% block title %}Race Results — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+.label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:var(--text-secondary);margin-bottom:8px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;padding:6px 8px}
+td{padding:7px 8px;border-bottom:1px solid var(--border)}
+.badge{padding:2px 8px;border-radius:4px;font-size:.78rem;font-weight:600}
+.badge-ok{background:var(--bg-secondary);color:var(--success)}
+.badge-pending{background:var(--border);color:var(--text-secondary)}
+.btn-sm{padding:6px 12px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.78rem;cursor:pointer}
+.btn-fetch{color:var(--accent);border-color:var(--accent-strong)}
+.btn-add{color:var(--success);border-color:var(--success)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-fetch:disabled{opacity:.5;cursor:not-allowed}
+.form-row{display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap}
+.form-row input,.form-row select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem}
+.form-row input::placeholder{color:var(--text-muted)}
+#msg{font-size:.85rem;margin-top:6px;min-height:1.2em}
+.msg-ok{color:var(--success)}.msg-err{color:var(--danger)}
+.highlight{background:var(--accent-strong) !important;color:#fff}
+.class-filter{margin-bottom:12px;display:flex;gap:8px;align-items:center}
+.class-filter select{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem;min-width:180px}
+.throwout{text-decoration:line-through;opacity:.6}
+dialog{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:12px;padding:20px;max-width:500px;width:90%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+dialog .form-row{flex-direction:column;align-items:stretch}
+dialog .form-row input,dialog .form-row select{width:100%}
+dialog .form-row label{font-size:.75rem;color:var(--text-secondary);margin-bottom:2px}
+dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.tab-row{display:flex;gap:2px;margin-bottom:12px}
+.tab{padding:6px 14px;border:1px solid var(--border);border-radius:6px 6px 0 0;background:var(--bg-input);color:var(--text-secondary);cursor:pointer;font-size:.82rem}
+.tab.active{background:var(--bg-secondary);color:var(--text-primary);border-bottom-color:var(--bg-secondary);font-weight:600}
+</style>
+{% endblock %}
+{% block content %}
+<h1>Race Results</h1>
+
+<!-- Saved Regattas -->
+<div class="card">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+<div class="label">Saved Regattas</div>
+<button class="btn-sm btn-add" onclick="addDlg.showModal()">+ Add Regatta</button>
+</div>
+<table id="regatta-tbl">
+<thead><tr><th>Name</th><th>Source</th><th>Races</th><th>Results</th><th>Last Fetched</th><th></th></tr></thead>
+<tbody>
+{% for r in regattas %}
+<tr data-id="{{ r.id }}" data-source="{{ r.source }}">
+<td>{{ r.name }}</td>
+<td>{{ r.source }}</td>
+<td>{{ r.race_count }}</td>
+<td>{{ r.result_count }}</td>
+<td>{{ r.last_fetched_at or "—" }}</td>
+<td style="white-space:nowrap">
+<button class="btn-sm btn-fetch" onclick="fetchResults({{ r.id }},this)">Fetch</button>
+<button class="btn-sm btn-del" onclick="deleteRegatta({{ r.id }},'{{ r.name | e }}')">×</button>
+</td>
+</tr>
+{% endfor %}
+{% if not regattas %}<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No regattas saved. Click + Add Regatta to get started.</td></tr>{% endif %}
+</tbody>
+</table>
+<div id="msg"></div>
+</div>
+
+<!-- Results Browser -->
+<div class="card" id="results-card" style="display:none">
+<div class="label" id="results-title">Results</div>
+<div class="class-filter">
+<label style="font-size:.82rem">Class:</label>
+<select id="class-select" onchange="loadResults()"><option value="">All</option></select>
+</div>
+<div class="tab-row">
+<div class="tab active" data-tab="races" onclick="switchTab('races')">Per-Race</div>
+<div class="tab" data-tab="series" onclick="switchTab('series')">Series</div>
+</div>
+<div id="tab-races">
+<table id="race-results-tbl">
+<thead><tr><th>Place</th><th>Sail</th><th>Boat</th><th>Skipper</th><th>Club</th><th>Points</th><th>Status</th></tr></thead>
+<tbody></tbody>
+</table>
+<div id="race-nav" style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap"></div>
+</div>
+<div id="tab-series" style="display:none">
+<table id="series-tbl">
+<thead><tr><th>Place</th><th>Sail</th><th>Boat</th><th>Skipper</th><th>Club</th><th>Total</th><th>Net</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+
+<!-- Add Regatta Dialog -->
+<dialog id="addDlg">
+<form method="dialog" onsubmit="return addRegatta(event)">
+<div style="font-weight:600;margin-bottom:12px">Add Regatta</div>
+<div class="form-row"><label>Source</label><select name="source" required><option value="clubspot">Clubspot</option><option value="styc">STYC</option></select></div>
+<div class="form-row"><label>Source ID</label><input name="source_id" placeholder="e.g. wYFzQvmG4R" required></div>
+<div class="form-row"><label>Name</label><input name="name" placeholder="e.g. CYC Sound Wednesday" required></div>
+<div class="form-row"><label>URL (STYC base dir)</label><input name="url" placeholder="https://race.styc.org/..."></div>
+<div class="form-row"><label>Class IDs (Clubspot, comma-sep)</label><input name="default_class" placeholder="e.g. 7q1o9ikhPH,EvS9obW8uC"></div>
+<div id="add-err" style="color:var(--danger);font-size:.8rem;margin-top:4px"></div>
+<div class="btn-row"><button type="button" onclick="addDlg.close()">Cancel</button><button type="submit" class="btn-sm btn-add">Add</button></div>
+</form>
+</dialog>
+
+<script>
+const addDlg=document.getElementById('addDlg');
+const msg=document.getElementById('msg');
+let activeRegattaId=null;
+let sailNumber=null;
+try{sailNumber=document.body.dataset.sailNumber||null}catch(e){}
+
+function showMsg(text,ok){msg.textContent=text;msg.className=ok?'msg-ok':'msg-err'}
+
+async function addRegatta(e){
+  e.preventDefault();
+  const f=addDlg.querySelector('form');
+  const fd=new FormData(f);
+  try{
+    const r=await fetch('/api/results/regattas',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Failed');
+    location.reload();
+  }catch(err){document.getElementById('add-err').textContent=err.message}
+  return false;
+}
+
+async function deleteRegatta(id,name){
+  if(!confirm('Delete regatta "'+name+'" and all its imported races/results?'))return;
+  const r=await fetch('/api/results/regattas/'+id,{method:'DELETE'});
+  if(r.ok)location.reload();
+  else showMsg('Delete failed',false);
+}
+
+async function fetchResults(id,btn){
+  btn.disabled=true;btn.textContent='Fetching…';
+  showMsg('',true);
+  try{
+    const r=await fetch('/api/results/regattas/'+id+'/fetch',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Fetch failed');
+    showMsg('Imported: '+d.races_upserted+' races, '+d.results_upserted+' results, '+d.boats_upserted+' boats',true);
+    activeRegattaId=id;
+    loadClasses(id);
+    setTimeout(()=>location.reload(),1500);
+  }catch(err){showMsg(err.message,false)}
+  finally{btn.disabled=false;btn.textContent='Fetch'}
+}
+
+async function loadClasses(regattaId){
+  const r=await fetch('/api/results/classes?regatta_id='+regattaId);
+  const classes=await r.json();
+  const sel=document.getElementById('class-select');
+  sel.innerHTML='<option value="">All</option>';
+  classes.forEach(c=>{
+    const o=document.createElement('option');o.value=c;o.textContent=c;
+    if(c.includes('J/105'))o.selected=true;
+    sel.appendChild(o);
+  });
+  document.getElementById('results-card').style.display='';
+  document.getElementById('results-title').textContent='Results — '+document.querySelector('#regatta-tbl tr[data-id="'+regattaId+'"] td').textContent;
+  loadResults();
+}
+
+async function loadResults(){
+  const cls=document.getElementById('class-select').value;
+  let url='/api/results/races?regatta_id='+activeRegattaId;
+  if(cls)url+='&class_name='+encodeURIComponent(cls);
+  const r=await fetch(url);
+  const races=await r.json();
+  const nav=document.getElementById('race-nav');
+  nav.innerHTML='';
+  races.forEach((rc,i)=>{
+    const b=document.createElement('button');
+    b.className='btn-sm'+(i===0?' btn-fetch':'');
+    b.textContent=rc.name.replace(/ - .*/,'');
+    b.onclick=()=>loadRace(rc.id,b);
+    nav.appendChild(b);
+  });
+  if(races.length)loadRace(races[0].id,nav.firstChild);
+  loadSeries();
+}
+
+async function loadRace(raceId,btn){
+  document.querySelectorAll('#race-nav button').forEach(b=>b.classList.remove('btn-fetch'));
+  if(btn)btn.classList.add('btn-fetch');
+  const r=await fetch('/api/results/races/'+raceId+'/results');
+  const rows=await r.json();
+  const tb=document.querySelector('#race-results-tbl tbody');
+  tb.innerHTML='';
+  rows.forEach(row=>{
+    const tr=document.createElement('tr');
+    if(sailNumber&&row.sail_number===sailNumber)tr.classList.add('highlight');
+    tr.innerHTML='<td>'+row.place+'</td><td>'+row.sail_number+'</td><td>'+(row.boat_name||'')+'</td><td>'+(row.skipper||'')+'</td><td>'+(row.yacht_club||'')+'</td><td>'+(row.points!=null?row.points:'')+'</td><td>'+(row.status_code||'')+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+async function loadSeries(){
+  const cls=document.getElementById('class-select').value;
+  let url='/api/results/series?regatta_id='+activeRegattaId;
+  if(cls)url+='&class_name='+encodeURIComponent(cls);
+  const r=await fetch(url);
+  const rows=await r.json();
+  const tb=document.querySelector('#series-tbl tbody');
+  tb.innerHTML='';
+  rows.forEach(row=>{
+    const tr=document.createElement('tr');
+    if(sailNumber&&row.sail_number===sailNumber)tr.classList.add('highlight');
+    tr.innerHTML='<td>'+(row.place_in_class||'')+'</td><td>'+row.sail_number+'</td><td>'+(row.boat_name||'')+'</td><td>'+(row.skipper||'')+'</td><td>'+(row.yacht_club||'')+'</td><td>'+(row.total_points!=null?row.total_points:'')+'</td><td>'+(row.net_points!=null?row.net_points:'')+'</td>';
+    tb.appendChild(tr);
+  });
+}
+
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.getElementById('tab-races').style.display=name==='races'?'':'none';
+  document.getElementById('tab-series').style.display=name==='series'?'':'none';
+}
+
+// Auto-open first regatta if results exist
+document.addEventListener('DOMContentLoaded',()=>{
+  const first=document.querySelector('#regatta-tbl tbody tr[data-id]');
+  if(first){
+    const id=parseInt(first.dataset.id);
+    const rc=parseInt(first.children[2].textContent);
+    if(rc>0){activeRegattaId=id;loadClasses(id)}
+  }
+});
+</script>
+{% endblock %}
