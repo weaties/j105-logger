@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Vakaros — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 4px;font-size:1.0rem;color:var(--text-primary)}
+.card .sub{font-size:.78rem;color:var(--text-secondary);margin-bottom:12px;font-family:monospace}
+table.list{width:100%;border-collapse:collapse;font-size:.85rem}
+table.list th{text-align:left;color:var(--text-secondary);font-weight:500;padding:6px 10px;border-bottom:1px solid var(--border);font-size:.74rem;text-transform:uppercase;letter-spacing:.05em}
+table.list td{padding:8px 10px;color:var(--text-primary);border-bottom:1px solid var(--border);vertical-align:middle}
+table.list tr:last-child td{border-bottom:none}
+.mono{font-family:monospace;font-size:.8rem}
+.hash{font-family:monospace;color:var(--text-secondary);font-size:.72rem}
+.btn{padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary);color:var(--text-primary);font-size:.8rem;cursor:pointer;font-family:inherit}
+.btn:hover{filter:brightness(1.15)}
+.btn-primary{background:var(--accent-strong);border-color:var(--accent-strong);color:var(--bg-primary)}
+.badge{display:inline-block;font-size:.7rem;padding:2px 8px;border-radius:4px;font-weight:600;letter-spacing:.04em}
+.badge-ok{background:var(--bg-primary);color:var(--success);border:1px solid var(--success)}
+.badge-warn{background:var(--bg-primary);color:var(--warning);border:1px solid var(--warning)}
+.badge-err{background:var(--bg-primary);color:var(--danger);border:1px solid var(--danger)}
+.badge-muted{background:var(--bg-primary);color:var(--text-secondary);border:1px solid var(--border)}
+.empty{padding:12px;color:var(--text-secondary);font-style:italic;font-size:.85rem}
+.flash{margin-bottom:16px;padding:10px 14px;border-radius:6px;font-size:.88rem}
+.flash-ok{background:var(--bg-secondary);color:var(--success);border:1px solid var(--success)}
+.flash-warn{background:var(--bg-secondary);color:var(--warning);border:1px solid var(--warning)}
+.flash-err{background:var(--bg-secondary);color:var(--danger);border:1px solid var(--danger)}
+.hint{font-size:.78rem;color:var(--text-secondary);margin-top:6px}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 style="margin-top:0">Vakaros</h1>
+
+{% if flash_filename and flash_status %}
+  {% if flash_status == "ingested" %}
+    <div class="flash flash-ok">Ingested <code>{{ flash_filename }}</code> — archived to <code>processed/</code>.</div>
+  {% elif flash_status == "duplicate" %}
+    <div class="flash flash-warn">Duplicate <code>{{ flash_filename }}</code> (same content hash as an existing session) — archived to <code>processed/</code>, no new rows written.</div>
+  {% elif flash_status == "failed" %}
+    <div class="flash flash-err">Failed to parse <code>{{ flash_filename }}</code> — archived to <code>failed/</code>.{% if flash_error %} <span class="mono">{{ flash_error }}</span>{% endif %}</div>
+  {% endif %}
+{% endif %}
+
+{% if flash_rematch %}
+  <div class="flash flash-ok">{{ flash_rematch }}</div>
+{% endif %}
+
+<div class="card">
+  <h2>Inbox</h2>
+  <div class="sub">{{ inbox_dir }}</div>
+  {% if inbox_files %}
+  <table class="list">
+    <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+    <tbody>
+      {% for f in inbox_files %}
+      <tr>
+        <td class="mono">{{ f.name }}</td>
+        <td class="mono">{{ "%.1f"|format(f.size / 1024) }} KB</td>
+        <td style="text-align:right">
+          <form method="post" action="/admin/vakaros/ingest" style="display:inline">
+            <input type="hidden" name="filename" value="{{ f.name }}">
+            <button class="btn btn-primary" type="submit">Ingest</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">Inbox is empty. Copy a <code>.vkx</code> file into <code>{{ inbox_dir }}</code> and reload this page.</div>
+  {% endif %}
+  <div class="hint">Successfully ingested files move to <code>processed/</code>. Parse failures move to <code>failed/</code> with a <code>.err</code> sidecar explaining the error.</div>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:4px">
+    <div>
+      <h2 style="margin:0">Ingested sessions</h2>
+      <div class="sub">vakaros_sessions</div>
+    </div>
+    <form method="post" action="/admin/vakaros/rematch" style="margin:0">
+      <button class="btn" type="submit" title="Re-run matching for every stored Vakaros session against the current races table.">Rematch all</button>
+    </form>
+  </div>
+  {% if sessions %}
+  <table class="list">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Source file</th>
+        <th>Start (UTC)</th>
+        <th>End (UTC)</th>
+        <th>Positions</th>
+        <th>Lines</th>
+        <th>Events</th>
+        <th>Matched races</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in sessions %}
+      <tr>
+        <td class="mono">{{ s.id }}</td>
+        <td class="mono">{{ s.source_file }}<br><span class="hash">{{ s.source_hash[:12] }}…</span></td>
+        <td class="mono">{{ s.start_utc[:19] }}</td>
+        <td class="mono">{{ s.end_utc[:19] }}</td>
+        <td class="mono">{{ s.position_count }}</td>
+        <td class="mono">{{ s.line_count }}</td>
+        <td class="mono">{{ s.event_count }}</td>
+        <td>
+          {% if s.matched_races %}
+            {% for r in s.matched_races %}
+              <span class="badge badge-ok" style="margin-right:4px">{{ r.name }}</span>
+            {% endfor %}
+          {% else %}
+            <span class="badge badge-muted">unmatched</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">No Vakaros sessions ingested yet.</div>
+  {% endif %}
+</div>
+{% endblock %}

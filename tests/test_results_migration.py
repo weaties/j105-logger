@@ -1,4 +1,4 @@
-"""Schema migration v59 — race results import foundation (#459)."""
+"""Schema migration v61 — race results import foundation (#459)."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from helmlog.storage import _CURRENT_VERSION, Storage
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_59(storage: Storage) -> None:
-    assert _CURRENT_VERSION == 59
+async def test_schema_version_is_61(storage: Storage) -> None:
+    assert _CURRENT_VERSION == 61
     db = storage._conn()
     async with db.execute("SELECT MAX(version) FROM schema_version") as cur:
         row = await cur.fetchone()
     assert row is not None
-    assert row[0] == 59
+    assert row[0] == 61
 
 
 @pytest.mark.asyncio

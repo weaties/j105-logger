@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from helmlog.audio import AudioSession
     from helmlog.external import TideReading, WeatherReading
     from helmlog.races import Race
+    from helmlog.vakaros import VakarosSession
 
 from helmlog.nmea2000 import (
     COGSOGRecord,
@@ -131,7 +132,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 59
+_CURRENT_VERSION: int = 61
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1305,6 +1306,70 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_race_slug_history_race ON race_slug_history(race_id);
     """,
     59: """
+        -- Vakaros VKX ingest (#458).  Sessions sourced from a Vakaros Atlas
+        -- via the watched-folder ingest path.  Kept in parallel with races(),
+        -- linked via matched_race_id when session matching finds an overlap.
+        CREATE TABLE IF NOT EXISTS vakaros_sessions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_hash     TEXT    NOT NULL UNIQUE,
+            source_file     TEXT    NOT NULL,
+            start_utc       TEXT    NOT NULL,
+            end_utc         TEXT    NOT NULL,
+            ingested_at     TEXT    NOT NULL,
+            matched_race_id INTEGER REFERENCES races(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_sessions_start ON vakaros_sessions(start_utc);
+        CREATE INDEX IF NOT EXISTS idx_vakaros_sessions_match ON vakaros_sessions(matched_race_id);
+
+        CREATE TABLE IF NOT EXISTS vakaros_positions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts            TEXT    NOT NULL,
+            latitude_deg  REAL    NOT NULL,
+            longitude_deg REAL    NOT NULL,
+            sog_mps       REAL    NOT NULL,
+            cog_deg       REAL    NOT NULL,
+            altitude_m    REAL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_positions_session
+            ON vakaros_positions(session_id, ts);
+
+        CREATE TABLE IF NOT EXISTS vakaros_line_positions (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id    INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts            TEXT    NOT NULL,
+            line_type     TEXT    NOT NULL,  -- 'pin' or 'boat'
+            latitude_deg  REAL    NOT NULL,
+            longitude_deg REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_line_session ON vakaros_line_positions(session_id);
+
+        CREATE TABLE IF NOT EXISTS vakaros_race_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts             TEXT    NOT NULL,
+            event_type     TEXT    NOT NULL,  -- 'reset'|'start'|'sync'|'race_start'|'race_end'
+            timer_value_s  INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_events_session
+            ON vakaros_race_events(session_id, ts);
+
+        CREATE TABLE IF NOT EXISTS vakaros_winds (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id     INTEGER NOT NULL REFERENCES vakaros_sessions(id) ON DELETE CASCADE,
+            ts             TEXT    NOT NULL,
+            direction_deg  REAL    NOT NULL,
+            speed_mps      REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_vakaros_winds_session ON vakaros_winds(session_id, ts);
+    """,
+    60: """
+        ALTER TABLE races ADD COLUMN vakaros_session_id INTEGER
+            REFERENCES vakaros_sessions(id) ON DELETE SET NULL;
+        CREATE INDEX IF NOT EXISTS idx_races_vakaros_session
+            ON races(vakaros_session_id);
+    """,
+    61: """
         -- Imported race results from external providers (#459): Clubspot, STYC, ...
         -- Additive only. No existing column is dropped, renamed, or retyped.
 
@@ -1779,7 +1844,7 @@ class Storage:
             " JOIN races r ON r.id = rs.race_id"
             " WHERE r.start_utc IS NOT NULL"
         )
-        races = await cur.fetchall()
+        races = list(await cur.fetchall())
         for race in races:
             race_id = race["race_id"]
             ts = race["start_utc"]
@@ -1844,7 +1909,7 @@ class Storage:
         cur = await db.execute(
             "SELECT id, name, camera_id, marker_id_a, marker_id_b, tolerance_mm FROM aruco_controls"
         )
-        aruco_rows = await cur.fetchall()
+        aruco_rows = list(await cur.fetchall())
         for ac in aruco_rows:
             # Insert control if it doesn't already exist (e.g., "vang" already seeded)
             await db.execute(
@@ -4426,7 +4491,8 @@ class Storage:
                 " WHERE main_id = ? OR jib_id = ? OR spinnaker_id = ?",
                 (sid, sid, sid),
             )
-            sail["total_sessions"] = (await cur.fetchone())["cnt"]
+            cnt_row = await cur.fetchone()
+            sail["total_sessions"] = cnt_row["cnt"] if cnt_row else 0
 
             # Maneuver counts filtered by point_of_sail, attributed via sail_changes
             if pos == "upwind":
@@ -6351,6 +6417,7 @@ class Storage:
     async def list_boat_settings(self, race_id: int | None) -> list[dict[str, Any]]:
         """Return all boat settings for a race, ordered by timestamp."""
         db = self._read_conn()
+        params: tuple[Any, ...]
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:
@@ -6369,6 +6436,7 @@ class Storage:
         Uses a window function to pick the most recent entry per parameter.
         """
         db = self._read_conn()
+        params: tuple[Any, ...]
         if race_id is None:
             where, params = "race_id IS NULL", ()
         else:
@@ -7842,6 +7910,598 @@ class Storage:
                 return float(ctrl["tolerance_mm"])
         val = await self.get_aruco_setting("tolerance_mm_default")
         return float(val) if val else 5.0
+
+    # ------------------------------------------------------------------
+    # Vakaros VKX ingest (#458)
+    # ------------------------------------------------------------------
+
+    async def find_vakaros_session_by_hash(self, source_hash: str) -> int | None:
+        """Return the id of a stored Vakaros session with this hash, or None."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id FROM vakaros_sessions WHERE source_hash = ?",
+            (source_hash,),
+        )
+        row = await cur.fetchone()
+        return int(row["id"]) if row is not None else None
+
+    async def store_vakaros_session(self, session: VakarosSession) -> int:
+        """Insert a parsed Vakaros session and all its child rows.
+
+        Idempotent on `source_hash` — if a session with the same hash
+        already exists, returns that session's id without reinserting.
+        Writes session + children in a single transaction.
+        """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT id FROM vakaros_sessions WHERE source_hash = ?",
+            (session.source_hash,),
+        )
+        existing = await cur.fetchone()
+        if existing is not None:
+            return int(existing["id"])
+
+        ingested_at = _datetime.now(UTC).isoformat()
+        cur = await db.execute(
+            "INSERT INTO vakaros_sessions "
+            "(source_hash, source_file, start_utc, end_utc, ingested_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                session.source_hash,
+                session.source_file,
+                session.start_utc.isoformat(),
+                session.end_utc.isoformat(),
+                ingested_at,
+            ),
+        )
+        session_id = cur.lastrowid
+        if session_id is None:
+            await db.rollback()
+            raise RuntimeError("Failed to insert vakaros_sessions row")
+
+        if session.positions:
+            await db.executemany(
+                "INSERT INTO vakaros_positions "
+                "(session_id, ts, latitude_deg, longitude_deg, sog_mps, cog_deg, altitude_m) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        p.timestamp.isoformat(),
+                        p.latitude_deg,
+                        p.longitude_deg,
+                        p.sog_mps,
+                        p.cog_deg,
+                        p.altitude_m,
+                    )
+                    for p in session.positions
+                ],
+            )
+        if session.line_positions:
+            await db.executemany(
+                "INSERT INTO vakaros_line_positions "
+                "(session_id, ts, line_type, latitude_deg, longitude_deg) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        lp.timestamp.isoformat(),
+                        lp.line_type.name.lower(),
+                        lp.latitude_deg,
+                        lp.longitude_deg,
+                    )
+                    for lp in session.line_positions
+                ],
+            )
+        if session.race_events:
+            await db.executemany(
+                "INSERT INTO vakaros_race_events "
+                "(session_id, ts, event_type, timer_value_s) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        e.timestamp.isoformat(),
+                        e.event_type.name.lower(),
+                        e.timer_value_s,
+                    )
+                    for e in session.race_events
+                ],
+            )
+        if session.winds:
+            await db.executemany(
+                "INSERT INTO vakaros_winds "
+                "(session_id, ts, direction_deg, speed_mps) VALUES (?, ?, ?, ?)",
+                [
+                    (
+                        session_id,
+                        w.timestamp.isoformat(),
+                        w.direction_deg,
+                        w.speed_mps,
+                    )
+                    for w in session.winds
+                ],
+            )
+        await db.commit()
+        return int(session_id)
+
+    async def delete_vakaros_session(self, session_id: int) -> None:
+        """Delete a Vakaros session and all its child rows (cascade)."""
+        db = self._conn()
+        await db.execute("DELETE FROM vakaros_sessions WHERE id = ?", (session_id,))
+        await db.commit()
+
+    async def get_vakaros_overlay_for_race(self, race_id: int) -> dict[str, Any] | None:
+        """Return the Vakaros overlay payload for a race, or None if unlinked.
+
+        Payload shape:
+            {
+                "vakaros_session_id": int,
+                "track": GeoJSON Feature (LineString, [lon, lat] order) | None,
+                "line_positions": [{"line_type": "pin"|"boat", ...}, ...],
+                "race_events": [{"ts", "event_type", "timer_value_s"}, ...],
+                "line": {"pin": [lat, lon], "boat": [lat, lon],
+                         "length_m": float, "bearing_deg": float} | None,
+            }
+
+        The track is **trimmed to the race's time window** so a short race
+        that shares a Vakaros file with other races doesn't display 2 hours
+        of track. ``line`` is computed from the most recent pin + boat
+        pings (across the whole Vakaros session, not just the race window,
+        so a line set during pre-start is still shown). ``None`` when
+        either endpoint is missing.
+        """
+        import math
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT vakaros_session_id, start_utc, end_utc FROM races WHERE id = ?",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        if row is None or row["vakaros_session_id"] is None:
+            return None
+        vakaros_id = int(row["vakaros_session_id"])
+        race_start = row["start_utc"]
+        race_end = row["end_utc"]
+
+        if race_end is None:
+            # Race still in progress — show everything up to now.
+            pos_cur = await db.execute(
+                "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
+                "FROM vakaros_positions WHERE session_id = ? AND ts >= ? "
+                "ORDER BY ts",
+                (vakaros_id, race_start),
+            )
+        else:
+            pos_cur = await db.execute(
+                "SELECT ts, latitude_deg, longitude_deg, sog_mps, cog_deg "
+                "FROM vakaros_positions WHERE session_id = ? "
+                "  AND ts >= ? AND ts <= ? ORDER BY ts",
+                (vakaros_id, race_start, race_end),
+            )
+        positions = await pos_cur.fetchall()
+        track: dict[str, Any] | None = None
+        if positions:
+            coords = [[p["longitude_deg"], p["latitude_deg"]] for p in positions]
+            track = {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": coords},
+                "properties": {
+                    "vakaros_session_id": vakaros_id,
+                    "points": len(coords),
+                    "timestamps": [p["ts"] for p in positions],
+                    "sog_mps": [p["sog_mps"] for p in positions],
+                    "cog_deg": [p["cog_deg"] for p in positions],
+                },
+            }
+
+        # Line positions: pull *all* pings (not trimmed to race window) so the
+        # UI can show every line-set event during the Vakaros session.
+        line_cur = await db.execute(
+            "SELECT ts, line_type, latitude_deg, longitude_deg "
+            "FROM vakaros_line_positions WHERE session_id = ? ORDER BY ts",
+            (vakaros_id,),
+        )
+        line_positions = [dict(r) for r in await line_cur.fetchall()]
+
+        # Race events: trim to the race's window with a 60s buffer on each
+        # side so the RACE_START event (which typically fires at the start
+        # boundary) is included for this race and not the adjacent one.
+        from datetime import datetime as _datetime
+        from datetime import timedelta as _timedelta
+
+        if race_end is not None:
+            evt_start = (_datetime.fromisoformat(race_start) - _timedelta(seconds=60)).isoformat()
+            evt_end = (_datetime.fromisoformat(race_end) + _timedelta(seconds=60)).isoformat()
+            evt_cur = await db.execute(
+                "SELECT ts, event_type, timer_value_s "
+                "FROM vakaros_race_events WHERE session_id = ? "
+                "  AND ts >= ? AND ts <= ? ORDER BY ts",
+                (vakaros_id, evt_start, evt_end),
+            )
+        else:
+            evt_cur = await db.execute(
+                "SELECT ts, event_type, timer_value_s "
+                "FROM vakaros_race_events WHERE session_id = ? AND ts >= ? "
+                "ORDER BY ts",
+                (vakaros_id, race_start),
+            )
+        race_events = [dict(r) for r in await evt_cur.fetchall()]
+
+        # Line geometry: "the line that was active at the start of this
+        # race" — latest pin + boat pings on or before the race start.
+        # If no pre-race ping exists for a side, fall back to the earliest
+        # post-race ping so the user still sees a line.
+        pre_pin: dict[str, Any] | None = None
+        pre_boat: dict[str, Any] | None = None
+        post_pin: dict[str, Any] | None = None
+        post_boat: dict[str, Any] | None = None
+        for lp in line_positions:  # ordered by ts ascending
+            is_pin = lp["line_type"] == "pin"
+            if lp["ts"] <= race_start:
+                if is_pin:
+                    pre_pin = lp
+                else:
+                    pre_boat = lp
+            elif is_pin and post_pin is None:
+                post_pin = lp
+            elif not is_pin and post_boat is None:
+                post_boat = lp
+        latest_pin = pre_pin or post_pin
+        latest_boat = pre_boat or post_boat
+
+        line: dict[str, Any] | None = None
+        if latest_pin is not None and latest_boat is not None:
+            lat1 = math.radians(latest_pin["latitude_deg"])
+            lon1 = math.radians(latest_pin["longitude_deg"])
+            lat2 = math.radians(latest_boat["latitude_deg"])
+            lon2 = math.radians(latest_boat["longitude_deg"])
+            dlat = lat2 - lat1
+            dlon = lon2 - lon1
+            # Haversine
+            a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+            length_m = 2 * 6371000.0 * math.asin(math.sqrt(a))
+            # Initial bearing pin -> boat
+            y = math.sin(dlon) * math.cos(lat2)
+            x = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
+            bearing_deg = (math.degrees(math.atan2(y, x)) + 360.0) % 360.0
+            line = {
+                "pin": [latest_pin["latitude_deg"], latest_pin["longitude_deg"]],
+                "boat": [latest_boat["latitude_deg"], latest_boat["longitude_deg"]],
+                "length_m": round(length_m, 1),
+                "bearing_deg": round(bearing_deg, 1),
+                "pin_set_at": latest_pin["ts"],
+                "boat_set_at": latest_boat["ts"],
+            }
+
+        # Trim line_positions to pings relevant to *this* race: anything set
+        # at or before the race start. Pings from after the race belong to a
+        # later race and would otherwise leak into this race's overlay (and
+        # break the "latest = active" saturation rule on the frontend).
+        # Fallback: if no pre-race pings exist for a side but the line
+        # geometry above filled in from a post-race fallback, include those.
+        relevant_pings: list[dict[str, Any]] = [
+            lp for lp in line_positions if lp["ts"] <= race_start
+        ]
+        if line is not None:
+            for fallback in (latest_pin, latest_boat):
+                if fallback is None:
+                    continue
+                if not any(
+                    lp["ts"] == fallback["ts"] and lp["line_type"] == fallback["line_type"]
+                    for lp in relevant_pings
+                ):
+                    relevant_pings.append(fallback)
+            relevant_pings.sort(key=lambda lp: lp["ts"])
+
+        race_start_context = await self._build_race_start_context(
+            race_events=race_events, line=line
+        )
+
+        return {
+            "vakaros_session_id": vakaros_id,
+            "track": track,
+            "line_positions": relevant_pings,
+            "race_events": race_events,
+            "line": line,
+            "race_start_context": race_start_context,
+        }
+
+    async def _build_race_start_context(
+        self,
+        race_events: list[dict[str, Any]],
+        line: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Build a per-race snapshot of the boat's state at the race-start gun.
+
+        Used by the session detail page to show boat speed, distance to the
+        start line, polar %, and wind-relative line bias at the moment the
+        Vakaros race_start event fires.  Returns ``None`` if there's no
+        race_start event at all; otherwise a dict with the event ts and
+        nullable per-field values so the UI can render partial data.
+        """
+        import math
+
+        from helmlog.polar import _compute_twa, lookup_polar
+
+        race_start_event: dict[str, Any] | None = None
+        for e in race_events:
+            if e["event_type"] == "race_start":
+                race_start_event = e
+                break
+        if race_start_event is None:
+            return None
+
+        ts = race_start_event["ts"]
+        db = self._read_conn()
+
+        # Nearest SK sample within ±5 seconds of the race start.
+        async def _nearest(table: str, columns: str) -> dict[str, Any] | None:
+            cur = await db.execute(
+                f"SELECT {columns} FROM {table} "
+                "WHERE ABS(strftime('%s', ts) - strftime('%s', ?)) <= 5 "
+                "ORDER BY ABS(strftime('%s', ts) - strftime('%s', ?)) ASC "
+                "LIMIT 1",
+                (ts, ts),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row is not None else None
+
+        speed_row = await _nearest("speeds", "ts, speed_kts")
+        sog_row = await _nearest("cogsog", "ts, sog_kts")
+        pos_row = await _nearest("positions", "ts, latitude_deg, longitude_deg")
+        head_row = await _nearest("headings", "ts, heading_deg")
+
+        # Wind: only consider true-wind references (boat-referenced TWA = 0,
+        # north-referenced TWD = 4). Apparent wind (reference = 2) is useless
+        # for polar lookup or wind-relative line bias and would otherwise
+        # poison the nearest-sample query when AWA samples are denser.
+        wind_cur = await db.execute(
+            "SELECT ts, wind_speed_kts, wind_angle_deg, reference FROM winds "
+            "WHERE reference IN (0, 4) "
+            "  AND ABS(strftime('%s', ts) - strftime('%s', ?)) <= 5 "
+            "ORDER BY ABS(strftime('%s', ts) - strftime('%s', ?)) ASC LIMIT 1",
+            (ts, ts),
+        )
+        wind_row_raw = await wind_cur.fetchone()
+        wind_row = dict(wind_row_raw) if wind_row_raw is not None else None
+
+        bsp_kts = float(speed_row["speed_kts"]) if speed_row else None
+        sog_kts = float(sog_row["sog_kts"]) if sog_row else None
+        lat = float(pos_row["latitude_deg"]) if pos_row else None
+        lon = float(pos_row["longitude_deg"]) if pos_row else None
+        heading_deg = float(head_row["heading_deg"]) if head_row else None
+
+        # Wind: TWS, TWD (when north-referenced), and TWA via polar's helper.
+        tws_kts: float | None = None
+        twd_deg: float | None = None
+        twa_deg: float | None = None
+        if wind_row is not None:
+            tws_kts = float(wind_row["wind_speed_kts"])
+            wind_angle = float(wind_row["wind_angle_deg"])
+            wind_ref = int(wind_row["reference"])
+            twa_deg = _compute_twa(wind_angle, wind_ref, heading_deg)
+            # reference=4 → wind_angle IS TWD; reference=0 → derive from heading.
+            if wind_ref == 4:
+                twd_deg = wind_angle
+            elif wind_ref == 0 and heading_deg is not None:
+                twd_deg = (heading_deg + wind_angle) % 360.0
+
+        # Polar %: actual BSP / target BSP at the (TWS, TWA) cell.
+        polar_pct: float | None = None
+        if bsp_kts is not None and tws_kts is not None and twa_deg is not None:
+            polar_row = await lookup_polar(self, tws_kts, twa_deg)
+            if polar_row is not None:
+                target = float(polar_row["p90_bsp"])
+                if target > 0:
+                    polar_pct = round(bsp_kts / target * 100.0, 1)
+
+        # Distance to line: perpendicular from boat position to the line.
+        distance_to_line_m: float | None = None
+        if line is not None and lat is not None and lon is not None:
+            pin_lat, pin_lon = line["pin"]
+            boat_end_lat, boat_end_lon = line["boat"]
+            lat_rad = math.radians(pin_lat)
+            m_per_deg_lat = 111320.0
+            m_per_deg_lon = 111320.0 * math.cos(lat_rad)
+            vx = (boat_end_lon - pin_lon) * m_per_deg_lon
+            vy = (boat_end_lat - pin_lat) * m_per_deg_lat
+            px = (lon - pin_lon) * m_per_deg_lon
+            py = (lat - pin_lat) * m_per_deg_lat
+            seg_len = math.hypot(vx, vy)
+            if seg_len > 0:
+                distance_to_line_m = round(abs(vx * py - vy * px) / seg_len, 1)
+
+        # Wind-relative line bias.
+        # The "square" line is perpendicular to the wind direction (TWD).
+        # We measure the line bearing pin→boat against TWD; the offset from
+        # square tells you which end is favoured.
+        #
+        # Convention here:
+        #   bias_deg = (line_bearing_pin_to_boat - TWD - 90) wrapped to [-90, 90]
+        #     0          → square (no bias)
+        #     positive   → boat end favoured (line tilted toward downwind on
+        #                  the boat side, so the boat end is closer to wind
+        #                  origin... actually depends; see below)
+        #
+        # Sign convention picked so positive == pin favoured, negative ==
+        # committee-boat favoured. Verified by the test fixture: line at 90°
+        # T, TWD 45° → bias = (90 - 45 - 90) = -45 → wrapped → +45 → pin.
+        line_bias_deg: float | None = None
+        favored_end: str | None = None
+        if line is not None and twd_deg is not None:
+            line_bearing = float(line["bearing_deg"])
+            raw = (line_bearing - twd_deg - 90.0) % 360.0
+            if raw > 180.0:
+                raw -= 360.0
+            # Bring into [-90, 90] (a 180° flip is the same line).
+            if raw > 90.0:
+                raw -= 180.0
+            elif raw < -90.0:
+                raw += 180.0
+            # Make positive == pin favoured.
+            line_bias_deg = round(-raw, 1)
+            if abs(line_bias_deg) < 1.0:
+                favored_end = "square"
+            elif line_bias_deg > 0:
+                favored_end = "pin"
+            else:
+                favored_end = "boat"
+
+        return {
+            "ts": ts,
+            "bsp_kts": bsp_kts,
+            "sog_kts": sog_kts,
+            "latitude_deg": lat,
+            "longitude_deg": lon,
+            "distance_to_line_m": distance_to_line_m,
+            "tws_kts": tws_kts,
+            "twd_deg": twd_deg,
+            "twa_deg": round(twa_deg, 1) if twa_deg is not None else None,
+            "polar_pct": polar_pct,
+            "line_bias_deg": line_bias_deg,
+            "favored_end": favored_end,
+        }
+
+    async def list_vakaros_sessions(self) -> list[dict[str, Any]]:
+        """Return all Vakaros sessions with row counts and matched races.
+
+        Each session carries a ``matched_races`` list: zero or more
+        ``{id, name, start_utc}`` dicts for the races currently linked to
+        it via ``races.vakaros_session_id``.  Ordered newest Vakaros
+        session first.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            """
+            SELECT
+                vs.id,
+                vs.source_file,
+                vs.source_hash,
+                vs.start_utc,
+                vs.end_utc,
+                vs.ingested_at,
+                (SELECT COUNT(*) FROM vakaros_positions WHERE session_id = vs.id)
+                    AS position_count,
+                (SELECT COUNT(*) FROM vakaros_line_positions WHERE session_id = vs.id)
+                    AS line_count,
+                (SELECT COUNT(*) FROM vakaros_race_events WHERE session_id = vs.id)
+                    AS event_count
+            FROM vakaros_sessions vs
+            ORDER BY vs.start_utc DESC
+            """
+        )
+        sessions = [dict(r) for r in await cur.fetchall()]
+
+        # One extra query to collect matched race names per session.
+        match_cur = await db.execute(
+            "SELECT id, name, start_utc, vakaros_session_id FROM races "
+            "WHERE vakaros_session_id IS NOT NULL ORDER BY start_utc"
+        )
+        matches_by_session: dict[int, list[dict[str, Any]]] = {}
+        for row in await match_cur.fetchall():
+            sid = int(row["vakaros_session_id"])
+            matches_by_session.setdefault(sid, []).append(
+                {
+                    "id": int(row["id"]),
+                    "name": row["name"],
+                    "start_utc": row["start_utc"],
+                }
+            )
+        for s in sessions:
+            s["matched_races"] = matches_by_session.get(int(s["id"]), [])
+        return sessions
+
+    async def match_vakaros_session(self, session_id: int) -> list[int]:
+        """Link a Vakaros session to *all* overlapping races.
+
+        Rule (from the spec): a race matches when its time window overlaps
+        the Vakaros session by at least 50% of the shorter duration. A
+        single VKX file typically contains a full race day — multiple
+        races plus practice — so each qualifying race on the races table
+        gets its own ``vakaros_session_id`` link.
+
+        Races still in progress (``end_utc IS NULL``) are never matched.
+        Races that already point at a different Vakaros session are not
+        overwritten — the first matcher to claim a race wins.  Re-running
+        the matcher on the same Vakaros session is idempotent.
+
+        Returns the list of race ids that now point at this session,
+        ordered by race ``start_utc``.
+        """
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "SELECT start_utc, end_utc FROM vakaros_sessions WHERE id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return []
+        v_start = _datetime.fromisoformat(row["start_utc"])
+        v_end = _datetime.fromisoformat(row["end_utc"])
+        v_duration = (v_end - v_start).total_seconds()
+        if v_duration <= 0:
+            return []
+
+        cur = await db.execute(
+            "SELECT id, start_utc, end_utc, vakaros_session_id FROM races "
+            "WHERE end_utc IS NOT NULL "
+            "  AND start_utc < ? AND end_utc > ? "
+            "ORDER BY start_utc",
+            (v_end.isoformat(), v_start.isoformat()),
+        )
+        candidates = await cur.fetchall()
+
+        linked: list[int] = []
+        for cand in candidates:
+            r_start = _datetime.fromisoformat(cand["start_utc"])
+            r_end = _datetime.fromisoformat(cand["end_utc"])
+            r_duration = (r_end - r_start).total_seconds()
+            if r_duration <= 0:
+                continue
+            overlap_start = max(v_start, r_start)
+            overlap_end = min(v_end, r_end)
+            overlap_s = (overlap_end - overlap_start).total_seconds()
+            if overlap_s <= 0:
+                continue
+            shorter = min(v_duration, r_duration)
+            ratio = overlap_s / shorter
+            if ratio < 0.5:
+                continue
+            existing = cand["vakaros_session_id"]
+            if existing is not None and int(existing) != session_id:
+                # Don't steal a race that's already claimed by a different
+                # Vakaros session — leaves room for future manual override.
+                continue
+            await db.execute(
+                "UPDATE races SET vakaros_session_id = ? WHERE id = ?",
+                (session_id, int(cand["id"])),
+            )
+            linked.append(int(cand["id"]))
+
+        await db.commit()
+        return linked
+
+    async def rematch_all_vakaros_sessions(self) -> dict[int, list[int]]:
+        """Re-run matching for every stored Vakaros session.
+
+        Intended for historical data ingested before the matcher existed
+        or when matching rules change.  Returns a mapping from Vakaros
+        session id to the list of race ids that now link to it.
+        """
+        db = self._read_conn()
+        cur = await db.execute("SELECT id FROM vakaros_sessions ORDER BY id")
+        rows = await cur.fetchall()
+        results: dict[int, list[int]] = {}
+        for r in rows:
+            sid = int(r["id"])
+            results[sid] = await self.match_vakaros_session(sid)
+        return results
 
     # ------------------------------------------------------------------
     # Helpers

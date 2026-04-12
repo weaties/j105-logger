@@ -409,3 +409,96 @@ async def admin_analysis_page(
         "admin/analysis.html",
         tpl_ctx(request, "/admin/analysis"),
     )
+
+
+@router.get("/admin/vakaros", response_class=HTMLResponse, include_in_schema=False)
+async def admin_vakaros_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    """Vakaros VKX inbox + ingested-sessions admin page (#458)."""
+    from helmlog.vakaros_inbox import get_inbox_dir, list_inbox_files
+
+    storage = get_storage(request)
+    inbox = get_inbox_dir()
+    inbox_files = [{"name": p.name, "size": p.stat().st_size} for p in list_inbox_files(inbox)]
+    sessions = await storage.list_vakaros_sessions()
+    # Surface any flash message from a prior POST (filename + status + error).
+    flash_filename = request.query_params.get("flash_filename")
+    flash_status = request.query_params.get("flash_status")
+    flash_error = request.query_params.get("flash_error")
+    flash_rematch = request.query_params.get("flash_rematch")
+    return templates.TemplateResponse(
+        request,
+        "admin/vakaros.html",
+        tpl_ctx(
+            request,
+            "/admin/vakaros",
+            inbox_dir=str(inbox),
+            inbox_files=inbox_files,
+            sessions=sessions,
+            flash_filename=flash_filename,
+            flash_status=flash_status,
+            flash_error=flash_error,
+            flash_rematch=flash_rematch,
+        ),
+    )
+
+
+@router.post("/admin/vakaros/rematch", include_in_schema=False)
+async def admin_vakaros_rematch(
+    request: Request,
+    user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    """Re-run matching for every stored Vakaros session (#458)."""
+    from fastapi.responses import RedirectResponse
+
+    storage = get_storage(request)
+    results = await storage.rematch_all_vakaros_sessions()
+    total_linked = sum(len(v) for v in results.values())
+    session_count = len(results)
+    await audit(
+        request,
+        "vakaros_rematch",
+        detail=f"{session_count} sessions, {total_linked} race links",
+        user=user,
+    )
+    from urllib.parse import quote
+
+    msg = f"Rematched {session_count} sessions, linked {total_linked} races."
+    return RedirectResponse(url="/admin/vakaros?flash_rematch=" + quote(msg), status_code=303)
+
+
+@router.post("/admin/vakaros/ingest", include_in_schema=False)
+async def admin_vakaros_ingest(
+    request: Request,
+    filename: str = Form(...),
+    user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    """Parse, store, and archive one inbox file (#458)."""
+    from fastapi.responses import RedirectResponse
+
+    from helmlog.vakaros_inbox import get_inbox_dir, ingest_inbox_file
+
+    storage = get_storage(request)
+    inbox = get_inbox_dir()
+    try:
+        result = await ingest_inbox_file(storage, inbox, filename)
+    except ValueError as exc:  # path-traversal
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    await audit(
+        request,
+        "vakaros_ingest",
+        detail=f"{result.filename} -> {result.status} (session_id={result.session_id})",
+        user=user,
+    )
+
+    params: list[str] = [f"flash_filename={result.filename}", f"flash_status={result.status}"]
+    if result.error:
+        from urllib.parse import quote
+
+        params.append(f"flash_error={quote(result.error)}")
+    return RedirectResponse(url="/admin/vakaros?" + "&".join(params), status_code=303)

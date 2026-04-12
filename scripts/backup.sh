@@ -34,7 +34,7 @@ log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
 # rsync --link-dest creates hardlinks for files that are byte-for-byte identical
 # to the previous snapshot, so unchanged files (photos, WAVs, etc.) cost zero
 # extra disk space across snapshots.
-PREV=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | head -1)
+PREV=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | head -1 || true)
 
 # Pre-compute link-dest flags as variables to avoid command substitution
 # inside &&-chains (which interacts badly with inline comments).
@@ -61,7 +61,7 @@ log "Source: $PI"
 [ -n "$PREV" ] && log "Link-dest (hardlink base): $PREV"
 
 # ── 1. SQLite — WAL checkpoint then rsync ────────────────────────────────────
-log "Step 1/4: SQLite WAL checkpoint + rsync"
+log "Step 1/5: SQLite WAL checkpoint + rsync"
 ssh "$PI" "sqlite3 ~/helmlog/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE);'" 2>/dev/null || \
   log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
 
@@ -72,7 +72,7 @@ rsync -az $RSYNC_PROGRESS $LINK_DATA \
 log "  SQLite + file data done"
 
 # ── 2. InfluxDB — remote backup then rsync ───────────────────────────────────
-log "Step 2/4: InfluxDB backup"
+log "Step 2/5: InfluxDB backup"
 if ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
   ssh "$PI" "influx backup /tmp/influx-backup \
     --host http://localhost:8086 \
@@ -87,21 +87,66 @@ else
   log "  WARNING: $INFLUX_TOKEN_FILE not found on Pi; skipping InfluxDB backup"
 fi
 
-# ── 3. Grafana — rsync with sudo ─────────────────────────────────────────────
-log "Step 3/4: Grafana data dir"
+# ── 3. Config — .env, Signal K, influx token ────────────────────────────────
+log "Step 3/5: Config (.env + Signal K + influx token)"
+mkdir -p "$SNAP/config"
+rsync -az $RSYNC_PROGRESS \
+  "$PI:~/helmlog/.env" \
+  "$SNAP/config/helmlog.env" 2>/dev/null && \
+  log "  helmlog .env done" || \
+  log "  WARNING: .env rsync failed; skipping"
+
+# influx-token.txt is needed by restore.sh to authenticate against the
+# target's InfluxDB after a prior `influx restore --full`, which replaces all
+# auth on the target with the source's tokens.
+rsync -az "$PI:$INFLUX_TOKEN_FILE" "$SNAP/config/influx-token.txt" 2>/dev/null && \
+  log "  influx-token.txt done" || \
+  log "  WARNING: influx-token.txt rsync failed; skipping"
+
+# Signal K — exclude node_modules (huge, reinstallable via npm install)
+LINK_SK=""
+[ -n "$PREV" ] && [ -d "$PREV/signalk" ] && LINK_SK="--link-dest=$PREV/signalk"
+# shellcheck disable=SC2086
+rsync -az $RSYNC_PROGRESS $LINK_SK \
+  --exclude='node_modules/' \
+  --exclude='package-lock.json' \
+  "$PI:~/.signalk/" \
+  "$SNAP/signalk/" 2>/dev/null && \
+  log "  Signal K config + data done" || \
+  log "  WARNING: Signal K rsync failed; skipping"
+
+# ── 4. Grafana — data dir + provisioning config ──────────────────────────────
+log "Step 4/5: Grafana data dir + provisioning config"
 # shellcheck disable=SC2046
 if rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GRAFANA \
     "$PI:/var/lib/grafana/" \
     "$SNAP/grafana/" 2>/dev/null; then
-  log "  Grafana backup done"
+  log "  Grafana data dir done"
 else
-  log "  WARNING: Grafana rsync failed (sudo rsync not configured?); skipping"
+  log "  WARNING: Grafana data rsync failed (sudo rsync not configured?); skipping"
 fi
 
-# ── 4. Rotate old snapshots ───────────────────────────────────────────────────
-log "Step 4/4: Rotating snapshots (keeping $KEEP_SNAPSHOTS)"
+# /etc/grafana/provisioning holds the InfluxDB datasource yaml (with token).
+# Without this, a restore points Grafana at a token that gets invalidated by
+# `influx restore --full`, leaving dashboards with no data.
+LINK_GP=""
+[ -n "$PREV" ] && [ -d "$PREV/grafana-provisioning" ] && \
+  LINK_GP="--link-dest=$PREV/grafana-provisioning"
+# shellcheck disable=SC2086
+if rsync -az $RSYNC_PROGRESS \
+    --rsync-path='sudo rsync' \
+    $LINK_GP \
+    "$PI:/etc/grafana/provisioning/" \
+    "$SNAP/grafana-provisioning/" 2>/dev/null; then
+  log "  Grafana provisioning done"
+else
+  log "  WARNING: Grafana provisioning rsync failed; skipping"
+fi
+
+# ── 5. Rotate old snapshots ───────────────────────────────────────────────────
+log "Step 5/5: Rotating snapshots (keeping $KEEP_SNAPSHOTS)"
 # shellcheck disable=SC2012
 STALE=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | tail -n +"$((KEEP_SNAPSHOTS + 1))")
 if [ -n "$STALE" ]; then
