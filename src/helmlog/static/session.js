@@ -565,6 +565,26 @@ async function loadVakarosOverlay() {
       L.circleMarker(boatUp, {
         radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
       }).addTo(_map).bindTooltip(popup);
+
+      // Start-line laylines (#473): from each end of the line, extend two
+      // tack laylines at the upwind-approach angle relative to the wind
+      // when the gun went off. Length scales with the start line itself
+      // (1/3 of line length) so the lines stay proportional at every
+      // zoom. Color is muted rose so they read clearly without washing
+      // out the more important start-line + wind ticks.
+      const LAYLINE_LEN_M = Math.max(60, (data.line.length_m || 180) / 3);
+      const TACK_HALF = 45;
+      const TACK_COLOR = '#f472b6';  // muted pink — less saturated than the rounding lines
+      const windTo = (ctx.twd_deg + 180) % 360;
+      const stbdBearing = (windTo + TACK_HALF) % 360;
+      const portBearing = (windTo - TACK_HALF + 360) % 360;
+      for (const end of [data.line.pin, data.line.boat]) {
+        const stbd = _offsetPoint(end[0], end[1], stbdBearing, LAYLINE_LEN_M);
+        const port = _offsetPoint(end[0], end[1], portBearing, LAYLINE_LEN_M);
+        const opts = {color: TACK_COLOR, weight: 2, opacity: 0.7, dashArray: '4, 6', lineCap: 'butt'};
+        L.polyline([end, stbd], opts).addTo(_map);
+        L.polyline([end, port], opts).addTo(_map);
+      }
     }
 
     // Line info panel below the map.
@@ -3103,6 +3123,9 @@ async function loadManeuvers() {
   _injectVakarosStartIntoManeuvers();
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
+  // Roundings are now loaded — refresh laylines so they anchor on the
+  // mark positions from this fetch (handles re-detection too).
+  if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
 }
 
 function _manKey(m, idx) {
@@ -3657,33 +3680,67 @@ function _addManeuverMarkers() {
 
   _maneuvers.forEach((m, idx) => {
     if (m.lat == null || m.lon == null) return;
-    const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    // Outer ring colored by maneuver type so the icon still tells you what
+    // it is at a glance; inner fill colored by rank (good/avg/bad) so the
+    // boat's track tells a debrief story without opening every popup.
+    const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    const fillColor = m.rank ? (_RANK_COLORS[m.rank] || ringColor) : ringColor;
     const marker = L.circleMarker([m.lat, m.lon], {
       radius: 7,
-      color: color,
-      fillColor: color,
-      fillOpacity: 0.85,
+      color: ringColor,
+      fillColor: fillColor,
+      fillOpacity: 0.9,
       weight: 2,
-    })
-      .addTo(_map)
-      .bindPopup(
-        '<b style="color:' + color + '">' + m.type + '</b><br>'
-        + fmtTime(m.ts)
-        + (m.duration_sec != null ? '<br>' + m.duration_sec.toFixed(1) + ' s' : '')
-        + (m.loss_kts != null ? '<br>' + m.loss_kts.toFixed(2) + ' kt loss' : '')
-      );
-    marker.on('click', function() { highlightManeuver(idx); });
+    });
+    marker.bindPopup(_renderManeuverPopup(m));
+    // Map marker clicks keep the focus on the track — they highlight the
+    // maneuver and seek the replay, but do NOT scroll the page down to the
+    // maneuvers card (which yanks the user away from the map).
+    marker.on('click', function() { highlightManeuver(idx, {scroll: false}); });
+    if (_showManeuverMarkers) marker.addTo(_map);
     _maneuverMarkers.push(marker);
   });
 }
 
-function highlightManeuver(idx) {
+function _renderManeuverPopup(m) {
+  const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const rankBadge = m.rank
+    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '">● ' + m.rank + '</span>'
+    : '';
+  const lines = [
+    '<b style="color:' + ringColor + ';text-transform:capitalize">' + (m.type || 'event') + '</b> ' + rankBadge,
+    fmtTime(m.ts),
+  ];
+  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s');
+  if (m.turn_angle_deg != null) lines.push(Math.round(m.turn_angle_deg) + '° turn');
+  if (m.entry_bsp != null && m.exit_bsp != null) {
+    lines.push('BSP ' + m.entry_bsp.toFixed(1) + ' → ' + m.exit_bsp.toFixed(1) + ' kt');
+  }
+  if (m.loss_kts != null) lines.push(m.loss_kts.toFixed(2) + ' kt loss');
+  if (m.distance_loss_m != null) lines.push(Math.round(m.distance_loss_m) + ' m loss');
+  return lines.join('<br>');
+}
+
+let _showManeuverMarkers = true;
+function _setManeuverMarkersVisible(visible) {
+  _showManeuverMarkers = !!visible;
+  _maneuverMarkers.forEach(m => {
+    if (_showManeuverMarkers) m.addTo(_map);
+    else m.remove();
+  });
+}
+
+function highlightManeuver(idx, opts) {
+  // opts.scroll === false suppresses the scroll-to-row behavior — used by
+  // map-marker clicks so the user isn't yanked down to the maneuvers card
+  // while they're looking at the track.
+  const shouldScroll = !(opts && opts.scroll === false);
   // Highlight table row
   document.querySelectorAll('.maneuver-table tr').forEach(r => r.classList.remove('active-row'));
   const row = document.getElementById('mrow-' + idx);
   if (row) {
     row.classList.add('active-row');
-    row.scrollIntoView({block: 'nearest'});
+    if (shouldScroll) row.scrollIntoView({block: 'nearest'});
   }
   const m = _maneuvers[idx];
   _renderManeuverDetail(m);
@@ -4943,11 +5000,24 @@ function _renderIsolationToggle() {
 
 let _replayStart = null; // Date — session start (for scrubber 0)
 let _replayEnd = null;   // Date — session end (for scrubber max)
+let _raceGun = null;     // Date — effective race gun (may be later than
+                         // _replayStart for races with a general recall)
 let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, aws, awa, hdg, cog}]
 let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
 let _gradeSegments = []; // [L.polyline] overlays when polar view is active
 let _gradeViewActive = false;
 let _followBoat = false;  // when true, map re-centers on the boat each tick
+
+// Course overlay state (#473): marks, start line, finish line, and laylines
+// anchored to each rounding mark. All Leaflet layers, owned by _courseOverlay
+// so a single toggle shows/hides them together.
+const _courseOverlay = {
+  visible: true,
+  marks: [],          // raw [{key,name,lat,lon}] from /course-overlay
+  markLayers: [],     // [L.layer]
+  finishLine: null,   // L.polyline (not yet captured)
+  laylines: null,     // L.layerGroup — all rounding-mark laylines, static
+};
 
 const _GRADE_COLORS = {
   red: '#d64545',
@@ -5193,6 +5263,254 @@ function _setGradeViewActive(active) {
   }
 }
 
+async function _loadCourseOverlay() {
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/course-overlay');
+    if (!r.ok) return;
+    const data = await r.json();
+    _courseOverlay.marks = (data.marks || []).filter(m => m.lat != null && m.lon != null);
+    _drawCourseMarks();
+    // Start-line geometry (and its laylines) are rendered by
+    // loadVakarosOverlay, which has the canonical race_start_context with
+    // the wind-from bearing at gun time. We intentionally don't draw it
+    // here to avoid duplicate layers on top of that one.
+    // Laylines depend on _maneuvers (rounding positions) and _replaySamples
+    // (TWD at each rounding). Both load asynchronously, so try once now and
+    // retry shortly if either is still missing — they'll usually be ready
+    // within a few hundred ms after _loadReplayData/loadManeuvers settle.
+    _drawAllLaylines();
+    setTimeout(_drawAllLaylines, 1500);
+    _setCourseOverlayVisible(_courseOverlay.visible);
+  } catch (e) {
+    // Non-fatal — replay still works without the course overlay.
+  }
+}
+
+function _drawCourseMarks() {
+  for (const layer of _courseOverlay.markLayers) {
+    try { _map.removeLayer(layer); } catch (e) { /* swallow */ }
+  }
+  _courseOverlay.markLayers = [];
+  if (!_map) return;
+  for (const m of _courseOverlay.marks) {
+    // Filled circle marker with the mark name as a tooltip — distinct from
+    // the start/finish dots already on the track polyline.
+    const layer = L.circleMarker([m.lat, m.lon], {
+      radius: 8,
+      color: '#1f2937',
+      weight: 2,
+      fillColor: '#facc15',
+      fillOpacity: 0.95,
+    }).bindTooltip(m.name || m.key || 'mark', {
+      permanent: true,
+      direction: 'right',
+      offset: [10, 0],
+      className: 'wf-mark-label',
+    });
+    if (_courseOverlay.visible) layer.addTo(_map);
+    _courseOverlay.markLayers.push(layer);
+  }
+}
+
+// Start-line rendering (dashed line, wind ticks, and tack laylines) lives
+// in loadVakarosOverlay() at the top of this file — it has the canonical
+// race_start_context.twd_deg, which is the wind-from bearing at gun time.
+// This file used to have a second implementation here, but it was fed by
+// replay-endpoint TWA that's folded to [0,180] and lost the sign needed
+// for correct wind-frame math. Removed to avoid duplicate layers.
+
+// Draw laylines anchored to each rounding mark (#473). Mark type (windward
+// vs leeward) is inferred from the boat's TWA in the ~20s leading up to the
+// rounding: |TWA| < 90 = sailing upwind = windward mark = tack laylines;
+// |TWA| >= 90 = sailing downwind = leeward mark = gybe laylines. Each mark
+// gets only its own pair, not all four — windward marks don't get gybe
+// laylines and vice versa.
+//
+// Length scales with the leg the boat just sailed: distance from the prior
+// rounding (or the boat's position at the race gun for the first rounding)
+// × 1.3. That keeps the laylines proportional to the course — short legs
+// get short laylines, long legs get long ones — without stretching over
+// the whole map.
+//
+// TWD comes from that same approach sample, so the laylines reflect the
+// wind state when the boat was actually approaching the mark. Bearings are
+// derived from HDG + TWA without any extra 180° flip (the v1 math bug).
+const _LAYLINE_LEG_SCALE = 1.3;
+const _LAYLINE_FALLBACK_M = 400;
+const _UPWIND_HALF_ANGLE = 45;   // tacking angle / 2 for typical masthead boat
+const _DOWNWIND_HALF_ANGLE = 30; // gybing angle / 2 for typical kite boat
+// High-contrast colors so they don't get lost on a pale-blue water tile.
+const _LAYLINE_TACK_COLOR = '#e11d48';   // saturated rose for upwind/tack
+const _LAYLINE_GYBE_COLOR = '#84cc16';   // saturated lime for downwind/gybe
+const _LAYLINE_WEIGHT = 3;
+const _APPROACH_LOOKBACK_MS = 20_000;
+
+function _drawAllLaylines() {
+  if (!_map) return;
+  if (_courseOverlay.laylines) {
+    try { _map.removeLayer(_courseOverlay.laylines); } catch (e) { /* swallow */ }
+    _courseOverlay.laylines = null;
+  }
+  if (!_maneuvers || !_maneuvers.length) return;
+  if (typeof _binarySearchSample !== 'function') return;
+
+  // Only show laylines for roundings that happen after the real race
+  // gun, plus a grace window. _raceGun may be later than _replayStart
+  // for races with a general recall — the stored races.start_utc points
+  // at the original attempt, and the actual gun is the latest Vakaros
+  // race_start event inside the race window. 120s of grace after the
+  // gun covers the start-hardening maneuver (reach → close-hauled)
+  // which the detector classifies as a rounding because the pre/post
+  // TWA mode differs; a real windward mark is always more than two
+  // minutes of sailing from the line.
+  const gun = _raceGun || _replayStart;
+  const raceStartMs = (gun && gun.getTime()) || 0;
+  const LAYLINE_START_GRACE_MS = 120_000;
+
+  // Build a list of every maneuver (any type) with position + timestamp so
+  // we can find "the last straight segment the boat sailed" before each
+  // rounding — that's the leg the layline is parallel to.
+  const allEvents = [];
+  for (const m of _maneuvers) {
+    if (!m || m.lat == null || m.lon == null || !m.ts) continue;
+    const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
+    const tMs = new Date(tsStr).getTime();
+    if (!isNaN(tMs)) allEvents.push({m, tMs});
+  }
+  allEvents.sort((a, b) => a.tMs - b.tMs);
+
+  // Boat position at race gun, used as the fallback "leg start" when a
+  // rounding has no prior maneuver to measure against.
+  let gunPos = null;
+  if (_trackData && _trackData.latLngs.length) {
+    const gunIdx = raceStartMs ? _indexForUtc(new Date(raceStartMs)) : 0;
+    gunPos = _trackData.latLngs[gunIdx] || _trackData.latLngs[0];
+  }
+
+  const layers = [];
+  for (let i = 0; i < allEvents.length; i++) {
+    const {m, tMs} = allEvents[i];
+    if (m.type !== 'rounding') continue;
+    if (raceStartMs && tMs < raceStartMs + LAYLINE_START_GRACE_MS) continue;
+    // Sample from ~20s before the rounding gives the boat's approach state,
+    // before the heading-change transient distorts TWA. Falls back to the
+    // sample at the rounding ts if the lookback is out of range.
+    const approach = _binarySearchSample(tMs - _APPROACH_LOOKBACK_MS) || _binarySearchSample(tMs);
+    if (!approach || approach.twa == null || approach.hdg == null) continue;
+
+    const isWindward = Math.abs(approach.twa) < 90;
+    // Wind reference frame (north-relative, degrees clockwise from north).
+    // HDG + TWA is the bearing FROM which the wind is blowing.
+    const windFromBearing = ((approach.hdg + approach.twa) % 360 + 360) % 360;
+    const windToBearing = (windFromBearing + 180) % 360;
+    const at = [m.lat, m.lon];
+
+    // Layline length scales with the boat's actual approach pattern.
+    // For a windward mark we look back at the last two TACKS and use the
+    // FURTHER of them × 1.3 — that ensures each tack layline extends past
+    // the tack the boat used to get onto that tack, which is what the
+    // user actually wants to see ("extend beyond where we tacked onto
+    // port last before the rounding"). For a leeward mark we use the
+    // distance to the previous GYBE × 1.3 but cap at 300m so long
+    // downwind legs don't stretch laylines across the whole map.
+    const MAX_LEEWARD_LAYLINE_M = 300;
+
+    let laylineLen;
+    if (isWindward) {
+      const tackDists = [];
+      for (let j = i - 1; j >= 0 && tackDists.length < 2; j--) {
+        const prev = allEvents[j];
+        if (prev.m.type === 'tack' && prev.m.lat != null && prev.m.lon != null) {
+          tackDists.push(_haversineMeters([prev.m.lat, prev.m.lon], at));
+        }
+      }
+      if (tackDists.length === 0) {
+        const legM = gunPos ? _haversineMeters(gunPos, at) : 0;
+        laylineLen = legM > 0 ? legM * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
+      } else {
+        laylineLen = Math.max(...tackDists) * _LAYLINE_LEG_SCALE;
+      }
+    } else {
+      let prevGybeDist = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = allEvents[j];
+        if (prev.m.type === 'gybe' && prev.m.lat != null && prev.m.lon != null) {
+          prevGybeDist = _haversineMeters([prev.m.lat, prev.m.lon], at);
+          break;
+        }
+      }
+      const scaled = prevGybeDist > 0 ? prevGybeDist * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
+      laylineLen = Math.min(scaled, MAX_LEEWARD_LAYLINE_M);
+    }
+
+    if (isWindward) {
+      // Tack laylines extend from the mark downwind (where the boat was
+      // coming from on the upwind leg), spread by ±tacking-half-angle.
+      const stbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, laylineLen);
+      const port = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, laylineLen);
+      const opts = {color: _LAYLINE_TACK_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+      layers.push(L.polyline([at, stbd], opts));
+      layers.push(L.polyline([at, port], opts));
+    } else {
+      // Gybe laylines extend from the mark upwind (where the boat was coming
+      // from on the downwind leg), spread by ±gybing-half-angle.
+      const stbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, laylineLen);
+      const port = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, laylineLen);
+      const opts = {color: _LAYLINE_GYBE_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+      layers.push(L.polyline([at, stbd], opts));
+      layers.push(L.polyline([at, port], opts));
+    }
+  }
+
+  if (!layers.length) return;
+  const group = L.layerGroup(layers);
+  if (_courseOverlay.visible) group.addTo(_map);
+  _courseOverlay.laylines = group;
+}
+
+// Haversine distance in meters between two [lat, lng] (or {lat,lng}) points.
+// Used to scale layline length to the leg the boat just sailed.
+function _haversineMeters(a, b) {
+  const aLat = Array.isArray(a) ? a[0] : a.lat;
+  const aLng = Array.isArray(a) ? a[1] : a.lng;
+  const bLat = Array.isArray(b) ? b[0] : b.lat;
+  const bLng = Array.isArray(b) ? b[1] : b.lng;
+  const R = 6371000;
+  const lat1 = (aLat * Math.PI) / 180;
+  const lat2 = (bLat * Math.PI) / 180;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+// Project a lat/lng forward by `distM` meters along true bearing `bearingDeg`.
+// Equirectangular approximation — fine at race-course scale (sub-km).
+function _projectLatLng(latLng, bearingDeg, distM) {
+  const lat = Array.isArray(latLng) ? latLng[0] : latLng.lat;
+  const lng = Array.isArray(latLng) ? latLng[1] : latLng.lng;
+  const R = 6371000;
+  const br = (bearingDeg * Math.PI) / 180;
+  const dLat = (distM * Math.cos(br)) / R;
+  const dLng = (distM * Math.sin(br)) / (R * Math.cos((lat * Math.PI) / 180));
+  return [lat + (dLat * 180) / Math.PI, lng + (dLng * 180) / Math.PI];
+}
+
+function _setCourseOverlayVisible(visible) {
+  _courseOverlay.visible = !!visible;
+  for (const layer of _courseOverlay.markLayers) {
+    if (_courseOverlay.visible) layer.addTo(_map);
+    else { try { _map.removeLayer(layer); } catch (e) { /* swallow */ } }
+  }
+  if (_courseOverlay.laylines) {
+    if (_courseOverlay.visible) _courseOverlay.laylines.addTo(_map);
+    else { try { _map.removeLayer(_courseOverlay.laylines); } catch (e) { /* swallow */ } }
+  } else if (_courseOverlay.visible) {
+    // First time we're being made visible after maneuvers loaded
+    _drawAllLaylines();
+  }
+}
+
 async function _loadReplayData() {
   try {
     const r = await fetch('/api/sessions/' + SESSION_ID + '/replay');
@@ -5200,6 +5518,7 @@ async function _loadReplayData() {
     const data = await r.json();
     _replayStart = new Date(data.start_utc);
     _replayEnd = new Date(data.end_utc);
+    _raceGun = data.race_gun_utc ? new Date(data.race_gun_utc) : _replayStart;
     _replaySamples = (data.samples || []).map(s => ({
       ts: new Date(s.ts),
       stw: s.stw,
@@ -5229,6 +5548,9 @@ async function _loadReplayData() {
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     _renderHud(_playClock.positionUtc);
     _updateReplayControls();
+    // Samples + replay window are now loaded — redraw the rounding
+    // laylines so they respect the race-start filter.
+    if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
   } catch (e) {
     // Non-fatal: replay is best-effort, the rest of the page still works
   }
@@ -5263,8 +5585,21 @@ function _wireReplayControls() {
       if (latLng && _map) _map.panTo(latLng, {animate: true});
     }
   });
+  const maneuverToggle = document.getElementById('toggle-maneuver-markers');
+  if (maneuverToggle) maneuverToggle.addEventListener('change', (e) => {
+    _setManeuverMarkersVisible(e.target.checked);
+  });
+  const courseToggle = document.getElementById('toggle-course-overlay');
+  if (courseToggle) courseToggle.addEventListener('change', (e) => {
+    _setCourseOverlayVisible(e.target.checked);
+  });
 
-  // Keyboard shortcuts: space toggles play, arrows seek ±5s
+  const prevBtn = document.getElementById('replay-prev-event-btn');
+  if (prevBtn) prevBtn.addEventListener('click', () => _stepEvent(-1));
+  const nextBtn = document.getElementById('replay-next-event-btn');
+  if (nextBtn) nextBtn.addEventListener('click', () => _stepEvent(+1));
+
+  // Keyboard shortcuts: space toggles play, arrows seek ±5s, [/] step events
   document.addEventListener('keydown', (e) => {
     if (!_replayStart) return;
     const tag = (e.target && e.target.tagName) || '';
@@ -5281,8 +5616,58 @@ function _wireReplayControls() {
       ));
       _seekTo(next, 'replay');
       _updateReplayControls();
+    } else if (e.code === 'BracketLeft') {
+      e.preventDefault();
+      _stepEvent(-1);
+    } else if (e.code === 'BracketRight') {
+      e.preventDefault();
+      _stepEvent(+1);
     }
   });
+}
+
+// Build a sorted list of replay-stepable events from the loaded maneuvers.
+// Filtered to {tack, gybe, rounding, start} and de-duplicated by timestamp
+// so the synthetic Vakaros race-start (already injected into _maneuvers)
+// doesn't double up if a real maneuver lands at the same instant.
+function _replayEventList() {
+  if (!_maneuvers || !_maneuvers.length) return [];
+  const out = [];
+  const seen = new Set();
+  for (const m of _maneuvers) {
+    if (!m || !m.ts) continue;
+    if (m.type && !['tack', 'gybe', 'rounding', 'start'].includes(m.type)) continue;
+    const tsStr = (m.ts.endsWith('Z') || m.ts.includes('+')) ? m.ts : m.ts + 'Z';
+    const tMs = new Date(tsStr).getTime();
+    if (isNaN(tMs)) continue;
+    if (seen.has(tMs)) continue;
+    seen.add(tMs);
+    out.push({ts: tMs, type: m.type});
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
+function _stepEvent(direction) {
+  const events = _replayEventList();
+  if (!events.length) return;
+  const cursor = (_playClock.positionUtc && _playClock.positionUtc.getTime()) || (_replayStart && _replayStart.getTime()) || events[0].ts;
+  // 250 ms tolerance so "next" doesn't land on the event we're already on.
+  const tol = 250;
+  let target = null;
+  if (direction > 0) {
+    for (const e of events) {
+      if (e.ts > cursor + tol) { target = e.ts; break; }
+    }
+    if (target == null) target = events[events.length - 1].ts;
+  } else {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].ts < cursor - tol) { target = events[i].ts; break; }
+    }
+    if (target == null) target = events[0].ts;
+  }
+  _seekTo(new Date(target), 'replay');
+  _updateReplayControls();
 }
 
 // Hook into init() path without rewriting it: kick off replay load once the
@@ -5293,6 +5678,7 @@ function _wireReplayControls() {
 document.addEventListener('DOMContentLoaded', function() {
   _wireReplayControls();
   _loadReplayData();
+  _loadCourseOverlay();
 });
 
 // ---------------------------------------------------------------------------

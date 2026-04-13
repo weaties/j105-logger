@@ -323,6 +323,11 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session window
 _TRACK_PRE_S = 20  # seconds of track before maneuver_ts
 _TRACK_POST_S = 30  # seconds of track after exit_ts (or maneuver_ts if exit unknown)
+# Normal tacks rotate the bow ~80–100°, gybes ~50–70°. Anything well above
+# that is almost always a mark rounding — including "Mexican" roundings
+# where pre/post TWA mode doesn't change. Threshold chosen at 130° so a
+# clean tack stays a tack.
+_ROUNDING_TURN_THRESHOLD_DEG = 130.0
 
 
 def extract_local_track(
@@ -419,6 +424,33 @@ async def enrich_session_maneuvers(
 
     start = _parse_iso(race_row["start_utc"])
     end = _parse_iso(race_row["end_utc"]) if race_row["end_utc"] else start + timedelta(hours=24)
+
+    # Effective race start: if a matched Vakaros session logged a race_start
+    # event inside or near the race window, prefer the *latest* one as the
+    # authoritative gun time. Races with a general recall have the stored
+    # start_utc pointing at the first attempt, while the actual gun is the
+    # last race_start event — the reclassification filter and any downstream
+    # "post-start" checks need that real gun time or pre-start practice
+    # maneuvers leak through as post-start events.
+    gun_cur = await db.execute(
+        """
+        SELECT vre.ts
+        FROM races r
+        JOIN vakaros_race_events vre ON vre.session_id = r.vakaros_session_id
+        WHERE r.id = ?
+          AND vre.event_type = 'race_start'
+          AND vre.ts BETWEEN ? AND ?
+        ORDER BY vre.ts DESC
+        LIMIT 1
+        """,
+        (
+            session_id,
+            (start - timedelta(seconds=60)).isoformat(),
+            (end + timedelta(seconds=60)).isoformat(),
+        ),
+    )
+    gun_row = await gun_cur.fetchone()
+    effective_start = _parse_iso(str(gun_row["ts"])) if gun_row is not None else start
     start_pad = start - timedelta(seconds=_ENRICH_PAD_S)
     end_pad = end + timedelta(seconds=_ENRICH_PAD_S)
 
@@ -546,6 +578,33 @@ async def enrich_session_maneuvers(
         # Storage's duration_sec is already present; metrics duration matches it.
         md.pop("duration_sec", None)
         d.update(md)
+
+        # Reclassify a wildly-large-turn gybe as a rounding. The detector
+        # classifies by pre/post TWA mode, which misses "Mexican" roundings
+        # where the boat stays downwind on both sides of a leeward mark but
+        # the leg direction changes ~180°. A normal gybe swings the bow
+        # 50–70°, so anything ≥ 130° is almost certainly a rounding.
+        #
+        # Only applied to maneuvers at or after the race start — pre-start
+        # warmups commonly include big practice gybes and zig-zag drills
+        # that aren't rounding anything, so reclassifying them as roundings
+        # would flood the debrief view with false positives.
+        #
+        # NB: we do NOT upgrade large tacks — tacks legitimately swing
+        # 80–100° already, and on a start-line approach or a big course
+        # change an isolated tack can get up to ~135° without being a mark
+        # rounding. The user explicitly flagged a 175° tack that was
+        # mis-upgraded by an earlier heuristic.
+        if (
+            d.get("type") == "gybe"
+            and metrics.turn_angle_deg is not None
+            and abs(metrics.turn_angle_deg) >= _ROUNDING_TURN_THRESHOLD_DEG
+            and m_ts >= effective_start
+        ):
+            if not isinstance(d.get("details"), dict):
+                d["details"] = {}
+            d["details"]["original_type"] = d["type"]
+            d["type"] = "rounding"
 
         # Nearest position for the map marker.
         pos = _position_at(positions, m_ts)

@@ -3925,3 +3925,49 @@ async def test_replay_endpoint_returns_samples_and_grades(storage: Storage) -> N
         assert "grade" in g
         assert "t_start" in g
         assert "t_end" in g
+
+
+@pytest.mark.asyncio
+async def test_course_overlay_unknown_session_returns_404(storage: Storage) -> None:
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/9999/course-overlay")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_course_overlay_returns_marks_and_empty_line(storage: Storage) -> None:
+    """Synth race with course marks and no Vakaros match: marks come back,
+    start_line is null."""
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc)"
+        " VALUES ('Course', 'E', 1, '2024-08-01',"
+        " '2024-08-01T12:00:00+00:00')"
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    race_id = int((await cur.fetchone())["id"])
+    await storage.save_synth_course_marks(
+        race_id,
+        [
+            {"mark_key": "1", "mark_name": "Windward", "lat": 37.81, "lon": -122.26},
+            {"mark_key": "2", "mark_name": "Leeward", "lat": 37.79, "lon": -122.28},
+        ],
+    )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/course-overlay")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == race_id
+    assert len(data["marks"]) == 2
+    assert {m["name"] for m in data["marks"]} == {"Windward", "Leeward"}
+    assert data["start_line"] is None
+    assert data["finish_line"] is None
