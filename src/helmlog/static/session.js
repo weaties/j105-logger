@@ -5326,10 +5326,17 @@ function _drawCourseMarks() {
 // gets only its own pair, not all four — windward marks don't get gybe
 // laylines and vice versa.
 //
+// Length scales with the leg the boat just sailed: distance from the prior
+// rounding (or the boat's position at the race gun for the first rounding)
+// × 1.3. That keeps the laylines proportional to the course — short legs
+// get short laylines, long legs get long ones — without stretching over
+// the whole map.
+//
 // TWD comes from that same approach sample, so the laylines reflect the
 // wind state when the boat was actually approaching the mark. Bearings are
 // derived from HDG + TWA without any extra 180° flip (the v1 math bug).
-const _LAYLINE_LENGTH_M = 600;
+const _LAYLINE_LEG_SCALE = 1.3;
+const _LAYLINE_FALLBACK_M = 400;
 const _UPWIND_HALF_ANGLE = 45;   // tacking angle / 2 for typical masthead boat
 const _DOWNWIND_HALF_ANGLE = 30; // gybing angle / 2 for typical kite boat
 // High-contrast colors so they don't get lost on a pale-blue water tile.
@@ -5360,7 +5367,9 @@ function _drawAllLaylines() {
   const raceStartMs = (gun && gun.getTime()) || 0;
   const LAYLINE_START_GRACE_MS = 120_000;
 
-  const layers = [];
+  // Collect eligible roundings first so we can measure leg lengths between
+  // them. Each entry carries ts/lat/lon plus a cached approach sample.
+  const eligible = [];
   for (const m of _maneuvers) {
     if (!m || m.type !== 'rounding') continue;
     if (m.lat == null || m.lon == null || !m.ts) continue;
@@ -5368,6 +5377,21 @@ function _drawAllLaylines() {
     const tMs = new Date(tsStr).getTime();
     if (isNaN(tMs)) continue;
     if (raceStartMs && tMs < raceStartMs + LAYLINE_START_GRACE_MS) continue;
+    eligible.push({m, tMs});
+  }
+  eligible.sort((a, b) => a.tMs - b.tMs);
+
+  // Boat position at race gun, used as the "leg start" for the first
+  // rounding. Falls back to the first GPS fix if no track data available.
+  let gunPos = null;
+  if (_trackData && _trackData.latLngs.length) {
+    const gunIdx = raceStartMs ? _indexForUtc(new Date(raceStartMs)) : 0;
+    gunPos = _trackData.latLngs[gunIdx] || _trackData.latLngs[0];
+  }
+
+  const layers = [];
+  for (let i = 0; i < eligible.length; i++) {
+    const {m, tMs} = eligible[i];
     // Sample from ~20s before the rounding gives the boat's approach state,
     // before the heading-change transient distorts TWA. Falls back to the
     // sample at the rounding ts if the lookback is out of range.
@@ -5381,19 +5405,27 @@ function _drawAllLaylines() {
     const windToBearing = (windFromBearing + 180) % 360;
     const at = [m.lat, m.lon];
 
+    // Layline length = distance from the previous rounding (or the boat's
+    // gun position for the first rounding) × 1.3. That leg is the one the
+    // laylines are parallel to, so scaling to it keeps short legs short
+    // and long legs long instead of always stretching across the map.
+    const prevPos = i === 0 ? gunPos : [eligible[i - 1].m.lat, eligible[i - 1].m.lon];
+    const legM = prevPos ? _haversineMeters(prevPos, at) : 0;
+    const laylineLen = legM > 0 ? legM * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
+
     if (isWindward) {
       // Tack laylines extend from the mark downwind (where the boat was
       // coming from on the upwind leg), spread by ±tacking-half-angle.
-      const stbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
-      const port = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+      const stbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, laylineLen);
+      const port = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, laylineLen);
       const opts = {color: _LAYLINE_TACK_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
       layers.push(L.polyline([at, stbd], opts));
       layers.push(L.polyline([at, port], opts));
     } else {
       // Gybe laylines extend from the mark upwind (where the boat was coming
       // from on the downwind leg), spread by ±gybing-half-angle.
-      const stbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
-      const port = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+      const stbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, laylineLen);
+      const port = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, laylineLen);
       const opts = {color: _LAYLINE_GYBE_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
       layers.push(L.polyline([at, stbd], opts));
       layers.push(L.polyline([at, port], opts));
@@ -5404,6 +5436,22 @@ function _drawAllLaylines() {
   const group = L.layerGroup(layers);
   if (_courseOverlay.visible) group.addTo(_map);
   _courseOverlay.laylines = group;
+}
+
+// Haversine distance in meters between two [lat, lng] (or {lat,lng}) points.
+// Used to scale layline length to the leg the boat just sailed.
+function _haversineMeters(a, b) {
+  const aLat = Array.isArray(a) ? a[0] : a.lat;
+  const aLng = Array.isArray(a) ? a[1] : a.lng;
+  const bLat = Array.isArray(b) ? b[0] : b.lat;
+  const bLng = Array.isArray(b) ? b[1] : b.lng;
+  const R = 6371000;
+  const lat1 = (aLat * Math.PI) / 180;
+  const lat2 = (bLat * Math.PI) / 180;
+  const dLat = ((bLat - aLat) * Math.PI) / 180;
+  const dLng = ((bLng - aLng) * Math.PI) / 180;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
 }
 
 // Project a lat/lng forward by `distM` meters along true bearing `bearingDeg`.
