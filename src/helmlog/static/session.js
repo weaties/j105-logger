@@ -5405,23 +5405,43 @@ function _drawAllLaylines() {
     const windToBearing = (windFromBearing + 180) % 360;
     const at = [m.lat, m.lon];
 
-    // Layline length = distance from the previous maneuver to this mark
-    // × 1.3. "Previous maneuver" (any type — tack, gybe, rounding) is the
-    // start of the last straight segment the boat sailed, which is the
-    // leg the laylines are parallel to. Scaling to it keeps short final
-    // approaches short and long ones long instead of always stretching a
-    // full-leg distance across the map.
-    let prevPos = null;
-    for (let j = i - 1; j >= 0; j--) {
-      const prev = allEvents[j];
-      if (prev.m.lat != null && prev.m.lon != null) {
-        prevPos = [prev.m.lat, prev.m.lon];
-        break;
+    // Layline length scales with the boat's actual approach pattern.
+    // For a windward mark we look back at the last two TACKS and use the
+    // FURTHER of them × 1.3 — that ensures each tack layline extends past
+    // the tack the boat used to get onto that tack, which is what the
+    // user actually wants to see ("extend beyond where we tacked onto
+    // port last before the rounding"). For a leeward mark we use the
+    // distance to the previous GYBE × 1.3 but cap at 300m so long
+    // downwind legs don't stretch laylines across the whole map.
+    const MAX_LEEWARD_LAYLINE_M = 300;
+
+    let laylineLen;
+    if (isWindward) {
+      const tackDists = [];
+      for (let j = i - 1; j >= 0 && tackDists.length < 2; j--) {
+        const prev = allEvents[j];
+        if (prev.m.type === 'tack' && prev.m.lat != null && prev.m.lon != null) {
+          tackDists.push(_haversineMeters([prev.m.lat, prev.m.lon], at));
+        }
       }
+      if (tackDists.length === 0) {
+        const legM = gunPos ? _haversineMeters(gunPos, at) : 0;
+        laylineLen = legM > 0 ? legM * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
+      } else {
+        laylineLen = Math.max(...tackDists) * _LAYLINE_LEG_SCALE;
+      }
+    } else {
+      let prevGybeDist = 0;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = allEvents[j];
+        if (prev.m.type === 'gybe' && prev.m.lat != null && prev.m.lon != null) {
+          prevGybeDist = _haversineMeters([prev.m.lat, prev.m.lon], at);
+          break;
+        }
+      }
+      const scaled = prevGybeDist > 0 ? prevGybeDist * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
+      laylineLen = Math.min(scaled, MAX_LEEWARD_LAYLINE_M);
     }
-    if (!prevPos) prevPos = gunPos;
-    const legM = prevPos ? _haversineMeters(prevPos, at) : 0;
-    const laylineLen = legM > 0 ? legM * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
 
     if (isWindward) {
       // Tack laylines extend from the mark downwind (where the boat was
