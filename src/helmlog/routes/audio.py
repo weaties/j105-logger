@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -17,9 +17,28 @@ import helmlog.web as _web_mod
 from helmlog.auth import require_auth
 from helmlog.routes._helpers import audit, get_storage, limiter
 
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
+
 _web_mod.asyncio = asyncio  # type: ignore[attr-defined]
 
 router = APIRouter()
+
+
+async def _resolve_transcription_targets(storage: Storage, row: dict[str, Any]) -> list[int]:
+    """Return every audio_session_id that should be transcribed for this request.
+
+    Single-device sessions return ``[row["id"]]``. Sibling-card captures
+    (#509) return every member of the ``capture_group_id`` in ordinal
+    order so fan-out transcribes the whole group in one click.
+    """
+    group_id = row.get("capture_group_id")
+    if not group_id:
+        return [int(row["id"])]
+    siblings = await storage.list_capture_group_siblings(str(group_id))
+    if not siblings:
+        return [int(row["id"])]
+    return [int(s["id"]) for s in siblings]
 
 
 @router.get("/api/audio/{session_id}/download")
@@ -79,12 +98,6 @@ async def api_transcribe(
     if row is None:
         raise HTTPException(status_code=404, detail="Audio session not found")
     model = os.environ.get("WHISPER_MODEL", "base")
-    try:
-        transcript_id = await storage.create_transcript_job(session_id, model)
-    except ValueError:
-        raise HTTPException(  # noqa: B904
-            status_code=409, detail="Transcript job already exists for this session"
-        )
 
     from helmlog.storage import get_effective_setting
     from helmlog.transcribe import transcribe_session
@@ -94,18 +107,45 @@ async def api_transcribe(
     # the worker has its own HF_TOKEN and decides locally.  Only gate on
     # the Pi's HF_TOKEN when running the local fallback path.
     diarize = True if t_url else bool(os.environ.get("HF_TOKEN"))
-    asyncio.create_task(
-        transcribe_session(
-            storage,
-            session_id,
-            transcript_id,
-            model_size=model,
-            diarize=diarize,
-            transcribe_url=t_url,
+
+    # Sibling-card capture (#509): fan out to every sibling in the group so
+    # the merged transcript covers every receiver, not just the one the UI
+    # happened to click on. Non-sibling sessions take the single-row path.
+    targets = await _resolve_transcription_targets(storage, row)
+    jobs: list[int] = []
+    try:
+        for tgt in targets:
+            jobs.append(await storage.create_transcript_job(tgt, model))
+    except ValueError:
+        # Roll back any sibling jobs we already created so the group state is
+        # consistent (all pending or none pending).
+        for _created, t in zip(jobs, targets, strict=False):
+            await storage.delete_transcript(t)
+        raise HTTPException(  # noqa: B904
+            status_code=409, detail="Transcript job already exists for this session"
         )
-    )
+
+    for tgt, tid in zip(targets, jobs, strict=True):
+        asyncio.create_task(
+            transcribe_session(
+                storage,
+                tgt,
+                tid,
+                model_size=model,
+                diarize=diarize,
+                transcribe_url=t_url,
+            )
+        )
     await audit(request, "transcribe.start", detail=str(session_id), user=_user)
-    return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
+    primary_transcript_id = jobs[0] if jobs else None
+    return JSONResponse(
+        {
+            "status": "accepted",
+            "transcript_id": primary_transcript_id,
+            "sibling_count": len(jobs),
+        },
+        status_code=202,
+    )
 
 
 @router.post("/api/audio/{session_id}/retranscribe", status_code=202)
@@ -124,11 +164,14 @@ async def api_retranscribe(
     row = await storage.get_audio_session_row(session_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Audio session not found")
-    # Delete the existing transcript (and any linked extraction runs)
-    await storage.delete_transcript(session_id)
-    # Create a new job
+
+    # Fan out to siblings (#509): delete + recreate jobs for every member.
+    targets = await _resolve_transcription_targets(storage, row)
+    for tgt in targets:
+        await storage.delete_transcript(tgt)
+
     model = os.environ.get("WHISPER_MODEL", "base")
-    transcript_id = await storage.create_transcript_job(session_id, model)
+    jobs = [await storage.create_transcript_job(tgt, model) for tgt in targets]
 
     from helmlog.storage import get_effective_setting
     from helmlog.transcribe import transcribe_session
@@ -138,18 +181,22 @@ async def api_retranscribe(
     # the worker has its own HF_TOKEN and decides locally.  Only gate on
     # the Pi's HF_TOKEN when running the local fallback path.
     diarize = True if t_url else bool(os.environ.get("HF_TOKEN"))
-    asyncio.create_task(
-        transcribe_session(
-            storage,
-            session_id,
-            transcript_id,
-            model_size=model,
-            diarize=diarize,
-            transcribe_url=t_url,
+    for tgt, tid in zip(targets, jobs, strict=True):
+        asyncio.create_task(
+            transcribe_session(
+                storage,
+                tgt,
+                tid,
+                model_size=model,
+                diarize=diarize,
+                transcribe_url=t_url,
+            )
         )
-    )
     await audit(request, "transcribe.retranscribe", detail=str(session_id), user=_user)
-    return JSONResponse({"status": "accepted", "transcript_id": transcript_id}, status_code=202)
+    return JSONResponse(
+        {"status": "accepted", "transcript_id": jobs[0], "sibling_count": len(jobs)},
+        status_code=202,
+    )
 
 
 @router.get("/api/audio/{session_id}/transcript")
@@ -160,7 +207,10 @@ async def api_get_transcript(
 ) -> JSONResponse:
     """Poll transcription status and retrieve the transcript text when done.
 
-    Applies speaker anonymization map if present (#197).
+    Applies speaker anonymization map if present (#197). When the target
+    session is part of a sibling capture group (#509), the segments array
+    is a merged, time-sorted union of every sibling's transcript so the
+    UI sees one continuous timeline across all receivers.
     """
     storage = get_storage(request)
     import json as _json
@@ -168,9 +218,31 @@ async def api_get_transcript(
     t = await storage.get_transcript_with_anon(session_id)
     if t is None:
         raise HTTPException(status_code=404, detail="No transcript job found for this session")
-    if t.get("segments_json"):
+
+    # Sibling merge: if this session has a capture_group_id, union the
+    # segments from every sibling's transcript into a single sorted array.
+    row = await storage.get_audio_session_row(session_id)
+    group_id = row.get("capture_group_id") if row else None
+    if group_id:
+        merged: list[dict[str, Any]] = []
+        siblings = await storage.list_capture_group_siblings(str(group_id))
+        for sr in siblings:
+            st = await storage.get_transcript_with_anon(int(sr["id"]))
+            if st is None:
+                continue
+            sj = st.get("segments_json")
+            if not sj:
+                continue
+            try:
+                segs = _json.loads(sj)
+            except (_json.JSONDecodeError, TypeError):
+                continue
+            merged.extend(segs)
+        merged.sort(key=lambda s: float(s.get("start", 0.0)))
+        t["segments"] = merged
+    elif t.get("segments_json"):
         t["segments"] = _json.loads(t["segments_json"])
-    del t["segments_json"]
+    t.pop("segments_json", None)
     # Remove internal anon map from response
     t.pop("speaker_anon_map", None)
     # Expose speaker_map for UI (crew labels, auto-match info)

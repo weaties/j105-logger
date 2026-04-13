@@ -167,18 +167,25 @@ async def _do_scheduled_start(app: FastAPI, event: str, session_type: str) -> No
 
         # Start audio if request.app.state.recorder is available
         if app.state.recorder is not None and app.state.audio_config is not None:
-            from helmlog.audio import AudioDeviceNotFoundError
+            from helmlog.audio import AudioDeviceNotFoundError, capture_start
 
             try:
-                session = await app.state.recorder.start(app.state.audio_config, name=race.name)
-                ss.audio_session_id = await storage.write_audio_session(
-                    session,
+                ss.audio_session_id = await capture_start(
+                    app.state.recorder,
+                    app.state.audio_config,
+                    storage,
+                    name=race.name,
                     race_id=race.id,
                     session_type=session_type,
-                    name=race.name,
                 )
             except AudioDeviceNotFoundError as exc:
                 logger.warning("Audio unavailable for scheduled race {}: {}", name, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Audio capture failed for scheduled race {} — continuing without audio: {}",
+                    name,
+                    exc,
+                )
 
         await storage.log_action("race.scheduled_start", detail=race.name)
     except Exception as exc:  # noqa: BLE001
@@ -337,9 +344,13 @@ async def api_start_race(
 
     # Auto-stop any active debrief before starting a new session
     if ss.debrief_audio_session_id is not None:
-        completed = await request.app.state.recorder.stop()
-        assert completed.end_utc is not None
-        await storage.update_audio_session_end(ss.debrief_audio_session_id, completed.end_utc)
+        from helmlog.audio import capture_stop
+
+        await capture_stop(
+            request.app.state.recorder,
+            storage,
+            primary_session_id=ss.debrief_audio_session_id,
+        )
         logger.info("Debrief auto-stopped to start new {}", session_type)
         ss.debrief_audio_session_id = None
         ss.debrief_race_id = None
@@ -373,21 +384,31 @@ async def api_start_race(
         logger.warning("Failed to auto-apply sail defaults for race {}: {}", race.name, exc)
 
     if request.app.state.recorder is not None and request.app.state.audio_config is not None:
-        from helmlog.audio import AudioDeviceNotFoundError
+        from helmlog.audio import AudioDeviceNotFoundError, capture_start
 
         try:
-            session = await request.app.state.recorder.start(
-                request.app.state.audio_config, name=race.name
-            )
-            ss.audio_session_id = await storage.write_audio_session(
-                session,
+            ss.audio_session_id = await capture_start(
+                request.app.state.recorder,
+                request.app.state.audio_config,
+                storage,
+                name=race.name,
                 race_id=race.id,
                 session_type=session_type,
-                name=race.name,
             )
-            logger.info("Audio recording started: {}", session.file_path)
+            logger.info("Audio recording started for race {}", race.name)
         except AudioDeviceNotFoundError as exc:
             logger.warning("Audio unavailable for race {}: {}", race.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            # Any other audio failure (PortAudio hot-unplug, USB drop, etc.)
+            # must not block the race from recording — the race row is
+            # already committed, so bubbling would leave an orphan race
+            # row plus a 500 in the UI. Log loud and continue with no
+            # audio for this session.
+            logger.exception(
+                "Audio capture failed for race {} — recording continues without audio: {}",
+                race.name,
+                exc,
+            )
 
     async def _start_cameras(rid: int) -> None:
         cams = await load_cameras(request)
@@ -485,9 +506,13 @@ async def api_end_race(
     asyncio.ensure_future(_auto_detect_maneuvers(race_id))
 
     if request.app.state.recorder is not None and ss.audio_session_id is not None:
-        completed = await request.app.state.recorder.stop()
-        assert completed.end_utc is not None
-        await storage.update_audio_session_end(ss.audio_session_id, completed.end_utc)
+        from helmlog.audio import capture_stop
+
+        completed = await capture_stop(
+            request.app.state.recorder,
+            storage,
+            primary_session_id=ss.audio_session_id,
+        )
         logger.info("Audio recording saved: {}", completed.file_path)
         ss.audio_session_id = None
 
@@ -511,38 +536,43 @@ async def api_start_debrief(
     if row is None:
         raise HTTPException(status_code=404, detail="Race not found")
 
+    from helmlog.audio import capture_start, capture_stop
+
     # Defensive: if the race is still in progress, auto-end it first
     if row["end_utc"] is None:
         now_end = datetime.now(UTC)
         await storage.end_race(race_id, now_end)
         if ss.audio_session_id is not None:
-            completed = await request.app.state.recorder.stop()
-            assert completed.end_utc is not None
-            await storage.update_audio_session_end(ss.audio_session_id, completed.end_utc)
+            await capture_stop(
+                request.app.state.recorder,
+                storage,
+                primary_session_id=ss.audio_session_id,
+            )
             ss.audio_session_id = None
         logger.info("Race {} auto-ended to start debrief", race_id)
 
     if ss.debrief_audio_session_id is not None:
-        completed = await request.app.state.recorder.stop()
-        assert completed.end_utc is not None
-        await storage.update_audio_session_end(ss.debrief_audio_session_id, completed.end_utc)
+        await capture_stop(
+            request.app.state.recorder,
+            storage,
+            primary_session_id=ss.debrief_audio_session_id,
+        )
         ss.debrief_audio_session_id = None
 
     debrief_name = f"{row['name']}-debrief"
     now = datetime.now(UTC)
-    session = await request.app.state.recorder.start(
-        request.app.state.audio_config, name=debrief_name
-    )
-    ss.debrief_audio_session_id = await storage.write_audio_session(
-        session,
+    ss.debrief_audio_session_id = await capture_start(
+        request.app.state.recorder,
+        request.app.state.audio_config,
+        storage,
+        name=debrief_name,
         race_id=race_id,
         session_type="debrief",
-        name=debrief_name,
     )
     ss.debrief_race_id = race_id
     ss.debrief_race_name = row["name"]
     ss.debrief_start_utc = now
-    logger.info("Debrief recording started: {}", session.file_path)
+    logger.info("Debrief recording started for {}", debrief_name)
 
     await audit(request, "debrief.start", detail=row["name"], user=_user)
     return JSONResponse(
@@ -562,9 +592,13 @@ async def api_stop_debrief(
     if ss.debrief_audio_session_id is None:
         raise HTTPException(status_code=409, detail="No debrief in progress")
 
-    completed = await request.app.state.recorder.stop()
-    assert completed.end_utc is not None
-    await storage.update_audio_session_end(ss.debrief_audio_session_id, completed.end_utc)
+    from helmlog.audio import capture_stop
+
+    completed = await capture_stop(
+        request.app.state.recorder,
+        storage,
+        primary_session_id=ss.debrief_audio_session_id,
+    )
     logger.info("Debrief recording saved: {}", completed.file_path)
 
     await audit(request, "debrief.stop", user=_user)

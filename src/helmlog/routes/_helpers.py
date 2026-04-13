@@ -262,6 +262,42 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
         default="2",
         help_text="How often to store rudder angle readings (Hz). ESP32 publishes at 10 Hz; default stores at 2 Hz. Live display always shows latest value.",
     ),
+    SettingDef(
+        key="AUDIO_CHANNELS",
+        label="Audio channels",
+        input_type="select",
+        default="1",
+        options=("1", "2", "4"),
+        help_text="Number of channels to record. Use '4' for multi-mic isolation.",
+    ),
+    SettingDef(
+        key="AUDIO_CH1_POS",
+        label="Audio Channel 1 Position",
+        input_type="text",
+        default="helm",
+        help_text="Crew position assigned to audio channel 1.",
+    ),
+    SettingDef(
+        key="AUDIO_CH2_POS",
+        label="Audio Channel 2 Position",
+        input_type="text",
+        default="tactician",
+        help_text="Crew position assigned to audio channel 2.",
+    ),
+    SettingDef(
+        key="AUDIO_CH3_POS",
+        label="Audio Channel 3 Position",
+        input_type="text",
+        default="main",
+        help_text="Crew position assigned to audio channel 3.",
+    ),
+    SettingDef(
+        key="AUDIO_CH4_POS",
+        label="Audio Channel 4 Position",
+        input_type="text",
+        default="pit",
+        help_text="Crew position assigned to audio channel 4.",
+    ),
 )
 
 SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}

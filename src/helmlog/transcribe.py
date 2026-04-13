@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -91,9 +92,127 @@ async def _try_remote_transcribe(
         return None
 
 
+async def _transcribe_one_channel(
+    file_path: str,
+    model_size: str,
+    diarize: bool,
+    *,
+    transcribe_url: str = "",
+) -> tuple[str, list[dict[str, object]]]:
+    """Helper: transcribe a single channel (local or remote)."""
+    # 1. Try remote
+    remote = await _try_remote_transcribe(
+        file_path, model_size, diarize, transcribe_url=transcribe_url
+    )
+    if remote is not None:
+        return remote
+
+    # 2. Try local
+    if diarize and _pyannote_available() and bool(os.environ.get("HF_TOKEN")):
+        text, segments_json_str = await asyncio.to_thread(
+            _run_with_diarization, file_path=file_path, model_size=model_size
+        )
+        return text, json.loads(segments_json_str)
+    else:
+        raw_segs = await asyncio.to_thread(
+            _run_whisper_segments, file_path=file_path, model_size=model_size
+        )
+        text = " ".join(t for _, _, t in raw_segs).strip()
+        segments = [{"start": s, "end": e, "text": t} for s, e, t in raw_segs]
+        return text, segments
+
+
+async def _transcribe_multi_channel(
+    file_path: str,
+    *,
+    channels: int,
+    channel_map: dict[int, str],
+    model_size: str,
+    transcribe_url: str = "",
+) -> list[dict[str, object]]:
+    """Split a multi-channel WAV and transcribe each channel independently.
+
+    Channel indices are 0-based to match sounddevice / numpy and the v63
+    ``channel_map`` table. ``channel_map[i]`` resolves to the configured
+    position name (e.g. "helm"); unmapped channels fall back to ``CH{i}``.
+
+    Pyannote diarisation is intentionally **skipped** because hardware
+    isolation already ties each channel to a person — running diarisation
+    would be redundant and slow per the issue spec.
+
+    Returns a single list of segments sorted by ``start``, each tagged with
+    ``channel_index``, ``position_name``, and ``speaker`` (= position).
+    """
+    import soundfile as sf
+
+    logger.info("Multi-channel isolation: transcribing {} channels for {}", channels, file_path)
+    data, samplerate = sf.read(file_path)
+
+    all_segments: list[dict[str, object]] = []
+    for i in range(channels):
+        position = channel_map.get(i, f"CH{i}")
+        logger.debug("Transcribing channel {} (position={})", i, position)
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+            ch_data = data[:, i] if data.ndim > 1 else data
+            sf.write(tmp_path, ch_data, samplerate)
+        try:
+            _text, segments = await _transcribe_one_channel(
+                tmp_path, model_size, diarize=False, transcribe_url=transcribe_url
+            )
+            for seg in segments:
+                seg["channel_index"] = i
+                seg["position_name"] = position
+                seg["speaker"] = position
+            all_segments.extend(segments)
+        finally:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+
+    all_segments.sort(key=lambda x: float(str(x.get("start", 0))))
+    return all_segments
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+
+
+async def _persist_sibling_segments(
+    storage: Storage,
+    transcript_id: int,
+    segments: list[dict[str, object]],
+    *,
+    ordinal: int,
+    position_name: str,
+) -> None:
+    """Tag mono-sibling segments with channel_index/position and persist relationally.
+
+    Sibling-card captures (#509) skip the multi-channel split because each
+    WAV is already a single-channel file — but the downstream merge (chunk 3)
+    needs the same ``channel_index``/``position_name``/``speaker`` tags that
+    pt.4's multi-channel path provides, so we annotate and bulk-insert here.
+    """
+    if not segments:
+        return
+    for seg in segments:
+        seg["channel_index"] = ordinal
+        seg["position_name"] = position_name
+        seg["speaker"] = position_name
+    relational = [
+        {
+            "segment_index": idx,
+            "start_time": float(seg.get("start", 0.0)),  # type: ignore[arg-type]
+            "end_time": float(seg.get("end", 0.0)),  # type: ignore[arg-type]
+            "text": str(seg.get("text", "")),
+            "speaker": position_name,
+            "channel_index": ordinal,
+            "position_name": position_name,
+        }
+        for idx, seg in enumerate(segments)
+    ]
+    await storage.insert_transcript_segments(transcript_id, relational)
 
 
 async def transcribe_session(
@@ -129,15 +248,79 @@ async def transcribe_session(
 
     await storage.update_transcript(transcript_id, status="running")
     file_path: str = row["file_path"]
-    use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
+    channels: int = row.get("channels", 1)
 
+    # Sibling-card capture (#509): when the session is one of N parallel
+    # mono USB cards, tag its segments with the ordinal + configured
+    # position_name so the downstream merge can stitch them back together.
+    sibling_tag: tuple[int, str] | None = None
+    if row.get("capture_group_id") and channels == 1:
+        cmap = await storage.get_channel_map_for_audio_session(audio_session_id)
+        position = cmap.get(0, f"sib{row.get('capture_ordinal', 0)}")
+        sibling_tag = (int(row.get("capture_ordinal") or 0), position)
+
+    segments_json_str: str | None = None
     try:
+        # ----- Multi-channel Isolation Mode (#462 pt.3) -----
+        if channels > 1:
+            # Look up the active channel→position map via the v63/v64 chain:
+            # session identity → channel_map override → admin default. 0-based.
+            channel_map = await storage.get_channel_map_for_audio_session(audio_session_id)
+            all_segments = await _transcribe_multi_channel(
+                file_path,
+                channels=channels,
+                channel_map=channel_map,
+                model_size=model_size,
+                transcribe_url=transcribe_url,
+            )
+            merged_text = " ".join(str(s.get("text", "")).strip() for s in all_segments).strip()
+            segments_json_str = json.dumps(all_segments)
+
+            # Relational persistence (#493) — populate transcript_segments so
+            # downstream sub-issues (#496–#499) don't re-parse JSON.
+            relational = [
+                {
+                    "segment_index": idx,
+                    "start_time": float(seg.get("start", 0.0)),  # type: ignore[arg-type]
+                    "end_time": float(seg.get("end", 0.0)),  # type: ignore[arg-type]
+                    "text": str(seg.get("text", "")),
+                    "speaker": seg.get("speaker"),
+                    "channel_index": seg.get("channel_index"),
+                    "position_name": seg.get("position_name"),
+                }
+                for idx, seg in enumerate(all_segments)
+            ]
+            await storage.insert_transcript_segments(transcript_id, relational)
+
+            await storage.update_transcript(
+                transcript_id, status="done", text=merged_text, segments_json=segments_json_str
+            )
+            logger.info(
+                "Multi-channel transcription done: audio_session_id={} channels={} segments={}",
+                audio_session_id,
+                channels,
+                len(all_segments),
+            )
+            await _run_trigger_scan(storage, audio_session_id, row, all_segments)
+            return
+
+        # ----- Single-channel mode (Existing logic) -----
+        use_diarize = diarize and bool(os.environ.get("HF_TOKEN")) and _pyannote_available()
+
         # ----- Remote offload (preferred when TRANSCRIBE_URL is set) -----
         remote = await _try_remote_transcribe(
             file_path, model_size, diarize, transcribe_url=transcribe_url
         )
         if remote is not None:
             text, segments = remote
+            if sibling_tag is not None:
+                await _persist_sibling_segments(
+                    storage,
+                    transcript_id,
+                    segments,
+                    ordinal=sibling_tag[0],
+                    position_name=sibling_tag[1],
+                )
             segments_json_str = json.dumps(segments) if segments else None
             await storage.update_transcript(
                 transcript_id, status="done", text=text, segments_json=segments_json_str
@@ -184,6 +367,22 @@ async def transcribe_session(
                 "Transcription done: audio_session_id={} chars={}",
                 audio_session_id,
                 len(text),
+            )
+
+        # Sibling-card annotation (#509): local single-channel paths reach here
+        # with a plain segments list; tag and persist before trigger scan.
+        if sibling_tag is not None:
+            await _persist_sibling_segments(
+                storage,
+                transcript_id,
+                segments,
+                ordinal=sibling_tag[0],
+                position_name=sibling_tag[1],
+            )
+            # Rewrite segments_json so GET /api/audio/{id}/transcript sees the tags
+            segments_json_str = json.dumps(segments) if segments else None
+            await storage.update_transcript(
+                transcript_id, status="done", segments_json=segments_json_str
             )
 
         # Auto-scan for trigger keywords and create tagged notes

@@ -7,10 +7,12 @@ all logged data.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 import aiosqlite
@@ -132,7 +134,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 61
+_CURRENT_VERSION: int = 65
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1430,6 +1432,72 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_races_regatta ON races(regatta_id);
         CREATE INDEX IF NOT EXISTS idx_races_local_session ON races(local_session_id);
     """,
+    62: """
+        -- Multi-channel audio recording and isolation (#462)
+        ALTER TABLE audio_sessions ADD COLUMN channel_map TEXT;
+    """,
+    63: """
+        -- Multi-channel audio: relational channel_map + per-segment channel
+        -- tagging foundation (#462 pt.1 / #493).
+        CREATE TABLE IF NOT EXISTS channel_map (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            vendor_id        INTEGER NOT NULL,
+            product_id       INTEGER NOT NULL,
+            serial           TEXT    NOT NULL DEFAULT '',
+            usb_port_path    TEXT    NOT NULL,
+            channel_index    INTEGER NOT NULL,
+            position_name    TEXT    NOT NULL,
+            audio_session_id INTEGER REFERENCES audio_sessions(id) ON DELETE CASCADE,
+            created_utc      TEXT    NOT NULL,
+            created_by       INTEGER REFERENCES users(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_map_unique
+            ON channel_map(
+                vendor_id, product_id, serial, usb_port_path,
+                channel_index, IFNULL(audio_session_id, -1)
+            );
+        CREATE INDEX IF NOT EXISTS idx_channel_map_session
+            ON channel_map(audio_session_id);
+
+        CREATE TABLE IF NOT EXISTS transcript_segments (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            transcript_id INTEGER NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
+            segment_index INTEGER NOT NULL,
+            start_time    REAL    NOT NULL,
+            end_time      REAL    NOT NULL,
+            text          TEXT    NOT NULL,
+            speaker       TEXT,
+            channel_index INTEGER,
+            position_name TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_transcript_segments_transcript
+            ON transcript_segments(transcript_id);
+        CREATE INDEX IF NOT EXISTS idx_transcript_segments_channel
+            ON transcript_segments(transcript_id, channel_index);
+    """,
+    64: """
+        -- Multi-channel audio: persist active USB device identity onto each
+        -- audio_sessions row so playback knows which channel_map to load
+        -- (#462 pt.2 / #494). The tuple matches the channel_map composite
+        -- key from v63.
+        ALTER TABLE audio_sessions ADD COLUMN vendor_id INTEGER;
+        ALTER TABLE audio_sessions ADD COLUMN product_id INTEGER;
+        ALTER TABLE audio_sessions ADD COLUMN serial TEXT;
+        ALTER TABLE audio_sessions ADD COLUMN usb_port_path TEXT;
+    """,
+    65: """
+        -- Sibling-card capture stopgap (#509 / #462 follow-up): when two or
+        -- more mono USB receivers are used in parallel (e.g. the Jieli
+        -- 4-mic wireless sets that mix all transmitters to mono before USB),
+        -- each card produces its own mono WAV and its own audio_sessions
+        -- row. All siblings from one start/stop cycle share a
+        -- ``capture_group_id`` UUID and each carries its ordinal within the
+        -- group. NULL capture_group_id = legacy single-device session.
+        ALTER TABLE audio_sessions ADD COLUMN capture_group_id TEXT;
+        ALTER TABLE audio_sessions ADD COLUMN capture_ordinal INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_audio_sessions_capture_group
+            ON audio_sessions(capture_group_id);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -2446,8 +2514,9 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO audio_sessions"
             " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            "  race_id, session_type, name)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  race_id, session_type, name, channel_map,"
+            "  capture_group_id, capture_ordinal)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.file_path,
                 session.device_name,
@@ -2458,12 +2527,56 @@ class Storage:
                 race_id,
                 session_type,
                 name,
+                json.dumps(session.channel_map) if session.channel_map else None,
+                session.capture_group_id,
+                session.capture_ordinal,
             ),
         )
         await db.commit()
         assert cur.lastrowid is not None
         logger.debug("Audio session stored: id={} file={}", cur.lastrowid, session.file_path)
         return cur.lastrowid
+
+    async def set_audio_session_device(
+        self,
+        session_id: int,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+    ) -> None:
+        """Persist the active USB device identity for an audio session (#494)."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE audio_sessions"
+            " SET vendor_id=?, product_id=?, serial=?, usb_port_path=?"
+            " WHERE id=?",
+            (vendor_id, product_id, serial, usb_port_path, session_id),
+        )
+        await db.commit()
+
+    async def get_channel_map_for_audio_session(self, session_id: int) -> dict[int, str]:
+        """Return the channel→position map for an audio session.
+
+        Looks up the session's stored device identity then chains through
+        ``get_channel_map`` so the per-session override (if any) takes
+        precedence over the admin default.
+        """
+        row = await self.get_audio_session_row(session_id)
+        if not row:
+            return {}
+        vendor_id = row.get("vendor_id")
+        product_id = row.get("product_id")
+        if vendor_id is None or product_id is None:
+            return {}
+        return await self.get_channel_map(
+            vendor_id=int(vendor_id),
+            product_id=int(product_id),
+            serial=row.get("serial") or "",
+            usb_port_path=row.get("usb_port_path") or "",
+            audio_session_id=session_id,
+        )
 
     async def update_audio_session_end(self, session_id: int, end_utc: datetime) -> None:
         """Set the end_utc for an existing audio session row."""
@@ -2479,12 +2592,42 @@ class Storage:
         """Return a single audio_sessions row as a dict, or None if not found."""
         cur = await self._read_conn().execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            " race_id, session_type, name"
+            " race_id, session_type, name, channel_map,"
+            " vendor_id, product_id, serial, usb_port_path,"
+            " capture_group_id, capture_ordinal"
             " FROM audio_sessions WHERE id = ?",
             (session_id,),
         )
         row = await cur.fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        res = dict(row)
+        if res.get("channel_map"):
+            try:
+                cmap = json.loads(res["channel_map"])
+                res["channel_map"] = {int(k): v for k, v in cmap.items()}
+            except (json.JSONDecodeError, ValueError):
+                pass
+        return res
+
+    async def list_capture_group_siblings(self, capture_group_id: str) -> list[dict[str, Any]]:
+        """Return all audio_sessions rows sharing a capture_group_id, in ordinal order.
+
+        Used by the sibling-card playback path (#509) to discover every WAV
+        that belongs to a single start/stop cycle across multiple mono USB
+        receivers. Returns an empty list if the group is unknown.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
+            " race_id, session_type, name, channel_map,"
+            " vendor_id, product_id, serial, usb_port_path,"
+            " capture_group_id, capture_ordinal"
+            " FROM audio_sessions WHERE capture_group_id = ?"
+            " ORDER BY capture_ordinal ASC",
+            (capture_group_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def list_audio_sessions(self) -> list[AudioSession]:
         """Return all audio sessions ordered by start_utc descending."""
@@ -5222,6 +5365,187 @@ class Storage:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------------------
+    # Multi-channel audio: channel_map + transcript_segments (#462 pt.1)
+    # ------------------------------------------------------------------
+
+    async def set_channel_map(
+        self,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+        mapping: dict[int, str],
+        audio_session_id: int | None = None,
+        created_by: int | None = None,
+    ) -> None:
+        """Replace the channel→position map for a USB device.
+
+        ``audio_session_id=None`` writes the admin default; passing a session id
+        writes a per-session override that takes precedence over the default
+        when read with the same session id.
+        """
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        now = _dt.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "DELETE FROM channel_map"
+            " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+            " AND IFNULL(audio_session_id, -1) = IFNULL(?, -1)",
+            (vendor_id, product_id, serial, usb_port_path, audio_session_id),
+        )
+        for ch_idx, position in mapping.items():
+            await db.execute(
+                "INSERT INTO channel_map"
+                " (vendor_id, product_id, serial, usb_port_path,"
+                "  channel_index, position_name, audio_session_id,"
+                "  created_utc, created_by)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    vendor_id,
+                    product_id,
+                    serial,
+                    usb_port_path,
+                    ch_idx,
+                    position,
+                    audio_session_id,
+                    now,
+                    created_by,
+                ),
+            )
+        await db.commit()
+
+    async def get_channel_map(
+        self,
+        *,
+        vendor_id: int,
+        product_id: int,
+        serial: str,
+        usb_port_path: str,
+        audio_session_id: int | None = None,
+    ) -> dict[int, str]:
+        """Return the channel→position map for a device.
+
+        If ``audio_session_id`` is given and a per-session override exists,
+        return it; otherwise fall back to the admin default. Empty dict if
+        neither is set.
+        """
+        db = self._read_conn()
+        if audio_session_id is not None:
+            cur = await db.execute(
+                "SELECT channel_index, position_name FROM channel_map"
+                " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+                " AND audio_session_id=?",
+                (vendor_id, product_id, serial, usb_port_path, audio_session_id),
+            )
+            rows = await cur.fetchall()
+            if rows:
+                return {r["channel_index"]: r["position_name"] for r in rows}
+        cur = await db.execute(
+            "SELECT channel_index, position_name FROM channel_map"
+            " WHERE vendor_id=? AND product_id=? AND serial=? AND usb_port_path=?"
+            " AND audio_session_id IS NULL",
+            (vendor_id, product_id, serial, usb_port_path),
+        )
+        return {r["channel_index"]: r["position_name"] for r in await cur.fetchall()}
+
+    async def list_channel_map_devices(self) -> list[dict[str, Any]]:
+        """Return one row per device that has an admin-default channel map.
+
+        Each entry has the v63 identity tuple, the current ``mapping`` dict
+        (channel_index → position_name), and ``last_updated_utc``. Used by
+        the admin UI in #496 to render the device list.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT vendor_id, product_id, serial, usb_port_path,"
+            " channel_index, position_name, created_utc"
+            " FROM channel_map"
+            " WHERE audio_session_id IS NULL"
+            " ORDER BY vendor_id, product_id, serial, usb_port_path, channel_index"
+        )
+        rows = await cur.fetchall()
+        grouped: dict[tuple[int, int, str, str], dict[str, Any]] = {}
+        for r in rows:
+            key = (r["vendor_id"], r["product_id"], r["serial"], r["usb_port_path"])
+            entry = grouped.setdefault(
+                key,
+                {
+                    "vendor_id": r["vendor_id"],
+                    "product_id": r["product_id"],
+                    "serial": r["serial"],
+                    "usb_port_path": r["usb_port_path"],
+                    "mapping": {},
+                    "last_updated_utc": r["created_utc"],
+                },
+            )
+            entry["mapping"][r["channel_index"]] = r["position_name"]
+            if r["created_utc"] > entry["last_updated_utc"]:
+                entry["last_updated_utc"] = r["created_utc"]
+        return list(grouped.values())
+
+    async def insert_transcript_segments(
+        self, transcript_id: int, segments: list[dict[str, Any]]
+    ) -> None:
+        """Bulk-insert relational transcript segments with channel tags."""
+        db = self._conn()
+        for seg in segments:
+            await db.execute(
+                "INSERT INTO transcript_segments"
+                " (transcript_id, segment_index, start_time, end_time,"
+                "  text, speaker, channel_index, position_name)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    transcript_id,
+                    seg["segment_index"],
+                    seg["start_time"],
+                    seg["end_time"],
+                    seg["text"],
+                    seg.get("speaker"),
+                    seg.get("channel_index"),
+                    seg.get("position_name"),
+                ),
+            )
+        await db.commit()
+
+    async def list_transcript_segments(self, transcript_id: int) -> list[dict[str, Any]]:
+        """Return relational transcript segments for a transcript, ordered."""
+        cur = await self._read_conn().execute(
+            "SELECT id, transcript_id, segment_index, start_time, end_time,"
+            " text, speaker, channel_index, position_name"
+            " FROM transcript_segments WHERE transcript_id=?"
+            " ORDER BY segment_index",
+            (transcript_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def log_voice_consent_ack(
+        self,
+        *,
+        user_id: int | None,
+        position_name: str,
+        device: dict[str, Any] | None = None,
+    ) -> int:
+        """Record that a user acknowledged voice-biometric consent for a position.
+
+        Writes a structured entry into the existing audit_log under the
+        ``voice_consent_ack`` action so the data licensing review trail covers
+        per-position diarisation. ``device`` may carry vendor/product/serial/
+        port_path so the acknowledgement can be tied to a physical mic.
+        """
+        import json as _json
+
+        payload: dict[str, Any] = {"position": position_name}
+        if device is not None:
+            payload["device"] = device
+        return await self.log_action(
+            "voice_consent_ack",
+            detail=_json.dumps(payload, sort_keys=True),
+            user_id=user_id,
+        )
+
+    # ------------------------------------------------------------------
     # Device API keys (#423)
     # ------------------------------------------------------------------
 
@@ -5770,6 +6094,197 @@ class Storage:
         await db.commit()
         logger.info("Audio session {} deleted", audio_session_id)
         return file_path
+
+    # ------------------------------------------------------------------
+    # Per-channel audio deletion (#462 pt.7 / #499)
+    # ------------------------------------------------------------------
+
+    async def delete_audio_channel(
+        self,
+        audio_session_id: int,
+        *,
+        channel_index: int,
+        user_id: int | None = None,
+        reason: str | None = None,
+        ip_address: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        """Atomically delete one channel's audio + transcript + channel_map.
+
+        Executes the per-channel data-licensing deletion right for a single
+        position in a multi-channel recording:
+
+        * Zero out ``channel_index`` in the WAV on disk (preserves channel
+          count so remaining channels keep their indices).
+        * Delete all ``transcript_segments`` rows tagged with that channel
+          for this session's transcript(s).
+        * Delete the matching ``channel_map`` row(s) for this session.
+        * Write an ``audio_channel_delete`` audit log entry.
+
+        The WAV rewrite is staged via a sibling ``.tmpNNN`` file and swapped
+        with ``os.replace`` only after all DB mutations succeed; any failure
+        rolls back the DB and leaves the original WAV untouched.
+        """
+        import os
+        import tempfile
+
+        import soundfile as sf
+
+        row = await self.get_audio_session_row(audio_session_id)
+        if row is None:
+            raise ValueError(f"audio session {audio_session_id} not found")
+
+        # Sibling-card dispatch (#509 chunk 4): when the target belongs to a
+        # capture group, "delete channel N" means "delete the sibling with
+        # capture_ordinal=N" — each sibling is its own mono WAV + transcript
+        # + channel_map row, so the data-licensing deletion right reduces to
+        # a full-sibling removal rather than zeroing a channel in a file.
+        if row.get("capture_group_id"):
+            await self._delete_sibling_by_ordinal(
+                row,
+                channel_index=channel_index,
+                user_id=user_id,
+                reason=reason,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return
+
+        channels = int(row.get("channels") or 0)
+        if channel_index < 0 or channel_index >= channels:
+            raise ValueError(
+                f"channel_index {channel_index} out of range for {channels}-channel session"
+            )
+        wav_path = Path(row["file_path"])
+        if not wav_path.exists():
+            raise FileNotFoundError(f"audio file missing: {wav_path}")
+
+        # Stage the zeroed WAV into a sibling tmp file. soundfile preserves
+        # samplerate/subtype via sf.info.
+        data, sr = sf.read(str(wav_path), always_2d=True)
+        info = sf.info(str(wav_path))
+        if data.shape[1] != channels:
+            raise RuntimeError(f"WAV channel count {data.shape[1]} != DB channels {channels}")
+        data[:, channel_index] = 0
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=wav_path.name + ".", suffix=".tmp", dir=str(wav_path.parent)
+        )
+        os.close(fd)
+        tmp_path = Path(tmp_name)
+        try:
+            sf.write(str(tmp_path), data, sr, format=info.format, subtype=info.subtype)
+
+            db = self._conn()
+            try:
+                await db.execute(
+                    "DELETE FROM transcript_segments"
+                    " WHERE channel_index = ?"
+                    "   AND transcript_id IN"
+                    "       (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+                    (channel_index, audio_session_id),
+                )
+                await db.execute(
+                    "DELETE FROM channel_map WHERE audio_session_id = ? AND channel_index = ?",
+                    (audio_session_id, channel_index),
+                )
+                detail = json.dumps(
+                    {
+                        "audio_session_id": audio_session_id,
+                        "channel_index": channel_index,
+                        "position_name": (
+                            await self._channel_position_name(audio_session_id, channel_index)
+                        ),
+                        "reason": reason,
+                    }
+                )
+                await self.log_action(
+                    "audio_channel_delete",
+                    detail=detail,
+                    user_id=user_id,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+                os.replace(str(tmp_path), str(wav_path))
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        except Exception:
+            if tmp_path.exists():
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+            raise
+        logger.info(
+            "Audio channel deleted: session={} channel={}",
+            audio_session_id,
+            channel_index,
+        )
+
+    async def _delete_sibling_by_ordinal(
+        self,
+        row: dict[str, Any],
+        *,
+        channel_index: int,
+        user_id: int | None,
+        reason: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Sibling-mode branch of ``delete_audio_channel`` (#509 chunk 4).
+
+        Resolves the sibling whose ``capture_ordinal`` matches
+        ``channel_index`` within the same capture group, deletes its
+        audio_sessions row (cascades to transcripts, transcript_segments
+        and channel_map via FK), unlinks its WAV file from disk, and
+        writes an ``audio_channel_delete`` audit entry tagged
+        ``sibling_mode=True``.
+        """
+        group_id = str(row["capture_group_id"])
+        siblings = await self.list_capture_group_siblings(group_id)
+        target = next((s for s in siblings if int(s["capture_ordinal"]) == channel_index), None)
+        if target is None:
+            raise ValueError(f"no sibling with capture_ordinal={channel_index} in group {group_id}")
+        sibling_id = int(target["id"])
+        position_name = await self._channel_position_name(sibling_id, 0)
+        wav_path_str = await self.delete_audio_session(sibling_id)
+        if wav_path_str:
+            p = Path(wav_path_str)
+            if p.exists():
+                with contextlib.suppress(OSError):
+                    p.unlink()
+        await self.log_action(
+            "audio_channel_delete",
+            detail=json.dumps(
+                {
+                    "sibling_mode": True,
+                    "capture_group_id": group_id,
+                    "channel_index": channel_index,
+                    "deleted_audio_session_id": sibling_id,
+                    "position_name": position_name,
+                    "reason": reason,
+                }
+            ),
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        logger.info(
+            "Sibling audio deleted: group={} ordinal={} audio_session_id={}",
+            group_id,
+            channel_index,
+            sibling_id,
+        )
+
+    async def _channel_position_name(self, audio_session_id: int, channel_index: int) -> str | None:
+        """Look up the stored position name for a channel (may be None)."""
+        cur = await self._read_conn().execute(
+            "SELECT position_name FROM channel_map"
+            " WHERE audio_session_id = ? AND channel_index = ?",
+            (audio_session_id, channel_index),
+        )
+        r = await cur.fetchone()
+        return r["position_name"] if r else None
 
     # ------------------------------------------------------------------
     # Photo cleanup on note deletion (#205)

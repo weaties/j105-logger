@@ -441,6 +441,48 @@ async def export_json(
 
 
 # ---------------------------------------------------------------------------
+# WAV export — multi-channel preservation (#462 pt.7 / #499)
+# ---------------------------------------------------------------------------
+
+
+async def export_wav(
+    storage: Storage,
+    audio_session_id: int,
+    output_path: str | Path,
+) -> int:
+    """Export a session's recorded WAV verbatim, preserving all channels.
+
+    Audio files on disk are already written as multi-channel PCM by
+    ``audio.py``; this export path must never downmix or flatten them, so
+    external tools can keep per-position isolation.
+
+    Returns the channel count of the exported file.
+    """
+    import shutil
+
+    import soundfile as sf
+
+    row = await storage.get_audio_session_row(audio_session_id)
+    if row is None:
+        raise ValueError(f"audio session {audio_session_id} not found")
+    src = Path(row["file_path"])
+    if not src.exists():
+        raise FileNotFoundError(f"source WAV missing: {src}")
+
+    dst = Path(output_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+
+    info = sf.info(str(dst))
+    expected = int(row["channels"] or 0)
+    if expected and info.channels != expected:
+        dst.unlink(missing_ok=True)
+        raise RuntimeError(f"exported WAV channel count {info.channels} != expected {expected}")
+    logger.info("WAV export: session={} channels={} → {}", audio_session_id, info.channels, dst)
+    return int(info.channels)
+
+
+# ---------------------------------------------------------------------------
 # Dispatch by extension
 # ---------------------------------------------------------------------------
 
