@@ -47,6 +47,24 @@ _KELVIN_OFFSET: float = 273.15
 SK_SOURCE_ADDR: int = 0  # no CAN source address for SK-originated records
 
 
+def _source_addr_for(src: str | None) -> int:
+    """Stable int hash of a Signal K $source string, fits in a SQLite INTEGER.
+
+    Multiple GPS antennas on a NMEA 2000 bus all publish navigation.position;
+    Signal K forwards each delta with its own $source label
+    (e.g. "n2k.0.130577.0" vs "n2k.1.43.0"). Without preserving that label
+    every SK record collapses to source_addr=0 and the consumers can't tell
+    which antenna an individual fix came from. Hash to a positive int31 so
+    SQLite stores it as a plain integer and tests can compare equality.
+    """
+    if not src:
+        return SK_SOURCE_ADDR
+    h = 0
+    for ch in src:
+        h = (h * 131 + ord(ch)) & 0x7FFFFFFF
+    return h or 1  # avoid colliding with SK_SOURCE_ADDR=0
+
+
 @dataclass
 class SKReaderConfig:
     """Configuration for the Signal K WebSocket reader.
@@ -204,6 +222,20 @@ def process_delta(
         except (ValueError, AttributeError):
             ts = datetime.now(UTC)
 
+        # Per-update Signal K source label (e.g. "n2k.0.130577.0"). Hashed
+        # to an int so position rows from different physical GPS antennas
+        # land on distinct source_addr values rather than all collapsing
+        # to 0. Other record types still use SK_SOURCE_ADDR — the source
+        # ambiguity only mattered for positions in practice. Some Signal K
+        # versions expose the label under "$source", others under
+        # "source.label"; check both.
+        src_label: str | None = update.get("$source")
+        if not src_label:
+            nested = update.get("source")
+            if isinstance(nested, dict):
+                src_label = nested.get("label")
+        update_source_addr = _source_addr_for(src_label)
+
         for entry in update.get("values", []):
             path: str = entry.get("path", "")
             value: Any = entry.get("value")
@@ -220,7 +252,7 @@ def process_delta(
                     records.append(
                         PositionRecord(
                             PGN_POSITION_RAPID,
-                            SK_SOURCE_ADDR,
+                            update_source_addr,
                             ts,
                             float(value["latitude"]),
                             float(value["longitude"]),

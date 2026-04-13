@@ -94,6 +94,40 @@ class TestPathConversions:
         assert isinstance(rec, PositionRecord)
         assert rec.latitude_deg == pytest.approx(41.79)
         assert rec.longitude_deg == pytest.approx(-71.87)
+        # No $source on the delta — position falls back to the SK constant
+        # so existing rows in the DB stay comparable.
+        assert rec.source_addr == SK_SOURCE_ADDR
+
+    def test_position_distinct_source_addr_per_signalk_source(self) -> None:
+        """Two physical GPS antennas alternating on the bus must end up in
+        rows with different source_addr values, so downstream consumers can
+        deduplicate or filter by source. Regression for the stair-step
+        track artifact found on corvopi-tst1.
+        """
+        buf: dict[str, float] = {}
+        pos = {"latitude": 41.79, "longitude": -71.87}
+
+        def delta_with_source(src: str) -> str:
+            return json.dumps(
+                {
+                    "context": "vessels.self",
+                    "updates": [
+                        {
+                            "$source": src,
+                            "timestamp": _TS,
+                            "values": [{"path": "navigation.position", "value": pos}],
+                        }
+                    ],
+                }
+            )
+
+        rec_a = process_delta(delta_with_source("n2k.0.130577.0"), buf)[0]
+        rec_b = process_delta(delta_with_source("n2k.1.43.0"), buf)[0]
+        assert isinstance(rec_a, PositionRecord)
+        assert isinstance(rec_b, PositionRecord)
+        assert rec_a.source_addr != rec_b.source_addr
+        assert rec_a.source_addr != SK_SOURCE_ADDR
+        assert rec_b.source_addr != SK_SOURCE_ADDR
 
     def test_temperature_kelvin_to_celsius(self) -> None:
         buf: dict[str, float] = {}

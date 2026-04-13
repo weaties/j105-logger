@@ -396,14 +396,12 @@ async function loadTrack() {
   // cursor continues to interpolate against the raw latLngs so the
   // boat position itself isn't lagged by the smoothing.
   const trackColor = cssVar('--warning') || '#fbbf24';
-  // The SK positions table is ~10 Hz, vs Vakaros at 1 Hz — the dense
-  // vertex count is what makes the SK dashes render as chevrons at
-  // zoom. Decimate to ~1 Hz for display (keeps Vakaros-like vertex
-  // density) and match the Vakaros dash style so the two tracks read
-  // the same way. Raw latLngs stay on _trackData.latLngs for the
-  // cursor so playback position isn't decimated.
-  const smoothedLatLngs = _decimateLatLngs(latLngs, timestamps, 1000);
-  const line = L.polyline(smoothedLatLngs, {
+  // The /track endpoint now returns 1 Hz mean-averaged positions (one
+  // row per second across all GPS sources), so we don't need any
+  // frontend smoothing or decimation — the polyline already matches
+  // Vakaros's vertex density. Just style it with the same dash pattern
+  // so the two tracks read the same way.
+  const line = L.polyline(latLngs, {
     color: trackColor,
     weight: 3,
     opacity: 0.9,
@@ -432,7 +430,7 @@ async function loadTrack() {
   });
   const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
-  _trackData = {latLngs, displayLatLngs: smoothedLatLngs, timestamps, line, cursor};
+  _trackData = {latLngs, timestamps, line, cursor};
 
   // Map is a consumer: render the cursor at the requested UTC. We use a
   // continuous interpolated position (not the nearest sample index) so the
@@ -689,47 +687,6 @@ function _nearestIndex(latlng) {
     if (d < minDist) { minDist = d; nearIdx = i; }
   }
   return nearIdx;
-}
-
-// Decimate a lat/lng series by timestamp so we keep at most one point
-// per intervalMs. Always keeps the first and last points so the polyline
-// still covers the full extent of the GPS track.
-function _decimateLatLngs(latLngs, timestamps, intervalMs) {
-  if (!latLngs || latLngs.length < 2) return latLngs || [];
-  if (!timestamps || timestamps.length !== latLngs.length) return latLngs;
-  const out = [latLngs[0]];
-  let lastT = timestamps[0].getTime();
-  for (let i = 1; i < latLngs.length - 1; i++) {
-    const t = timestamps[i].getTime();
-    if (t - lastT >= intervalMs) {
-      out.push(latLngs[i]);
-      lastT = t;
-    }
-  }
-  out.push(latLngs[latLngs.length - 1]);
-  return out;
-}
-
-// Centered moving average over lat/lng arrays. half=2 means a 5-point
-// window (i-2..i+2). Leaves the first/last few points progressively less
-// smoothed rather than chopping them off, so the polyline still covers
-// the full extent of the GPS track.
-function _smoothLatLngs(latLngs, half) {
-  if (!latLngs || latLngs.length < 3) return latLngs || [];
-  const out = new Array(latLngs.length);
-  const n = latLngs.length;
-  for (let i = 0; i < n; i++) {
-    const lo = Math.max(0, i - half);
-    const hi = Math.min(n - 1, i + half);
-    let sLat = 0, sLng = 0, c = 0;
-    for (let j = lo; j <= hi; j++) {
-      sLat += latLngs[j][0];
-      sLng += latLngs[j][1];
-      c++;
-    }
-    out[i] = [sLat / c, sLng / c];
-  }
-  return out;
 }
 
 function _moveCursorToIndex(idx) {
@@ -5201,9 +5158,6 @@ function _drawGradeSegments() {
   // top of the base track. We walk the sample positions and mark each one
   // with the grade that covers it, then coalesce consecutive same-grade runs.
   const timestamps = _trackData.timestamps;
-  // Grade overlay walks positions in lockstep with timestamps, so we need
-  // the raw (non-decimated) latLngs — displayLatLngs has been thinned to
-  // 1 Hz for the base polyline and would lose alignment here.
   const latLngs = _trackData.latLngs;
   if (!timestamps || timestamps.length < 2) return;
   const gradesAtIdx = new Array(timestamps.length);

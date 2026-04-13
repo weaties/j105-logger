@@ -319,10 +319,34 @@ async def api_session_track(
     if not positions:
         return JSONResponse({"type": "FeatureCollection", "features": []})
 
-    coords = [[r["longitude_deg"], r["latitude_deg"]] for r in positions]
-    timestamps = [
-        t if "+" in t or t.endswith("Z") else t + "Z" for r in positions if (t := r["ts"])
-    ]
+    # Per-second mean averaging. The SK reader currently records every fix
+    # with source_addr=0 even when Signal K is multiplexing two physical
+    # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
+    # Bucketing to 1Hz and averaging within the bucket collapses the
+    # zig-zag into a smooth single line midway between the antennas — what
+    # you'd get from a single GPS anyway. Also gives the frontend a
+    # naturally Vakaros-density polyline so its dash style reads cleanly.
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    bucket_order: list[str] = []
+    for r in positions:
+        ts_raw = r["ts"]
+        if not ts_raw:
+            continue
+        key = str(ts_raw)[:19]  # truncate to whole-second precision
+        if key not in buckets:
+            buckets[key] = []
+            bucket_order.append(key)
+        buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+    coords: list[list[float]] = []
+    timestamps: list[str] = []
+    for key in bucket_order:
+        rows = buckets[key]
+        avg_lat = sum(p[0] for p in rows) / len(rows)
+        avg_lng = sum(p[1] for p in rows) / len(rows)
+        coords.append([avg_lng, avg_lat])
+        timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
+
     feature = {
         "type": "Feature",
         "geometry": {"type": "LineString", "coordinates": coords},
