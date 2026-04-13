@@ -3657,23 +3657,50 @@ function _addManeuverMarkers() {
 
   _maneuvers.forEach((m, idx) => {
     if (m.lat == null || m.lon == null) return;
-    const color = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    // Outer ring colored by maneuver type so the icon still tells you what
+    // it is at a glance; inner fill colored by rank (good/avg/bad) so the
+    // boat's track tells a debrief story without opening every popup.
+    const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    const fillColor = m.rank ? (_RANK_COLORS[m.rank] || ringColor) : ringColor;
     const marker = L.circleMarker([m.lat, m.lon], {
       radius: 7,
-      color: color,
-      fillColor: color,
-      fillOpacity: 0.85,
+      color: ringColor,
+      fillColor: fillColor,
+      fillOpacity: 0.9,
       weight: 2,
-    })
-      .addTo(_map)
-      .bindPopup(
-        '<b style="color:' + color + '">' + m.type + '</b><br>'
-        + fmtTime(m.ts)
-        + (m.duration_sec != null ? '<br>' + m.duration_sec.toFixed(1) + ' s' : '')
-        + (m.loss_kts != null ? '<br>' + m.loss_kts.toFixed(2) + ' kt loss' : '')
-      );
+    });
+    marker.bindPopup(_renderManeuverPopup(m));
     marker.on('click', function() { highlightManeuver(idx); });
+    if (_showManeuverMarkers) marker.addTo(_map);
     _maneuverMarkers.push(marker);
+  });
+}
+
+function _renderManeuverPopup(m) {
+  const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const rankBadge = m.rank
+    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '">● ' + m.rank + '</span>'
+    : '';
+  const lines = [
+    '<b style="color:' + ringColor + ';text-transform:capitalize">' + (m.type || 'event') + '</b> ' + rankBadge,
+    fmtTime(m.ts),
+  ];
+  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s');
+  if (m.turn_angle_deg != null) lines.push(Math.round(m.turn_angle_deg) + '° turn');
+  if (m.entry_bsp != null && m.exit_bsp != null) {
+    lines.push('BSP ' + m.entry_bsp.toFixed(1) + ' → ' + m.exit_bsp.toFixed(1) + ' kt');
+  }
+  if (m.loss_kts != null) lines.push(m.loss_kts.toFixed(2) + ' kt loss');
+  if (m.distance_loss_m != null) lines.push(Math.round(m.distance_loss_m) + ' m loss');
+  return lines.join('<br>');
+}
+
+let _showManeuverMarkers = true;
+function _setManeuverMarkersVisible(visible) {
+  _showManeuverMarkers = !!visible;
+  _maneuverMarkers.forEach(m => {
+    if (_showManeuverMarkers) m.addTo(_map);
+    else m.remove();
   });
 }
 
@@ -4949,6 +4976,18 @@ let _gradeSegments = []; // [L.polyline] overlays when polar view is active
 let _gradeViewActive = false;
 let _followBoat = false;  // when true, map re-centers on the boat each tick
 
+// Course overlay state (#473): marks, start line, finish line, and a pair of
+// laylines from the current cursor position. All Leaflet layers, all owned
+// by _courseOverlay so a single toggle can show/hide them together.
+const _courseOverlay = {
+  visible: true,
+  marks: [],          // raw [{key,name,lat,lon}] from /course-overlay
+  markLayers: [],     // [L.layer]
+  startLine: null,    // L.polyline
+  finishLine: null,   // L.polyline
+  layline: null,      // L.layerGroup (port + starboard)
+};
+
 const _GRADE_COLORS = {
   red: '#d64545',
   yellow: '#d6a745',
@@ -5193,6 +5232,152 @@ function _setGradeViewActive(active) {
   }
 }
 
+async function _loadCourseOverlay() {
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/course-overlay');
+    if (!r.ok) return;
+    const data = await r.json();
+    _courseOverlay.marks = (data.marks || []).filter(m => m.lat != null && m.lon != null);
+    _drawCourseMarks();
+    if (data.start_line) _drawStartLine(data.start_line);
+    // Register laylines as a clock consumer so they update every tick/seek
+    registerSurface('layline', function(utc) { _drawLaylines(utc); });
+    if (_playClock.positionUtc) _drawLaylines(_playClock.positionUtc);
+    _setCourseOverlayVisible(_courseOverlay.visible);
+  } catch (e) {
+    // Non-fatal — replay still works without the course overlay.
+  }
+}
+
+function _drawCourseMarks() {
+  for (const layer of _courseOverlay.markLayers) {
+    try { _map.removeLayer(layer); } catch (e) { /* swallow */ }
+  }
+  _courseOverlay.markLayers = [];
+  if (!_map) return;
+  for (const m of _courseOverlay.marks) {
+    // Filled circle marker with the mark name as a tooltip — distinct from
+    // the start/finish dots already on the track polyline.
+    const layer = L.circleMarker([m.lat, m.lon], {
+      radius: 8,
+      color: '#1f2937',
+      weight: 2,
+      fillColor: '#facc15',
+      fillOpacity: 0.95,
+    }).bindTooltip(m.name || m.key || 'mark', {
+      permanent: true,
+      direction: 'right',
+      offset: [10, 0],
+      className: 'wf-mark-label',
+    });
+    if (_courseOverlay.visible) layer.addTo(_map);
+    _courseOverlay.markLayers.push(layer);
+  }
+}
+
+function _drawStartLine(line) {
+  if (!_map || !line || !line.pin || !line.boat) return;
+  if (_courseOverlay.startLine) {
+    try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ }
+  }
+  // Two dashed orange poly segments terminated with circles for pin and boat.
+  const pinLatLng = [line.pin[0], line.pin[1]];
+  const boatLatLng = [line.boat[0], line.boat[1]];
+  const layer = L.layerGroup([
+    L.polyline([pinLatLng, boatLatLng], {
+      color: '#fb923c',
+      weight: 3,
+      opacity: 0.95,
+      dashArray: '6, 6',
+      lineCap: 'butt',
+    }),
+    L.circleMarker(pinLatLng, {
+      radius: 5, color: '#fb923c', weight: 2, fillColor: '#fb923c', fillOpacity: 1,
+    }).bindTooltip('pin', {permanent: false}),
+    L.circleMarker(boatLatLng, {
+      radius: 5, color: '#fb923c', weight: 2, fillColor: '#fb923c', fillOpacity: 1,
+    }).bindTooltip('committee', {permanent: false}),
+  ]);
+  _courseOverlay.startLine = layer;
+  if (_courseOverlay.visible) layer.addTo(_map);
+}
+
+// Compute laylines from the current boat position. A layline is the line you
+// can sail on a single tack to fetch a windward mark — drawn at TWA-tacking
+// angle off the wind direction. v1 uses a fixed 45° tacking angle (close to
+// most masthead boats) and projects 800 m on each tack from the cursor. The
+// upwind direction comes from the boat's TWA + HDG sample, so the layline
+// rotates as the wind shifts during the race.
+function _drawLaylines(utc) {
+  if (!_map) return;
+  if (_courseOverlay.layline) {
+    try { _map.removeLayer(_courseOverlay.layline); } catch (e) { /* swallow */ }
+    _courseOverlay.layline = null;
+  }
+  if (!_courseOverlay.visible) return;
+  if (!_trackData || !_trackData.latLngs.length) return;
+  // Use the smoothed cursor position (interpolated) so laylines anchor on the
+  // boat's continuous path, not on the nearest discrete fix.
+  const idx = _indexForUtc(utc);
+  const at = _trackData.latLngs[idx];
+  if (!at) return;
+  const sample = (typeof _binarySearchSample === 'function')
+    ? _binarySearchSample(utc.getTime())
+    : null;
+  if (!sample || sample.twa == null || sample.hdg == null) return;
+  // True wind direction in degrees from north. TWA is signed (port negative,
+  // starboard positive); TWD = HDG + TWA gives "the direction the wind is
+  // going to" — for sailing we want where it's coming from, so add 180°.
+  const twd = ((sample.hdg + sample.twa) % 360 + 360) % 360;
+  const windFromBearing = (twd + 180) % 360;
+  const tackingAngle = 45;
+  const portBearing = (windFromBearing + tackingAngle + 360) % 360;
+  const stbdBearing = (windFromBearing - tackingAngle + 360) % 360;
+  const distM = 800;
+  const portEnd = _projectLatLng(at, portBearing, distM);
+  const stbdEnd = _projectLatLng(at, stbdBearing, distM);
+  const opts = {color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4, 6', lineCap: 'butt'};
+  const group = L.layerGroup([
+    L.polyline([at, portEnd], opts),
+    L.polyline([at, stbdEnd], opts),
+  ]);
+  group.addTo(_map);
+  _courseOverlay.layline = group;
+}
+
+// Project a lat/lng forward by `distM` meters along true bearing `bearingDeg`.
+// Equirectangular approximation — fine at race-course scale (sub-km).
+function _projectLatLng(latLng, bearingDeg, distM) {
+  const lat = Array.isArray(latLng) ? latLng[0] : latLng.lat;
+  const lng = Array.isArray(latLng) ? latLng[1] : latLng.lng;
+  const R = 6371000;
+  const br = (bearingDeg * Math.PI) / 180;
+  const dLat = (distM * Math.cos(br)) / R;
+  const dLng = (distM * Math.sin(br)) / (R * Math.cos((lat * Math.PI) / 180));
+  return [lat + (dLat * 180) / Math.PI, lng + (dLng * 180) / Math.PI];
+}
+
+function _setCourseOverlayVisible(visible) {
+  _courseOverlay.visible = !!visible;
+  for (const layer of _courseOverlay.markLayers) {
+    if (_courseOverlay.visible) layer.addTo(_map);
+    else { try { _map.removeLayer(layer); } catch (e) { /* swallow */ } }
+  }
+  if (_courseOverlay.startLine) {
+    if (_courseOverlay.visible) _courseOverlay.startLine.addTo(_map);
+    else { try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ } }
+  }
+  // Laylines are drawn on every tick, so visibility is enforced by
+  // _drawLaylines bailing out — but also clear the current layer so they
+  // disappear immediately when the user toggles off.
+  if (!_courseOverlay.visible && _courseOverlay.layline) {
+    try { _map.removeLayer(_courseOverlay.layline); } catch (e) { /* swallow */ }
+    _courseOverlay.layline = null;
+  } else if (_courseOverlay.visible && _playClock.positionUtc) {
+    _drawLaylines(_playClock.positionUtc);
+  }
+}
+
 async function _loadReplayData() {
   try {
     const r = await fetch('/api/sessions/' + SESSION_ID + '/replay');
@@ -5263,8 +5448,21 @@ function _wireReplayControls() {
       if (latLng && _map) _map.panTo(latLng, {animate: true});
     }
   });
+  const maneuverToggle = document.getElementById('toggle-maneuver-markers');
+  if (maneuverToggle) maneuverToggle.addEventListener('change', (e) => {
+    _setManeuverMarkersVisible(e.target.checked);
+  });
+  const courseToggle = document.getElementById('toggle-course-overlay');
+  if (courseToggle) courseToggle.addEventListener('change', (e) => {
+    _setCourseOverlayVisible(e.target.checked);
+  });
 
-  // Keyboard shortcuts: space toggles play, arrows seek ±5s
+  const prevBtn = document.getElementById('replay-prev-event-btn');
+  if (prevBtn) prevBtn.addEventListener('click', () => _stepEvent(-1));
+  const nextBtn = document.getElementById('replay-next-event-btn');
+  if (nextBtn) nextBtn.addEventListener('click', () => _stepEvent(+1));
+
+  // Keyboard shortcuts: space toggles play, arrows seek ±5s, [/] step events
   document.addEventListener('keydown', (e) => {
     if (!_replayStart) return;
     const tag = (e.target && e.target.tagName) || '';
@@ -5281,8 +5479,58 @@ function _wireReplayControls() {
       ));
       _seekTo(next, 'replay');
       _updateReplayControls();
+    } else if (e.code === 'BracketLeft') {
+      e.preventDefault();
+      _stepEvent(-1);
+    } else if (e.code === 'BracketRight') {
+      e.preventDefault();
+      _stepEvent(+1);
     }
   });
+}
+
+// Build a sorted list of replay-stepable events from the loaded maneuvers.
+// Filtered to {tack, gybe, rounding, start} and de-duplicated by timestamp
+// so the synthetic Vakaros race-start (already injected into _maneuvers)
+// doesn't double up if a real maneuver lands at the same instant.
+function _replayEventList() {
+  if (!_maneuvers || !_maneuvers.length) return [];
+  const out = [];
+  const seen = new Set();
+  for (const m of _maneuvers) {
+    if (!m || !m.ts) continue;
+    if (m.type && !['tack', 'gybe', 'rounding', 'start'].includes(m.type)) continue;
+    const tsStr = (m.ts.endsWith('Z') || m.ts.includes('+')) ? m.ts : m.ts + 'Z';
+    const tMs = new Date(tsStr).getTime();
+    if (isNaN(tMs)) continue;
+    if (seen.has(tMs)) continue;
+    seen.add(tMs);
+    out.push({ts: tMs, type: m.type});
+  }
+  out.sort((a, b) => a.ts - b.ts);
+  return out;
+}
+
+function _stepEvent(direction) {
+  const events = _replayEventList();
+  if (!events.length) return;
+  const cursor = (_playClock.positionUtc && _playClock.positionUtc.getTime()) || (_replayStart && _replayStart.getTime()) || events[0].ts;
+  // 250 ms tolerance so "next" doesn't land on the event we're already on.
+  const tol = 250;
+  let target = null;
+  if (direction > 0) {
+    for (const e of events) {
+      if (e.ts > cursor + tol) { target = e.ts; break; }
+    }
+    if (target == null) target = events[events.length - 1].ts;
+  } else {
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].ts < cursor - tol) { target = events[i].ts; break; }
+    }
+    if (target == null) target = events[0].ts;
+  }
+  _seekTo(new Date(target), 'replay');
+  _updateReplayControls();
 }
 
 // Hook into init() path without rewriting it: kick off replay load once the
@@ -5293,6 +5541,7 @@ function _wireReplayControls() {
 document.addEventListener('DOMContentLoaded', function() {
   _wireReplayControls();
   _loadReplayData();
+  _loadCourseOverlay();
 });
 
 // ---------------------------------------------------------------------------

@@ -395,6 +395,61 @@ async def api_session_vakaros_overlay(
     return JSONResponse({"matched": True, **overlay})
 
 
+@router.get("/api/sessions/{session_id}/course-overlay")
+@limiter.limit("30/minute")
+async def api_session_course_overlay(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return course marks + start/finish line geometry for the replay map.
+
+    The session detail page draws this as a single "Marks & lines" layer so
+    the user can see where they were going relative to the course. Synthesized
+    races have explicit course marks in synth_course_marks; real races may have
+    a Vakaros-derived start line. Both are merged into one response so the
+    frontend can render with a single fetch.
+    """
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+
+    marks_rows = await storage.get_synth_course_marks(session_id)
+    marks = [
+        {
+            "key": m["mark_key"],
+            "name": m["mark_name"],
+            "lat": m["lat"],
+            "lon": m["lon"],
+        }
+        for m in marks_rows
+        if m.get("lat") is not None and m.get("lon") is not None
+    ]
+
+    start_line: dict[str, Any] | None = None
+    overlay = await storage.get_vakaros_overlay_for_race(session_id)
+    if overlay and overlay.get("line"):
+        line = overlay["line"]
+        if line.get("pin") and line.get("boat"):
+            start_line = {
+                "pin": line["pin"],
+                "boat": line["boat"],
+                "length_m": line.get("length_m"),
+                "bearing_deg": line.get("bearing_deg"),
+            }
+
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "marks": marks,
+            "start_line": start_line,
+            "finish_line": None,  # not yet captured separately
+        }
+    )
+
+
 @router.get("/api/sessions/{session_id}/detail")
 async def api_session_detail(
     request: Request,

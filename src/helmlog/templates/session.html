@@ -102,6 +102,8 @@
   <div id="replay-toggle-row" style="display:none;margin-bottom:8px;font-size:.78rem;color:var(--text-secondary)">
     <label style="margin-right:12px"><input type="checkbox" id="toggle-polar-grades"> Color track by polar %</label>
     <label style="margin-right:12px"><input type="checkbox" id="toggle-follow-boat"> Keep boat centered</label>
+    <label style="margin-right:12px"><input type="checkbox" id="toggle-maneuver-markers" checked> Maneuvers</label>
+    <label style="margin-right:12px"><input type="checkbox" id="toggle-course-overlay" checked> Marks &amp; lines</label>
     <span id="polar-legend" style="display:none;margin-left:6px">
       <span style="display:inline-block;width:10px;height:10px;background:#d64545;vertical-align:middle;margin-right:2px"></span>&lt;90%
       <span style="display:inline-block;width:10px;height:10px;background:#d6a745;vertical-align:middle;margin:0 2px 0 8px"></span>90–97%
@@ -153,7 +155,9 @@
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button id="replay-prev-event-btn" type="button" title="Previous event ([)" aria-label="Previous event" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;width:30px;height:30px;font-size:.85rem;cursor:pointer">&#9198;</button>
       <button id="replay-play-btn" type="button" aria-label="Play/pause" style="background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;width:34px;height:30px;font-size:1rem;cursor:pointer">&#9654;</button>
+      <button id="replay-next-event-btn" type="button" title="Next event (])" aria-label="Next event" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;width:30px;height:30px;font-size:.85rem;cursor:pointer">&#9197;</button>
       <span id="replay-time" style="font-family:monospace;font-size:.78rem;color:var(--text-secondary);min-width:72px;text-align:center">00:00 / 00:00</span>
       <input type="range" id="replay-scrubber" min="0" max="1000" value="0" step="1" style="flex:1;min-width:140px">
       <select id="replay-speed" title="Playback speed" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:.78rem">
