@@ -151,14 +151,12 @@ async def _link_regatta_races_to_local_sessions(
     db: aiosqlite.Connection,
     regatta_id: int,
 ) -> int:
-    """Pair imported races to local race sessions by order within each date.
+    """Link imported races to the earliest local race session on the same date.
 
-    For each date that the regatta has imported races on:
-      1. List imported races (``regatta_id`` match) sorted by ``race_num``.
-      2. List local race-type sessions (``session_type='race'``, non-imported)
-         whose stored ``date`` matches, sorted by ``start_utc``.
-      3. Zip them: imported race N → local session N.  Extra imported races
-         or extra local sessions on the fringes are left unlinked.
+    For each date that the regatta has imported races on, every imported
+    race is linked to the earliest local race-type session recorded on
+    that date. A regatta date maps to one sailing day, so multiple
+    imported races (race 1, race 2, ...) share a single local session.
 
     Only rows with ``local_session_id IS NULL`` are updated, so manual
     links and prior matches are preserved.
@@ -166,7 +164,7 @@ async def _link_regatta_races_to_local_sessions(
     Returns the number of links written.
     """
     cur = await db.execute(
-        "SELECT id, race_num, date, local_session_id FROM races"
+        "SELECT id, date, local_session_id FROM races"
         " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'"
         " AND date IS NOT NULL",
         (regatta_id,),
@@ -175,25 +173,22 @@ async def _link_regatta_races_to_local_sessions(
     if not imported_rows:
         return 0
 
-    by_date: dict[date, list[tuple[int, int, int | None]]] = {}
+    by_date: dict[date, list[tuple[int, int | None]]] = {}
     for r in imported_rows:
         try:
-            d = date.fromisoformat(r[2])
+            d = date.fromisoformat(r[1])
         except (ValueError, TypeError):
             continue
-        by_date.setdefault(d, []).append((r[0], r[1] or 0, r[3]))
+        by_date.setdefault(d, []).append((r[0], r[2]))
 
     linked_count = 0
     for d, imported in by_date.items():
-        imported.sort(key=lambda x: x[1])  # sort by race_num
-
         local_sessions = await _list_local_race_sessions_on_date(db, d)
         if not local_sessions:
             continue
+        local_id = local_sessions[0]
 
-        for (imp_id, _race_num, existing_link), local_id in zip(
-            imported, local_sessions, strict=False
-        ):
+        for imp_id, existing_link in imported:
             if existing_link is not None:
                 continue
             await db.execute(

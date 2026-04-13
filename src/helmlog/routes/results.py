@@ -220,15 +220,25 @@ async def api_rematch_regatta(
     if not await cur.fetchone():
         raise HTTPException(404, "Regatta not found")
 
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM races"
+        " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'",
+        (regatta_id,),
+    )
+    row = await cur.fetchone()
+    races_checked = int(row[0]) if row else 0
+
     linked = await _link_regatta_races_to_local_sessions(db, regatta_id)
     await db.commit()
 
     await audit(
         request,
         "results_regatta_rematch",
-        detail=json.dumps({"regatta_id": regatta_id, "linked": linked}),
+        detail=json.dumps(
+            {"regatta_id": regatta_id, "races_checked": races_checked, "linked": linked}
+        ),
     )
-    return JSONResponse({"ok": True, "linked": linked})
+    return JSONResponse({"ok": True, "races_checked": races_checked, "linked": linked})
 
 
 @router.get("/api/results/races", response_class=JSONResponse)
