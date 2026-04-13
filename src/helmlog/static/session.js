@@ -1794,6 +1794,19 @@ function loadAudio() {
   // A "large jump" (>2 s away) is treated as a user click, so we pause any
   // currently-playing audio: it's distracting to have audio keep going from
   // a new spot just because the user clicked somewhere on the page.
+  // Track the most recently requested local position. Setting currentTime
+  // on a still-loading <audio> element is silently dropped by the browser,
+  // so we re-apply the target on 'loadedmetadata' and 'play' to guarantee
+  // the user's scrub lands when playback actually starts.
+  let _audioTargetLocal = null;
+  const _applyAudioTarget = () => {
+    if (_audioTargetLocal == null) return;
+    if (el.duration && _audioTargetLocal > el.duration) return;
+    if (Math.abs(el.currentTime - _audioTargetLocal) < 0.15) return;
+    try { el.currentTime = _audioTargetLocal; } catch (e) { /* not seekable yet */ }
+  };
+  el.addEventListener('loadedmetadata', _applyAudioTarget);
+
   registerSurface('audio', function(utc) {
     // NB: setting el.currentTime on a paused audio element is safe — it
     // doesn't start playback — so unlike the video consumer we don't need
@@ -1802,6 +1815,7 @@ function loadAudio() {
     // listening to it.
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
+    _audioTargetLocal = local;
     const delta = Math.abs(el.currentTime - local);
     if (delta < 0.15) return; // already there
     if (delta > _LARGE_JUMP_SEC && !el.paused) {
@@ -1828,6 +1842,10 @@ function loadAudio() {
   // replay play button. Fanout via timeupdate is enough to keep the map
   // cursor and gauges tracking while WAV plays on its own.
   el.addEventListener('play', function() {
+    // Re-apply any pending target seek first — if the user scrubbed before
+    // metadata loaded, the original currentTime= assignment may have been
+    // dropped, and we'd otherwise start playback from 0:00.
+    _applyAudioTarget();
     setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
   });
 }
