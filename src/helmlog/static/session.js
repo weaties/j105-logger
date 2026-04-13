@@ -5367,22 +5367,20 @@ function _drawAllLaylines() {
   const raceStartMs = (gun && gun.getTime()) || 0;
   const LAYLINE_START_GRACE_MS = 120_000;
 
-  // Collect eligible roundings first so we can measure leg lengths between
-  // them. Each entry carries ts/lat/lon plus a cached approach sample.
-  const eligible = [];
+  // Build a list of every maneuver (any type) with position + timestamp so
+  // we can find "the last straight segment the boat sailed" before each
+  // rounding — that's the leg the layline is parallel to.
+  const allEvents = [];
   for (const m of _maneuvers) {
-    if (!m || m.type !== 'rounding') continue;
-    if (m.lat == null || m.lon == null || !m.ts) continue;
+    if (!m || m.lat == null || m.lon == null || !m.ts) continue;
     const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
     const tMs = new Date(tsStr).getTime();
-    if (isNaN(tMs)) continue;
-    if (raceStartMs && tMs < raceStartMs + LAYLINE_START_GRACE_MS) continue;
-    eligible.push({m, tMs});
+    if (!isNaN(tMs)) allEvents.push({m, tMs});
   }
-  eligible.sort((a, b) => a.tMs - b.tMs);
+  allEvents.sort((a, b) => a.tMs - b.tMs);
 
-  // Boat position at race gun, used as the "leg start" for the first
-  // rounding. Falls back to the first GPS fix if no track data available.
+  // Boat position at race gun, used as the fallback "leg start" when a
+  // rounding has no prior maneuver to measure against.
   let gunPos = null;
   if (_trackData && _trackData.latLngs.length) {
     const gunIdx = raceStartMs ? _indexForUtc(new Date(raceStartMs)) : 0;
@@ -5390,8 +5388,10 @@ function _drawAllLaylines() {
   }
 
   const layers = [];
-  for (let i = 0; i < eligible.length; i++) {
-    const {m, tMs} = eligible[i];
+  for (let i = 0; i < allEvents.length; i++) {
+    const {m, tMs} = allEvents[i];
+    if (m.type !== 'rounding') continue;
+    if (raceStartMs && tMs < raceStartMs + LAYLINE_START_GRACE_MS) continue;
     // Sample from ~20s before the rounding gives the boat's approach state,
     // before the heading-change transient distorts TWA. Falls back to the
     // sample at the rounding ts if the lookback is out of range.
@@ -5405,11 +5405,21 @@ function _drawAllLaylines() {
     const windToBearing = (windFromBearing + 180) % 360;
     const at = [m.lat, m.lon];
 
-    // Layline length = distance from the previous rounding (or the boat's
-    // gun position for the first rounding) × 1.3. That leg is the one the
-    // laylines are parallel to, so scaling to it keeps short legs short
-    // and long legs long instead of always stretching across the map.
-    const prevPos = i === 0 ? gunPos : [eligible[i - 1].m.lat, eligible[i - 1].m.lon];
+    // Layline length = distance from the previous maneuver to this mark
+    // × 1.3. "Previous maneuver" (any type — tack, gybe, rounding) is the
+    // start of the last straight segment the boat sailed, which is the
+    // leg the laylines are parallel to. Scaling to it keeps short final
+    // approaches short and long ones long instead of always stretching a
+    // full-leg distance across the map.
+    let prevPos = null;
+    for (let j = i - 1; j >= 0; j--) {
+      const prev = allEvents[j];
+      if (prev.m.lat != null && prev.m.lon != null) {
+        prevPos = [prev.m.lat, prev.m.lon];
+        break;
+      }
+    }
+    if (!prevPos) prevPos = gunPos;
     const legM = prevPos ? _haversineMeters(prevPos, at) : 0;
     const laylineLen = legM > 0 ? legM * _LAYLINE_LEG_SCALE : _LAYLINE_FALLBACK_M;
 
