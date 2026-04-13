@@ -389,8 +389,15 @@ async function loadTrack() {
   // different cycle lengths prevent consistent overlap and the different
   // dash sizes read clearly even where they briefly coincide. Butt caps
   // keep the dashes sharply rectangular for that "super crisp" look.
+  //
+  // The polyline is drawn from a moving-average smoothed copy of the
+  // GPS samples. Raw 1 Hz fixes are noisy enough that the line looks
+  // fuzzy when zoomed in (see the user report of a wavy track). The
+  // cursor continues to interpolate against the raw latLngs so the
+  // boat position itself isn't lagged by the smoothing.
   const trackColor = cssVar('--warning') || '#fbbf24';
-  const line = L.polyline(latLngs, {
+  const smoothedLatLngs = _smoothLatLngs(latLngs, 2);
+  const line = L.polyline(smoothedLatLngs, {
     color: trackColor,
     weight: 3,
     opacity: 1,
@@ -419,7 +426,7 @@ async function loadTrack() {
   });
   const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
-  _trackData = {latLngs, timestamps, line, cursor};
+  _trackData = {latLngs, displayLatLngs: smoothedLatLngs, timestamps, line, cursor};
 
   // Map is a consumer: render the cursor at the requested UTC. We use a
   // continuous interpolated position (not the nearest sample index) so the
@@ -676,6 +683,28 @@ function _nearestIndex(latlng) {
     if (d < minDist) { minDist = d; nearIdx = i; }
   }
   return nearIdx;
+}
+
+// Centered moving average over lat/lng arrays. half=2 means a 5-point
+// window (i-2..i+2). Leaves the first/last few points progressively less
+// smoothed rather than chopping them off, so the polyline still covers
+// the full extent of the GPS track.
+function _smoothLatLngs(latLngs, half) {
+  if (!latLngs || latLngs.length < 3) return latLngs || [];
+  const out = new Array(latLngs.length);
+  const n = latLngs.length;
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - half);
+    const hi = Math.min(n - 1, i + half);
+    let sLat = 0, sLng = 0, c = 0;
+    for (let j = lo; j <= hi; j++) {
+      sLat += latLngs[j][0];
+      sLng += latLngs[j][1];
+      c++;
+    }
+    out[i] = [sLat / c, sLng / c];
+  }
+  return out;
 }
 
 function _moveCursorToIndex(idx) {
@@ -5147,7 +5176,9 @@ function _drawGradeSegments() {
   // top of the base track. We walk the sample positions and mark each one
   // with the grade that covers it, then coalesce consecutive same-grade runs.
   const timestamps = _trackData.timestamps;
-  const latLngs = _trackData.latLngs;
+  // Use the smoothed display path so the colored grade segments inherit
+  // the same crisp line the base polyline uses.
+  const latLngs = _trackData.displayLatLngs || _trackData.latLngs;
   if (!timestamps || timestamps.length < 2) return;
   const gradesAtIdx = new Array(timestamps.length);
   for (let i = 0; i < timestamps.length; i++) {
