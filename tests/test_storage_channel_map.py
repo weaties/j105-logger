@@ -256,6 +256,82 @@ class TestAudioSessionDeviceIdentity:
         assert row["serial"] == "ABC"
         assert row["usb_port_path"] == "1-1.2"
 
+    async def test_write_audio_session_persists_device_identity(self, storage: Storage) -> None:
+        """write_audio_session must persist vendor/product/serial/usb_port_path.
+
+        Regression guard: prior to the #514 follow-up the INSERT dropped these
+        four columns. The bug was masked in other tests because they seed
+        identity via an explicit set_audio_session_device() call after
+        write_audio_session(). This test deliberately does *not* call
+        set_audio_session_device — it only populates the AudioSession
+        dataclass, then checks the row and the admin-default channel_map
+        lookup chain both resolve.
+        """
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from helmlog.audio import AudioSession as _AudioSession
+
+        await storage.set_channel_map(
+            vendor_id=0x1234,
+            product_id=0x5678,
+            serial="ABC",
+            usb_port_path="1-1.2",
+            mapping={0: "helm", 1: "trim"},
+        )
+
+        session = _AudioSession(
+            file_path="/tmp/siblingA.wav",
+            device_name="Lavalier4",
+            start_utc=_dt.now(UTC),
+            end_utc=None,
+            sample_rate=48000,
+            channels=2,
+            vendor_id=0x1234,
+            product_id=0x5678,
+            serial="ABC",
+            usb_port_path="1-1.2",
+        )
+        session_id = await storage.write_audio_session(session)
+
+        row = await storage.get_audio_session_row(session_id)
+        assert row is not None
+        assert row["vendor_id"] == 0x1234
+        assert row["product_id"] == 0x5678
+        assert row["serial"] == "ABC"
+        assert row["usb_port_path"] == "1-1.2"
+
+        result = await storage.get_channel_map_for_audio_session(session_id)
+        assert result == {0: "helm", 1: "trim"}
+
+    async def test_write_audio_session_null_identity_when_unset(self, storage: Storage) -> None:
+        """Zero / empty identity fields on the dataclass must land as NULL.
+
+        The fix null-coalesces `session.vendor_id or None` so legacy mono /
+        built-in-mic sessions don't pollute the column with 0 / "".
+        """
+        from datetime import UTC
+        from datetime import datetime as _dt
+
+        from helmlog.audio import AudioSession as _AudioSession
+
+        session = _AudioSession(
+            file_path="/tmp/builtin.wav",
+            device_name="BuiltIn",
+            start_utc=_dt.now(UTC),
+            end_utc=None,
+            sample_rate=48000,
+            channels=1,
+        )
+        session_id = await storage.write_audio_session(session)
+
+        row = await storage.get_audio_session_row(session_id)
+        assert row is not None
+        assert row["vendor_id"] is None
+        assert row["product_id"] is None
+        assert row["serial"] is None
+        assert row["usb_port_path"] is None
+
     async def test_get_channel_map_via_session_device(self, storage: Storage) -> None:
         """Once a session has identity, channel_map lookup chains through it."""
         from datetime import UTC
