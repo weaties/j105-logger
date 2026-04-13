@@ -565,6 +565,26 @@ async function loadVakarosOverlay() {
       L.circleMarker(boatUp, {
         radius: 4, color: vakarosTrackColor, fillColor: vakarosTrackColor, fillOpacity: 1, weight: 1,
       }).addTo(_map).bindTooltip(popup);
+
+      // Start-line laylines (#473): from each end of the line, extend two
+      // tack laylines at the upwind-approach angle relative to the wind
+      // when the gun went off. Using ctx.twd_deg (the canonical wind-from
+      // bearing at race start) sidesteps the sign-folding in the replay
+      // sample TWA. The lines extend downwind from each endpoint so the
+      // two approaches on each tack are visible in the start area.
+      const LAYLINE_LEN_M = 600;
+      const TACK_HALF = 45;
+      const TACK_COLOR = '#e11d48';
+      const windTo = (ctx.twd_deg + 180) % 360;
+      const stbdBearing = (windTo + TACK_HALF) % 360;
+      const portBearing = (windTo - TACK_HALF + 360) % 360;
+      for (const end of [data.line.pin, data.line.boat]) {
+        const stbd = _offsetPoint(end[0], end[1], stbdBearing, LAYLINE_LEN_M);
+        const port = _offsetPoint(end[0], end[1], portBearing, LAYLINE_LEN_M);
+        const opts = {color: TACK_COLOR, weight: 3, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+        L.polyline([end, stbd], opts).addTo(_map);
+        L.polyline([end, port], opts).addTo(_map);
+      }
     }
 
     // Line info panel below the map.
@@ -4993,9 +5013,7 @@ const _courseOverlay = {
   visible: true,
   marks: [],          // raw [{key,name,lat,lon}] from /course-overlay
   markLayers: [],     // [L.layer]
-  rawStartLine: null, // last payload passed to _drawStartLine (for redraws)
-  startLine: null,    // L.polyline
-  finishLine: null,   // L.polyline
+  finishLine: null,   // L.polyline (not yet captured)
   laylines: null,     // L.layerGroup — all rounding-mark laylines, static
 };
 
@@ -5250,7 +5268,10 @@ async function _loadCourseOverlay() {
     const data = await r.json();
     _courseOverlay.marks = (data.marks || []).filter(m => m.lat != null && m.lon != null);
     _drawCourseMarks();
-    if (data.start_line) _drawStartLine(data.start_line);
+    // Start-line geometry (and its laylines) are rendered by
+    // loadVakarosOverlay, which has the canonical race_start_context with
+    // the wind-from bearing at gun time. We intentionally don't draw it
+    // here to avoid duplicate layers on top of that one.
     // Laylines depend on _maneuvers (rounding positions) and _replaySamples
     // (TWD at each rounding). Both load asynchronously, so try once now and
     // retry shortly if either is still missing — they'll usually be ready
@@ -5289,63 +5310,12 @@ function _drawCourseMarks() {
   }
 }
 
-function _drawStartLine(line) {
-  if (!_map || !line || !line.pin || !line.boat) return;
-  _courseOverlay.rawStartLine = line;
-  if (_courseOverlay.startLine) {
-    try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ }
-  }
-  // Two dashed orange poly segments terminated with circles for pin and boat,
-  // plus upwind laylines from each end of the line computed from the wind at
-  // gun time — so the user can see the approach geometry at race start.
-  const pinLatLng = [line.pin[0], line.pin[1]];
-  const boatLatLng = [line.boat[0], line.boat[1]];
-  const layers = [
-    L.polyline([pinLatLng, boatLatLng], {
-      color: '#fb923c',
-      weight: 3,
-      opacity: 0.95,
-      dashArray: '6, 6',
-      lineCap: 'butt',
-    }),
-    L.circleMarker(pinLatLng, {
-      radius: 5, color: '#fb923c', weight: 2, fillColor: '#fb923c', fillOpacity: 1,
-    }).bindTooltip('pin', {permanent: false}),
-    L.circleMarker(boatLatLng, {
-      radius: 5, color: '#fb923c', weight: 2, fillColor: '#fb923c', fillOpacity: 1,
-    }).bindTooltip('committee', {permanent: false}),
-  ];
-
-  // Start-line laylines: from each end of the line, project a tack layline
-  // on each side at the upwind-approach angle relative to the wind when the
-  // gun went off. "Wind at gun time" = the replay sample at _replayStart.
-  // Only draw when replay samples are loaded and we have a TWD.
-  const startMs = (_replayStart && _replayStart.getTime()) || null;
-  if (startMs != null && typeof _binarySearchSample === 'function') {
-    const sample = _binarySearchSample(startMs);
-    if (sample && sample.hdg != null && sample.twa != null) {
-      const windFromBearing = ((sample.hdg + sample.twa) % 360 + 360) % 360;
-      const windToBearing = (windFromBearing + 180) % 360;
-      const opts = {
-        color: _LAYLINE_TACK_COLOR,
-        weight: _LAYLINE_WEIGHT,
-        opacity: 0.85,
-        dashArray: '6, 6',
-        lineCap: 'butt',
-      };
-      for (const end of [pinLatLng, boatLatLng]) {
-        const stbd = _projectLatLng(end, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
-        const port = _projectLatLng(end, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
-        layers.push(L.polyline([end, stbd], opts));
-        layers.push(L.polyline([end, port], opts));
-      }
-    }
-  }
-
-  const layer = L.layerGroup(layers);
-  _courseOverlay.startLine = layer;
-  if (_courseOverlay.visible) layer.addTo(_map);
-}
+// Start-line rendering (dashed line, wind ticks, and tack laylines) lives
+// in loadVakarosOverlay() at the top of this file — it has the canonical
+// race_start_context.twd_deg, which is the wind-from bearing at gun time.
+// This file used to have a second implementation here, but it was fed by
+// replay-endpoint TWA that's folded to [0,180] and lost the sign needed
+// for correct wind-frame math. Removed to avoid duplicate layers.
 
 // Draw laylines anchored to each rounding mark (#473). Mark type (windward
 // vs leeward) is inferred from the boat's TWA in the ~20s leading up to the
@@ -5445,10 +5415,6 @@ function _setCourseOverlayVisible(visible) {
     if (_courseOverlay.visible) layer.addTo(_map);
     else { try { _map.removeLayer(layer); } catch (e) { /* swallow */ } }
   }
-  if (_courseOverlay.startLine) {
-    if (_courseOverlay.visible) _courseOverlay.startLine.addTo(_map);
-    else { try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ } }
-  }
   if (_courseOverlay.laylines) {
     if (_courseOverlay.visible) _courseOverlay.laylines.addTo(_map);
     else { try { _map.removeLayer(_courseOverlay.laylines); } catch (e) { /* swallow */ } }
@@ -5494,10 +5460,8 @@ async function _loadReplayData() {
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     _renderHud(_playClock.positionUtc);
     _updateReplayControls();
-    // Samples + replay window are now loaded — redraw the start line so
-    // its laylines pick up the TWD sample at gun time, and redraw the
-    // rounding laylines so they respect the race-start filter.
-    if (_courseOverlay.rawStartLine) _drawStartLine(_courseOverlay.rawStartLine);
+    // Samples + replay window are now loaded — redraw the rounding
+    // laylines so they respect the race-start filter.
     if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
   } catch (e) {
     // Non-fatal: replay is best-effort, the rest of the page still works
