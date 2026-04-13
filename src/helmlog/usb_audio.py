@@ -204,7 +204,14 @@ def detect_all_capture_devices(*, min_channels: int = 1) -> list[DetectedDevice]
                 usb_iter = context.list_devices(subsystem="sound", ID_BUS="usb")
             except TypeError:
                 usb_iter = context.list_devices(subsystem="sound")
+            # Filter to one entry per physical card — the sound subsystem
+            # also lists ``controlC*`` nodes which share the parent USB
+            # identity, so walking everything would yield duplicate
+            # entries per card and break the zip with sounddevice inputs.
             for udev in usb_iter:
+                sys_name = str(getattr(udev, "sys_name", "") or "")
+                if not sys_name.startswith("card"):
+                    continue
                 vendor = udev.get("ID_VENDOR_ID", None)
                 product = udev.get("ID_MODEL_ID", None)
                 if not vendor or not product:
@@ -214,7 +221,7 @@ def detect_all_capture_devices(*, min_channels: int = 1) -> list[DetectedDevice]
                         _parse_hex(vendor),
                         _parse_hex(product),
                         udev.get("ID_SERIAL_SHORT", "") or "",
-                        str(getattr(udev, "sys_name", "") or ""),
+                        sys_name,
                     )
                 )
         except Exception as exc:  # pragma: no cover - libudev missing

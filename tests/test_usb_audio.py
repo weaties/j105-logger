@@ -221,9 +221,9 @@ def test_detect_all_capture_devices_filters_by_min_channels() -> None:
 
 
 def test_detect_all_capture_devices_linux_enriches_with_pyudev() -> None:
-    """Linux path: each sounddevice input is paired with a pyudev entry in order."""
-    fake_a = _fake_udev_device(vendor="3634", product="4155", serial="AAA", devpath="1-1")
-    fake_b = _fake_udev_device(vendor="3634", product="4155", serial="BBB", devpath="1-2")
+    """Linux path: each sounddevice input is paired with a pyudev card* entry."""
+    fake_a = _fake_udev_device(vendor="3634", product="4155", serial="AAA", devpath="card2")
+    fake_b = _fake_udev_device(vendor="3634", product="4155", serial="BBB", devpath="card3")
     fake_context = MagicMock()
     fake_context.list_devices.return_value = [fake_a, fake_b]
     fake_pyudev = MagicMock()
@@ -240,14 +240,41 @@ def test_detect_all_capture_devices_linux_enriches_with_pyudev() -> None:
     assert [d.serial for d in result] == ["AAA", "BBB"]
     assert [d.vendor_id for d in result] == [0x3634, 0x3634]
     assert [d.product_id for d in result] == [0x4155, 0x4155]
-    assert [d.usb_port_path for d in result] == ["1-1", "1-2"]
+    assert [d.usb_port_path for d in result] == ["card2", "card3"]
     assert [d.sounddevice_index for d in result] == [1, 2]
+
+
+def test_detect_all_capture_devices_linux_skips_controlC_entries() -> None:
+    """Regression: the sound subsystem lists both card* and controlC* nodes
+    per physical card; walking both would zip two control nodes into the
+    sounddevice inputs and both sounddevice entries would end up with the
+    first card's identity (observed on corvopi-tst1 with two Jieli cards)."""
+    control_a = _fake_udev_device(vendor="3634", product="4155", serial="AAA", devpath="controlC2")
+    card_a = _fake_udev_device(vendor="3634", product="4155", serial="AAA", devpath="card2")
+    control_b = _fake_udev_device(vendor="3634", product="4155", serial="BBB", devpath="controlC3")
+    card_b = _fake_udev_device(vendor="3634", product="4155", serial="BBB", devpath="card3")
+    fake_context = MagicMock()
+    # Order matches real udev enumeration: card2, controlC2, card3, controlC3
+    fake_context.list_devices.return_value = [card_a, control_a, card_b, control_b]
+    fake_pyudev = MagicMock()
+    fake_pyudev.Context.return_value = fake_context
+
+    with (
+        patch.dict(sys.modules, {"pyudev": fake_pyudev}),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+        patch("helmlog.usb_audio._is_linux", return_value=True),
+    ):
+        result = detect_all_capture_devices(min_channels=1)
+
+    assert len(result) == 2
+    assert [d.serial for d in result] == ["AAA", "BBB"]
+    assert [d.usb_port_path for d in result] == ["card2", "card3"]
 
 
 def test_detect_all_capture_devices_linux_fewer_pyudev_entries_than_sd() -> None:
     """If pyudev sees fewer USB sound devices than sounddevice lists, extras
     get blank identity so the sibling path still records (best-effort)."""
-    fake = _fake_udev_device(vendor="3634", product="4155", serial="ONLY", devpath="1-1")
+    fake = _fake_udev_device(vendor="3634", product="4155", serial="ONLY", devpath="card2")
     fake_context = MagicMock()
     fake_context.list_devices.return_value = [fake]
     fake_pyudev = MagicMock()
