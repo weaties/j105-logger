@@ -9,156 +9,403 @@
 #
 # Prerequisites on the Mac:
 #   - SSH access to the Pi (via Tailscale; key-based auth recommended)
-#   - influx CLI for InfluxDB restore: brew install influxdb-cli
+#   - influx CLI for InfluxDB backup: brew install influxdb-cli
 #   - sudo rsync allowed on the Pi for the SSH user (for Grafana dir)
+#   - Python 3 on PATH (for the email report helper; stdlib only)
 #
 # Environment overrides:
-#   PI                 SSH target           (default: weaties@corvopi)
-#   BACKUP_DEST        local snapshot root  (default: ~/backups/helmlog)
-#   KEEP_SNAPSHOTS     how many to retain   (default: 10)
-#   INFLUX_TOKEN_FILE  path on the Pi       (default: ~/influx-token.txt)
+#   PI                 SSH target                (default: weaties@corvopi)
+#   BACKUP_DEST        local snapshot root       (default: ~/backups/helmlog)
+#   KEEP_SNAPSHOTS     how many to retain        (default: 10)
+#   INFLUX_TOKEN_FILE  path on the Pi            (default: ~/influx-token.txt)
+#   REPORT_TO          email recipient           (default: weaties@gmail.com)
+#   SMTP_CACHE         local creds cache path    (default: ~/.config/helmlog-backup/smtp.env)
+#   MIN_SNAPSHOT_BYTES safety-gate threshold     (default: 10485760 — 10 MiB)
+#   SKIP_EMAIL         set to 1 to suppress mail (default: unset)
+#
+# Exit codes:
+#   0   backup succeeded
+#   10  SSH preflight failed (source unreachable)
+#   11  Safety gate failed (snapshot suspiciously empty; rotation skipped)
+#   1   other error
 
-set -euo pipefail
+set -uo pipefail
 
 PI="${PI:-weaties@corvopi}"
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 KEEP_SNAPSHOTS="${KEEP_SNAPSHOTS:-10}"
 INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-~/influx-token.txt}"
+REPORT_TO="${REPORT_TO:-weaties@gmail.com}"
+SMTP_CACHE="${SMTP_CACHE:-$HOME/.config/helmlog-backup/smtp.env}"
+MIN_SNAPSHOT_BYTES="${MIN_SNAPSHOT_BYTES:-10485760}"
 
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
 SNAP="$BACKUP_DEST/$DATE"
+REPORT="/tmp/helmlog-backup-report-$DATE.md"
+STDERR_LOG="/tmp/helmlog-backup-stderr-$DATE.log"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MAIL_HELPER="$SCRIPT_DIR/backup_report_mail.py"
+
+STATUS="ok"
+STATUS_REASON=""
+SECONDS=0
+
+# Capture everything this script writes to stderr so the failure report can
+# include the full diagnostic trail. Use `tee` so we still see output on the
+# tty when running manually, and so launchd's own log gets populated too.
+exec 2> >(tee "$STDERR_LOG" >&2)
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
 
-# Find the most recent previous snapshot to use as --link-dest base.
-# rsync --link-dest creates hardlinks for files that are byte-for-byte identical
-# to the previous snapshot, so unchanged files (photos, WAVs, etc.) cost zero
-# extra disk space across snapshots.
-PREV=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | head -1 || true)
+# Append a line to the markdown report. First arg is the line; no newline
+# handling beyond what `echo` does.
+report_line() { echo "$*" >> "$REPORT"; }
 
-# Pre-compute link-dest flags as variables to avoid command substitution
-# inside &&-chains (which interacts badly with inline comments).
+mark_failed() {
+  STATUS="failed"
+  if [ -z "$STATUS_REASON" ]; then
+    STATUS_REASON="$*"
+  fi
+}
+
+# Human-readable size for a path (falls back to "—" if the path is missing).
+human_size() {
+  local path="$1"
+  if [ -d "$path" ] || [ -f "$path" ]; then
+    du -sh "$path" 2>/dev/null | cut -f1
+  else
+    echo "—"
+  fi
+}
+
+# File count under a path (0 if missing).
+file_count() {
+  local path="$1"
+  if [ -d "$path" ]; then
+    find "$path" -type f 2>/dev/null | wc -l | tr -d ' '
+  else
+    echo 0
+  fi
+}
+
+# Bytes for a path, integer (0 if missing). macOS `du` lacks --bytes; use the
+# BSD-friendly 512-byte block output and multiply.
+bytes_size() {
+  local path="$1"
+  if [ -d "$path" ] || [ -f "$path" ]; then
+    du -sk "$path" 2>/dev/null | awk '{print $1 * 1024}'
+  else
+    echo 0
+  fi
+}
+
+# Seconds since an epoch timestamp (set before each step).
+elapsed_since() {
+  local start="$1"
+  echo $(( $(date +%s) - start ))
+}
+
+fmt_duration() {
+  local s="$1"
+  local h=$(( s / 3600 ))
+  local m=$(( (s % 3600) / 60 ))
+  local sec=$(( s % 60 ))
+  if [ "$h" -gt 0 ]; then
+    printf '%dh%02dm%02ds' "$h" "$m" "$sec"
+  elif [ "$m" -gt 0 ]; then
+    printf '%dm%02ds' "$m" "$sec"
+  else
+    printf '%ds' "$sec"
+  fi
+}
+
+# Initialise the report header early so preflight failures still have a file
+# to email out.
+init_report() {
+  cat > "$REPORT" <<EOF
+# Helmlog backup report
+
+- **Target Pi**: \`$PI\`
+- **Snapshot**: \`$SNAP\`
+- **Started**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+- **Backup root**: \`$BACKUP_DEST\`
+
+## Steps
+
+EOF
+}
+
+# Runs on EVERY exit from this script: successful, expected failure, or
+# unexpected error. Finalises the report and fires the email helper. We
+# guard against recursion by disabling the trap inside the handler.
+on_exit() {
+  local rc=$?
+  trap - EXIT
+
+  local total_size
+  local total_files
+  local total_bytes
+  total_size=$(human_size "$SNAP")
+  total_files=$(file_count "$SNAP")
+  total_bytes=$(bytes_size "$SNAP")
+
+  report_line ""
+  report_line "## Summary"
+  report_line ""
+  report_line "- **Duration**: $(fmt_duration "$SECONDS")"
+  report_line "- **Snapshot size**: $total_size ($total_bytes bytes)"
+  report_line "- **File count**: $total_files"
+  if [ -n "${PREV:-}" ]; then
+    local prev_size
+    prev_size=$(human_size "$PREV")
+    report_line "- **Previous snapshot**: \`$PREV\` ($prev_size)"
+  fi
+  report_line "- **Exit code**: $rc"
+  report_line "- **Status**: $([ "$STATUS" = "ok" ] && echo SUCCESS || echo FAILURE)"
+  if [ -n "$STATUS_REASON" ]; then
+    report_line "- **Reason**: $STATUS_REASON"
+  fi
+
+  report_line ""
+  report_line "## Snapshots on disk"
+  report_line ""
+  report_line '```'
+  ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | head -"$KEEP_SNAPSHOTS" >> "$REPORT" || true
+  report_line '```'
+
+  # Send the email unless explicitly suppressed.
+  if [ "${SKIP_EMAIL:-0}" = "1" ]; then
+    log "SKIP_EMAIL=1; not sending report"
+  elif [ ! -x "$MAIL_HELPER" ] && [ ! -f "$MAIL_HELPER" ]; then
+    log "mail helper not found at $MAIL_HELPER; not sending report"
+  elif [ ! -f "$SMTP_CACHE" ]; then
+    log "no SMTP cache at $SMTP_CACHE; cannot send report (first run must succeed once while Pi is reachable)"
+  else
+    if python3 "$MAIL_HELPER" \
+        --status "$STATUS" \
+        --report "$REPORT" \
+        --creds "$SMTP_CACHE" \
+        --to "$REPORT_TO" \
+        --target "$PI" \
+        --stderr "$STDERR_LOG"; then
+      log "Report emailed to $REPORT_TO"
+    else
+      log "WARNING: report email failed (rc=$?); report retained at $REPORT"
+    fi
+  fi
+}
+trap on_exit EXIT
+
+init_report
+
+# ── Preflight ─────────────────────────────────────────────────────────────────
+log "Preflight: SSH check to $PI"
+if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+    "$PI" true 2>&1; then
+  mark_failed "SSH preflight to $PI failed (host unreachable or auth failure)"
+  log "  FAIL: SSH preflight"
+  report_line "- **Preflight**: FAILED — could not SSH to \`$PI\`"
+  report_line ""
+  report_line "Snapshot directory was NOT created. No rotation performed."
+  exit 10
+fi
+log "  OK"
+report_line "- **Preflight**: OK — \`$PI\` reachable"
+
+# ── Refresh SMTP credential cache from the Pi ────────────────────────────────
+log "Refreshing SMTP credential cache → $SMTP_CACHE"
+mkdir -p "$(dirname "$SMTP_CACHE")"
+# Pull just the SMTP_* lines from the Pi's .env so the cache never holds
+# unrelated secrets. `grep -E` yields rc=1 on no match, which we swallow.
+SMTP_TMP="$(mktemp)"
+if ssh "$PI" "grep -E '^SMTP_' ~/helmlog/.env 2>/dev/null" > "$SMTP_TMP" 2>&1; then
+  if [ -s "$SMTP_TMP" ]; then
+    mv "$SMTP_TMP" "$SMTP_CACHE"
+    chmod 600 "$SMTP_CACHE"
+    log "  Cached $(wc -l < "$SMTP_CACHE" | tr -d ' ') SMTP_* vars"
+  else
+    rm -f "$SMTP_TMP"
+    log "  WARNING: Pi's .env has no SMTP_* lines; keeping previous cache if any"
+  fi
+else
+  rm -f "$SMTP_TMP"
+  log "  WARNING: could not read Pi's .env for SMTP cache; falling back to existing cache"
+fi
+
+mkdir -p "$SNAP"
+log "Starting backup → $SNAP"
+
+# Find the most recent previous snapshot to use as --link-dest base.
+PREV=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | grep -v "^$SNAP\$" | head -1 || true)
+
 LINK_DATA=""
 LINK_INFLUX=""
 LINK_GRAFANA=""
 if [ -n "$PREV" ]; then
-  [ -d "$PREV/data" ]    && LINK_DATA="--link-dest=$PREV/data"
+  [ -d "$PREV/data" ]     && LINK_DATA="--link-dest=$PREV/data"
   [ -d "$PREV/influxdb" ] && LINK_INFLUX="--link-dest=$PREV/influxdb"
   [ -d "$PREV/grafana" ]  && LINK_GRAFANA="--link-dest=$PREV/grafana"
 fi
 
 # --info=progress2 requires rsync 3.1+; macOS ships with BSD rsync 2.6.9.
-# Feature-detect rather than parse the version string.
 if rsync --info=progress2 --version >/dev/null 2>&1; then
   RSYNC_PROGRESS="--info=progress2"
 else
   RSYNC_PROGRESS="--progress"
 fi
 
-mkdir -p "$SNAP"
-log "Starting backup → $SNAP"
-log "Source: $PI"
 [ -n "$PREV" ] && log "Link-dest (hardlink base): $PREV"
 
+# run_step NAME REMOTE_SUBDIR <command...>
+# Records per-step status/duration/size/count in the report. On failure the
+# step is logged as FAILED and mark_failed is called, but the backup continues
+# so we still capture whatever other steps work. The safety gate at the end
+# decides whether to honour rotation.
+run_step() {
+  local name="$1"; shift
+  local local_dir="$1"; shift
+  local start
+  start=$(date +%s)
+  log "Step: $name"
+  if "$@"; then
+    local dur
+    dur=$(elapsed_since "$start")
+    local size count
+    size=$(human_size "$local_dir")
+    count=$(file_count "$local_dir")
+    log "  OK ($size, $count files, $(fmt_duration "$dur"))"
+    report_line "- **$name**: OK — $size, $count files, $(fmt_duration "$dur")"
+    return 0
+  else
+    local rc=$?
+    local dur
+    dur=$(elapsed_since "$start")
+    log "  FAILED (rc=$rc, $(fmt_duration "$dur"))"
+    report_line "- **$name**: FAILED (rc=$rc, $(fmt_duration "$dur"))"
+    mark_failed "$name failed (rc=$rc)"
+    return "$rc"
+  fi
+}
+
 # ── 1. SQLite — WAL checkpoint then rsync ────────────────────────────────────
-log "Step 1/5: SQLite WAL checkpoint + rsync"
 ssh "$PI" "sqlite3 ~/helmlog/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE);'" 2>/dev/null || \
   log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
 
 # shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
-rsync -az $RSYNC_PROGRESS $LINK_DATA \
-  "$PI:~/helmlog/data/" \
-  "$SNAP/data/"
-log "  SQLite + file data done"
+run_step "SQLite + file data" "$SNAP/data" \
+  rsync -az $RSYNC_PROGRESS $LINK_DATA \
+    "$PI:~/helmlog/data/" \
+    "$SNAP/data/" || true
 
 # ── 2. InfluxDB — remote backup then rsync ───────────────────────────────────
-log "Step 2/5: InfluxDB backup"
-if ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
+influx_backup() {
+  if ! ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
+    log "  $INFLUX_TOKEN_FILE not found on Pi; skipping"
+    report_line "- **InfluxDB**: SKIPPED — no token file on Pi"
+    return 0
+  fi
   ssh "$PI" "influx backup /tmp/influx-backup \
     --host http://localhost:8086 \
-    --token \$(cat $INFLUX_TOKEN_FILE)" 2>/dev/null && \
+    --token \$(cat $INFLUX_TOKEN_FILE)" || return $?
+  # shellcheck disable=SC2086
   rsync -az $RSYNC_PROGRESS $LINK_INFLUX \
     "$PI:/tmp/influx-backup/" \
-    "$SNAP/influxdb/" && \
-  ssh "$PI" "rm -rf /tmp/influx-backup" && \
-  log "  InfluxDB backup done" || \
-  log "  WARNING: InfluxDB backup failed; skipping (data dir intact on Pi)"
+    "$SNAP/influxdb/" || return $?
+  ssh "$PI" "rm -rf /tmp/influx-backup" || true
+}
+if influx_backup; then
+  size=$(human_size "$SNAP/influxdb")
+  count=$(file_count "$SNAP/influxdb")
+  report_line "- **InfluxDB**: OK — $size, $count files"
 else
-  log "  WARNING: $INFLUX_TOKEN_FILE not found on Pi; skipping InfluxDB backup"
+  report_line "- **InfluxDB**: FAILED (rc=$?)"
+  mark_failed "InfluxDB backup failed"
 fi
 
 # ── 3. Config — .env, Signal K, influx token ────────────────────────────────
-log "Step 3/5: Config (.env + Signal K + influx token)"
 mkdir -p "$SNAP/config"
-rsync -az $RSYNC_PROGRESS \
-  "$PI:~/helmlog/.env" \
-  "$SNAP/config/helmlog.env" 2>/dev/null && \
-  log "  helmlog .env done" || \
-  log "  WARNING: .env rsync failed; skipping"
+if rsync -az $RSYNC_PROGRESS \
+    "$PI:~/helmlog/.env" \
+    "$SNAP/config/helmlog.env" 2>&1; then
+  report_line "- **helmlog .env**: OK — $(human_size "$SNAP/config/helmlog.env")"
+else
+  report_line "- **helmlog .env**: FAILED"
+  mark_failed ".env rsync failed"
+fi
 
 # influx-token.txt is needed by restore.sh to authenticate against the
 # target's InfluxDB after a prior `influx restore --full`, which replaces all
 # auth on the target with the source's tokens.
-rsync -az "$PI:$INFLUX_TOKEN_FILE" "$SNAP/config/influx-token.txt" 2>/dev/null && \
-  log "  influx-token.txt done" || \
-  log "  WARNING: influx-token.txt rsync failed; skipping"
+if rsync -az "$PI:$INFLUX_TOKEN_FILE" "$SNAP/config/influx-token.txt" 2>&1; then
+  report_line "- **Influx token file**: OK"
+else
+  report_line "- **Influx token file**: FAILED"
+  mark_failed "influx-token.txt rsync failed"
+fi
 
 # Signal K — exclude node_modules (huge, reinstallable via npm install)
 LINK_SK=""
 [ -n "$PREV" ] && [ -d "$PREV/signalk" ] && LINK_SK="--link-dest=$PREV/signalk"
 # shellcheck disable=SC2086
-rsync -az $RSYNC_PROGRESS $LINK_SK \
-  --exclude='node_modules/' \
-  --exclude='package-lock.json' \
-  "$PI:~/.signalk/" \
-  "$SNAP/signalk/" 2>/dev/null && \
-  log "  Signal K config + data done" || \
-  log "  WARNING: Signal K rsync failed; skipping"
+run_step "Signal K config + data" "$SNAP/signalk" \
+  rsync -az $RSYNC_PROGRESS $LINK_SK \
+    --exclude='node_modules/' \
+    --exclude='package-lock.json' \
+    "$PI:~/.signalk/" \
+    "$SNAP/signalk/" || true
 
 # ── 4. Grafana — data dir + provisioning config ──────────────────────────────
-log "Step 4/5: Grafana data dir + provisioning config"
-# shellcheck disable=SC2046
-if rsync -az $RSYNC_PROGRESS \
+# shellcheck disable=SC2086
+run_step "Grafana data dir" "$SNAP/grafana" \
+  rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GRAFANA \
     "$PI:/var/lib/grafana/" \
-    "$SNAP/grafana/" 2>/dev/null; then
-  log "  Grafana data dir done"
-else
-  log "  WARNING: Grafana data rsync failed (sudo rsync not configured?); skipping"
-fi
+    "$SNAP/grafana/" || true
 
-# /etc/grafana/provisioning holds the InfluxDB datasource yaml (with token).
-# Without this, a restore points Grafana at a token that gets invalidated by
-# `influx restore --full`, leaving dashboards with no data.
 LINK_GP=""
 [ -n "$PREV" ] && [ -d "$PREV/grafana-provisioning" ] && \
   LINK_GP="--link-dest=$PREV/grafana-provisioning"
 # shellcheck disable=SC2086
-if rsync -az $RSYNC_PROGRESS \
+run_step "Grafana provisioning" "$SNAP/grafana-provisioning" \
+  rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GP \
     "$PI:/etc/grafana/provisioning/" \
-    "$SNAP/grafana-provisioning/" 2>/dev/null; then
-  log "  Grafana provisioning done"
-else
-  log "  WARNING: Grafana provisioning rsync failed; skipping"
-fi
+    "$SNAP/grafana-provisioning/" || true
 
-# ── 5. Rotate old snapshots ───────────────────────────────────────────────────
-log "Step 5/5: Rotating snapshots (keeping $KEEP_SNAPSHOTS)"
+# ── 5. Safety gate + rotation ─────────────────────────────────────────────────
+log "Safety gate: snapshot must contain data/logger.db and exceed $MIN_SNAPSHOT_BYTES bytes"
+snap_bytes=$(bytes_size "$SNAP")
+if [ ! -f "$SNAP/data/logger.db" ]; then
+  mark_failed "safety gate failed: $SNAP/data/logger.db is missing"
+  log "  FAIL: logger.db missing in new snapshot"
+  report_line ""
+  report_line "**Safety gate**: FAILED — \`data/logger.db\` missing. Rotation skipped; old snapshots preserved."
+  exit 11
+fi
+if [ "$snap_bytes" -lt "$MIN_SNAPSHOT_BYTES" ]; then
+  mark_failed "safety gate failed: snapshot only $snap_bytes bytes (< $MIN_SNAPSHOT_BYTES)"
+  log "  FAIL: snapshot too small ($snap_bytes bytes)"
+  report_line ""
+  report_line "**Safety gate**: FAILED — snapshot size $snap_bytes bytes is below the $MIN_SNAPSHOT_BYTES-byte minimum. Rotation skipped; old snapshots preserved."
+  exit 11
+fi
+log "  OK ($snap_bytes bytes)"
+report_line "- **Safety gate**: OK — $snap_bytes bytes"
+
+log "Rotating snapshots (keeping $KEEP_SNAPSHOTS)"
 # shellcheck disable=SC2012
 STALE=$(ls -1dt "$BACKUP_DEST"/20* 2>/dev/null | tail -n +"$((KEEP_SNAPSHOTS + 1))")
 if [ -n "$STALE" ]; then
   echo "$STALE" | xargs rm -rf
-  log "  Removed $(echo "$STALE" | wc -l | tr -d ' ') old snapshot(s)"
+  removed=$(echo "$STALE" | wc -l | tr -d ' ')
+  log "  Removed $removed old snapshot(s)"
+  report_line "- **Rotation**: removed $removed snapshot(s), kept $KEEP_SNAPSHOTS"
 else
   log "  Nothing to rotate"
+  report_line "- **Rotation**: nothing to rotate, kept $KEEP_SNAPSHOTS"
 fi
 
-# ── Summary ───────────────────────────────────────────────────────────────────
-SNAP_SIZE=$(du -sh "$SNAP" 2>/dev/null | cut -f1)
-log "Backup complete — $SNAP  ($SNAP_SIZE)"
-echo ""
-echo "Snapshots in $BACKUP_DEST:"
-ls -1t "$BACKUP_DEST" | head -"$KEEP_SNAPSHOTS" | sed 's/^/  /'
+log "Backup complete — $SNAP ($(human_size "$SNAP"))"
+exit 0
