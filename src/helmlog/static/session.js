@@ -383,7 +383,13 @@ async function loadTrack() {
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
   const trackColor = cssVar('--accent-strong');
-  const line = L.polyline(latLngs, {color: trackColor, weight: 4}).addTo(_map);
+  const line = L.polyline(latLngs, {
+    color: trackColor,
+    weight: 3,
+    opacity: 1,
+    lineCap: 'round',
+    lineJoin: 'round',
+  }).addTo(_map);
 
   const successColor = cssVar('--success');
   const dangerColor = cssVar('--danger');
@@ -400,8 +406,8 @@ async function loadTrack() {
   const cursorIcon = L.divIcon({
     className: 'boat-cursor',
     html: _renderBoatCursorSvg(0, 0),
-    iconSize: [40, 40],
-    iconAnchor: [20, 20],
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
   });
   const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
@@ -790,19 +796,26 @@ function _renderBoatCursorSvg(hdg, cog) {
   const hasHdg = hdg != null && !isNaN(hdg);
   const hasCog = cog != null && !isNaN(cog);
   const hdgDeg = hasHdg ? hdg : 0;
-  // SVG 0° points up (north) because we use -y for the bow, matching
-  // geographic bearing conventions. viewBox is centered on the anchor.
-  let parts = '<svg width="40" height="40" viewBox="-20 -20 40 40" style="overflow:visible;pointer-events:none">';
-  // COG line (red, slightly longer) — drawn first so it sits under the hull
+  // Larger viewBox so the indicator lines can extend well beyond the hull
+  // and read clearly against the track without being clipped.
+  let parts = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="overflow:visible;pointer-events:none">';
+  // COG line (red) — drawn first so it sits under the hull. Doubled up
+  // with a dark halo stroke so it pops against any map background.
   if (hasCog) {
-    parts += '<line x1="0" y1="0" x2="0" y2="-19" stroke="#ef4444" stroke-width="2" stroke-linecap="round" transform="rotate(' + cog + ')"/>';
+    parts += '<g transform="rotate(' + cog + ')">';
+    parts += '<line x1="0" y1="0" x2="0" y2="-30" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    parts += '<line x1="0" y1="0" x2="0" y2="-30" stroke="#ef4444" stroke-width="3.5" stroke-linecap="round"/>';
+    parts += '</g>';
   }
-  // Heading line (yellow, stops at bow)
+  // Heading line (yellow) — same halo treatment.
   if (hasHdg) {
-    parts += '<line x1="0" y1="0" x2="0" y2="-16" stroke="#facc15" stroke-width="2" stroke-linecap="round" transform="rotate(' + hdgDeg + ')"/>';
+    parts += '<g transform="rotate(' + hdgDeg + ')">';
+    parts += '<line x1="0" y1="0" x2="0" y2="-26" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    parts += '<line x1="0" y1="0" x2="0" y2="-26" stroke="#facc15" stroke-width="3.5" stroke-linecap="round"/>';
+    parts += '</g>';
   }
   // Hull — thin triangle, bow at top, stern at bottom, rotated to heading
-  parts += '<polygon points="0,-10 5,7 -5,7" fill="#facc15" stroke="#1f2937" stroke-width="1" stroke-linejoin="round" transform="rotate(' + hdgDeg + ')"/>';
+  parts += '<polygon points="0,-11 6,8 -6,8" fill="#facc15" stroke="#1f2937" stroke-width="1.25" stroke-linejoin="round" transform="rotate(' + hdgDeg + ')"/>';
   parts += '</svg>';
   return parts;
 }
