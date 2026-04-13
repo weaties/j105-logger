@@ -778,6 +778,32 @@ async def api_session_replay(
     start_utc = row["start_utc"]
     end_utc = row["end_utc"] or row["start_utc"]
 
+    # Effective race gun: for Vakaros-matched races, prefer the latest
+    # race_start event inside the race window. Races that were recalled
+    # have an earlier stored start_utc but a later real gun; the frontend
+    # needs the real gun time to filter pre-gun "roundings" out of the
+    # replay laylines. Falls back to start_utc when no Vakaros event is
+    # available.
+    gun_cur = await db.execute(
+        """
+        SELECT vre.ts
+        FROM races r
+        JOIN vakaros_race_events vre ON vre.session_id = r.vakaros_session_id
+        WHERE r.id = ?
+          AND vre.event_type = 'race_start'
+          AND vre.ts BETWEEN ? AND ?
+        ORDER BY vre.ts DESC
+        LIMIT 1
+        """,
+        (
+            session_id,
+            start_utc,
+            end_utc,
+        ),
+    )
+    gun_row = await gun_cur.fetchone()
+    race_gun_utc = gun_row["ts"] if gun_row is not None else start_utc
+
     # Graded segments (cached) — may be empty if session hasn't ended
     import helmlog.polar as _polar
 
@@ -902,6 +928,12 @@ async def api_session_replay(
             # time label, and YT sync.
             "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
             "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
+            # Effective race gun (prefers the latest Vakaros race_start
+            # event inside the race window). Frontend uses this to filter
+            # pre-gun "roundings" out of the replay laylines.
+            "race_gun_utc": (
+                race_gun_utc if ("Z" in race_gun_utc or "+" in race_gun_utc) else race_gun_utc + "Z"
+            ),
             "segment_seconds": _polar.POLAR_SEGMENT_SECONDS,
             "grades": grades_out,
             "samples": samples,

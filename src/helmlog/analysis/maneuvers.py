@@ -424,6 +424,33 @@ async def enrich_session_maneuvers(
 
     start = _parse_iso(race_row["start_utc"])
     end = _parse_iso(race_row["end_utc"]) if race_row["end_utc"] else start + timedelta(hours=24)
+
+    # Effective race start: if a matched Vakaros session logged a race_start
+    # event inside or near the race window, prefer the *latest* one as the
+    # authoritative gun time. Races with a general recall have the stored
+    # start_utc pointing at the first attempt, while the actual gun is the
+    # last race_start event — the reclassification filter and any downstream
+    # "post-start" checks need that real gun time or pre-start practice
+    # maneuvers leak through as post-start events.
+    gun_cur = await db.execute(
+        """
+        SELECT vre.ts
+        FROM races r
+        JOIN vakaros_race_events vre ON vre.session_id = r.vakaros_session_id
+        WHERE r.id = ?
+          AND vre.event_type = 'race_start'
+          AND vre.ts BETWEEN ? AND ?
+        ORDER BY vre.ts DESC
+        LIMIT 1
+        """,
+        (
+            session_id,
+            (start - timedelta(seconds=60)).isoformat(),
+            (end + timedelta(seconds=60)).isoformat(),
+        ),
+    )
+    gun_row = await gun_cur.fetchone()
+    effective_start = _parse_iso(str(gun_row["ts"])) if gun_row is not None else start
     start_pad = start - timedelta(seconds=_ENRICH_PAD_S)
     end_pad = end + timedelta(seconds=_ENRICH_PAD_S)
 
@@ -572,7 +599,7 @@ async def enrich_session_maneuvers(
             d.get("type") == "gybe"
             and metrics.turn_angle_deg is not None
             and abs(metrics.turn_angle_deg) >= _ROUNDING_TURN_THRESHOLD_DEG
-            and m_ts >= start
+            and m_ts >= effective_start
         ):
             if not isinstance(d.get("details"), dict):
                 d["details"] = {}

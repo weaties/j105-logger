@@ -5000,6 +5000,8 @@ function _renderIsolationToggle() {
 
 let _replayStart = null; // Date — session start (for scrubber 0)
 let _replayEnd = null;   // Date — session end (for scrubber max)
+let _raceGun = null;     // Date — effective race gun (may be later than
+                         // _replayStart for races with a general recall)
 let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, aws, awa, hdg, cog}]
 let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
 let _gradeSegments = []; // [L.polyline] overlays when polar view is active
@@ -5345,14 +5347,17 @@ function _drawAllLaylines() {
   if (!_maneuvers || !_maneuvers.length) return;
   if (typeof _binarySearchSample !== 'function') return;
 
-  // Only show laylines for roundings that happen after the race start,
-  // plus a grace window. The first few seconds after the gun are
-  // typically the start-hardening maneuver (reach → close-hauled) which
-  // the detector classifies as a "rounding" because pre/post TWA mode
-  // differs — but that's not actually rounding a mark. 120s comfortably
-  // excludes that transient without masking a real windward mark (which
-  // will always be at least several minutes of sailing from the line).
-  const raceStartMs = (_replayStart && _replayStart.getTime()) || 0;
+  // Only show laylines for roundings that happen after the real race
+  // gun, plus a grace window. _raceGun may be later than _replayStart
+  // for races with a general recall — the stored races.start_utc points
+  // at the original attempt, and the actual gun is the latest Vakaros
+  // race_start event inside the race window. 120s of grace after the
+  // gun covers the start-hardening maneuver (reach → close-hauled)
+  // which the detector classifies as a rounding because the pre/post
+  // TWA mode differs; a real windward mark is always more than two
+  // minutes of sailing from the line.
+  const gun = _raceGun || _replayStart;
+  const raceStartMs = (gun && gun.getTime()) || 0;
   const LAYLINE_START_GRACE_MS = 120_000;
 
   const layers = [];
@@ -5435,6 +5440,7 @@ async function _loadReplayData() {
     const data = await r.json();
     _replayStart = new Date(data.start_utc);
     _replayEnd = new Date(data.end_utc);
+    _raceGun = data.race_gun_utc ? new Date(data.race_gun_utc) : _replayStart;
     _replaySamples = (data.samples || []).map(s => ({
       ts: new Date(s.ts),
       stw: s.stw,
