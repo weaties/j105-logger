@@ -407,12 +407,14 @@ async function loadTrack() {
 
   _trackData = {latLngs, timestamps, line, cursor};
 
-  // Map is a consumer: render the cursor at the requested UTC
+  // Map is a consumer: render the cursor at the requested UTC. We use a
+  // continuous interpolated position (not the nearest sample index) so the
+  // boat glides along the polyline instead of stepping between fixes — the
+  // stepping was especially visible at 8x replay.
   registerSurface('map', function(utc) {
     if (!_trackData) return;
-    const idx = _indexForUtc(utc);
-    _moveCursorToIndex(idx);
-    _updateBoatSettingsForUtc(_utcForIndex(idx));
+    _moveCursorToUtc(utc);
+    _updateBoatSettingsForUtc(utc);
   });
 
   // Click track → seek the playback clock (which then seeks video, audio, etc.)
@@ -657,22 +659,57 @@ function _nearestIndex(latlng) {
 
 function _moveCursorToIndex(idx) {
   if (!_trackData) return;
-  const latLng = _trackData.latLngs[idx];
-  _trackData.cursor.setLatLng(latLng).addTo(_map);
-  // Read HDG/COG from the replay sample closest to the cursor timestamp,
-  // then smooth across a ±5s window so the icon doesn't twitch with every
-  // 1 Hz sample. Circular mean via sin/cos so values near 0°/360° wrap
-  // cleanly instead of averaging to 180°.
-  let hdg = null, cog = null;
   const ts = _trackData.timestamps[idx];
   if (ts) {
-    const windowed = _windowedHeadingCog(ts.getTime(), 5000);
-    hdg = windowed.hdg;
-    cog = windowed.cog;
+    _moveCursorToUtc(ts);
+  } else {
+    _trackData.cursor.setLatLng(_trackData.latLngs[idx]).addTo(_map);
   }
+}
+
+// Interpolated cursor: finds the two bracketing GPS samples for the
+// requested UTC and lerps lat/lng between them, so the boat glides
+// continuously along the polyline. Rotation is still circular-meaned
+// across a ±5s window to damp HDG/COG noise.
+function _moveCursorToUtc(utc) {
+  if (!_trackData) return;
+  const {latLngs, timestamps} = _trackData;
+  if (!latLngs.length) return;
+  const tMs = utc.getTime();
+  // Bracket the timestamps
+  let hi = _trackLowerBound(tMs);
+  if (hi <= 0) { hi = 1; }
+  if (hi >= timestamps.length) { hi = timestamps.length - 1; }
+  const lo = hi - 1;
+  const t0 = timestamps[lo].getTime();
+  const t1 = timestamps[hi].getTime();
+  let frac = t1 > t0 ? (tMs - t0) / (t1 - t0) : 0;
+  if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
+  const a = latLngs[lo];
+  const b = latLngs[hi];
+  const lat = a[0] + (b[0] - a[0]) * frac;
+  const lng = a[1] + (b[1] - a[1]) * frac;
+  const interp = [lat, lng];
+  _trackData.cursor.setLatLng(interp).addTo(_map);
+
+  const windowed = _windowedHeadingCog(tMs, 5000);
   const el = _trackData.cursor.getElement();
-  if (el) el.innerHTML = _renderBoatCursorSvg(hdg, cog);
-  if (_followBoat && _map) _maybeFollowPan(latLng);
+  if (el) el.innerHTML = _renderBoatCursorSvg(windowed.hdg, windowed.cog);
+  if (_followBoat && _map) _maybeFollowPan(interp);
+}
+
+// Binary search for the first timestamp index where ts >= tMs. Mirrors
+// the replay-sample helper but operates on the track timestamps array.
+function _trackLowerBound(tMs) {
+  const ts = _trackData && _trackData.timestamps;
+  if (!ts || !ts.length) return 0;
+  let lo = 0, hi = ts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ts[mid].getTime() < tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
 }
 
 // Circular-mean smoothing of hdg/cog over a window around ts. Returns
