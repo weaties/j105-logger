@@ -783,7 +783,13 @@ function _onVideoReady() {
         currentOffset = _videoSync.player.getCurrentTime();
       }
     } catch (e) { /* swallow */ }
-    if (currentOffset != null && Math.abs(currentOffset - offset) > _LARGE_JUMP_SEC) {
+    const delta = currentOffset != null ? Math.abs(currentOffset - offset) : Infinity;
+    // While the clock tick is driving playback, the render callback fires at
+    // ~10 Hz. Issuing seekTo() on every tick for small deltas (<0.5s) causes
+    // the YouTube embed to stutter — the player is constantly re-buffering
+    // instead of playing. Skip small corrections and let YT run naturally.
+    if (delta < 0.5) return;
+    if (delta > _LARGE_JUMP_SEC) {
       try {
         const state = typeof _videoSync.player.getPlayerState === 'function'
           ? _videoSync.player.getPlayerState() : -1;
@@ -847,7 +853,11 @@ function _onPlayerStateChange(event) {
     _syncTimer = setInterval(_videoTick, 500);
   } else {
     _stopSyncTimer();
-    _videoTick();
+    // Deliberately do NOT call _videoTick() here: every YT state change
+    // (paused, buffering, cued) would otherwise overwrite _playClock.positionUtc
+    // with YT's getCurrentTime(), which during a scrub can still be 0 or an
+    // old offset and snaps the progress bar/cursor backward. _videoTick only
+    // makes sense while YT is actually playing and driving the clock.
   }
 }
 
