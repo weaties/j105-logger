@@ -416,9 +416,67 @@ class TestEnrichSessionManeuversWindRefZero:
         assert m["details"].get("original_type") == "gybe"
 
     @pytest.mark.asyncio
-    async def test_enrich_does_not_upgrade_large_tack_to_rounding(
+    async def test_enrich_does_not_upgrade_pre_start_gybe_to_rounding(
         self, storage: Storage
     ) -> None:
+        """Pre-start warmup gybes (practice maneuvers, zig-zags, drills)
+        can easily swing 130°+ without rounding anything. The rounding
+        reclassification must only apply to events at or after the race
+        start so pre-start debrief isn't flooded with false 'roundings'."""
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (5, 'pre-start-test', 'e', 1, ?, 'race', ?, ?)",
+            (start.date().isoformat(), start.isoformat(), end.isoformat()),
+        )
+        # Span of data covering both pre-start and post-start so enrichment
+        # has enough samples around the maneuver ts. Heading swings 176°
+        # from 5° to 181°, downwind both sides (TWA > 90).
+        pre_start_ts = start - timedelta(seconds=30)
+        for i in range(121):
+            ts_dt = pre_start_ts + timedelta(seconds=i)
+            hdg = 5.0 if i < 30 else 181.0  # 176° swing
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts_dt.isoformat(), 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts_dt.isoformat(), 0x05, 5.0),
+            )
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts_dt.isoformat(), 0x05, 10.0, 130.0),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts_dt.isoformat(), 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+        # Stored maneuver lands 15s BEFORE the race start → pre-start event.
+        maneuver_ts = start - timedelta(seconds=15)
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (5, 'gybe', ?, ?, 10.0, 3.0, NULL, 10, 130, NULL)",
+            (maneuver_ts.isoformat(), (maneuver_ts + timedelta(seconds=10)).isoformat()),
+        )
+        await db.commit()
+
+        enriched, _ = await enrich_session_maneuvers(storage, 5)
+        assert len(enriched) == 1
+        # Still a gybe — the large-turn reclassification is gated on
+        # ts >= race start so pre-start practice gybes don't become
+        # false 'roundings'.
+        assert enriched[0]["type"] == "gybe"
+
+    @pytest.mark.asyncio
+    async def test_enrich_does_not_upgrade_large_tack_to_rounding(self, storage: Storage) -> None:
         """A large-angle tack (~175°) stays a tack. Tacks legitimately swing
         through 80–100°, and on a start-line approach or sharp course change
         an isolated tack can get much larger without being a mark rounding.

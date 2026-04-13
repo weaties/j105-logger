@@ -558,15 +558,21 @@ async def enrich_session_maneuvers(
         # the leg direction changes ~180°. A normal gybe swings the bow
         # 50–70°, so anything ≥ 130° is almost certainly a rounding.
         #
+        # Only applied to maneuvers at or after the race start — pre-start
+        # warmups commonly include big practice gybes and zig-zag drills
+        # that aren't rounding anything, so reclassifying them as roundings
+        # would flood the debrief view with false positives.
+        #
         # NB: we do NOT upgrade large tacks — tacks legitimately swing
         # 80–100° already, and on a start-line approach or a big course
         # change an isolated tack can get up to ~135° without being a mark
         # rounding. The user explicitly flagged a 175° tack that was
-        # mis-upgraded by the previous heuristic.
+        # mis-upgraded by an earlier heuristic.
         if (
             d.get("type") == "gybe"
             and metrics.turn_angle_deg is not None
             and abs(metrics.turn_angle_deg) >= _ROUNDING_TURN_THRESHOLD_DEG
+            and m_ts >= start
         ):
             if not isinstance(d.get("details"), dict):
                 d["details"] = {}

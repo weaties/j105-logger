@@ -568,20 +568,20 @@ async function loadVakarosOverlay() {
 
       // Start-line laylines (#473): from each end of the line, extend two
       // tack laylines at the upwind-approach angle relative to the wind
-      // when the gun went off. Using ctx.twd_deg (the canonical wind-from
-      // bearing at race start) sidesteps the sign-folding in the replay
-      // sample TWA. The lines extend downwind from each endpoint so the
-      // two approaches on each tack are visible in the start area.
-      const LAYLINE_LEN_M = 600;
+      // when the gun went off. Length scales with the start line itself
+      // (1/3 of line length) so the lines stay proportional at every
+      // zoom. Color is muted rose so they read clearly without washing
+      // out the more important start-line + wind ticks.
+      const LAYLINE_LEN_M = Math.max(60, (data.line.length_m || 180) / 3);
       const TACK_HALF = 45;
-      const TACK_COLOR = '#e11d48';
+      const TACK_COLOR = '#f472b6';  // muted pink — less saturated than the rounding lines
       const windTo = (ctx.twd_deg + 180) % 360;
       const stbdBearing = (windTo + TACK_HALF) % 360;
       const portBearing = (windTo - TACK_HALF + 360) % 360;
       for (const end of [data.line.pin, data.line.boat]) {
         const stbd = _offsetPoint(end[0], end[1], stbdBearing, LAYLINE_LEN_M);
         const port = _offsetPoint(end[0], end[1], portBearing, LAYLINE_LEN_M);
-        const opts = {color: TACK_COLOR, weight: 3, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+        const opts = {color: TACK_COLOR, weight: 2, opacity: 0.7, dashArray: '4, 6', lineCap: 'butt'};
         L.polyline([end, stbd], opts).addTo(_map);
         L.polyline([end, port], opts).addTo(_map);
       }
