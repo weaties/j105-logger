@@ -180,6 +180,12 @@ async def _do_scheduled_start(app: FastAPI, event: str, session_type: str) -> No
                 )
             except AudioDeviceNotFoundError as exc:
                 logger.warning("Audio unavailable for scheduled race {}: {}", name, exc)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Audio capture failed for scheduled race {} — continuing without audio: {}",
+                    name,
+                    exc,
+                )
 
         await storage.log_action("race.scheduled_start", detail=race.name)
     except Exception as exc:  # noqa: BLE001
@@ -392,6 +398,17 @@ async def api_start_race(
             logger.info("Audio recording started for race {}", race.name)
         except AudioDeviceNotFoundError as exc:
             logger.warning("Audio unavailable for race {}: {}", race.name, exc)
+        except Exception as exc:  # noqa: BLE001
+            # Any other audio failure (PortAudio hot-unplug, USB drop, etc.)
+            # must not block the race from recording — the race row is
+            # already committed, so bubbling would leave an orphan race
+            # row plus a 500 in the UI. Log loud and continue with no
+            # audio for this session.
+            logger.exception(
+                "Audio capture failed for race {} — recording continues without audio: {}",
+                race.name,
+                exc,
+            )
 
     async def _start_cameras(rid: int) -> None:
         cams = await load_cameras(request)

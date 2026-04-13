@@ -237,9 +237,13 @@ class AudioRecorder:
         )
         self._writer_thread.start()
 
-        # Open the InputStream — callback enqueues numpy chunks
+        # Open the InputStream — callback enqueues numpy chunks.
+        # Pass ``(device_index, None)`` rather than a scalar so PortAudio does
+        # not try to pair us with its cached default output device — on Linux
+        # with USB hot-unplug that cached pointer can go stale between service
+        # startup and race-start and trip "Illegal combination of I/O devices".
         self._stream = sd.InputStream(
-            device=device_index,
+            device=(device_index, None),
             samplerate=config.sample_rate,
             channels=requested_ch,
             dtype="int16",
