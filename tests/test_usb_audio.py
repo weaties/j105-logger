@@ -14,6 +14,7 @@ import pytest
 
 from helmlog.usb_audio import (
     DetectedDevice,
+    detect_all_capture_devices,
     detect_multi_channel_device,
     detect_via_sounddevice,
 )
@@ -175,6 +176,93 @@ def test_detect_multi_channel_device_returns_none_when_nothing_found() -> None:
     ):
         result = detect_multi_channel_device(min_channels=4)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Sibling-card enumeration (#509)
+# ---------------------------------------------------------------------------
+
+
+_FAKE_SD_TWO_MONO = [
+    {"name": "Built-in", "max_input_channels": 0, "max_output_channels": 2},
+    {
+        "name": "USB Composite Device: Audio (hw:2,0)",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+    },
+    {
+        "name": "USB Composite Device: Audio (hw:3,0)",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+    },
+]
+
+
+def test_detect_all_capture_devices_darwin_returns_all_inputs() -> None:
+    """darwin path: every input-capable device meeting min_channels is returned."""
+    with (
+        patch("helmlog.usb_audio._is_linux", return_value=False),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+    ):
+        result = detect_all_capture_devices(min_channels=1)
+    assert len(result) == 2
+    assert all(d.max_channels == 1 for d in result)
+    assert [d.sounddevice_index for d in result] == [1, 2]
+    assert all(d.vendor_id == 0 and d.serial == "" for d in result)
+
+
+def test_detect_all_capture_devices_filters_by_min_channels() -> None:
+    with (
+        patch("helmlog.usb_audio._is_linux", return_value=False),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+    ):
+        result = detect_all_capture_devices(min_channels=2)
+    assert result == []
+
+
+def test_detect_all_capture_devices_linux_enriches_with_pyudev() -> None:
+    """Linux path: each sounddevice input is paired with a pyudev entry in order."""
+    fake_a = _fake_udev_device(vendor="3634", product="4155", serial="AAA", devpath="1-1")
+    fake_b = _fake_udev_device(vendor="3634", product="4155", serial="BBB", devpath="1-2")
+    fake_context = MagicMock()
+    fake_context.list_devices.return_value = [fake_a, fake_b]
+    fake_pyudev = MagicMock()
+    fake_pyudev.Context.return_value = fake_context
+
+    with (
+        patch.dict(sys.modules, {"pyudev": fake_pyudev}),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+        patch("helmlog.usb_audio._is_linux", return_value=True),
+    ):
+        result = detect_all_capture_devices(min_channels=1)
+
+    assert len(result) == 2
+    assert [d.serial for d in result] == ["AAA", "BBB"]
+    assert [d.vendor_id for d in result] == [0x3634, 0x3634]
+    assert [d.product_id for d in result] == [0x4155, 0x4155]
+    assert [d.usb_port_path for d in result] == ["1-1", "1-2"]
+    assert [d.sounddevice_index for d in result] == [1, 2]
+
+
+def test_detect_all_capture_devices_linux_fewer_pyudev_entries_than_sd() -> None:
+    """If pyudev sees fewer USB sound devices than sounddevice lists, extras
+    get blank identity so the sibling path still records (best-effort)."""
+    fake = _fake_udev_device(vendor="3634", product="4155", serial="ONLY", devpath="1-1")
+    fake_context = MagicMock()
+    fake_context.list_devices.return_value = [fake]
+    fake_pyudev = MagicMock()
+    fake_pyudev.Context.return_value = fake_context
+
+    with (
+        patch.dict(sys.modules, {"pyudev": fake_pyudev}),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+        patch("helmlog.usb_audio._is_linux", return_value=True),
+    ):
+        result = detect_all_capture_devices(min_channels=1)
+    assert len(result) == 2
+    assert result[0].serial == "ONLY"
+    assert result[1].serial == ""
+    assert result[1].vendor_id == 0
 
 
 @pytest.mark.parametrize(

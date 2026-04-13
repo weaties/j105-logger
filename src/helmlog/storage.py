@@ -134,7 +134,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 64
+_CURRENT_VERSION: int = 65
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1485,6 +1485,19 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE audio_sessions ADD COLUMN serial TEXT;
         ALTER TABLE audio_sessions ADD COLUMN usb_port_path TEXT;
     """,
+    65: """
+        -- Sibling-card capture stopgap (#509 / #462 follow-up): when two or
+        -- more mono USB receivers are used in parallel (e.g. the Jieli
+        -- 4-mic wireless sets that mix all transmitters to mono before USB),
+        -- each card produces its own mono WAV and its own audio_sessions
+        -- row. All siblings from one start/stop cycle share a
+        -- ``capture_group_id`` UUID and each carries its ordinal within the
+        -- group. NULL capture_group_id = legacy single-device session.
+        ALTER TABLE audio_sessions ADD COLUMN capture_group_id TEXT;
+        ALTER TABLE audio_sessions ADD COLUMN capture_ordinal INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_audio_sessions_capture_group
+            ON audio_sessions(capture_group_id);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -2501,8 +2514,9 @@ class Storage:
         cur = await db.execute(
             "INSERT INTO audio_sessions"
             " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
-            "  race_id, session_type, name, channel_map)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  race_id, session_type, name, channel_map,"
+            "  capture_group_id, capture_ordinal)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.file_path,
                 session.device_name,
@@ -2514,6 +2528,8 @@ class Storage:
                 session_type,
                 name,
                 json.dumps(session.channel_map) if session.channel_map else None,
+                session.capture_group_id,
+                session.capture_ordinal,
             ),
         )
         await db.commit()
@@ -2577,7 +2593,8 @@ class Storage:
         cur = await self._read_conn().execute(
             "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
             " race_id, session_type, name, channel_map,"
-            " vendor_id, product_id, serial, usb_port_path"
+            " vendor_id, product_id, serial, usb_port_path,"
+            " capture_group_id, capture_ordinal"
             " FROM audio_sessions WHERE id = ?",
             (session_id,),
         )
@@ -2592,6 +2609,25 @@ class Storage:
             except (json.JSONDecodeError, ValueError):
                 pass
         return res
+
+    async def list_capture_group_siblings(self, capture_group_id: str) -> list[dict[str, Any]]:
+        """Return all audio_sessions rows sharing a capture_group_id, in ordinal order.
+
+        Used by the sibling-card playback path (#509) to discover every WAV
+        that belongs to a single start/stop cycle across multiple mono USB
+        receivers. Returns an empty list if the group is unknown.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT id, file_path, device_name, start_utc, end_utc, sample_rate, channels,"
+            " race_id, session_type, name, channel_map,"
+            " vendor_id, product_id, serial, usb_port_path,"
+            " capture_group_id, capture_ordinal"
+            " FROM audio_sessions WHERE capture_group_id = ?"
+            " ORDER BY capture_ordinal ASC",
+            (capture_group_id,),
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
     async def list_audio_sessions(self) -> list[AudioSession]:
         """Return all audio sessions ordered by start_utc descending."""

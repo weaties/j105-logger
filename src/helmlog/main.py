@@ -397,10 +397,16 @@ async def _run() -> None:
     for row in await storage.list_settings():
         os.environ.setdefault(row["key"], row["value"])
 
-    from helmlog.audio import AudioConfig, AudioRecorder
+    from helmlog.audio import AudioConfig, AudioRecorder, AudioRecorderGroup
 
     audio_config = AudioConfig()
-    recorder = AudioRecorder()
+    _capture_mode = os.environ.get("AUDIO_CAPTURE_MODE", "single").lower()
+    recorder: AudioRecorder | AudioRecorderGroup
+    if _capture_mode == "sibling":
+        logger.info("Audio capture mode: sibling (parallel USB cards, #509)")
+        recorder = AudioRecorderGroup()
+    else:
+        recorder = AudioRecorder()
 
     # Seed cameras table from env var on first run, then load from DB
     cameras_str = os.environ.get("CAMERAS", "")

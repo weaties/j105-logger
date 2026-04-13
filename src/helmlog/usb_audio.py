@@ -168,6 +168,78 @@ def detect_via_pyudev(*, min_channels: int) -> DetectedDevice | None:
 # ---------------------------------------------------------------------------
 
 
+def detect_all_capture_devices(*, min_channels: int = 1) -> list[DetectedDevice]:
+    """Enumerate every USB audio input device that meets ``min_channels``.
+
+    Used by the sibling-card capture path (#509) when a single physical
+    USB receiver exposes only a mono PCM stream and we need to open
+    multiple cards in parallel.
+
+    On Linux each entry is enriched with a pyudev identity tuple in
+    enumeration order (best-effort — if pyudev lists fewer USB sound
+    devices than sounddevice sees, the extras get blank identity and the
+    sibling path records them anyway with an unstable channel-map key).
+
+    On darwin the identity tuple is always blank because PortAudio does
+    not expose USB vendor/product/serial.
+    """
+    import sounddevice as sd
+
+    sd_devices = sd.query_devices()
+    sd_inputs: list[tuple[int, dict[str, object]]] = [
+        (idx, dev)
+        for idx, dev in enumerate(sd_devices)
+        if int(dev["max_input_channels"]) >= min_channels
+    ]
+    if not sd_inputs:
+        return []
+
+    udev_entries: list[tuple[int, int, str, str]] = []
+    if _is_linux():
+        try:
+            import pyudev
+
+            context = pyudev.Context()
+            try:
+                usb_iter = context.list_devices(subsystem="sound", ID_BUS="usb")
+            except TypeError:
+                usb_iter = context.list_devices(subsystem="sound")
+            for udev in usb_iter:
+                vendor = udev.get("ID_VENDOR_ID", None)
+                product = udev.get("ID_MODEL_ID", None)
+                if not vendor or not product:
+                    continue
+                udev_entries.append(
+                    (
+                        _parse_hex(vendor),
+                        _parse_hex(product),
+                        udev.get("ID_SERIAL_SHORT", "") or "",
+                        str(getattr(udev, "sys_name", "") or ""),
+                    )
+                )
+        except Exception as exc:  # pragma: no cover - libudev missing
+            logger.warning("pyudev enumeration failed, identities blank: {}", exc)
+
+    result: list[DetectedDevice] = []
+    for pos, (sd_idx, sd_dev) in enumerate(sd_inputs):
+        if pos < len(udev_entries):
+            vid, pid, serial, port = udev_entries[pos]
+        else:
+            vid, pid, serial, port = 0, 0, "", ""
+        result.append(
+            DetectedDevice(
+                vendor_id=vid,
+                product_id=pid,
+                serial=serial,
+                usb_port_path=port,
+                max_channels=int(sd_dev["max_input_channels"]),  # type: ignore[call-overload]
+                sounddevice_index=sd_idx,
+                name=str(sd_dev["name"]),
+            )
+        )
+    return result
+
+
 def detect_multi_channel_device(*, min_channels: int = 4) -> DetectedDevice | None:
     """Detect a multi-channel USB audio input device.
 

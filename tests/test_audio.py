@@ -15,8 +15,10 @@ from helmlog.audio import (
     AudioConfig,
     AudioDeviceNotFoundError,
     AudioRecorder,
+    AudioRecorderGroup,
     _resolve_device,
 )
+from helmlog.usb_audio import DetectedDevice
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -384,3 +386,171 @@ def test_start_with_custom_name(tmp_path: Path) -> None:
 
     assert session.file_path.endswith("20260226-BallardCup-1.wav")
     assert "audio_" not in session.file_path
+
+
+# ---------------------------------------------------------------------------
+# AudioRecorderGroup — sibling-card capture (#509)
+# ---------------------------------------------------------------------------
+
+
+_FAKE_SIBLING_SD_DEVICES = [
+    {
+        "name": "USB Composite Device: Audio (hw:2,0)",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+        "default_samplerate": 48000.0,
+    },
+    {
+        "name": "USB Composite Device: Audio (hw:3,0)",
+        "max_input_channels": 1,
+        "max_output_channels": 0,
+        "default_samplerate": 48000.0,
+    },
+]
+
+
+def _detected(idx: int, serial: str) -> DetectedDevice:
+    return DetectedDevice(
+        vendor_id=0x3634,
+        product_id=0x4155,
+        serial=serial,
+        usb_port_path=f"1-{idx + 1}",
+        max_channels=1,
+        sounddevice_index=idx,
+        name=f"USB Composite Device: Audio (hw:{idx + 2},0)",
+    )
+
+
+def test_audio_recorder_group_start_opens_n_siblings(tmp_path: Path) -> None:
+    """Start() with 2 devices opens 2 InputStreams + 2 SoundFiles, one per card."""
+    import asyncio
+
+    mock_streams = [MagicMock(), MagicMock()]
+    mock_soundfiles = [MagicMock(), MagicMock()]
+    stream_iter = iter(mock_streams)
+    sf_iter = iter(mock_soundfiles)
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_SIBLING_SD_DEVICES),
+        patch("sounddevice.InputStream", side_effect=lambda **kw: next(stream_iter)),
+        patch("soundfile.SoundFile", side_effect=lambda *a, **kw: next(sf_iter)),
+    ):
+        config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+        group = AudioRecorderGroup()
+        devices = [_detected(0, "AAA"), _detected(1, "BBB")]
+        sessions = asyncio.run(
+            group.start(config, devices=devices, name="20260412-multichannel-P1")
+        )
+
+    assert len(sessions) == 2
+    # Distinct filenames so the two recorders don't collide.
+    assert sessions[0].file_path != sessions[1].file_path
+    assert sessions[0].file_path.endswith("-sib0.wav")
+    assert sessions[1].file_path.endswith("-sib1.wav")
+
+    # Shared capture_group_id, distinct ordinals.
+    assert sessions[0].capture_group_id == sessions[1].capture_group_id
+    assert sessions[0].capture_group_id is not None
+    assert sessions[0].capture_ordinal == 0
+    assert sessions[1].capture_ordinal == 1
+
+    # Per-sibling USB identity carried through.
+    assert sessions[0].serial == "AAA"
+    assert sessions[1].serial == "BBB"
+    assert sessions[0].channels == 1
+    assert sessions[1].channels == 1
+
+    # Both streams were started.
+    assert mock_streams[0].start.called
+    assert mock_streams[1].start.called
+    assert group.is_recording
+
+
+def test_audio_recorder_group_stop_stops_all_siblings(tmp_path: Path) -> None:
+    """Stop() closes every sibling's stream and SoundFile, preserves group metadata."""
+    import asyncio
+
+    mock_streams = [MagicMock(), MagicMock()]
+    mock_soundfiles = [MagicMock(), MagicMock()]
+    stream_iter = iter(mock_streams)
+    sf_iter = iter(mock_soundfiles)
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_SIBLING_SD_DEVICES),
+        patch("sounddevice.InputStream", side_effect=lambda **kw: next(stream_iter)),
+        patch("soundfile.SoundFile", side_effect=lambda *a, **kw: next(sf_iter)),
+    ):
+        config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+        group = AudioRecorderGroup()
+        asyncio.run(
+            group.start(
+                config,
+                devices=[_detected(0, "AAA"), _detected(1, "BBB")],
+                name="20260412-race",
+            )
+        )
+        completed = asyncio.run(group.stop())
+
+    assert len(completed) == 2
+    assert not group.is_recording
+    # Group metadata preserved through stop().
+    assert completed[0].capture_group_id == completed[1].capture_group_id
+    assert completed[0].capture_ordinal == 0
+    assert completed[1].capture_ordinal == 1
+    # end_utc set on every sibling.
+    for s in completed:
+        assert s.end_utc is not None
+    # Both streams + files closed.
+    for m in mock_streams:
+        assert m.stop.called
+        assert m.close.called
+    for m in mock_soundfiles:
+        assert m.close.called
+
+
+def test_audio_recorder_group_start_rejects_empty_device_list(tmp_path: Path) -> None:
+    import asyncio
+
+    config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+    group = AudioRecorderGroup()
+    with pytest.raises(AudioDeviceNotFoundError):
+        asyncio.run(group.start(config, devices=[], name="x"))
+
+
+def test_audio_recorder_group_start_cleans_up_on_sibling_failure(tmp_path: Path) -> None:
+    """If the second sibling fails to open, the first must be stopped cleanly."""
+    import asyncio
+
+    mock_first_stream = MagicMock()
+    mock_first_sf = MagicMock()
+
+    def input_stream_side_effect(**_kwargs: object) -> MagicMock:
+        if input_stream_side_effect.calls == 0:
+            input_stream_side_effect.calls += 1
+            return mock_first_stream
+        raise RuntimeError("device busy")
+
+    input_stream_side_effect.calls = 0  # type: ignore[attr-defined]
+
+    sf_iter = iter([mock_first_sf, MagicMock()])
+
+    with (
+        patch("sounddevice.query_devices", return_value=_FAKE_SIBLING_SD_DEVICES),
+        patch("sounddevice.InputStream", side_effect=input_stream_side_effect),
+        patch("soundfile.SoundFile", side_effect=lambda *a, **kw: next(sf_iter)),
+    ):
+        config = AudioConfig(device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path))
+        group = AudioRecorderGroup()
+        with pytest.raises(RuntimeError, match="device busy"):
+            asyncio.run(
+                group.start(
+                    config,
+                    devices=[_detected(0, "AAA"), _detected(1, "BBB")],
+                    name="x",
+                )
+            )
+
+    # First sibling was cleaned up even though start() raised.
+    assert mock_first_stream.stop.called
+    assert mock_first_stream.close.called
+    assert not group.is_recording

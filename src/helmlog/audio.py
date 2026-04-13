@@ -83,6 +83,11 @@ class AudioSession:
     product_id: int = 0
     serial: str = ""
     usb_port_path: str = ""
+    # Sibling-card capture (#509). When multiple mono USB receivers are
+    # recorded in parallel, every sibling shares a ``capture_group_id`` and
+    # gets its own ordinal (0..N-1). None / 0 = legacy single-device session.
+    capture_group_id: str | None = None
+    capture_ordinal: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -323,6 +328,202 @@ class AudioRecorder:
                 continue
             except Exception as exc:
                 logger.error("Audio writer thread error: {}", exc)
+
+
+# ---------------------------------------------------------------------------
+# AudioRecorderGroup — sibling-card parallel capture (#509)
+# ---------------------------------------------------------------------------
+
+
+class AudioRecorderGroup:
+    """Record from N USB capture devices in parallel, one WAV per card.
+
+    Stopgap for hardware that presents each wireless receiver as a
+    mono-only USB device (#509). Each sibling recorder writes its own
+    WAV file; all siblings from one start/stop cycle share a single
+    ``capture_group_id`` UUID and an ordinal within the group.
+
+    Usage::
+
+        from helmlog.usb_audio import detect_all_capture_devices
+
+        group = AudioRecorderGroup()
+        sessions = await group.start(
+            config,
+            devices=detect_all_capture_devices(min_channels=1),
+            name=race.name,
+        )
+        # … write every session to storage; all share capture_group_id …
+        completed = await group.stop()
+
+    On failure during ``start()``, any siblings that already opened are
+    best-effort stopped before the exception propagates, so we never
+    leak USB streams.
+    """
+
+    def __init__(self) -> None:
+        self._recorders: list[AudioRecorder] = []
+        self._sessions: list[AudioSession] = []
+
+    @property
+    def is_recording(self) -> bool:
+        return bool(self._recorders)
+
+    async def start(
+        self,
+        config: AudioConfig,
+        *,
+        devices: list[Any],  # list[DetectedDevice]; loose to avoid import
+        name: str | None = None,
+    ) -> list[AudioSession]:
+        """Open one sibling recorder per device and return their sessions."""
+        import uuid
+
+        if not devices:
+            raise AudioDeviceNotFoundError(
+                "AudioRecorderGroup.start(): no capture devices provided"
+            )
+
+        group_id = uuid.uuid4().hex
+        sessions: list[AudioSession] = []
+        recorders: list[AudioRecorder] = []
+        try:
+            for ordinal, device in enumerate(devices):
+                sibling_name: str | None = None
+                if name is not None:
+                    sibling_name = f"{name}-sib{ordinal}"
+                recorder = AudioRecorder()
+                session = await recorder.start(config, name=sibling_name, detected=device)
+                session.capture_group_id = group_id
+                session.capture_ordinal = ordinal
+                recorders.append(recorder)
+                sessions.append(session)
+        except Exception:
+            for r in recorders:
+                try:
+                    await r.stop()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("sibling cleanup on start failure: {}", exc)
+            raise
+
+        self._recorders = recorders
+        self._sessions = sessions
+        logger.debug(
+            "AudioRecorderGroup started: group={} siblings={}",
+            group_id,
+            len(sessions),
+        )
+        return sessions
+
+    async def stop(self) -> list[AudioSession]:
+        """Stop every sibling and return the completed sessions in ordinal order."""
+        if not self._recorders:
+            raise RuntimeError("AudioRecorderGroup.stop() called before start()")
+        completed: list[AudioSession] = []
+        errors: list[BaseException] = []
+        for r, staged in zip(self._recorders, self._sessions, strict=True):
+            try:
+                done = await r.stop()
+                done.capture_group_id = staged.capture_group_id
+                done.capture_ordinal = staged.capture_ordinal
+                completed.append(done)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("sibling stop failed ordinal={}: {}", staged.capture_ordinal, exc)
+                errors.append(exc)
+        self._recorders = []
+        self._sessions = []
+        if errors:
+            raise RuntimeError(
+                f"AudioRecorderGroup.stop(): {len(errors)} sibling(s) failed — first: {errors[0]!r}"
+            )
+        return completed
+
+
+# ---------------------------------------------------------------------------
+# Unified start/stop helpers that handle both AudioRecorder and
+# AudioRecorderGroup so route handlers can stay oblivious (#509).
+# ---------------------------------------------------------------------------
+
+
+async def capture_start(
+    recorder: AudioRecorder | AudioRecorderGroup,
+    config: AudioConfig,
+    storage: Any,  # noqa: ANN401 — Storage; loose to avoid import cycle
+    *,
+    name: str | None,
+    race_id: int | None,
+    session_type: str,
+) -> int:
+    """Start an audio capture and persist every resulting session.
+
+    Works transparently whether the recorder is a single-device
+    ``AudioRecorder`` or a sibling-card ``AudioRecorderGroup``. Returns
+    the *primary* session id (ordinal 0) so the caller can keep tracking
+    the capture with a single scalar in ``session_state``.
+    """
+    if isinstance(recorder, AudioRecorderGroup):
+        from helmlog.usb_audio import detect_all_capture_devices
+
+        devices = detect_all_capture_devices(min_channels=1)
+        sessions = await recorder.start(config, devices=devices, name=name)
+    else:
+        sessions = [await recorder.start(config, name=name)]
+
+    primary_id: int | None = None
+    for s in sessions:
+        sid = await storage.write_audio_session(
+            s, race_id=race_id, session_type=session_type, name=name
+        )
+        if primary_id is None:
+            primary_id = sid
+    assert primary_id is not None
+    return primary_id
+
+
+async def capture_stop(
+    recorder: AudioRecorder | AudioRecorderGroup,
+    storage: Any,  # noqa: ANN401 — Storage
+    *,
+    primary_session_id: int,
+) -> AudioSession:
+    """Stop the active capture and persist end_utc for every sibling.
+
+    In single-device mode only ``primary_session_id`` is updated. In
+    sibling mode the recorder's completed sessions carry their
+    ``capture_group_id`` and ordinals; we resolve the corresponding
+    audio_sessions row ids by querying ``list_capture_group_siblings``.
+    Returns the primary completed ``AudioSession``.
+    """
+    if isinstance(recorder, AudioRecorderGroup):
+        completed = await recorder.stop()
+        if not completed:
+            raise RuntimeError("capture_stop(): group returned no sessions")
+        primary = completed[0]
+        assert primary.end_utc is not None
+        group_id = primary.capture_group_id
+        if group_id is None:
+            # Defensive: sibling recorder somehow forgot the group id.
+            await storage.update_audio_session_end(primary_session_id, primary.end_utc)
+            return primary
+        rows = await storage.list_capture_group_siblings(group_id)
+        by_ordinal = {r["capture_ordinal"]: r["id"] for r in rows}
+        for s in completed:
+            sid = by_ordinal.get(s.capture_ordinal)
+            if sid is None:
+                logger.warning(
+                    "capture_stop(): no row for group={} ordinal={}",
+                    group_id,
+                    s.capture_ordinal,
+                )
+                continue
+            assert s.end_utc is not None
+            await storage.update_audio_session_end(sid, s.end_utc)
+        return primary
+
+    completed_single = await recorder.stop()
+    assert completed_single.end_utc is not None
+    await storage.update_audio_session_end(primary_session_id, completed_single.end_utc)
+    return completed_single
 
 
 # ---------------------------------------------------------------------------
