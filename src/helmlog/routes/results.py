@@ -199,6 +199,57 @@ async def api_fetch_results(
     return JSONResponse({"ok": True, **counts})
 
 
+@router.post("/api/results/regattas/{regatta_id}/rematch", response_class=JSONResponse)
+async def api_rematch_regatta(
+    request: Request,
+    regatta_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Re-run local-session matching over an already-imported regatta's races.
+
+    Walks every race in the regatta with ``local_session_id IS NULL``,
+    asks the matcher (with ``ambiguous_policy='first'``) and writes any
+    new links. Useful when local sessions were created after the import,
+    or when the matcher behavior has been improved.
+    """
+    from helmlog.results.importer import _maybe_link_local_session, _resolve_venue_tz
+
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT * FROM regattas WHERE id = ?", (regatta_id,))
+    reg_row = await cur.fetchone()
+    if not reg_row:
+        raise HTTPException(404, "Regatta not found")
+
+    venue_tz_str: str | None = None
+    keys = reg_row.keys() if hasattr(reg_row, "keys") else []
+    if "venue_tz" in keys:
+        venue_tz_str = reg_row["venue_tz"]
+    venue_tz = _resolve_venue_tz(venue_tz_str)
+
+    cur = await db.execute(
+        "SELECT id, date FROM races"
+        " WHERE regatta_id = ? AND local_session_id IS NULL AND date IS NOT NULL",
+        (regatta_id,),
+    )
+    rows = list(await cur.fetchall())
+    linked = 0
+    for row in rows:
+        await _maybe_link_local_session(db, row["id"], row["date"], venue_tz)
+        after = await db.execute("SELECT local_session_id FROM races WHERE id = ?", (row["id"],))
+        after_row = await after.fetchone()
+        if after_row is not None and after_row[0] is not None:
+            linked += 1
+    await db.commit()
+
+    await audit(
+        request,
+        "results_regatta_rematch",
+        detail=json.dumps({"regatta_id": regatta_id, "races_checked": len(rows), "linked": linked}),
+    )
+    return JSONResponse({"ok": True, "races_checked": len(rows), "linked": linked})
+
+
 @router.get("/api/results/races", response_class=JSONResponse)
 async def api_list_results(
     request: Request,

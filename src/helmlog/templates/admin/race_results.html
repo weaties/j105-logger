@@ -56,6 +56,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <td>{{ r.last_fetched_at or "—" }}</td>
 <td style="white-space:nowrap">
 <button class="btn-sm btn-fetch" onclick="fetchResults({{ r.id }},this)">Fetch</button>
+<button class="btn-sm" onclick="rematchRegatta({{ r.id }},this)" title="Re-link imported races to local sessions">Rematch</button>
 <button class="btn-sm btn-del" onclick="deleteRegatta({{ r.id }},'{{ r.name | e }}')">×</button>
 </td>
 </tr>
@@ -226,6 +227,19 @@ async function fetchResults(id,btn){
     setTimeout(()=>location.reload(),1500);
   }catch(err){showMsg(err.message,false)}
   finally{btn.disabled=false;btn.textContent='Fetch'}
+}
+
+async function rematchRegatta(id,btn){
+  btn.disabled=true;btn.textContent='Rematching…';
+  showMsg('',true);
+  try{
+    const r=await fetch('/api/results/regattas/'+id+'/rematch',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Rematch failed');
+    showMsg('Rematch: linked '+d.linked+' of '+d.races_checked+' unlinked races',true);
+    setTimeout(()=>location.reload(),1000);
+  }catch(err){showMsg(err.message,false)}
+  finally{btn.disabled=false;btn.textContent='Rematch'}
 }
 
 async function loadClasses(regattaId){
