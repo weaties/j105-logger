@@ -80,10 +80,19 @@ function setPosition(utc, opts) {
   _playClock.tickAnchorUtc = date;
   _playClock.tickAnchorPerf = _clockNowMs();
   const source = (opts && opts.source) || null;
+  // Stash source so individual consumers can decide whether this producer
+  // should drive them. In particular, playback-bearing consumers (video,
+  // audio, mc) use this to avoid seeking one player when a different player
+  // is the one producing updates — e.g. WAV play must not start YT.
+  _playClock.currentSource = source;
   for (const c of _playClock.consumers) {
     if (c.name === source) continue; // don't echo back to producer
     try { c.render(date); } catch (e) { /* never let one surface break others */ }
   }
+  _playClock.currentSource = null;
+  // Keep the replay scrubber + time label in sync with producer events
+  // (YT scrub, WAV scrub) — otherwise only clock-driven ticks update them.
+  try { _updateReplayControls(); } catch (e) { /* not yet wired */ }
 }
 
 function _isEchoEvent() {
@@ -802,6 +811,9 @@ function _onVideoReady() {
   // wherever the user just clicked. Small deltas (playback ticks) don't
   // touch playback state.
   registerSurface('video', function(utc) {
+    // Playback independence: don't seek YT just because another player's
+    // producer fanout reached us. Let WAV/mc play on their own.
+    if (_playClock.currentSource === 'audio' || _playClock.currentSource === 'mc') return;
     if (!_videoSync || !_videoSync.player || !_videoSync.player.seekTo) return;
     const offset = _utcToVideoOffset(utc);
     if (offset === null || offset < 0) return;
@@ -855,12 +867,11 @@ function switchVideo(idx) {
 function _onPlayerStateChange(event) {
   // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, BUFFERING = 3
   if (event.data === 1) {
-    // If the playback clock is paused (user is scrubbing, nothing has been
-    // explicitly played) but the YT embed decided to start on its own — e.g.
-    // because a seekTo resumed playback — clamp it back down immediately so
-    // the video can't escape our paused state. Without this the video keeps
-    // running through every scrub and stepping on the rest of the surfaces.
-    if (_playClock.state !== 'playing') {
+    // If we're inside the echo window from a recent programmatic seek,
+    // clamp YT back to paused — a scrub just drove seekTo() and the embed
+    // is trying to auto-resume out from under us. Outside the echo window
+    // this is a user-initiated play and we leave it alone.
+    if (_isEchoEvent()) {
       try {
         if (typeof _videoSync.player.pauseVideo === 'function') {
           _videoSync.player.pauseVideo();
@@ -869,16 +880,9 @@ function _onPlayerStateChange(event) {
       return;
     }
     _stopSyncTimer();
-    // Treat YT play as a producer: anchor the clock to the current video time
-    if (typeof _videoSync.player.getCurrentTime === 'function') {
-      const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
-      if (utc) {
-        _playClock.positionUtc = utc;
-        // Don't fire echo to video — but other surfaces should follow
-        setPosition(utc, {source: 'video'});
-      }
-    }
-    // Drive a 2 Hz tick from the YT player so map/transcript follow during play
+    // YT plays independently — drive a 2 Hz fanout so the map cursor, gauges,
+    // and track scrubber follow along. Do NOT start the replay clock tick;
+    // replay 'playing' state is reserved for the track replay play button.
     _syncTimer = setInterval(_videoTick, 500);
   } else {
     _stopSyncTimer();
@@ -897,14 +901,14 @@ function _stopSyncTimer() {
 function _videoTick() {
   if (!_videoSync || !_videoSync.player) return;
   if (typeof _videoSync.player.getCurrentTime !== 'function') return;
+  // The replay clock is master when it's playing — let its tick drive the
+  // surfaces instead of YT so the rates don't fight each other.
+  if (_playClock.state === 'playing') return;
   const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
   if (!utc) return;
-  // Treat as a non-seek update: update other surfaces but not the video itself
-  _playClock.positionUtc = utc;
-  for (const c of _playClock.consumers) {
-    if (c.name === 'video') continue;
-    try { c.render(utc); } catch (e) { /* swallow */ }
-  }
+  // Fan out through setPosition so the track scrubber and gauges update too.
+  // source='video' keeps the video consumer itself out of the loop (no echo).
+  setPosition(utc, {source: 'video'});
 }
 
 // Convert video playback seconds → UTC
@@ -1791,6 +1795,10 @@ function loadAudio() {
   // currently-playing audio: it's distracting to have audio keep going from
   // a new spot just because the user clicked somewhere on the page.
   registerSurface('audio', function(utc) {
+    // Playback independence: if a different player is producing updates,
+    // don't move this player's playhead. Scrubs via replay/map/etc still
+    // seek audio so the preview stays in sync with the cursor.
+    if (_playClock.currentSource === 'video' || _playClock.currentSource === 'mc') return;
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
     const delta = Math.abs(el.currentTime - local);
@@ -1814,12 +1822,12 @@ function loadAudio() {
   };
   el.addEventListener('seeked', _fanout);
   el.addEventListener('timeupdate', _fanout);
+  // The WAV player plays independently — it is NOT allowed to drive the
+  // replay clock's 'playing' state. The clock is reserved for the track
+  // replay play button. Fanout via timeupdate is enough to keep the map
+  // cursor and gauges tracking while WAV plays on its own.
   el.addEventListener('play', function() {
     setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
-    _startPlayTick();
-  });
-  el.addEventListener('pause', function() {
-    _stopPlayTick();
   });
 }
 
@@ -1992,10 +2000,26 @@ function _mcUpdateProgress() {
   time.textContent = `${fmt(t)} / ${fmt(_mcBuffer.duration)}`;
 }
 
+let _mcFanoutLast = 0;
 function _mcStartProgressTick() {
   _mcStopProgressTick();
   const tick = () => {
     _mcUpdateProgress();
+    // Throttled producer fanout: while mc is playing, push the current
+    // playhead out as a source='mc' update so the map cursor, gauges, and
+    // replay scrubber track along. 150 ms matches the existing audio
+    // fanout cadence.
+    const now = _clockNowMs();
+    if (_mcIsPlaying && now - _mcFanoutLast >= 150) {
+      _mcFanoutLast = now;
+      const anchor = _mcSessionStart();
+      if (anchor) {
+        setPosition(
+          new Date(anchor.getTime() + _mcCurrentTime() * 1000),
+          {source: 'mc'},
+        );
+      }
+    }
     if (_mcIsPlaying) _mcRafHandle = requestAnimationFrame(tick);
   };
   _mcRafHandle = requestAnimationFrame(tick);
@@ -2094,6 +2118,9 @@ async function loadMultiChannelAudio() {
   // the mc seek bar and start offset. Skipped while playing (avoid fighting
   // natural playback) and while the user is actively dragging the slider.
   registerSurface('mc', function(utc) {
+    // Playback independence: leave mc alone when a different player drives
+    // the update. Only replay/map/scrub-style sources should move mc.
+    if (_playClock.currentSource === 'video' || _playClock.currentSource === 'audio') return;
     if (!_mcBuffer) return;
     const anchor = _mcSessionStart();
     if (!anchor) return;
@@ -4883,6 +4910,16 @@ function _togglePlayPause() {
   if (_playClock.state === 'playing') {
     _stopPlayTick();
   } else {
+    // Pause any WAV / multi-channel audio before the clock starts — the
+    // user wants the track replay play button to drive the map/video
+    // preview, not audio. YT is intentionally left running so it keeps
+    // providing a visual preview while the replay scrubs it.
+    try {
+      const aEl = document.getElementById('session-audio')
+        || document.querySelector('#audio-body audio');
+      if (aEl && !aEl.paused) aEl.pause();
+    } catch (e) { /* swallow */ }
+    try { if (typeof _mcIsPlaying !== 'undefined' && _mcIsPlaying) _mcPause(); } catch (e) { /* swallow */ }
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     // If at (or past) the end, restart from the beginning
     if (_replayEnd && _playClock.positionUtc.getTime() >= _replayEnd.getTime()) {
