@@ -8,16 +8,25 @@ from typing import TYPE_CHECKING
 import pytest
 
 from helmlog.nmea2000 import (
+    PGN_POSITION_RAPID,
     PGN_SPEED_THROUGH_WATER,
     PGN_WIND_DATA,
+    PositionRecord,
     SpeedRecord,
     WindRecord,
 )
 from helmlog.polar import (
+    GRADE_GREEN_BELOW,
+    GRADE_RED_BELOW,
+    GRADE_SUSPICIOUS_AT,
+    GRADE_YELLOW_BELOW,
     _compute_twa,
+    _grade_from_pct,
     _twa_bin,
     _tws_bin,
     build_polar_baseline,
+    get_polar_baseline_version,
+    grade_session_segments,
     lookup_polar,
     session_polar_comparison,
 )
@@ -337,3 +346,225 @@ async def test_session_polar_tws_and_twa_bins_sorted(storage: Storage) -> None:
     assert 10 in result.tws_bins
     assert 45 in result.twa_bins
     assert 90 in result.twa_bins
+
+
+# ---------------------------------------------------------------------------
+# Per-segment grading (#469)
+# ---------------------------------------------------------------------------
+
+
+class TestGradeFromPct:
+    def test_none_is_unknown(self) -> None:
+        assert _grade_from_pct(None) == "unknown"
+
+    def test_below_red_threshold(self) -> None:
+        assert _grade_from_pct(0.5) == "red"
+        assert _grade_from_pct(GRADE_RED_BELOW - 0.0001) == "red"
+
+    def test_red_threshold_inclusive_yellow(self) -> None:
+        assert _grade_from_pct(GRADE_RED_BELOW) == "yellow"
+
+    def test_yellow_band(self) -> None:
+        assert _grade_from_pct(0.95) == "yellow"
+
+    def test_yellow_threshold_inclusive_green(self) -> None:
+        assert _grade_from_pct(GRADE_YELLOW_BELOW) == "green"
+
+    def test_green_band(self) -> None:
+        assert _grade_from_pct(1.00) == "green"
+
+    def test_green_extends_through_old_top(self) -> None:
+        # 1.05 used to be the green ceiling but now stays green up to 1.20.
+        assert _grade_from_pct(GRADE_GREEN_BELOW) == "green"
+        assert _grade_from_pct(1.10) == "green"
+
+    def test_suspicious_threshold(self) -> None:
+        assert _grade_from_pct(GRADE_SUSPICIOUS_AT) == "suspicious"
+        assert _grade_from_pct(2.0) == "suspicious"
+
+
+async def _seed_session(
+    storage: Storage,
+    *,
+    duration_s: int,
+    bsp: float,
+    tws: float,
+    twa: float,
+    with_positions: bool = True,
+    with_winds: bool = True,
+) -> int:
+    """Create a completed race with 1 Hz instrument data and return its id."""
+    start = datetime(2024, 7, 1, 12, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=duration_s)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('Seg', 'E', 1, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    sid = int((await cur.fetchone())["id"])
+
+    for i in range(duration_s):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, bsp))
+        if with_winds:
+            await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, tws, twa, 0))
+        if with_positions:
+            await storage.write(
+                PositionRecord(PGN_POSITION_RAPID, 5, ts, 37.80 + i * 1e-5, -122.27 + i * 1e-5)
+            )
+    return sid
+
+
+async def _build_baseline_at(storage: Storage, bsp: float, tws: float, twa: float) -> None:
+    for i in range(1, 4):
+        await _make_session(storage, race_num=100 + i, bsp=bsp, tws=tws, twa=twa)
+    await build_polar_baseline(storage)
+
+
+@pytest.mark.asyncio
+async def test_grade_unfinished_session_returns_empty(storage: Storage) -> None:
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc)"
+        " VALUES ('Open', 'E', 1, '2024-07-01', '2024-07-01T12:00:00')"
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    sid = int((await cur.fetchone())["id"])
+    assert await grade_session_segments(storage, sid) == []
+
+
+@pytest.mark.asyncio
+async def test_grade_nonexistent_session(storage: Storage) -> None:
+    assert await grade_session_segments(storage, 9999) == []
+
+
+@pytest.mark.asyncio
+async def test_grade_segment_count_matches_duration(storage: Storage) -> None:
+    """60s session, 10s segments → 6 segments."""
+    sid = await _seed_session(storage, duration_s=60, bsp=6.0, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert len(segs) == 6
+    assert segs[0].segment_index == 0
+    assert segs[-1].segment_index == 5
+
+
+@pytest.mark.asyncio
+async def test_grade_unknown_when_no_baseline(storage: Storage) -> None:
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    # No baseline → target_bsp None → grade unknown
+    assert all(s.grade == "unknown" for s in segs)
+    assert all(s.target_bsp_kts is None for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_green_when_at_target(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.grade == "green" for s in segs)
+    assert all(s.target_bsp_kts == pytest.approx(6.0, rel=1e-3) for s in segs)
+    assert all(s.pct_target == pytest.approx(1.0, rel=1e-3) for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_red_when_far_below_target(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=4.0, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.grade == "red" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_suspicious_when_far_above_target(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=5.0, tws=10.0, twa=45.0)
+    # 6.5 / 5.0 = 1.30 → suspicious
+    sid = await _seed_session(storage, duration_s=30, bsp=6.5, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.grade == "suspicious" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_unknown_when_wind_missing(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0, with_winds=False)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.grade == "unknown" for s in segs)
+    assert all(s.tws_kts is None for s in segs)
+    assert all(s.twa_deg is None for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_unknown_when_no_gps(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(
+        storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0, with_positions=False
+    )
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.lat is None and s.lon is None for s in segs)
+    assert all(s.grade == "unknown" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_position_interpolated(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    # First segment midpoint at +5s → lat ≈ 37.80005
+    assert segs[0].lat is not None
+    assert segs[0].lat == pytest.approx(37.80 + 5e-5, abs=1e-6)
+
+
+@pytest.mark.asyncio
+async def test_grade_cache_hit_does_not_recompute(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    first = await grade_session_segments(storage, sid, segment_seconds=10)
+    # Mutate underlying data; cache should hide it.
+    db = storage._conn()
+    await db.execute("DELETE FROM speeds")
+    await db.commit()
+    second = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert [s.grade for s in second] == [s.grade for s in first]
+
+
+@pytest.mark.asyncio
+async def test_grade_cache_invalidated_on_baseline_rebuild(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    v1 = await get_polar_baseline_version(storage)
+    await grade_session_segments(storage, sid, segment_seconds=10)
+    # Rebuild → version bump → cache stale → recompute reflects new data
+    await build_polar_baseline(storage)
+    v2 = await get_polar_baseline_version(storage)
+    assert v2 == v1 + 1
+    # Clear the speeds and recompute; new run should see the empty data
+    db = storage._conn()
+    await db.execute("DELETE FROM speeds")
+    await db.commit()
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert all(s.bsp_kts is None for s in segs)
+    assert all(s.grade == "unknown" for s in segs)
+
+
+@pytest.mark.asyncio
+async def test_grade_baseline_version_bumped_on_build(storage: Storage) -> None:
+    v0 = await get_polar_baseline_version(storage)
+    assert v0 == 0
+    await build_polar_baseline(storage)
+    assert await get_polar_baseline_version(storage) == v0 + 1
+    await build_polar_baseline(storage)
+    assert await get_polar_baseline_version(storage) == v0 + 2
+
+
+@pytest.mark.asyncio
+async def test_grade_distinct_polar_source_caches_separately(storage: Storage) -> None:
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+    own = await grade_session_segments(storage, sid, polar_source="own", segment_seconds=10)
+    ref = await grade_session_segments(storage, sid, polar_source="reference", segment_seconds=10)
+    assert len(own) == len(ref) == 3
