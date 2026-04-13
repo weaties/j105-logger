@@ -156,7 +156,10 @@ jobs:
           - MEDIUM: embargo gaps, export leaks, missing auth/rate-limit
           - Ignore style, line length, import ordering, pre-existing web.py mypy errors
 
-          Output format:
+          Output format — start directly with `## Summary`. Do NOT write any
+          preamble, acknowledgement, or "Let me compile my findings" sentence.
+          The very first character of your response must be `#`. The exact
+          structure is:
 
               ## Summary
               1–2 sentences.
@@ -171,14 +174,35 @@ jobs:
               (or ::VERDICT::FAIL if at least one HIGH)
           PROMPT
           envsubst < /tmp/prompt.txt > /tmp/prompt.final.txt
-          claude -p "$(cat /tmp/prompt.final.txt)" --output-format text > /tmp/review.md
+          claude -p "$(cat /tmp/prompt.final.txt)" --output-format json > /tmp/result.json
+          jq -r '.result' /tmp/result.json > /tmp/review.md
+          cost=$(jq -r '.total_cost_usd // "unknown"' /tmp/result.json)
+          turns=$(jq -r '.num_turns // "unknown"' /tmp/result.json)
+          echo "cost=${cost}" >> "${GITHUB_OUTPUT}"
+          echo "turns=${turns}" >> "${GITHUB_OUTPUT}"
+          echo "--- review output ---"
           cat /tmp/review.md
+          echo "--- metrics ---"
+          echo "cost_usd=${cost} num_turns=${turns}"
+
           verdict=$(grep -E '^::VERDICT::(PASS|FAIL)' /tmp/review.md | tail -1 || echo "::VERDICT::FAIL")
           if [ "${verdict}" = "::VERDICT::FAIL" ]; then
             echo "step_status=fail" >> "${GITHUB_OUTPUT}"
           else
             echo "step_status=pass" >> "${GITHUB_OUTPUT}"
           fi
+
+          # Bisect step summary
+          {
+            echo "## Claude Bisect — step ${{ github.event.inputs.depth }}"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Verdict | \`${verdict}\` |"
+            echo "| Cost (USD) | \`${cost}\` |"
+            echo "| Turns | \`${turns}\` |"
+            echo "| Midpoint | \`${MID}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Post terminal result
         if: steps.mid.outputs.terminal == 'found'
