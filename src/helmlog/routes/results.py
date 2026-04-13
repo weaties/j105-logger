@@ -207,12 +207,15 @@ async def api_rematch_regatta(
 ) -> JSONResponse:
     """Re-run local-session matching over an already-imported regatta's races.
 
-    Walks every race in the regatta with ``local_session_id IS NULL``,
-    asks the matcher (with ``ambiguous_policy='first'``) and writes any
-    new links. Useful when local sessions were created after the import,
-    or when the matcher behavior has been improved.
+    Pairs imported races to local race-type sessions by order within each
+    venue-local date.  Only updates rows with ``local_session_id IS NULL``;
+    manual links and prior matches are preserved.  Useful when local
+    sessions were created after the import.
     """
-    from helmlog.results.importer import _maybe_link_local_session, _resolve_venue_tz
+    from helmlog.results.importer import (
+        _link_regatta_races_to_local_sessions,
+        _resolve_venue_tz,
+    )
 
     storage = get_storage(request)
     db = storage._conn()
@@ -227,27 +230,15 @@ async def api_rematch_regatta(
         venue_tz_str = reg_row["venue_tz"]
     venue_tz = _resolve_venue_tz(venue_tz_str)
 
-    cur = await db.execute(
-        "SELECT id, date FROM races"
-        " WHERE regatta_id = ? AND local_session_id IS NULL AND date IS NOT NULL",
-        (regatta_id,),
-    )
-    rows = list(await cur.fetchall())
-    linked = 0
-    for row in rows:
-        await _maybe_link_local_session(db, row["id"], row["date"], venue_tz)
-        after = await db.execute("SELECT local_session_id FROM races WHERE id = ?", (row["id"],))
-        after_row = await after.fetchone()
-        if after_row is not None and after_row[0] is not None:
-            linked += 1
+    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, venue_tz)
     await db.commit()
 
     await audit(
         request,
         "results_regatta_rematch",
-        detail=json.dumps({"regatta_id": regatta_id, "races_checked": len(rows), "linked": linked}),
+        detail=json.dumps({"regatta_id": regatta_id, "linked": linked}),
     )
-    return JSONResponse({"ok": True, "races_checked": len(rows), "linked": linked})
+    return JSONResponse({"ok": True, "linked": linked})
 
 
 @router.get("/api/results/races", response_class=JSONResponse)

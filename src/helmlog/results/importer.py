@@ -15,11 +15,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from loguru import logger
 
-from helmlog.results.session_match import (
-    SessionCandidate,
-    match_race_to_sessions,
-)
-
 if TYPE_CHECKING:
     import aiosqlite
 
@@ -88,7 +83,6 @@ async def import_results(
             continue
 
         race_id = await _upsert_race(db, race_data, regatta_id, reg.source)
-        await _maybe_link_local_session(db, race_id, race_data.date, venue_tz)
 
         ranked = _assign_places(race_data.finishes)
         for place, finish in ranked:
@@ -97,6 +91,8 @@ async def import_results(
             counts["results_upserted"] += 1
 
         counts["races_upserted"] += 1
+
+    await _link_regatta_races_to_local_sessions(db, regatta_id, venue_tz)
 
     for standing in results.standings:
         boat_id = await _upsert_boat_minimal(db, standing.sail_number, boat_cache)
@@ -152,64 +148,112 @@ def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
     return ZoneInfo("UTC")
 
 
-async def _maybe_link_local_session(
+async def _link_regatta_races_to_local_sessions(
     db: aiosqlite.Connection,
-    race_id: int,
-    race_date: str,
+    regatta_id: int,
     venue_tz: tzinfo,
-) -> None:
-    """Link an imported race to a local session if currently unlinked.
+) -> int:
+    """Pair imported races to local race sessions by order within each date.
 
-    Looks at non-imported races within ±1 day of the race date, asks the
-    session matcher (with ``ambiguous_policy="first"`` so multi-session
-    days resolve to the earliest start), and writes the link if any
-    candidate matches.
+    For each venue-local date that the regatta has imported races on:
+      1. List imported races (``regatta_id`` match) sorted by ``race_num``.
+      2. List local race-type sessions (``session_type='race'``, non-imported)
+         whose ``start_utc`` falls on that date in ``venue_tz``, sorted by
+         ``start_utc``.
+      3. Zip them: imported race N → local session N.  Extra imported races
+         or extra local sessions on the fringes are left unlinked.
+
+    Only rows with ``local_session_id IS NULL`` are updated, so manual
+    links and prior matches are preserved.
+
+    Returns the number of links written.
     """
-    cur = await db.execute("SELECT local_session_id FROM races WHERE id = ?", (race_id,))
-    row = await cur.fetchone()
-    if row is None:
-        return
-    if row[0] is not None:
-        return  # already linked — leave it alone
+    cur = await db.execute(
+        "SELECT id, race_num, date, local_session_id FROM races"
+        " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'"
+        " AND date IS NOT NULL",
+        (regatta_id,),
+    )
+    imported_rows = await cur.fetchall()
+    if not imported_rows:
+        return 0
 
-    try:
-        rd = date.fromisoformat(race_date)
-    except ValueError:
-        return
+    by_date: dict[date, list[tuple[int, int, int | None]]] = {}
+    for r in imported_rows:
+        try:
+            d = date.fromisoformat(r[2])
+        except (ValueError, TypeError):
+            continue
+        by_date.setdefault(d, []).append((r[0], r[1] or 0, r[3]))
 
+    linked_count = 0
+    for d, imported in by_date.items():
+        imported.sort(key=lambda x: x[1])  # sort by race_num
+
+        local_sessions = await _list_local_race_sessions_on_date(db, d, venue_tz)
+        if not local_sessions:
+            continue
+
+        for (imp_id, _race_num, existing_link), local_id in zip(
+            imported, local_sessions, strict=False
+        ):
+            if existing_link is not None:
+                continue
+            await db.execute(
+                "UPDATE races SET local_session_id = ? WHERE id = ?",
+                (local_id, imp_id),
+            )
+            logger.debug(
+                "Linked imported race {} → local session {} (date {})",
+                imp_id,
+                local_id,
+                d.isoformat(),
+            )
+            linked_count += 1
+    return linked_count
+
+
+async def _list_local_race_sessions_on_date(
+    db: aiosqlite.Connection,
+    target_date: date,
+    venue_tz: tzinfo,
+) -> list[int]:
+    """Return local race-type session ids whose venue-local date is *target_date*.
+
+    Queries a ±1 day window around the target date and filters by
+    converting each ``start_utc`` into ``venue_tz`` local time — so a
+    session that straddles midnight UTC but is on *target_date* locally
+    still counts.
+    """
     from datetime import timedelta as _td
 
-    lo = (rd - _td(days=1)).isoformat()
-    hi = (rd + _td(days=1)).isoformat()
+    lo = (target_date - _td(days=1)).isoformat()
+    hi = (target_date + _td(days=1)).isoformat()
     cur = await db.execute(
-        "SELECT id, start_utc, name FROM races"
+        "SELECT id, start_utc FROM races"
         " WHERE (source IS NULL OR source = 'live')"
+        " AND session_type = 'race'"
+        " AND start_utc IS NOT NULL"
         " AND date >= ? AND date <= ?"
         " ORDER BY start_utc",
         (lo, hi),
     )
     rows = await cur.fetchall()
-    candidates: list[SessionCandidate] = []
+    matched: list[tuple[datetime, int]] = []
     for r in rows:
+        raw = r[1]
+        if not raw:
+            continue
         try:
-            start = datetime.fromisoformat(r[1].replace("Z", "+00:00"))
+            start = datetime.fromisoformat(raw.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
             continue
         if start.tzinfo is None:
             start = start.replace(tzinfo=UTC)
-        candidates.append(SessionCandidate(id=r[0], start_utc=start, label=r[2] or ""))
-
-    match = match_race_to_sessions(rd, candidates, venue_tz, ambiguous_policy="first")
-    if match.auto_linked_id is not None:
-        await db.execute(
-            "UPDATE races SET local_session_id = ? WHERE id = ?",
-            (match.auto_linked_id, race_id),
-        )
-        logger.debug(
-            "Linked imported race {} → local session {}",
-            race_id,
-            match.auto_linked_id,
-        )
+        if start.astimezone(venue_tz).date() == target_date:
+            matched.append((start, r[0]))
+    matched.sort(key=lambda x: x[0])
+    return [sid for _, sid in matched]
 
 
 async def _upsert_regatta(db: aiosqlite.Connection, reg: Regatta, now: str) -> int:
