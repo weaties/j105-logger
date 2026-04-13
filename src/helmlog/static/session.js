@@ -37,6 +37,38 @@ function registerSurface(name, render) {
   _playClock.consumers.push({name, render});
 }
 
+// Stop every active playback surface (replay tick, YT video, HTML audio element,
+// multi-channel Web Audio) so seeks coming from the scrubber/map/keyboard only
+// move the playhead — the PR review caught that they were stepping on each
+// other and stuttering when multiple surfaces kept playing mid-seek.
+function _pauseAllPlayback() {
+  try { _stopPlayTick(); } catch (e) { /* swallow */ }
+  _playClock.state = 'paused';
+  try {
+    if (_videoSync && _videoSync.player && typeof _videoSync.player.getPlayerState === 'function') {
+      const st = _videoSync.player.getPlayerState();
+      if (st === 1 && typeof _videoSync.player.pauseVideo === 'function') {
+        _videoSync.player.pauseVideo();
+      }
+    }
+  } catch (e) { /* swallow */ }
+  try {
+    const aEl = document.getElementById('session-audio')
+      || document.querySelector('#audio-body audio');
+    if (aEl && !aEl.paused) aEl.pause();
+  } catch (e) { /* swallow */ }
+  try { if (typeof _mcIsPlaying !== 'undefined' && _mcIsPlaying) _mcPause(); } catch (e) { /* swallow */ }
+  try { _updateReplayControls(); } catch (e) { /* not yet wired */ }
+}
+
+// Seek helper used by every "click/drag to move the playhead" entry point —
+// scrubber, map click, keyboard arrows, maneuver table, discussion anchors.
+// Guarantees playback is paused first so nothing auto-resumes after the seek.
+function _seekTo(utc, source) {
+  _pauseAllPlayback();
+  setPosition(utc, {source: source || 'seek'});
+}
+
 function setPosition(utc, opts) {
   if (!utc) return;
   const date = utc instanceof Date ? utc : new Date(utc);
@@ -370,7 +402,7 @@ async function loadTrack() {
   line.on('click', function(e) {
     const idx = _nearestIndex(e.latlng);
     const utc = _utcForIndex(idx);
-    if (utc) setPosition(utc, {source: 'map'});
+    if (utc) _seekTo(utc, 'map');
     // Map producer still updates its own cursor immediately
     _moveCursorToIndex(idx);
   });
@@ -3332,7 +3364,7 @@ function highlightManeuver(idx) {
   // Move map cursor to maneuver position
   if (m && _trackData) {
     const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
-    setPosition(ts);
+    _seekTo(ts, 'maneuver');
   }
   // Seek the embedded player to the maneuver moment if a video is loaded.
   if (m && _videoSync && _videoSync.player) {
@@ -3953,7 +3985,7 @@ function seekToThreadAnchor(ts) {
   if (!ts) return;
   const utc = new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z');
   if (isNaN(utc.getTime())) return;
-  setPosition(utc);
+  _seekTo(utc, 'thread');
 }
 
 function _checkThreadHash() {
@@ -4585,7 +4617,7 @@ function _renderIsolationToggle() {
 
 let _replayStart = null; // Date — session start (for scrubber 0)
 let _replayEnd = null;   // Date — session end (for scrubber max)
-let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, hdg, cog}]
+let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, aws, awa, hdg, cog}]
 let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
 let _gradeSegments = []; // [L.polyline] overlays when polar view is active
 let _gradeViewActive = false;
@@ -4649,6 +4681,71 @@ function _fmtPct(v) {
   return Math.round(v * 100) + '%';
 }
 
+// Lookback window for each gauge's sparkline — enough context to see trend
+// without dominating the card.
+const _SPARK_LOOKBACK_MS = 5 * 60 * 1000;
+
+// Draw a single-channel sparkline into a canvas. `samples` is the full
+// per-second series; we slice it to the lookback window ending at cursorMs
+// and scale y to the slice's own min/max so small movements are still
+// visible. Returns without touching the canvas when the field is absent
+// so missing sensors fall back to a blank strip rather than a garbage line.
+function _drawSparkline(canvasId, field, cursorMs, color) {
+  const c = document.getElementById(canvasId);
+  if (!c || !_replaySamples || !_replaySamples.length) return;
+  const ctx = c.getContext('2d');
+  // Match backing store to displayed size on first draw / on resize so the
+  // line stays crisp without depending on CSS pixels matching width attrs.
+  const cssW = c.clientWidth || c.width;
+  const cssH = c.clientHeight || c.height;
+  if (c.width !== cssW) c.width = cssW;
+  if (c.height !== cssH) c.height = cssH;
+  const w = c.width;
+  const h = c.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const t1 = cursorMs;
+  const t0 = cursorMs - _SPARK_LOOKBACK_MS;
+  // Collect points within [t0, t1] that have a value for this field
+  const pts = [];
+  for (let i = 0; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t < t0) continue;
+    if (t > t1) break;
+    const v = s[field];
+    if (v == null || isNaN(v)) continue;
+    pts.push([t, v]);
+  }
+  if (pts.length < 2) return;
+
+  let vmin = Infinity, vmax = -Infinity;
+  for (const [, v] of pts) { if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
+  // Pad the range a touch so flat series don't sit on the edges
+  if (vmax - vmin < 1e-6) { vmax = vmin + 1; }
+  const pad = (vmax - vmin) * 0.1;
+  vmin -= pad; vmax += pad;
+
+  const xFor = t => ((t - t0) / (t1 - t0)) * (w - 2) + 1;
+  const yFor = v => h - 1 - ((v - vmin) / (vmax - vmin)) * (h - 2);
+
+  ctx.strokeStyle = color || 'rgba(120,180,255,0.9)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(xFor(pts[0][0]), yFor(pts[0][1]));
+  for (let i = 1; i < pts.length; i++) {
+    ctx.lineTo(xFor(pts[i][0]), yFor(pts[i][1]));
+  }
+  ctx.stroke();
+
+  // Cursor dot on the most-recent point so it reads as "live"
+  const last = pts[pts.length - 1];
+  ctx.fillStyle = color || 'rgba(120,180,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(xFor(last[0]), yFor(last[1]), 1.8, 0, Math.PI * 2);
+  ctx.fill();
+}
+
 function _renderHud(utc) {
   if (!_replaySamples) return;
   const s = _binarySearchSample(utc.getTime());
@@ -4661,10 +4758,22 @@ function _renderHud(utc) {
   setEl('hud-stw', _fmtNum(s && s.stw, 2));
   setEl('hud-tws', _fmtNum(s && s.tws, 1));
   setEl('hud-twa', _fmtNum(s && s.twa, 0));
+  setEl('hud-aws', _fmtNum(s && s.aws, 1));
+  setEl('hud-awa', _fmtNum(s && s.awa, 0));
   setEl('hud-hdg', _fmtNum(s && s.hdg, 0));
   setEl('hud-cog', _fmtNum(s && s.cog, 0));
   setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
   setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
+
+  const cursorMs = utc.getTime();
+  _drawSparkline('spark-stw', 'stw', cursorMs, 'rgba(120,180,255,0.9)');
+  _drawSparkline('spark-sog', 'sog', cursorMs, 'rgba(120,180,255,0.6)');
+  _drawSparkline('spark-tws', 'tws', cursorMs, 'rgba(100,220,150,0.9)');
+  _drawSparkline('spark-twa', 'twa', cursorMs, 'rgba(100,220,150,0.6)');
+  _drawSparkline('spark-aws', 'aws', cursorMs, 'rgba(220,180,100,0.9)');
+  _drawSparkline('spark-awa', 'awa', cursorMs, 'rgba(220,180,100,0.6)');
+  _drawSparkline('spark-hdg', 'hdg', cursorMs, 'rgba(255,140,140,0.9)');
+  _drawSparkline('spark-cog', 'cog', cursorMs, 'rgba(255,140,140,0.6)');
 }
 
 function _updateReplayControls() {
@@ -4760,6 +4869,8 @@ async function _loadReplayData() {
       sog: s.sog,
       tws: s.tws,
       twa: s.twa,
+      aws: s.aws,
+      awa: s.awa,
       hdg: s.hdg,
       cog: s.cog,
     }));
@@ -4799,7 +4910,7 @@ function _wireReplayControls() {
       if (!_replayStart || !_replayEnd) return;
       const frac = Number(e.target.value) / 1000;
       const t = _replayStart.getTime() + frac * (_replayEnd.getTime() - _replayStart.getTime());
-      setPosition(new Date(t), {source: 'replay'});
+      _seekTo(new Date(t), 'replay');
     });
   }
   const toggle = document.getElementById('toggle-polar-grades');
@@ -4820,7 +4931,7 @@ function _wireReplayControls() {
         _replayEnd.getTime(),
         Math.max(_replayStart.getTime(), base.getTime() + delta)
       ));
-      setPosition(next, {source: 'replay'});
+      _seekTo(next, 'replay');
       _updateReplayControls();
     }
   });

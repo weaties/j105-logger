@@ -740,32 +740,60 @@ async def api_session_replay(
             out[key] = {f: r[f] for f in fields}
         return out
 
+    # Wind table holds both true (ref 0/4) and apparent (ref 2) rows; keep them
+    # separated so the replay HUD can surface TWS/TWA and AWS/AWA independently.
+    async def _wind_series(where: str) -> dict[str, dict[str, Any]]:
+        q = (
+            "SELECT ts, wind_speed_kts, wind_angle_deg, reference FROM winds "
+            f"WHERE ts >= ? AND ts <= ? AND {where} ORDER BY ts"
+        )
+        qcur = await db.execute(q, (start_utc, end_utc))
+        rows = await qcur.fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            key = str(r["ts"])[:19]
+            if key in out:
+                continue
+            out[key] = {
+                "wind_speed_kts": r["wind_speed_kts"],
+                "wind_angle_deg": r["wind_angle_deg"],
+                "reference": r["reference"],
+            }
+        return out
+
     speeds_by_s = await _series("speeds", ["speed_kts"])
-    winds_by_s = await _series("winds", ["wind_speed_kts", "wind_angle_deg", "reference"])
+    true_winds_by_s = await _wind_series("reference IN (0, 4)")
+    app_winds_by_s = await _wind_series("reference = 2")
     hdgs_by_s = await _series("headings", ["heading_deg"])
     cogsog_by_s = await _series("cogsog", ["cog_deg", "sog_kts"])
 
     keys = sorted(
         set(speeds_by_s.keys())
-        | set(winds_by_s.keys())
+        | set(true_winds_by_s.keys())
+        | set(app_winds_by_s.keys())
         | set(hdgs_by_s.keys())
         | set(cogsog_by_s.keys())
     )
 
     samples: list[dict[str, Any]] = []
     for k in keys:
-        w = winds_by_s.get(k)
+        tw = true_winds_by_s.get(k)
         tws: float | None = None
         twa: float | None = None
-        if w is not None:
-            raw_ref = w.get("reference")
+        if tw is not None:
+            raw_ref = tw.get("reference")
             ref = int(raw_ref) if raw_ref is not None else -1
-            tws = float(w["wind_speed_kts"]) if w["wind_speed_kts"] is not None else None
-            # Derive TWA using the same helper the grading pipeline uses so the
-            # HUD value matches the colored-segment value on the map.
+            tws = float(tw["wind_speed_kts"]) if tw["wind_speed_kts"] is not None else None
             h = hdgs_by_s.get(k)
             heading = float(h["heading_deg"]) if h and h["heading_deg"] is not None else None
-            twa = _polar._compute_twa(float(w["wind_angle_deg"]), ref, heading)
+            twa = _polar._compute_twa(float(tw["wind_angle_deg"]), ref, heading)
+
+        aw = app_winds_by_s.get(k)
+        aws: float | None = None
+        awa: float | None = None
+        if aw is not None:
+            aws = float(aw["wind_speed_kts"]) if aw["wind_speed_kts"] is not None else None
+            awa = float(aw["wind_angle_deg"]) if aw["wind_angle_deg"] is not None else None
 
         sp = speeds_by_s.get(k)
         cs = cogsog_by_s.get(k)
@@ -779,6 +807,8 @@ async def api_session_replay(
                 "hdg": float(hd["heading_deg"]) if hd else None,
                 "tws": tws,
                 "twa": twa,
+                "aws": aws,
+                "awa": awa,
             }
         )
 
