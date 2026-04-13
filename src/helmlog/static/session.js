@@ -28,6 +28,7 @@ const _playClock = {
   tickTimer: null,
   tickAnchorUtc: null, // UTC at last tick anchor
   tickAnchorPerf: 0, // performance.now() at last tick anchor
+  speed: 1, // replay speed multiplier (1 / 2 / 4 / 8)
 };
 
 function _clockNowMs() { return performance.now(); }
@@ -64,13 +65,32 @@ function _startPlayTick() {
   _playClock.state = 'playing';
   _playClock.tickTimer = setInterval(() => {
     if (!_playClock.tickAnchorUtc) return;
-    const elapsedMs = _clockNowMs() - _playClock.tickAnchorPerf;
+    const elapsedMs = (_clockNowMs() - _playClock.tickAnchorPerf) * (_playClock.speed || 1);
     const utc = new Date(_playClock.tickAnchorUtc.getTime() + elapsedMs);
     _playClock.positionUtc = utc;
+    // Auto-stop at end of replay window
+    if (_replayEnd && utc.getTime() >= _replayEnd.getTime()) {
+      _playClock.positionUtc = _replayEnd;
+      _stopPlayTick();
+      for (const c of _playClock.consumers) {
+        try { c.render(_replayEnd); } catch (e) { /* swallow */ }
+      }
+      _updateReplayControls();
+      return;
+    }
     for (const c of _playClock.consumers) {
       try { c.render(utc); } catch (e) { /* swallow */ }
     }
+    _updateReplayControls();
   }, 100);
+}
+
+function _setPlaybackSpeed(newSpeed) {
+  if (!newSpeed) return;
+  // Re-anchor so speed change doesn't jump the cursor
+  _playClock.tickAnchorUtc = _playClock.positionUtc;
+  _playClock.tickAnchorPerf = _clockNowMs();
+  _playClock.speed = newSpeed;
 }
 
 function _stopPlayTick() {
@@ -4552,6 +4572,269 @@ function _renderIsolationToggle() {
   // checkbox; nothing to add to the transcript header.
   return '';
 }
+
+// ---------------------------------------------------------------------------
+// Replay controls, HUD, and polar-graded track overlay (#464, #465, #468, #470)
+// ---------------------------------------------------------------------------
+//
+// Extends the existing _playClock (which already drives map/video/audio
+// surfaces) with: a visible scrubber, play/pause, speed selector, keyboard
+// shortcuts, a live instrument HUD, and a polar-grade color overlay that
+// paints the track by % of target. The underlying data comes from
+// /api/sessions/{id}/replay in one fetch.
+
+let _replayStart = null; // Date — session start (for scrubber 0)
+let _replayEnd = null;   // Date — session end (for scrubber max)
+let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, hdg, cog}]
+let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
+let _gradeSegments = []; // [L.polyline] overlays when polar view is active
+let _gradeViewActive = false;
+
+const _GRADE_COLORS = {
+  red: '#d64545',
+  yellow: '#d6a745',
+  green: '#3db86e',
+  suspicious: '#a855f7',
+  unknown: '#888888',
+};
+
+function _pad2(n) { return String(n).padStart(2, '0'); }
+
+function _fmtClock(deltaMs) {
+  if (deltaMs == null || isNaN(deltaMs)) return '--:--';
+  const totalS = Math.max(0, Math.floor(deltaMs / 1000));
+  const mm = Math.floor(totalS / 60);
+  const ss = totalS % 60;
+  if (mm >= 60) {
+    const hh = Math.floor(mm / 60);
+    return hh + ':' + _pad2(mm % 60) + ':' + _pad2(ss);
+  }
+  return _pad2(mm) + ':' + _pad2(ss);
+}
+
+function _binarySearchSample(tMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= tMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+function _findGradeAt(tMs) {
+  if (!_replayGrades || !_replayGrades.length) return null;
+  // Grades are segment_index-ordered and time-contiguous; linear scan is fine
+  // at ~360 segments for a 1h session but use binary for safety.
+  let lo = 0, hi = _replayGrades.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (_replayGrades[mid].t_end.getTime() <= tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  const g = _replayGrades[lo];
+  if (!g) return null;
+  if (tMs < g.t_start.getTime()) return null;
+  return g;
+}
+
+function _fmtNum(v, digits) {
+  if (v == null || isNaN(v)) return '—';
+  return Number(v).toFixed(digits);
+}
+
+function _fmtPct(v) {
+  if (v == null || isNaN(v)) return '—';
+  return Math.round(v * 100) + '%';
+}
+
+function _renderHud(utc) {
+  if (!_replaySamples) return;
+  const s = _binarySearchSample(utc.getTime());
+  const g = _findGradeAt(utc.getTime());
+  const setEl = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setEl('hud-sog', _fmtNum(s && s.sog, 2));
+  setEl('hud-stw', _fmtNum(s && s.stw, 2));
+  setEl('hud-tws', _fmtNum(s && s.tws, 1));
+  setEl('hud-twa', _fmtNum(s && s.twa, 0));
+  setEl('hud-hdg', _fmtNum(s && s.hdg, 0));
+  setEl('hud-cog', _fmtNum(s && s.cog, 0));
+  setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
+  setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
+}
+
+function _updateReplayControls() {
+  if (!_replayStart || !_replayEnd) return;
+  const pos = _playClock.positionUtc || _replayStart;
+  const elapsedMs = pos.getTime() - _replayStart.getTime();
+  const durMs = _replayEnd.getTime() - _replayStart.getTime();
+  const timeEl = document.getElementById('replay-time');
+  if (timeEl) timeEl.textContent = _fmtClock(elapsedMs) + ' / ' + _fmtClock(durMs);
+  const scrubber = document.getElementById('replay-scrubber');
+  if (scrubber && document.activeElement !== scrubber) {
+    const frac = durMs > 0 ? Math.min(1, Math.max(0, elapsedMs / durMs)) : 0;
+    scrubber.value = String(Math.round(frac * 1000));
+  }
+  const btn = document.getElementById('replay-play-btn');
+  if (btn) btn.innerHTML = _playClock.state === 'playing' ? '&#10074;&#10074;' : '&#9654;';
+}
+
+function _togglePlayPause() {
+  if (!_replayStart) return;
+  if (_playClock.state === 'playing') {
+    _stopPlayTick();
+  } else {
+    if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
+    // If at (or past) the end, restart from the beginning
+    if (_replayEnd && _playClock.positionUtc.getTime() >= _replayEnd.getTime()) {
+      setPosition(_replayStart, {source: 'replay'});
+    }
+    _startPlayTick();
+  }
+  _updateReplayControls();
+}
+
+function _clearGradeSegments() {
+  for (const seg of _gradeSegments) {
+    try { _map.removeLayer(seg); } catch (e) { /* ignore */ }
+  }
+  _gradeSegments = [];
+}
+
+function _drawGradeSegments() {
+  _clearGradeSegments();
+  if (!_map || !_replayGrades || !_trackData) return;
+  // Paint contiguous runs of same-grade segments as individual polylines on
+  // top of the base track. We walk the sample positions and mark each one
+  // with the grade that covers it, then coalesce consecutive same-grade runs.
+  const timestamps = _trackData.timestamps;
+  const latLngs = _trackData.latLngs;
+  if (!timestamps || timestamps.length < 2) return;
+  const gradesAtIdx = new Array(timestamps.length);
+  for (let i = 0; i < timestamps.length; i++) {
+    const g = _findGradeAt(timestamps[i].getTime());
+    gradesAtIdx[i] = g ? g.grade : 'unknown';
+  }
+  let runStart = 0;
+  for (let i = 1; i <= timestamps.length; i++) {
+    if (i === timestamps.length || gradesAtIdx[i] !== gradesAtIdx[runStart]) {
+      const color = _GRADE_COLORS[gradesAtIdx[runStart]] || _GRADE_COLORS.unknown;
+      const slice = latLngs.slice(runStart, i + 1); // include boundary point
+      if (slice.length >= 2) {
+        const line = L.polyline(slice, {color: color, weight: 6, opacity: 0.85}).addTo(_map);
+        _gradeSegments.push(line);
+      }
+      runStart = i;
+    }
+  }
+  // Hide the underlying single-color track while grade overlay is active
+  if (_trackData.line) _trackData.line.setStyle({opacity: 0});
+}
+
+function _setGradeViewActive(active) {
+  _gradeViewActive = !!active;
+  const legend = document.getElementById('polar-legend');
+  if (legend) legend.style.display = _gradeViewActive ? '' : 'none';
+  if (_gradeViewActive) {
+    _drawGradeSegments();
+  } else {
+    _clearGradeSegments();
+    if (_trackData && _trackData.line) _trackData.line.setStyle({opacity: 1});
+  }
+}
+
+async function _loadReplayData() {
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/replay');
+    if (!r.ok) return;
+    const data = await r.json();
+    _replayStart = new Date(data.start_utc);
+    _replayEnd = new Date(data.end_utc);
+    _replaySamples = (data.samples || []).map(s => ({
+      ts: new Date(s.ts),
+      stw: s.stw,
+      sog: s.sog,
+      tws: s.tws,
+      twa: s.twa,
+      hdg: s.hdg,
+      cog: s.cog,
+    }));
+    _replayGrades = (data.grades || []).map(g => ({
+      t_start: new Date(g.t_start),
+      t_end: new Date(g.t_end),
+      grade: g.grade,
+      pct: g.pct,
+      delta: g.delta,
+    }));
+    // Register HUD as a clock consumer so it updates on every tick/seek
+    registerSurface('hud', function(utc) { _renderHud(utc); });
+    // Show replay UI
+    const controls = document.getElementById('replay-controls');
+    if (controls) controls.style.display = '';
+    const toggleRow = document.getElementById('replay-toggle-row');
+    if (toggleRow) toggleRow.style.display = '';
+    // Initial HUD render at session start
+    if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
+    _renderHud(_playClock.positionUtc);
+    _updateReplayControls();
+  } catch (e) {
+    // Non-fatal: replay is best-effort, the rest of the page still works
+  }
+}
+
+function _wireReplayControls() {
+  const btn = document.getElementById('replay-play-btn');
+  if (btn) btn.addEventListener('click', _togglePlayPause);
+  const speedSel = document.getElementById('replay-speed');
+  if (speedSel) speedSel.addEventListener('change', (e) => {
+    _setPlaybackSpeed(parseFloat(e.target.value) || 1);
+  });
+  const scrubber = document.getElementById('replay-scrubber');
+  if (scrubber) {
+    scrubber.addEventListener('input', (e) => {
+      if (!_replayStart || !_replayEnd) return;
+      const frac = Number(e.target.value) / 1000;
+      const t = _replayStart.getTime() + frac * (_replayEnd.getTime() - _replayStart.getTime());
+      setPosition(new Date(t), {source: 'replay'});
+    });
+  }
+  const toggle = document.getElementById('toggle-polar-grades');
+  if (toggle) toggle.addEventListener('change', (e) => _setGradeViewActive(e.target.checked));
+
+  // Keyboard shortcuts: space toggles play, arrows seek ±5s
+  document.addEventListener('keydown', (e) => {
+    if (!_replayStart) return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      _togglePlayPause();
+    } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      const delta = (e.code === 'ArrowRight' ? 5000 : -5000) * (e.shiftKey ? 6 : 1);
+      const base = _playClock.positionUtc || _replayStart;
+      const next = new Date(Math.min(
+        _replayEnd.getTime(),
+        Math.max(_replayStart.getTime(), base.getTime() + delta)
+      ));
+      setPosition(next, {source: 'replay'});
+      _updateReplayControls();
+    }
+  });
+}
+
+// Hook into init() path without rewriting it: kick off replay load once the
+// DOM is ready, and wire controls immediately. _loadReplayData() waits on
+// the fetch, and the track map is loaded in parallel, so the polar overlay
+// can only be drawn once both are ready — _setGradeViewActive is a no-op
+// until _trackData is populated.
+document.addEventListener('DOMContentLoaded', function() {
+  _wireReplayControls();
+  _loadReplayData();
+});
 
 // ---------------------------------------------------------------------------
 // Go

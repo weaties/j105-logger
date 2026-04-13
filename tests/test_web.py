@@ -3848,3 +3848,80 @@ async def test_v41_migration_creates_sail_changes_table(storage: Storage) -> Non
     )
     row = await cur.fetchone()
     assert row is not None
+
+
+# ---------------------------------------------------------------------------
+# Replay endpoint (#464, #465, #468, #470)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_replay_endpoint_unknown_session_returns_404(storage: Storage) -> None:
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/sessions/9999/replay")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_replay_endpoint_returns_samples_and_grades(storage: Storage) -> None:
+    """Seeds a completed race with instrument data, hits /replay, and
+    verifies the payload includes per-second samples, graded segments,
+    and the expected top-level fields.
+    """
+    from datetime import timedelta
+
+    from helmlog.nmea2000 import (
+        PGN_POSITION_RAPID,
+        PGN_SPEED_THROUGH_WATER,
+        PGN_WIND_DATA,
+        PositionRecord,
+        SpeedRecord,
+        WindRecord,
+    )
+
+    start = datetime(2024, 8, 1, 12, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=30)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('Replay', 'E', 1, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    race_id = int((await cur.fetchone())["id"])
+    for i in range(30):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 6.0))
+        await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+        await storage.write(
+            PositionRecord(PGN_POSITION_RAPID, 5, ts, 37.80 + i * 1e-5, -122.27 + i * 1e-5)
+        )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/replay")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == race_id
+    assert data["start_utc"].startswith("2024-08-01T12:00:00")
+    assert data["end_utc"].startswith("2024-08-01T12:00:30")
+    assert data["segment_seconds"] == 10
+    assert len(data["samples"]) == 30
+    sample = data["samples"][0]
+    assert sample["stw"] == pytest.approx(6.0)
+    assert sample["tws"] == pytest.approx(10.0)
+    assert sample["twa"] == pytest.approx(45.0)
+    # 30s / 10s per segment → 3 graded segments (grade is "unknown" because
+    # no baseline has been built — we only check shape here).
+    assert len(data["grades"]) == 3
+    for g in data["grades"]:
+        assert "grade" in g
+        assert "t_start" in g
+        assert "t_end" in g

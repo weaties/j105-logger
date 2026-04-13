@@ -99,7 +99,40 @@
     <label style="margin-right:12px"><input type="checkbox" id="toggle-sk-track" checked> SK track</label>
     <label><input type="checkbox" id="toggle-vakaros-track"> Vakaros track</label>
   </div>
+  <div id="replay-toggle-row" style="display:none;margin-bottom:8px;font-size:.78rem;color:var(--text-secondary)">
+    <label style="margin-right:12px"><input type="checkbox" id="toggle-polar-grades"> Color track by polar %</label>
+    <span id="polar-legend" style="display:none;margin-left:6px">
+      <span style="display:inline-block;width:10px;height:10px;background:#d64545;vertical-align:middle;margin-right:2px"></span>&lt;90%
+      <span style="display:inline-block;width:10px;height:10px;background:#d6a745;vertical-align:middle;margin:0 2px 0 8px"></span>90–97%
+      <span style="display:inline-block;width:10px;height:10px;background:#3db86e;vertical-align:middle;margin:0 2px 0 8px"></span>97–120%
+      <span style="display:inline-block;width:10px;height:10px;background:#a855f7;vertical-align:middle;margin:0 2px 0 8px"></span>&ge;120% (suspect)
+      <span style="display:inline-block;width:10px;height:10px;background:#888;vertical-align:middle;margin:0 2px 0 8px"></span>unknown
+    </span>
+  </div>
   <div id="track-map" class="track-map"></div>
+  <div id="replay-controls" style="display:none;margin-top:10px">
+    <div id="replay-hud" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.78rem;color:var(--text-primary);background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-family:monospace">
+      <span><span style="color:var(--text-secondary)">SOG</span> <span id="hud-sog">—</span></span>
+      <span><span style="color:var(--text-secondary)">STW</span> <span id="hud-stw">—</span></span>
+      <span><span style="color:var(--text-secondary)">TWS</span> <span id="hud-tws">—</span></span>
+      <span><span style="color:var(--text-secondary)">TWA</span> <span id="hud-twa">—</span></span>
+      <span><span style="color:var(--text-secondary)">HDG</span> <span id="hud-hdg">—</span></span>
+      <span><span style="color:var(--text-secondary)">COG</span> <span id="hud-cog">—</span></span>
+      <span><span style="color:var(--text-secondary)">Polar</span> <span id="hud-pct">—</span></span>
+      <span><span style="color:var(--text-secondary)">Δ</span> <span id="hud-delta">—</span></span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button id="replay-play-btn" type="button" aria-label="Play/pause" style="background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;width:34px;height:30px;font-size:1rem;cursor:pointer">&#9654;</button>
+      <span id="replay-time" style="font-family:monospace;font-size:.78rem;color:var(--text-secondary);min-width:72px;text-align:center">00:00 / 00:00</span>
+      <input type="range" id="replay-scrubber" min="0" max="1000" value="0" step="1" style="flex:1;min-width:140px">
+      <select id="replay-speed" title="Playback speed" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:.78rem">
+        <option value="1">1&times;</option>
+        <option value="2">2&times;</option>
+        <option value="4">4&times;</option>
+        <option value="8">8&times;</option>
+      </select>
+    </div>
+  </div>
   <div id="track-hint" style="font-size:.72rem;color:var(--text-secondary);margin-top:4px"></div>
   <div id="vakaros-line-info" style="display:none;font-size:.78rem;color:var(--text-secondary);margin-top:6px;font-family:monospace"></div>
 </div>
