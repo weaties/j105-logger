@@ -396,14 +396,20 @@ async function loadTrack() {
   // cursor continues to interpolate against the raw latLngs so the
   // boat position itself isn't lagged by the smoothing.
   const trackColor = cssVar('--warning') || '#fbbf24';
-  const smoothedLatLngs = _smoothLatLngs(latLngs, 2);
+  // Heavy centered moving average (~15s window at 1 Hz GPS) to kill the
+  // sawtooth produced by 1 Hz sample noise + dash stroking. Combined
+  // with a higher Leaflet smoothFactor to drop near-collinear vertices
+  // during projection so the SVG path is short and the dashes walk
+  // cleanly along gentle curves instead of chevroning at every fix.
+  const smoothedLatLngs = _smoothLatLngs(latLngs, 7);
   const line = L.polyline(smoothedLatLngs, {
     color: trackColor,
     weight: 3,
     opacity: 1,
     lineCap: 'butt',
-    lineJoin: 'miter',
+    lineJoin: 'round',
     dashArray: '6, 6',
+    smoothFactor: 2.0,
   }).addTo(_map);
 
   const successColor = cssVar('--success');
