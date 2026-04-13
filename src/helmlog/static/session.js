@@ -767,7 +767,36 @@ function _openWatchOnYoutube(ev) {
   return false;
 }
 
+// Watchdog for user scrubs on the YT player itself. The IFrame API doesn't
+// emit a "seeked" event, so we poll getCurrentTime() while the clock is not
+// in playing state and fan out any unexpected jump as a producer event.
+// Disabled during clock-driven playback because fast speeds (2×/4×/8×) would
+// otherwise read as "seeks" on every poll.
+let _ytScrubPollTimer = null;
+let _ytScrubLastOffset = null;
+function _startYtScrubWatch() {
+  if (_ytScrubPollTimer) return;
+  _ytScrubPollTimer = setInterval(() => {
+    if (!_videoSync || !_videoSync.player) return;
+    if (_playClock.state === 'playing') return;
+    if (_isEchoEvent()) return;
+    let cur;
+    try { cur = _videoSync.player.getCurrentTime(); } catch (e) { return; }
+    if (cur == null || isNaN(cur)) return;
+    if (_ytScrubLastOffset == null) { _ytScrubLastOffset = cur; return; }
+    const delta = Math.abs(cur - _ytScrubLastOffset);
+    _ytScrubLastOffset = cur;
+    // Threshold > max natural drift between polls. YT paused shouldn't move
+    // at all, so anything above 0.4s is a user-initiated scrub.
+    if (delta < 0.4) return;
+    const utc = _videoOffsetToUtc(cur);
+    if (!utc) return;
+    setPosition(utc, {source: 'video'});
+  }, 250);
+}
+
 function _onVideoReady() {
+  _startYtScrubWatch();
   // Video is a consumer: seek to the requested UTC if it's within range.
   // Large jumps (>2 s) pause the player so audio doesn't keep playing from
   // wherever the user just clicked. Small deltas (playback ticks) don't
@@ -2061,6 +2090,23 @@ async function loadMultiChannelAudio() {
     console.error('multi-channel audio load failed', e);
     document.getElementById('mc-status').textContent = 'Error: ' + e.message;
   }
+  // Register mc as a clock consumer so scrubs/seeks from other surfaces move
+  // the mc seek bar and start offset. Skipped while playing (avoid fighting
+  // natural playback) and while the user is actively dragging the slider.
+  registerSurface('mc', function(utc) {
+    if (!_mcBuffer) return;
+    const anchor = _mcSessionStart();
+    if (!anchor) return;
+    const seconds = (utc.getTime() - anchor.getTime()) / 1000;
+    if (seconds < 0 || seconds > _mcBuffer.duration) return;
+    if (_mcIsPlaying) return;
+    const seek = document.getElementById('mc-seek');
+    if (seek && document.activeElement === seek) return;
+    const delta = Math.abs((_mcStartOffset || 0) - seconds);
+    if (delta < 0.15) return;
+    _mcStartOffset = seconds;
+    _mcUpdateProgress();
+  });
 }
 
 function _mcTogglePlay() {
@@ -2071,7 +2117,24 @@ function _mcTogglePlay() {
 
 function _mcSeekFromSlider(val) {
   if (!_mcBuffer) return;
-  _mcSeek((Number(val) / 1000) * _mcBuffer.duration);
+  const seconds = (Number(val) / 1000) * _mcBuffer.duration;
+  _mcSeek(seconds);
+  // Producer: fan out to every other surface (map cursor, video, gauges)
+  // so dragging the Web Audio scrubber keeps everything in sync. Skipped
+  // when we can't derive a session-wide UTC anchor.
+  const anchor = _mcSessionStart();
+  if (anchor) setPosition(new Date(anchor.getTime() + seconds * 1000), {source: 'mc'});
+}
+
+// Resolve the session-wide UTC anchor for the multi-channel buffer. The
+// buffer is keyed to _session.audio_start_utc (same reference the transcript
+// highlighter uses), normalized to UTC regardless of how the backend wrote it.
+function _mcSessionStart() {
+  if (!_session || !_session.audio_start_utc) return null;
+  const raw = _session.audio_start_utc;
+  const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 function _mcToggleSticky(on) {
