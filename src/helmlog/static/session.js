@@ -3673,7 +3673,10 @@ function _addManeuverMarkers() {
       weight: 2,
     });
     marker.bindPopup(_renderManeuverPopup(m));
-    marker.on('click', function() { highlightManeuver(idx); });
+    // Map marker clicks keep the focus on the track — they highlight the
+    // maneuver and seek the replay, but do NOT scroll the page down to the
+    // maneuvers card (which yanks the user away from the map).
+    marker.on('click', function() { highlightManeuver(idx, {scroll: false}); });
     if (_showManeuverMarkers) marker.addTo(_map);
     _maneuverMarkers.push(marker);
   });
@@ -3707,13 +3710,17 @@ function _setManeuverMarkersVisible(visible) {
   });
 }
 
-function highlightManeuver(idx) {
+function highlightManeuver(idx, opts) {
+  // opts.scroll === false suppresses the scroll-to-row behavior — used by
+  // map-marker clicks so the user isn't yanked down to the maneuvers card
+  // while they're looking at the track.
+  const shouldScroll = !(opts && opts.scroll === false);
   // Highlight table row
   document.querySelectorAll('.maneuver-table tr').forEach(r => r.classList.remove('active-row'));
   const row = document.getElementById('mrow-' + idx);
   if (row) {
     row.classList.add('active-row');
-    row.scrollIntoView({block: 'nearest'});
+    if (shouldScroll) row.scrollIntoView({block: 'nearest'});
   }
   const m = _maneuvers[idx];
   _renderManeuverDetail(m);
