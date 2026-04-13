@@ -382,13 +382,21 @@ async function loadTrack() {
   const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
-  const trackColor = cssVar('--accent-strong');
+  // Instrument (SK) track: dashed like the Vakaros overlay but with a
+  // distinct color and a longer dash period, so the two patterns don't
+  // land on top of each other when both tracks are shown. Vakaros uses
+  // '2,4' (dash 2, gap 4, 6px cycle); we use '6,6' (12px cycle). The
+  // different cycle lengths prevent consistent overlap and the different
+  // dash sizes read clearly even where they briefly coincide. Butt caps
+  // keep the dashes sharply rectangular for that "super crisp" look.
+  const trackColor = cssVar('--warning') || '#fbbf24';
   const line = L.polyline(latLngs, {
     color: trackColor,
     weight: 3,
     opacity: 1,
-    lineCap: 'round',
-    lineJoin: 'round',
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    dashArray: '6, 6',
   }).addTo(_map);
 
   const successColor = cssVar('--success');
@@ -576,7 +584,14 @@ async function loadVakarosOverlay() {
   if (data.track && data.track.geometry && data.track.geometry.coordinates.length) {
     const vakLatLngs = data.track.geometry.coordinates.map(c => [c[1], c[0]]);
     vakarosLine = L.polyline(vakLatLngs, {
-      color: vakarosTrackColor, weight: 3, opacity: 0.85, dashArray: '2, 4',
+      color: vakarosTrackColor,
+      weight: 3,
+      opacity: 0.9,
+      lineCap: 'butt',
+      lineJoin: 'miter',
+      // Intentionally kept shorter than the SK track's '6,6' so the two
+      // dash cycles don't align when both overlays are visible.
+      dashArray: '2, 4',
     }).bindPopup('Vakaros track');
     // Reveal the selector now that there's something to toggle.
     const selector = document.getElementById('vakaros-track-toggle');
