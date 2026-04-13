@@ -8,10 +8,11 @@ this baseline to show whether the boat is over or under-performing.
 from __future__ import annotations
 
 import math
+import os
 from collections import defaultdict
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, Literal
 
 from loguru import logger
 
@@ -27,6 +28,22 @@ _TWA_BIN_SIZE = 5
 # wind reference values that appear in the winds table
 _WIND_REF_BOAT = 0  # wind_angle_deg IS the TWA (true wind, boat-referenced)
 _WIND_REF_NORTH = 4  # wind_angle_deg is TWD; need heading to derive TWA
+
+# Replay-grading config (#469). All tunable so we can adjust without a
+# schema change. Segment width is read from env so deployments can tweak
+# it without code changes.
+POLAR_SEGMENT_SECONDS: int = int(os.environ.get("POLAR_SEGMENT_SECONDS", "10"))
+
+# pct_target thresholds for the grade decision table.
+GRADE_RED_BELOW: float = 0.90
+GRADE_YELLOW_BELOW: float = 0.97
+GRADE_GREEN_BELOW: float = 1.05  # [0.97, 1.05) → green
+GRADE_SUSPICIOUS_AT: float = 1.20  # ≥ 1.20 → suspicious (likely bad baseline cell)
+
+# Cache invalidation: bumped whenever the polar baseline is rebuilt.
+POLAR_BASELINE_VERSION_KEY: str = "polar_baseline_version"
+
+GradeLabel = Literal["green", "yellow", "red", "suspicious", "unknown"]
 
 # ---------------------------------------------------------------------------
 # Pure helpers (all unit-testable without Storage)
@@ -88,6 +105,9 @@ async def build_polar_baseline(storage: Storage, min_sessions: int = 3) -> int:
     if not races:
         logger.info("Polar: no completed races found; baseline not built")
         await storage.upsert_polar_baseline([], datetime.now(UTC).isoformat())
+        current = await storage.get_setting(POLAR_BASELINE_VERSION_KEY)
+        next_version = (int(current) if current and current.isdigit() else 0) + 1
+        await storage.set_setting(POLAR_BASELINE_VERSION_KEY, str(next_version))
         return 0
 
     # bin_samples[(tws_bin, twa_bin)] = list of (race_id, bsp_kts)
@@ -170,8 +190,23 @@ async def build_polar_baseline(storage: Storage, min_sessions: int = 3) -> int:
 
     built_at = datetime.now(UTC).isoformat()
     await storage.upsert_polar_baseline(rows_to_write, built_at)
-    logger.info("Polar baseline built: {} bins from {} races", len(rows_to_write), len(races))
+    # Bump the baseline version so any cached per-segment grades become stale.
+    current = await storage.get_setting(POLAR_BASELINE_VERSION_KEY)
+    next_version = (int(current) if current and current.isdigit() else 0) + 1
+    await storage.set_setting(POLAR_BASELINE_VERSION_KEY, str(next_version))
+    logger.info(
+        "Polar baseline built: {} bins from {} races (baseline_version={})",
+        len(rows_to_write),
+        len(races),
+        next_version,
+    )
     return len(rows_to_write)
+
+
+async def get_polar_baseline_version(storage: Storage) -> int:
+    """Return the current polar baseline version (0 if never built)."""
+    raw = await storage.get_setting(POLAR_BASELINE_VERSION_KEY)
+    return int(raw) if raw and raw.isdigit() else 0
 
 
 # ---------------------------------------------------------------------------
@@ -350,3 +385,248 @@ async def session_polar_comparison(
         twa_bins=twa_bins,
         session_sample_count=total_samples,
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-segment grading for race replay (#469)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GradedSegment:
+    """One time-window's worth of polar grading along a session track."""
+
+    segment_index: int
+    t_start: datetime
+    t_end: datetime
+    lat: float | None
+    lon: float | None
+    tws_kts: float | None
+    twa_deg: float | None
+    bsp_kts: float | None
+    target_bsp_kts: float | None
+    pct_target: float | None
+    delta_kts: float | None
+    grade: GradeLabel
+
+    def to_row(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["t_start"] = self.t_start.isoformat()
+        d["t_end"] = self.t_end.isoformat()
+        return d
+
+
+def _grade_from_pct(pct: float | None) -> GradeLabel:
+    """Map pct_target → grade per the decision table."""
+    if pct is None:
+        return "unknown"
+    if pct >= GRADE_SUSPICIOUS_AT:
+        return "suspicious"
+    if pct < GRADE_RED_BELOW:
+        return "red"
+    if pct < GRADE_YELLOW_BELOW:
+        return "yellow"
+    return "green"  # [0.97, 1.20)
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _interp_position(
+    positions: list[dict[str, Any]], t_mid: datetime
+) -> tuple[float | None, float | None]:
+    """Return interpolated (lat, lon) at *t_mid*, or nearest fix within ±2s."""
+    if not positions:
+        return None, None
+    # Find bracketing fixes
+    before: dict[str, Any] | None = None
+    after: dict[str, Any] | None = None
+    for p in positions:
+        ts = datetime.fromisoformat(str(p["ts"])).replace(tzinfo=UTC)
+        if ts <= t_mid:
+            before = {**p, "_dt": ts}
+        else:
+            after = {**p, "_dt": ts}
+            break
+    if before is not None and after is not None:
+        span = (after["_dt"] - before["_dt"]).total_seconds()
+        if span <= 0:
+            return float(before["latitude_deg"]), float(before["longitude_deg"])
+        f = (t_mid - before["_dt"]).total_seconds() / span
+        lat = float(before["latitude_deg"]) + f * (
+            float(after["latitude_deg"]) - float(before["latitude_deg"])
+        )
+        lon = float(before["longitude_deg"]) + f * (
+            float(after["longitude_deg"]) - float(before["longitude_deg"])
+        )
+        return lat, lon
+    # Fall back to nearest fix within ±2s
+    candidates = [
+        (abs((datetime.fromisoformat(str(p["ts"])).replace(tzinfo=UTC) - t_mid).total_seconds()), p)
+        for p in positions
+    ]
+    candidates.sort(key=lambda x: x[0])
+    nearest_dt, nearest = candidates[0]
+    if nearest_dt <= 2.0:
+        return float(nearest["latitude_deg"]), float(nearest["longitude_deg"])
+    return None, None
+
+
+async def grade_session_segments(
+    storage: Storage,
+    session_id: int,
+    polar_source: str = "own",
+    segment_seconds: int | None = None,
+) -> list[GradedSegment]:
+    """Return per-segment polar grading for a completed session.
+
+    Segments are fixed-width windows over the session's [start_utc, end_utc]
+    range. Each segment carries averaged conditions, the polar target, and
+    a grade label. Results are cached in ``polar_segment_grades`` and
+    invalidated when the polar baseline is rebuilt.
+    """
+    width = segment_seconds or POLAR_SEGMENT_SECONDS
+    db = storage._conn()
+
+    # Resolve session bounds
+    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if row is None or row["end_utc"] is None:
+        return []  # req 16
+    try:
+        start = datetime.fromisoformat(str(row["start_utc"])).replace(tzinfo=UTC)
+        end = datetime.fromisoformat(str(row["end_utc"])).replace(tzinfo=UTC)
+    except ValueError:
+        return []
+    if end <= start:
+        return []
+
+    baseline_version = await get_polar_baseline_version(storage)
+
+    # Cache hit?
+    cached = await storage.get_polar_segment_grades(session_id, polar_source, baseline_version)
+    if cached is not None:
+        return [
+            GradedSegment(
+                segment_index=int(r["segment_index"]),
+                t_start=datetime.fromisoformat(str(r["t_start"])).replace(tzinfo=UTC),
+                t_end=datetime.fromisoformat(str(r["t_end"])).replace(tzinfo=UTC),
+                lat=r["lat"],
+                lon=r["lon"],
+                tws_kts=r["tws_kts"],
+                twa_deg=r["twa_deg"],
+                bsp_kts=r["bsp_kts"],
+                target_bsp_kts=r["target_bsp_kts"],
+                pct_target=r["pct_target"],
+                delta_kts=r["delta_kts"],
+                grade=r["grade"],
+            )
+            for r in cached
+        ]
+
+    # Load session window data
+    speeds = await storage.query_range("speeds", start, end)
+    winds = await storage.query_range("winds", start, end)
+    headings = await storage.query_range("headings", start, end)
+    positions = await storage.query_range("positions", start, end)
+
+    # Detect un-migrated DB: lookup_polar will raise on missing table.
+    baseline_missing = False
+
+    def _ts_of(rec: dict[str, Any]) -> datetime:
+        return datetime.fromisoformat(str(rec["ts"])).replace(tzinfo=UTC)
+
+    speeds_dt = [(_ts_of(r), r) for r in speeds]
+    winds_dt = [
+        (_ts_of(r), r)
+        for r in winds
+        if int(r.get("reference", -1)) in (_WIND_REF_BOAT, _WIND_REF_NORTH)
+    ]
+    hdg_dt = [(_ts_of(r), r) for r in headings]
+
+    segments: list[GradedSegment] = []
+    grade_hist: dict[str, int] = defaultdict(int)
+
+    n_segments = math.ceil((end - start).total_seconds() / width)
+    for idx in range(n_segments):
+        seg_start = start + timedelta(seconds=idx * width)
+        seg_end = min(end, seg_start + timedelta(seconds=width))
+        t_mid = seg_start + (seg_end - seg_start) / 2
+
+        spd_in = [float(r["speed_kts"]) for ts, r in speeds_dt if seg_start <= ts < seg_end]
+        wind_in = [(ts, r) for ts, r in winds_dt if seg_start <= ts < seg_end]
+        hdg_in = [float(r["heading_deg"]) for ts, r in hdg_dt if seg_start <= ts < seg_end]
+        pos_in = [r for ts, r in [(_ts_of(r), r) for r in positions] if seg_start <= ts < seg_end]
+
+        lat, lon = _interp_position(positions, t_mid) if positions else (None, None)
+
+        bsp = _mean(spd_in)
+
+        tws = _mean([float(r["wind_speed_kts"]) for _, r in wind_in])
+        # Compute segment TWA from the mean wind angle / mean heading.
+        twa: float | None = None
+        if wind_in:
+            wind_angle_mean = sum(float(r["wind_angle_deg"]) for _, r in wind_in) / len(wind_in)
+            ref = int(wind_in[0][1].get("reference", -1))
+            heading_mean = _mean(hdg_in) if ref == _WIND_REF_NORTH else None
+            twa = _compute_twa(wind_angle_mean, ref, heading_mean)
+
+        target: float | None = None
+        pct: float | None = None
+        delta: float | None = None
+        if bsp is not None and tws is not None and twa is not None and not baseline_missing:
+            try:
+                lp = await lookup_polar(storage, tws, twa)
+            except Exception as e:  # un-migrated DB or other table-missing error
+                logger.warning(
+                    "Polar grading: baseline lookup failed for session {}: {}", session_id, e
+                )
+                baseline_missing = True
+                lp = None
+            if lp is not None:
+                target = float(lp["mean_bsp"])
+                pct = bsp / target if target > 0 else None
+                delta = round(bsp - target, 4)
+
+        if bsp is not None and tws is not None and twa is not None:
+            grade = _grade_from_pct(pct)
+        else:
+            grade = "unknown"
+        if lat is None or lon is None:
+            grade = "unknown"
+
+        seg = GradedSegment(
+            segment_index=idx,
+            t_start=seg_start,
+            t_end=seg_end,
+            lat=lat,
+            lon=lon,
+            tws_kts=round(tws, 4) if tws is not None else None,
+            twa_deg=round(twa, 4) if twa is not None else None,
+            bsp_kts=round(bsp, 4) if bsp is not None else None,
+            target_bsp_kts=round(target, 4) if target is not None else None,
+            pct_target=round(pct, 4) if pct is not None else None,
+            delta_kts=delta,
+            grade=grade,
+        )
+        segments.append(seg)
+        grade_hist[grade] += 1
+        # silence unused
+        _ = pos_in
+
+    # Persist cache
+    await storage.upsert_polar_segment_grades(
+        session_id,
+        polar_source,
+        [s.to_row() for s in segments],
+        baseline_version,
+    )
+
+    logger.info(
+        "Polar grading: session={} segments={} grades={}",
+        session_id,
+        len(segments),
+        dict(grade_hist),
+    )
+    return segments

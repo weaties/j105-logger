@@ -28,12 +28,45 @@ const _playClock = {
   tickTimer: null,
   tickAnchorUtc: null, // UTC at last tick anchor
   tickAnchorPerf: 0, // performance.now() at last tick anchor
+  speed: 1, // replay speed multiplier (1 / 2 / 4 / 8)
 };
 
 function _clockNowMs() { return performance.now(); }
 
 function registerSurface(name, render) {
   _playClock.consumers.push({name, render});
+}
+
+// Stop every active playback surface (replay tick, YT video, HTML audio element,
+// multi-channel Web Audio) so seeks coming from the scrubber/map/keyboard only
+// move the playhead — the PR review caught that they were stepping on each
+// other and stuttering when multiple surfaces kept playing mid-seek.
+function _pauseAllPlayback() {
+  try { _stopPlayTick(); } catch (e) { /* swallow */ }
+  _playClock.state = 'paused';
+  try {
+    if (_videoSync && _videoSync.player && typeof _videoSync.player.getPlayerState === 'function') {
+      const st = _videoSync.player.getPlayerState();
+      if (st === 1 && typeof _videoSync.player.pauseVideo === 'function') {
+        _videoSync.player.pauseVideo();
+      }
+    }
+  } catch (e) { /* swallow */ }
+  try {
+    const aEl = document.getElementById('session-audio')
+      || document.querySelector('#audio-body audio');
+    if (aEl && !aEl.paused) aEl.pause();
+  } catch (e) { /* swallow */ }
+  try { if (typeof _mcIsPlaying !== 'undefined' && _mcIsPlaying) _mcPause(); } catch (e) { /* swallow */ }
+  try { _updateReplayControls(); } catch (e) { /* not yet wired */ }
+}
+
+// Seek helper used by every "click/drag to move the playhead" entry point —
+// scrubber, map click, keyboard arrows, maneuver table, discussion anchors.
+// Guarantees playback is paused first so nothing auto-resumes after the seek.
+function _seekTo(utc, source) {
+  _pauseAllPlayback();
+  setPosition(utc, {source: source || 'seek'});
 }
 
 function setPosition(utc, opts) {
@@ -47,10 +80,19 @@ function setPosition(utc, opts) {
   _playClock.tickAnchorUtc = date;
   _playClock.tickAnchorPerf = _clockNowMs();
   const source = (opts && opts.source) || null;
+  // Stash source so individual consumers can decide whether this producer
+  // should drive them. In particular, playback-bearing consumers (video,
+  // audio, mc) use this to avoid seeking one player when a different player
+  // is the one producing updates — e.g. WAV play must not start YT.
+  _playClock.currentSource = source;
   for (const c of _playClock.consumers) {
     if (c.name === source) continue; // don't echo back to producer
     try { c.render(date); } catch (e) { /* never let one surface break others */ }
   }
+  _playClock.currentSource = null;
+  // Keep the replay scrubber + time label in sync with producer events
+  // (YT scrub, WAV scrub) — otherwise only clock-driven ticks update them.
+  try { _updateReplayControls(); } catch (e) { /* not yet wired */ }
 }
 
 function _isEchoEvent() {
@@ -64,13 +106,32 @@ function _startPlayTick() {
   _playClock.state = 'playing';
   _playClock.tickTimer = setInterval(() => {
     if (!_playClock.tickAnchorUtc) return;
-    const elapsedMs = _clockNowMs() - _playClock.tickAnchorPerf;
+    const elapsedMs = (_clockNowMs() - _playClock.tickAnchorPerf) * (_playClock.speed || 1);
     const utc = new Date(_playClock.tickAnchorUtc.getTime() + elapsedMs);
     _playClock.positionUtc = utc;
+    // Auto-stop at end of replay window
+    if (_replayEnd && utc.getTime() >= _replayEnd.getTime()) {
+      _playClock.positionUtc = _replayEnd;
+      _stopPlayTick();
+      for (const c of _playClock.consumers) {
+        try { c.render(_replayEnd); } catch (e) { /* swallow */ }
+      }
+      _updateReplayControls();
+      return;
+    }
     for (const c of _playClock.consumers) {
       try { c.render(utc); } catch (e) { /* swallow */ }
     }
+    _updateReplayControls();
   }, 100);
+}
+
+function _setPlaybackSpeed(newSpeed) {
+  if (!newSpeed) return;
+  // Re-anchor so speed change doesn't jump the cursor
+  _playClock.tickAnchorUtc = _playClock.positionUtc;
+  _playClock.tickAnchorPerf = _clockNowMs();
+  _playClock.speed = newSpeed;
 }
 
 function _stopPlayTick() {
@@ -321,8 +382,33 @@ async function loadTrack() {
   const rawTimestamps = feature.properties.timestamps || [];
   const latLngs = coords.map(c => [c[1], c[0]]);
   const timestamps = rawTimestamps.map(t => new Date(t.endsWith('Z') || t.includes('+') ? t : t + 'Z'));
-  const trackColor = cssVar('--accent-strong');
-  const line = L.polyline(latLngs, {color: trackColor, weight: 4}).addTo(_map);
+  // Instrument (SK) track: dashed like the Vakaros overlay but with a
+  // distinct color and a longer dash period, so the two patterns don't
+  // land on top of each other when both tracks are shown. Vakaros uses
+  // '2,4' (dash 2, gap 4, 6px cycle); we use '6,6' (12px cycle). The
+  // different cycle lengths prevent consistent overlap and the different
+  // dash sizes read clearly even where they briefly coincide. Butt caps
+  // keep the dashes sharply rectangular for that "super crisp" look.
+  //
+  // The polyline is drawn from a moving-average smoothed copy of the
+  // GPS samples. Raw 1 Hz fixes are noisy enough that the line looks
+  // fuzzy when zoomed in (see the user report of a wavy track). The
+  // cursor continues to interpolate against the raw latLngs so the
+  // boat position itself isn't lagged by the smoothing.
+  const trackColor = cssVar('--warning') || '#fbbf24';
+  // The /track endpoint now returns 1 Hz mean-averaged positions (one
+  // row per second across all GPS sources), so we don't need any
+  // frontend smoothing or decimation — the polyline already matches
+  // Vakaros's vertex density. Just style it with the same dash pattern
+  // so the two tracks read the same way.
+  const line = L.polyline(latLngs, {
+    color: trackColor,
+    weight: 3,
+    opacity: 0.9,
+    lineCap: 'butt',
+    lineJoin: 'miter',
+    dashArray: '2, 4',
+  }).addTo(_map);
 
   const successColor = cssVar('--success');
   const dangerColor = cssVar('--danger');
@@ -332,25 +418,35 @@ async function loadTrack() {
   L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: dangerColor, fillColor: dangerColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Finish');
 
-  const cursor = L.circleMarker([0, 0], {
-    radius: 7, color: warningColor, fillColor: warningColor, fillOpacity: 1, weight: 2,
+  // Boat cursor: divIcon with a rotating SVG so we can show heading (boat
+  // orientation) and COG (a separate indicator line) in one marker. The DOM
+  // is built once and mutated in-place on each tick to avoid re-creating
+  // the Leaflet layer at 10 Hz.
+  const cursorIcon = L.divIcon({
+    className: 'boat-cursor',
+    html: _renderBoatCursorSvg(0, 0),
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
   });
+  const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
   _trackData = {latLngs, timestamps, line, cursor};
 
-  // Map is a consumer: render the cursor at the requested UTC
+  // Map is a consumer: render the cursor at the requested UTC. We use a
+  // continuous interpolated position (not the nearest sample index) so the
+  // boat glides along the polyline instead of stepping between fixes — the
+  // stepping was especially visible at 8x replay.
   registerSurface('map', function(utc) {
     if (!_trackData) return;
-    const idx = _indexForUtc(utc);
-    _moveCursorToIndex(idx);
-    _updateBoatSettingsForUtc(_utcForIndex(idx));
+    _moveCursorToUtc(utc);
+    _updateBoatSettingsForUtc(utc);
   });
 
   // Click track → seek the playback clock (which then seeks video, audio, etc.)
   line.on('click', function(e) {
     const idx = _nearestIndex(e.latlng);
     const utc = _utcForIndex(idx);
-    if (utc) setPosition(utc, {source: 'map'});
+    if (utc) _seekTo(utc, 'map');
     // Map producer still updates its own cursor immediately
     _moveCursorToIndex(idx);
   });
@@ -499,7 +595,14 @@ async function loadVakarosOverlay() {
   if (data.track && data.track.geometry && data.track.geometry.coordinates.length) {
     const vakLatLngs = data.track.geometry.coordinates.map(c => [c[1], c[0]]);
     vakarosLine = L.polyline(vakLatLngs, {
-      color: vakarosTrackColor, weight: 3, opacity: 0.85, dashArray: '2, 4',
+      color: vakarosTrackColor,
+      weight: 3,
+      opacity: 0.9,
+      lineCap: 'butt',
+      lineJoin: 'miter',
+      // Intentionally kept shorter than the SK track's '6,6' so the two
+      // dash cycles don't align when both overlays are visible.
+      dashArray: '2, 4',
     }).bindPopup('Vakaros track');
     // Reveal the selector now that there's something to toggle.
     const selector = document.getElementById('vakaros-track-toggle');
@@ -588,7 +691,159 @@ function _nearestIndex(latlng) {
 
 function _moveCursorToIndex(idx) {
   if (!_trackData) return;
-  _trackData.cursor.setLatLng(_trackData.latLngs[idx]).addTo(_map);
+  const ts = _trackData.timestamps[idx];
+  if (ts) {
+    _moveCursorToUtc(ts);
+  } else {
+    _trackData.cursor.setLatLng(_trackData.latLngs[idx]).addTo(_map);
+  }
+}
+
+// Interpolated cursor: finds the two bracketing GPS samples for the
+// requested UTC and lerps lat/lng between them, so the boat glides
+// continuously along the polyline. Rotation is still circular-meaned
+// across a ±5s window to damp HDG/COG noise.
+function _moveCursorToUtc(utc) {
+  if (!_trackData) return;
+  const {latLngs, timestamps} = _trackData;
+  if (!latLngs.length) return;
+  const tMs = utc.getTime();
+  // Bracket the timestamps
+  let hi = _trackLowerBound(tMs);
+  if (hi <= 0) { hi = 1; }
+  if (hi >= timestamps.length) { hi = timestamps.length - 1; }
+  const lo = hi - 1;
+  const t0 = timestamps[lo].getTime();
+  const t1 = timestamps[hi].getTime();
+  let frac = t1 > t0 ? (tMs - t0) / (t1 - t0) : 0;
+  if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
+  const a = latLngs[lo];
+  const b = latLngs[hi];
+  const lat = a[0] + (b[0] - a[0]) * frac;
+  const lng = a[1] + (b[1] - a[1]) * frac;
+  const interp = [lat, lng];
+  _trackData.cursor.setLatLng(interp).addTo(_map);
+
+  const windowed = _windowedHeadingCog(tMs, 5000);
+  const el = _trackData.cursor.getElement();
+  if (el) el.innerHTML = _renderBoatCursorSvg(windowed.hdg, windowed.cog);
+  if (_followBoat && _map) _maybeFollowPan(interp);
+}
+
+// Binary search for the first timestamp index where ts >= tMs. Mirrors
+// the replay-sample helper but operates on the track timestamps array.
+function _trackLowerBound(tMs) {
+  const ts = _trackData && _trackData.timestamps;
+  if (!ts || !ts.length) return 0;
+  let lo = 0, hi = ts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (ts[mid].getTime() < tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Circular-mean smoothing of hdg/cog over a window around ts. Returns
+// {hdg, cog} in degrees [0, 360). Null fields if not enough samples.
+function _windowedHeadingCog(tMs, halfMs) {
+  if (!_replaySamples || !_replaySamples.length) return {hdg: null, cog: null};
+  const lo = tMs - halfMs;
+  const hi = tMs + halfMs;
+  let hdgX = 0, hdgY = 0, hdgN = 0;
+  let cogX = 0, cogY = 0, cogN = 0;
+  // _replaySamples is sorted by ts; linear scan around the cursor is
+  // bounded by the window so this is still O(window) not O(n).
+  const startIdx = _sampleLowerBound(lo);
+  for (let i = startIdx; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t > hi) break;
+    if (s.hdg != null && !isNaN(s.hdg)) {
+      const r = (s.hdg * Math.PI) / 180;
+      hdgX += Math.cos(r); hdgY += Math.sin(r); hdgN++;
+    }
+    if (s.cog != null && !isNaN(s.cog)) {
+      const r = (s.cog * Math.PI) / 180;
+      cogX += Math.cos(r); cogY += Math.sin(r); cogN++;
+    }
+  }
+  const angle = (x, y, n) => {
+    if (!n) return null;
+    const a = (Math.atan2(y / n, x / n) * 180) / Math.PI;
+    return (a + 360) % 360;
+  };
+  return {hdg: angle(hdgX, hdgY, hdgN), cog: angle(cogX, cogY, cogN)};
+}
+
+function _sampleLowerBound(tMs) {
+  if (!_replaySamples || !_replaySamples.length) return 0;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (_replaySamples[mid].ts.getTime() < tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Soft-viewport follow: only recenter when the boat is within 25% of the
+// nearest map edge, otherwise leave the map alone. Prevents the constant
+// 10 Hz panning that caused the page-wide jitter.
+function _maybeFollowPan(latLng) {
+  if (!_map) return;
+  // latLngs are stored as [lat, lng] arrays; normalize.
+  const lat = Array.isArray(latLng) ? latLng[0] : latLng.lat;
+  const lng = Array.isArray(latLng) ? latLng[1] : latLng.lng;
+  const bounds = _map.getBounds();
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const latSpan = ne.lat - sw.lat;
+  const lngSpan = ne.lng - sw.lng;
+  const margin = 0.25;
+  const latMargin = latSpan * margin;
+  const lngMargin = lngSpan * margin;
+  const nearEdge =
+    lat < sw.lat + latMargin ||
+    lat > ne.lat - latMargin ||
+    lng < sw.lng + lngMargin ||
+    lng > ne.lng - lngMargin;
+  if (!nearEdge) return;
+  // Use Leaflet's panTo with a short animation so the recenter glides
+  // rather than snapping; duration short enough not to overshoot tick.
+  _map.panTo(latLng, {animate: true, duration: 0.4});
+}
+
+// Render the boat cursor SVG. The hull is a simplified triangle that
+// rotates with heading so the bow points the way the boat is pointing.
+// A second line extending from the center shows COG, so the offset
+// between heading and COG (leeway, current) is visible at a glance.
+function _renderBoatCursorSvg(hdg, cog) {
+  const hasHdg = hdg != null && !isNaN(hdg);
+  const hasCog = cog != null && !isNaN(cog);
+  const hdgDeg = hasHdg ? hdg : 0;
+  // Larger viewBox so the indicator lines can extend well beyond the hull
+  // and read clearly against the track without being clipped.
+  let parts = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="overflow:visible;pointer-events:none">';
+  // COG line (red) — drawn first so it sits under the hull. Doubled up
+  // with a dark halo stroke so it pops against any map background.
+  if (hasCog) {
+    parts += '<g transform="rotate(' + cog + ')">';
+    parts += '<line x1="0" y1="0" x2="0" y2="-30" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    parts += '<line x1="0" y1="0" x2="0" y2="-30" stroke="#ef4444" stroke-width="3.5" stroke-linecap="round"/>';
+    parts += '</g>';
+  }
+  // Heading line (yellow) — same halo treatment.
+  if (hasHdg) {
+    parts += '<g transform="rotate(' + hdgDeg + ')">';
+    parts += '<line x1="0" y1="0" x2="0" y2="-26" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    parts += '<line x1="0" y1="0" x2="0" y2="-26" stroke="#facc15" stroke-width="3.5" stroke-linecap="round"/>';
+    parts += '</g>';
+  }
+  // Hull — thin triangle, bow at top, stern at bottom, rotated to heading
+  parts += '<polygon points="0,-11 6,8 -6,8" fill="#facc15" stroke="#1f2937" stroke-width="1.25" stroke-linejoin="round" transform="rotate(' + hdgDeg + ')"/>';
+  parts += '</svg>';
+  return parts;
 }
 
 function _indexForUtc(utcDate) {
@@ -715,12 +970,44 @@ function _openWatchOnYoutube(ev) {
   return false;
 }
 
+// Watchdog for user scrubs on the YT player itself. The IFrame API doesn't
+// emit a "seeked" event, so we poll getCurrentTime() while the clock is not
+// in playing state and fan out any unexpected jump as a producer event.
+// Disabled during clock-driven playback because fast speeds (2×/4×/8×) would
+// otherwise read as "seeks" on every poll.
+let _ytScrubPollTimer = null;
+let _ytScrubLastOffset = null;
+function _startYtScrubWatch() {
+  if (_ytScrubPollTimer) return;
+  _ytScrubPollTimer = setInterval(() => {
+    if (!_videoSync || !_videoSync.player) return;
+    if (_playClock.state === 'playing') return;
+    if (_isEchoEvent()) return;
+    let cur;
+    try { cur = _videoSync.player.getCurrentTime(); } catch (e) { return; }
+    if (cur == null || isNaN(cur)) return;
+    if (_ytScrubLastOffset == null) { _ytScrubLastOffset = cur; return; }
+    const delta = Math.abs(cur - _ytScrubLastOffset);
+    _ytScrubLastOffset = cur;
+    // Threshold > max natural drift between polls. YT paused shouldn't move
+    // at all, so anything above 0.4s is a user-initiated scrub.
+    if (delta < 0.4) return;
+    const utc = _videoOffsetToUtc(cur);
+    if (!utc) return;
+    setPosition(utc, {source: 'video'});
+  }, 250);
+}
+
 function _onVideoReady() {
+  _startYtScrubWatch();
   // Video is a consumer: seek to the requested UTC if it's within range.
   // Large jumps (>2 s) pause the player so audio doesn't keep playing from
   // wherever the user just clicked. Small deltas (playback ticks) don't
   // touch playback state.
   registerSurface('video', function(utc) {
+    // Playback independence: don't seek YT just because another player's
+    // producer fanout reached us. Let WAV/mc play on their own.
+    if (_playClock.currentSource === 'audio' || _playClock.currentSource === 'mc') return;
     if (!_videoSync || !_videoSync.player || !_videoSync.player.seekTo) return;
     const offset = _utcToVideoOffset(utc);
     if (offset === null || offset < 0) return;
@@ -731,7 +1018,13 @@ function _onVideoReady() {
         currentOffset = _videoSync.player.getCurrentTime();
       }
     } catch (e) { /* swallow */ }
-    if (currentOffset != null && Math.abs(currentOffset - offset) > _LARGE_JUMP_SEC) {
+    const delta = currentOffset != null ? Math.abs(currentOffset - offset) : Infinity;
+    // While the clock tick is driving playback, the render callback fires at
+    // ~10 Hz. Issuing seekTo() on every tick for small deltas (<0.5s) causes
+    // the YouTube embed to stutter — the player is constantly re-buffering
+    // instead of playing. Skip small corrections and let YT run naturally.
+    if (delta < 0.5) return;
+    if (delta > _LARGE_JUMP_SEC) {
       try {
         const state = typeof _videoSync.player.getPlayerState === 'function'
           ? _videoSync.player.getPlayerState() : -1;
@@ -768,21 +1061,30 @@ function switchVideo(idx) {
 function _onPlayerStateChange(event) {
   // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, BUFFERING = 3
   if (event.data === 1) {
-    _stopSyncTimer();
-    // Treat YT play as a producer: anchor the clock to the current video time
-    if (typeof _videoSync.player.getCurrentTime === 'function') {
-      const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
-      if (utc) {
-        _playClock.positionUtc = utc;
-        // Don't fire echo to video — but other surfaces should follow
-        setPosition(utc, {source: 'video'});
-      }
+    // If we're inside the echo window from a recent programmatic seek,
+    // clamp YT back to paused — a scrub just drove seekTo() and the embed
+    // is trying to auto-resume out from under us. Outside the echo window
+    // this is a user-initiated play and we leave it alone.
+    if (_isEchoEvent()) {
+      try {
+        if (typeof _videoSync.player.pauseVideo === 'function') {
+          _videoSync.player.pauseVideo();
+        }
+      } catch (e) { /* swallow */ }
+      return;
     }
-    // Drive a 2 Hz tick from the YT player so map/transcript follow during play
+    _stopSyncTimer();
+    // YT plays independently — drive a 2 Hz fanout so the map cursor, gauges,
+    // and track scrubber follow along. Do NOT start the replay clock tick;
+    // replay 'playing' state is reserved for the track replay play button.
     _syncTimer = setInterval(_videoTick, 500);
   } else {
     _stopSyncTimer();
-    _videoTick();
+    // Deliberately do NOT call _videoTick() here: every YT state change
+    // (paused, buffering, cued) would otherwise overwrite _playClock.positionUtc
+    // with YT's getCurrentTime(), which during a scrub can still be 0 or an
+    // old offset and snaps the progress bar/cursor backward. _videoTick only
+    // makes sense while YT is actually playing and driving the clock.
   }
 }
 
@@ -793,14 +1095,14 @@ function _stopSyncTimer() {
 function _videoTick() {
   if (!_videoSync || !_videoSync.player) return;
   if (typeof _videoSync.player.getCurrentTime !== 'function') return;
+  // The replay clock is master when it's playing — let its tick drive the
+  // surfaces instead of YT so the rates don't fight each other.
+  if (_playClock.state === 'playing') return;
   const utc = _videoOffsetToUtc(_videoSync.player.getCurrentTime());
   if (!utc) return;
-  // Treat as a non-seek update: update other surfaces but not the video itself
-  _playClock.positionUtc = utc;
-  for (const c of _playClock.consumers) {
-    if (c.name === 'video') continue;
-    try { c.render(utc); } catch (e) { /* swallow */ }
-  }
+  // Fan out through setPosition so the track scrubber and gauges update too.
+  // source='video' keeps the video consumer itself out of the loop (no echo).
+  setPosition(utc, {source: 'video'});
 }
 
 // Convert video playback seconds → UTC
@@ -1686,9 +1988,28 @@ function loadAudio() {
   // A "large jump" (>2 s away) is treated as a user click, so we pause any
   // currently-playing audio: it's distracting to have audio keep going from
   // a new spot just because the user clicked somewhere on the page.
+  // Track the most recently requested local position. Setting currentTime
+  // on a still-loading <audio> element is silently dropped by the browser,
+  // so we re-apply the target on 'loadedmetadata' and 'play' to guarantee
+  // the user's scrub lands when playback actually starts.
+  let _audioTargetLocal = null;
+  const _applyAudioTarget = () => {
+    if (_audioTargetLocal == null) return;
+    if (el.duration && _audioTargetLocal > el.duration) return;
+    if (Math.abs(el.currentTime - _audioTargetLocal) < 0.15) return;
+    try { el.currentTime = _audioTargetLocal; } catch (e) { /* not seekable yet */ }
+  };
+  el.addEventListener('loadedmetadata', _applyAudioTarget);
+
   registerSurface('audio', function(utc) {
+    // NB: setting el.currentTime on a paused audio element is safe — it
+    // doesn't start playback — so unlike the video consumer we don't need
+    // to skip based on currentSource. Seeking a paused audio keeps its
+    // scrubber in lockstep with YT/replay even when the user isn't
+    // listening to it.
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
+    _audioTargetLocal = local;
     const delta = Math.abs(el.currentTime - local);
     if (delta < 0.15) return; // already there
     if (delta > _LARGE_JUMP_SEC && !el.paused) {
@@ -1710,12 +2031,16 @@ function loadAudio() {
   };
   el.addEventListener('seeked', _fanout);
   el.addEventListener('timeupdate', _fanout);
+  // The WAV player plays independently — it is NOT allowed to drive the
+  // replay clock's 'playing' state. The clock is reserved for the track
+  // replay play button. Fanout via timeupdate is enough to keep the map
+  // cursor and gauges tracking while WAV plays on its own.
   el.addEventListener('play', function() {
+    // Re-apply any pending target seek first — if the user scrubbed before
+    // metadata loaded, the original currentTime= assignment may have been
+    // dropped, and we'd otherwise start playback from 0:00.
+    _applyAudioTarget();
     setPosition(audioLocalToUtc(el.currentTime), {source: 'audio'});
-    _startPlayTick();
-  });
-  el.addEventListener('pause', function() {
-    _stopPlayTick();
   });
 }
 
@@ -1888,10 +2213,26 @@ function _mcUpdateProgress() {
   time.textContent = `${fmt(t)} / ${fmt(_mcBuffer.duration)}`;
 }
 
+let _mcFanoutLast = 0;
 function _mcStartProgressTick() {
   _mcStopProgressTick();
   const tick = () => {
     _mcUpdateProgress();
+    // Throttled producer fanout: while mc is playing, push the current
+    // playhead out as a source='mc' update so the map cursor, gauges, and
+    // replay scrubber track along. 150 ms matches the existing audio
+    // fanout cadence.
+    const now = _clockNowMs();
+    if (_mcIsPlaying && now - _mcFanoutLast >= 150) {
+      _mcFanoutLast = now;
+      const anchor = _mcSessionStart();
+      if (anchor) {
+        setPosition(
+          new Date(anchor.getTime() + _mcCurrentTime() * 1000),
+          {source: 'mc'},
+        );
+      }
+    }
     if (_mcIsPlaying) _mcRafHandle = requestAnimationFrame(tick);
   };
   _mcRafHandle = requestAnimationFrame(tick);
@@ -1986,6 +2327,26 @@ async function loadMultiChannelAudio() {
     console.error('multi-channel audio load failed', e);
     document.getElementById('mc-status').textContent = 'Error: ' + e.message;
   }
+  // Register mc as a clock consumer so scrubs/seeks from other surfaces move
+  // the mc seek bar and start offset. Skipped while playing (avoid fighting
+  // natural playback) and while the user is actively dragging the slider.
+  registerSurface('mc', function(utc) {
+    // Moving _mcStartOffset on a paused mc source doesn't start playback,
+    // so we can safely follow updates from any producer. The _mcIsPlaying
+    // guard below still prevents us from interrupting active playback.
+    if (!_mcBuffer) return;
+    const anchor = _mcSessionStart();
+    if (!anchor) return;
+    const seconds = (utc.getTime() - anchor.getTime()) / 1000;
+    if (seconds < 0 || seconds > _mcBuffer.duration) return;
+    if (_mcIsPlaying) return;
+    const seek = document.getElementById('mc-seek');
+    if (seek && document.activeElement === seek) return;
+    const delta = Math.abs((_mcStartOffset || 0) - seconds);
+    if (delta < 0.15) return;
+    _mcStartOffset = seconds;
+    _mcUpdateProgress();
+  });
 }
 
 function _mcTogglePlay() {
@@ -1996,7 +2357,24 @@ function _mcTogglePlay() {
 
 function _mcSeekFromSlider(val) {
   if (!_mcBuffer) return;
-  _mcSeek((Number(val) / 1000) * _mcBuffer.duration);
+  const seconds = (Number(val) / 1000) * _mcBuffer.duration;
+  _mcSeek(seconds);
+  // Producer: fan out to every other surface (map cursor, video, gauges)
+  // so dragging the Web Audio scrubber keeps everything in sync. Skipped
+  // when we can't derive a session-wide UTC anchor.
+  const anchor = _mcSessionStart();
+  if (anchor) setPosition(new Date(anchor.getTime() + seconds * 1000), {source: 'mc'});
+}
+
+// Resolve the session-wide UTC anchor for the multi-channel buffer. The
+// buffer is keyed to _session.audio_start_utc (same reference the transcript
+// highlighter uses), normalized to UTC regardless of how the backend wrote it.
+function _mcSessionStart() {
+  if (!_session || !_session.audio_start_utc) return null;
+  const raw = _session.audio_start_utc;
+  const iso = raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 function _mcToggleSticky(on) {
@@ -3312,7 +3690,7 @@ function highlightManeuver(idx) {
   // Move map cursor to maneuver position
   if (m && _trackData) {
     const ts = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z');
-    setPosition(ts);
+    _seekTo(ts, 'maneuver');
   }
   // Seek the embedded player to the maneuver moment if a video is loaded.
   if (m && _videoSync && _videoSync.player) {
@@ -3933,7 +4311,7 @@ function seekToThreadAnchor(ts) {
   if (!ts) return;
   const utc = new Date(ts.endsWith('Z') || ts.includes('+') ? ts : ts + 'Z');
   if (isNaN(utc.getTime())) return;
-  setPosition(utc);
+  _seekTo(utc, 'thread');
 }
 
 function _checkThreadHash() {
@@ -4552,6 +4930,370 @@ function _renderIsolationToggle() {
   // checkbox; nothing to add to the transcript header.
   return '';
 }
+
+// ---------------------------------------------------------------------------
+// Replay controls, HUD, and polar-graded track overlay (#464, #465, #468, #470)
+// ---------------------------------------------------------------------------
+//
+// Extends the existing _playClock (which already drives map/video/audio
+// surfaces) with: a visible scrubber, play/pause, speed selector, keyboard
+// shortcuts, a live instrument HUD, and a polar-grade color overlay that
+// paints the track by % of target. The underlying data comes from
+// /api/sessions/{id}/replay in one fetch.
+
+let _replayStart = null; // Date — session start (for scrubber 0)
+let _replayEnd = null;   // Date — session end (for scrubber max)
+let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, aws, awa, hdg, cog}]
+let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
+let _gradeSegments = []; // [L.polyline] overlays when polar view is active
+let _gradeViewActive = false;
+let _followBoat = false;  // when true, map re-centers on the boat each tick
+
+const _GRADE_COLORS = {
+  red: '#d64545',
+  yellow: '#d6a745',
+  green: '#3db86e',
+  suspicious: '#a855f7',
+  unknown: '#888888',
+};
+
+function _pad2(n) { return String(n).padStart(2, '0'); }
+
+function _fmtClock(deltaMs) {
+  if (deltaMs == null || isNaN(deltaMs)) return '--:--';
+  const totalS = Math.max(0, Math.floor(deltaMs / 1000));
+  const mm = Math.floor(totalS / 60);
+  const ss = totalS % 60;
+  if (mm >= 60) {
+    const hh = Math.floor(mm / 60);
+    return hh + ':' + _pad2(mm % 60) + ':' + _pad2(ss);
+  }
+  return _pad2(mm) + ':' + _pad2(ss);
+}
+
+function _binarySearchSample(tMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= tMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+function _findGradeAt(tMs) {
+  if (!_replayGrades || !_replayGrades.length) return null;
+  // Grades are segment_index-ordered and time-contiguous; linear scan is fine
+  // at ~360 segments for a 1h session but use binary for safety.
+  let lo = 0, hi = _replayGrades.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (_replayGrades[mid].t_end.getTime() <= tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  const g = _replayGrades[lo];
+  if (!g) return null;
+  if (tMs < g.t_start.getTime()) return null;
+  return g;
+}
+
+function _fmtNum(v, digits) {
+  if (v == null || isNaN(v)) return '—';
+  return Number(v).toFixed(digits);
+}
+
+function _fmtPct(v) {
+  if (v == null || isNaN(v)) return '—';
+  return Math.round(v * 100) + '%';
+}
+
+// Lookback window for each gauge's sparkline — enough context to see trend
+// without dominating the card.
+const _SPARK_LOOKBACK_MS = 5 * 60 * 1000;
+
+// Draw a single-channel sparkline into a canvas. `samples` is the full
+// per-second series; we slice it to the lookback window ending at cursorMs
+// and scale y to the slice's own min/max so small movements are still
+// visible. Returns without touching the canvas when the field is absent
+// so missing sensors fall back to a blank strip rather than a garbage line.
+function _drawSparkline(canvasId, field, cursorMs, color) {
+  const c = document.getElementById(canvasId);
+  if (!c || !_replaySamples || !_replaySamples.length) return;
+  const ctx = c.getContext('2d');
+  // Match backing store to displayed size on first draw / on resize so the
+  // line stays crisp without depending on CSS pixels matching width attrs.
+  const cssW = c.clientWidth || c.width;
+  const cssH = c.clientHeight || c.height;
+  if (c.width !== cssW) c.width = cssW;
+  if (c.height !== cssH) c.height = cssH;
+  const w = c.width;
+  const h = c.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const t1 = cursorMs;
+  const t0 = cursorMs - _SPARK_LOOKBACK_MS;
+  // Collect points within [t0, t1] that have a value for this field
+  const pts = [];
+  for (let i = 0; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t < t0) continue;
+    if (t > t1) break;
+    const v = s[field];
+    if (v == null || isNaN(v)) continue;
+    pts.push([t, v]);
+  }
+  if (pts.length < 2) return;
+
+  let vmin = Infinity, vmax = -Infinity;
+  for (const [, v] of pts) { if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
+  // Pad the range a touch so flat series don't sit on the edges
+  if (vmax - vmin < 1e-6) { vmax = vmin + 1; }
+  const pad = (vmax - vmin) * 0.1;
+  vmin -= pad; vmax += pad;
+
+  const xFor = t => ((t - t0) / (t1 - t0)) * (w - 2) + 1;
+  const yFor = v => h - 1 - ((v - vmin) / (vmax - vmin)) * (h - 2);
+
+  ctx.strokeStyle = color || 'rgba(120,180,255,0.9)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(xFor(pts[0][0]), yFor(pts[0][1]));
+  for (let i = 1; i < pts.length; i++) {
+    ctx.lineTo(xFor(pts[i][0]), yFor(pts[i][1]));
+  }
+  ctx.stroke();
+
+  // Cursor dot on the most-recent point so it reads as "live"
+  const last = pts[pts.length - 1];
+  ctx.fillStyle = color || 'rgba(120,180,255,0.9)';
+  ctx.beginPath();
+  ctx.arc(xFor(last[0]), yFor(last[1]), 1.8, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function _renderHud(utc) {
+  if (!_replaySamples) return;
+  const s = _binarySearchSample(utc.getTime());
+  const g = _findGradeAt(utc.getTime());
+  const setEl = (id, text) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+  };
+  setEl('hud-sog', _fmtNum(s && s.sog, 2));
+  setEl('hud-stw', _fmtNum(s && s.stw, 2));
+  setEl('hud-tws', _fmtNum(s && s.tws, 1));
+  setEl('hud-twa', _fmtNum(s && s.twa, 0));
+  setEl('hud-aws', _fmtNum(s && s.aws, 1));
+  setEl('hud-awa', _fmtNum(s && s.awa, 0));
+  setEl('hud-hdg', _fmtNum(s && s.hdg, 0));
+  setEl('hud-cog', _fmtNum(s && s.cog, 0));
+  setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
+  setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
+
+  const cursorMs = utc.getTime();
+  _drawSparkline('spark-stw', 'stw', cursorMs, 'rgba(120,180,255,0.9)');
+  _drawSparkline('spark-sog', 'sog', cursorMs, 'rgba(120,180,255,0.6)');
+  _drawSparkline('spark-tws', 'tws', cursorMs, 'rgba(100,220,150,0.9)');
+  _drawSparkline('spark-twa', 'twa', cursorMs, 'rgba(100,220,150,0.6)');
+  _drawSparkline('spark-aws', 'aws', cursorMs, 'rgba(220,180,100,0.9)');
+  _drawSparkline('spark-awa', 'awa', cursorMs, 'rgba(220,180,100,0.6)');
+  _drawSparkline('spark-hdg', 'hdg', cursorMs, 'rgba(255,140,140,0.9)');
+  _drawSparkline('spark-cog', 'cog', cursorMs, 'rgba(255,140,140,0.6)');
+}
+
+function _updateReplayControls() {
+  if (!_replayStart || !_replayEnd) return;
+  const pos = _playClock.positionUtc || _replayStart;
+  const elapsedMs = pos.getTime() - _replayStart.getTime();
+  const durMs = _replayEnd.getTime() - _replayStart.getTime();
+  const timeEl = document.getElementById('replay-time');
+  if (timeEl) timeEl.textContent = _fmtClock(elapsedMs) + ' / ' + _fmtClock(durMs);
+  const scrubber = document.getElementById('replay-scrubber');
+  if (scrubber && document.activeElement !== scrubber) {
+    const frac = durMs > 0 ? Math.min(1, Math.max(0, elapsedMs / durMs)) : 0;
+    scrubber.value = String(Math.round(frac * 1000));
+  }
+  const btn = document.getElementById('replay-play-btn');
+  if (btn) btn.innerHTML = _playClock.state === 'playing' ? '&#10074;&#10074;' : '&#9654;';
+}
+
+function _togglePlayPause() {
+  if (!_replayStart) return;
+  if (_playClock.state === 'playing') {
+    _stopPlayTick();
+  } else {
+    // Pause any WAV / multi-channel audio before the clock starts — the
+    // user wants the track replay play button to drive the map/video
+    // preview, not audio. YT is intentionally left running so it keeps
+    // providing a visual preview while the replay scrubs it.
+    try {
+      const aEl = document.getElementById('session-audio')
+        || document.querySelector('#audio-body audio');
+      if (aEl && !aEl.paused) aEl.pause();
+    } catch (e) { /* swallow */ }
+    try { if (typeof _mcIsPlaying !== 'undefined' && _mcIsPlaying) _mcPause(); } catch (e) { /* swallow */ }
+    if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
+    // If at (or past) the end, restart from the beginning
+    if (_replayEnd && _playClock.positionUtc.getTime() >= _replayEnd.getTime()) {
+      setPosition(_replayStart, {source: 'replay'});
+    }
+    _startPlayTick();
+  }
+  _updateReplayControls();
+}
+
+function _clearGradeSegments() {
+  for (const seg of _gradeSegments) {
+    try { _map.removeLayer(seg); } catch (e) { /* ignore */ }
+  }
+  _gradeSegments = [];
+}
+
+function _drawGradeSegments() {
+  _clearGradeSegments();
+  if (!_map || !_replayGrades || !_trackData) return;
+  // Paint contiguous runs of same-grade segments as individual polylines on
+  // top of the base track. We walk the sample positions and mark each one
+  // with the grade that covers it, then coalesce consecutive same-grade runs.
+  const timestamps = _trackData.timestamps;
+  const latLngs = _trackData.latLngs;
+  if (!timestamps || timestamps.length < 2) return;
+  const gradesAtIdx = new Array(timestamps.length);
+  for (let i = 0; i < timestamps.length; i++) {
+    const g = _findGradeAt(timestamps[i].getTime());
+    gradesAtIdx[i] = g ? g.grade : 'unknown';
+  }
+  let runStart = 0;
+  for (let i = 1; i <= timestamps.length; i++) {
+    if (i === timestamps.length || gradesAtIdx[i] !== gradesAtIdx[runStart]) {
+      const color = _GRADE_COLORS[gradesAtIdx[runStart]] || _GRADE_COLORS.unknown;
+      const slice = latLngs.slice(runStart, i + 1); // include boundary point
+      if (slice.length >= 2) {
+        const line = L.polyline(slice, {color: color, weight: 6, opacity: 0.85}).addTo(_map);
+        _gradeSegments.push(line);
+      }
+      runStart = i;
+    }
+  }
+  // Hide the underlying single-color track while grade overlay is active
+  if (_trackData.line) _trackData.line.setStyle({opacity: 0});
+}
+
+function _setGradeViewActive(active) {
+  _gradeViewActive = !!active;
+  const legend = document.getElementById('polar-legend');
+  if (legend) legend.style.display = _gradeViewActive ? '' : 'none';
+  if (_gradeViewActive) {
+    _drawGradeSegments();
+  } else {
+    _clearGradeSegments();
+    if (_trackData && _trackData.line) _trackData.line.setStyle({opacity: 1});
+  }
+}
+
+async function _loadReplayData() {
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/replay');
+    if (!r.ok) return;
+    const data = await r.json();
+    _replayStart = new Date(data.start_utc);
+    _replayEnd = new Date(data.end_utc);
+    _replaySamples = (data.samples || []).map(s => ({
+      ts: new Date(s.ts),
+      stw: s.stw,
+      sog: s.sog,
+      tws: s.tws,
+      twa: s.twa,
+      aws: s.aws,
+      awa: s.awa,
+      hdg: s.hdg,
+      cog: s.cog,
+    }));
+    _replayGrades = (data.grades || []).map(g => ({
+      t_start: new Date(g.t_start),
+      t_end: new Date(g.t_end),
+      grade: g.grade,
+      pct: g.pct,
+      delta: g.delta,
+    }));
+    // Register HUD as a clock consumer so it updates on every tick/seek
+    registerSurface('hud', function(utc) { _renderHud(utc); });
+    // Show replay UI
+    const controls = document.getElementById('replay-controls');
+    if (controls) controls.style.display = '';
+    const toggleRow = document.getElementById('replay-toggle-row');
+    if (toggleRow) toggleRow.style.display = '';
+    // Initial HUD render at session start
+    if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
+    _renderHud(_playClock.positionUtc);
+    _updateReplayControls();
+  } catch (e) {
+    // Non-fatal: replay is best-effort, the rest of the page still works
+  }
+}
+
+function _wireReplayControls() {
+  const btn = document.getElementById('replay-play-btn');
+  if (btn) btn.addEventListener('click', _togglePlayPause);
+  const speedSel = document.getElementById('replay-speed');
+  if (speedSel) speedSel.addEventListener('change', (e) => {
+    _setPlaybackSpeed(parseFloat(e.target.value) || 1);
+  });
+  const scrubber = document.getElementById('replay-scrubber');
+  if (scrubber) {
+    scrubber.addEventListener('input', (e) => {
+      if (!_replayStart || !_replayEnd) return;
+      const frac = Number(e.target.value) / 1000;
+      const t = _replayStart.getTime() + frac * (_replayEnd.getTime() - _replayStart.getTime());
+      _seekTo(new Date(t), 'replay');
+    });
+  }
+  const toggle = document.getElementById('toggle-polar-grades');
+  if (toggle) toggle.addEventListener('change', (e) => _setGradeViewActive(e.target.checked));
+  const followToggle = document.getElementById('toggle-follow-boat');
+  if (followToggle) followToggle.addEventListener('change', (e) => {
+    _followBoat = !!e.target.checked;
+    // Snap to the current position immediately when enabled so the user
+    // doesn't have to wait for the next tick.
+    if (_followBoat && _trackData && _playClock.positionUtc) {
+      const idx = _indexForUtc(_playClock.positionUtc);
+      const latLng = _trackData.latLngs[idx];
+      if (latLng && _map) _map.panTo(latLng, {animate: true});
+    }
+  });
+
+  // Keyboard shortcuts: space toggles play, arrows seek ±5s
+  document.addEventListener('keydown', (e) => {
+    if (!_replayStart) return;
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      _togglePlayPause();
+    } else if (e.code === 'ArrowRight' || e.code === 'ArrowLeft') {
+      const delta = (e.code === 'ArrowRight' ? 5000 : -5000) * (e.shiftKey ? 6 : 1);
+      const base = _playClock.positionUtc || _replayStart;
+      const next = new Date(Math.min(
+        _replayEnd.getTime(),
+        Math.max(_replayStart.getTime(), base.getTime() + delta)
+      ));
+      _seekTo(next, 'replay');
+      _updateReplayControls();
+    }
+  });
+}
+
+// Hook into init() path without rewriting it: kick off replay load once the
+// DOM is ready, and wire controls immediately. _loadReplayData() waits on
+// the fetch, and the track map is loaded in parallel, so the polar overlay
+// can only be drawn once both are ready — _setGradeViewActive is a no-op
+// until _trackData is populated.
+document.addEventListener('DOMContentLoaded', function() {
+  _wireReplayControls();
+  _loadReplayData();
+});
 
 // ---------------------------------------------------------------------------
 // Go

@@ -319,10 +319,34 @@ async def api_session_track(
     if not positions:
         return JSONResponse({"type": "FeatureCollection", "features": []})
 
-    coords = [[r["longitude_deg"], r["latitude_deg"]] for r in positions]
-    timestamps = [
-        t if "+" in t or t.endswith("Z") else t + "Z" for r in positions if (t := r["ts"])
-    ]
+    # Per-second mean averaging. The SK reader currently records every fix
+    # with source_addr=0 even when Signal K is multiplexing two physical
+    # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
+    # Bucketing to 1Hz and averaging within the bucket collapses the
+    # zig-zag into a smooth single line midway between the antennas — what
+    # you'd get from a single GPS anyway. Also gives the frontend a
+    # naturally Vakaros-density polyline so its dash style reads cleanly.
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    bucket_order: list[str] = []
+    for r in positions:
+        ts_raw = r["ts"]
+        if not ts_raw:
+            continue
+        key = str(ts_raw)[:19]  # truncate to whole-second precision
+        if key not in buckets:
+            buckets[key] = []
+            bucket_order.append(key)
+        buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+    coords: list[list[float]] = []
+    timestamps: list[str] = []
+    for key in bucket_order:
+        rows = buckets[key]
+        avg_lat = sum(p[0] for p in rows) / len(rows)
+        avg_lng = sum(p[1] for p in rows) / len(rows)
+        coords.append([avg_lng, avg_lat])
+        timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
+
     feature = {
         "type": "Feature",
         "geometry": {"type": "LineString", "coordinates": coords},
@@ -671,6 +695,161 @@ async def api_session_polar(
             "tws_bins": data.tws_bins,
             "twa_bins": data.twa_bins,
             "session_sample_count": data.session_sample_count,
+        }
+    )
+
+
+@router.get("/api/sessions/{session_id}/replay")
+@limiter.limit("30/minute")
+async def api_session_replay(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return the payload the replay UI needs: session bounds, a per-second
+    instrument series for the HUD, and per-segment polar grades (#464/#469).
+
+    The instrument series is downsampled to 1 Hz keyed on the first 19 chars
+    of the ISO timestamp so the frontend can binary-search by cursor position
+    without loading the full raw tables. Fields are nulled out when a given
+    sensor had no reading for that second.
+    """
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT id, start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+    start_utc = row["start_utc"]
+    end_utc = row["end_utc"] or row["start_utc"]
+
+    # Graded segments (cached) — may be empty if session hasn't ended
+    import helmlog.polar as _polar
+
+    try:
+        graded = await _polar.grade_session_segments(storage, session_id)
+    except Exception as e:  # pragma: no cover - defensive
+        logger.warning("replay: grading failed for session {}: {}", session_id, e)
+        graded = []
+
+    grades_out = [
+        {
+            "i": g.segment_index,
+            "t_start": g.t_start.isoformat(),
+            "t_end": g.t_end.isoformat(),
+            "lat": g.lat,
+            "lon": g.lon,
+            "tws": g.tws_kts,
+            "twa": g.twa_deg,
+            "bsp": g.bsp_kts,
+            "target": g.target_bsp_kts,
+            "pct": g.pct_target,
+            "delta": g.delta_kts,
+            "grade": g.grade,
+        }
+        for g in graded
+    ]
+
+    # Thin instrument series for HUD. 1 Hz dedup by truncated timestamp key.
+    async def _series(table: str, fields: list[str]) -> dict[str, dict[str, Any]]:
+        cols = ", ".join(["ts", *fields])
+        q = f"SELECT {cols} FROM {table} WHERE ts >= ? AND ts <= ? ORDER BY ts"
+        qcur = await db.execute(q, (start_utc, end_utc))
+        rows = await qcur.fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            key = str(r["ts"])[:19]
+            if key in out:
+                continue
+            out[key] = {f: r[f] for f in fields}
+        return out
+
+    # Wind table holds both true (ref 0/4) and apparent (ref 2) rows; keep them
+    # separated so the replay HUD can surface TWS/TWA and AWS/AWA independently.
+    async def _wind_series(where: str) -> dict[str, dict[str, Any]]:
+        q = (
+            "SELECT ts, wind_speed_kts, wind_angle_deg, reference FROM winds "
+            f"WHERE ts >= ? AND ts <= ? AND {where} ORDER BY ts"
+        )
+        qcur = await db.execute(q, (start_utc, end_utc))
+        rows = await qcur.fetchall()
+        out: dict[str, dict[str, Any]] = {}
+        for r in rows:
+            key = str(r["ts"])[:19]
+            if key in out:
+                continue
+            out[key] = {
+                "wind_speed_kts": r["wind_speed_kts"],
+                "wind_angle_deg": r["wind_angle_deg"],
+                "reference": r["reference"],
+            }
+        return out
+
+    speeds_by_s = await _series("speeds", ["speed_kts"])
+    true_winds_by_s = await _wind_series("reference IN (0, 4)")
+    app_winds_by_s = await _wind_series("reference = 2")
+    hdgs_by_s = await _series("headings", ["heading_deg"])
+    cogsog_by_s = await _series("cogsog", ["cog_deg", "sog_kts"])
+
+    keys = sorted(
+        set(speeds_by_s.keys())
+        | set(true_winds_by_s.keys())
+        | set(app_winds_by_s.keys())
+        | set(hdgs_by_s.keys())
+        | set(cogsog_by_s.keys())
+    )
+
+    samples: list[dict[str, Any]] = []
+    for k in keys:
+        tw = true_winds_by_s.get(k)
+        tws: float | None = None
+        twa: float | None = None
+        if tw is not None:
+            raw_ref = tw.get("reference")
+            ref = int(raw_ref) if raw_ref is not None else -1
+            tws = float(tw["wind_speed_kts"]) if tw["wind_speed_kts"] is not None else None
+            h = hdgs_by_s.get(k)
+            heading = float(h["heading_deg"]) if h and h["heading_deg"] is not None else None
+            twa = _polar._compute_twa(float(tw["wind_angle_deg"]), ref, heading)
+
+        aw = app_winds_by_s.get(k)
+        aws: float | None = None
+        awa: float | None = None
+        if aw is not None:
+            aws = float(aw["wind_speed_kts"]) if aw["wind_speed_kts"] is not None else None
+            awa = float(aw["wind_angle_deg"]) if aw["wind_angle_deg"] is not None else None
+
+        sp = speeds_by_s.get(k)
+        cs = cogsog_by_s.get(k)
+        hd = hdgs_by_s.get(k)
+        samples.append(
+            {
+                "ts": k + "Z",
+                "stw": float(sp["speed_kts"]) if sp else None,
+                "sog": float(cs["sog_kts"]) if cs else None,
+                "cog": float(cs["cog_deg"]) if cs else None,
+                "hdg": float(hd["heading_deg"]) if hd else None,
+                "tws": tws,
+                "twa": twa,
+                "aws": aws,
+                "awa": awa,
+            }
+        )
+
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            # Normalize for the JS Date() parser: if the row already carries a
+            # timezone indicator (isoformat on an aware UTC datetime produces
+            # "...+00:00") leave it alone, otherwise append "Z". The previous
+            # unconditional-append produced the invalid "...+00:00Z" that made
+            # new Date() return Invalid Date and silently broke the scrubber,
+            # time label, and YT sync.
+            "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
+            "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
+            "segment_seconds": _polar.POLAR_SEGMENT_SECONDS,
+            "grades": grades_out,
+            "samples": samples,
         }
     )
 

@@ -134,7 +134,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 65
+_CURRENT_VERSION: int = 66
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1497,6 +1497,33 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE audio_sessions ADD COLUMN capture_ordinal INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS idx_audio_sessions_capture_group
             ON audio_sessions(capture_group_id);
+    """,
+    66: """
+        -- Per-segment polar grading cache for race replay (#469).
+        -- One row per (session_id, polar_source, segment_index). Invalidated
+        -- by bumping the polar_baseline_version app_setting in
+        -- build_polar_baseline().
+        CREATE TABLE IF NOT EXISTS polar_segment_grades (
+            session_id        INTEGER NOT NULL,
+            polar_source      TEXT    NOT NULL DEFAULT 'own',
+            segment_index     INTEGER NOT NULL,
+            t_start           TEXT    NOT NULL,
+            t_end             TEXT    NOT NULL,
+            lat               REAL,
+            lon               REAL,
+            tws_kts           REAL,
+            twa_deg           REAL,
+            bsp_kts           REAL,
+            target_bsp_kts    REAL,
+            pct_target        REAL,
+            delta_kts         REAL,
+            grade             TEXT NOT NULL,
+            baseline_version  INTEGER NOT NULL,
+            computed_at       TEXT NOT NULL,
+            PRIMARY KEY (session_id, polar_source, segment_index)
+        );
+        CREATE INDEX IF NOT EXISTS idx_polar_segment_grades_session
+            ON polar_segment_grades(session_id, polar_source);
     """,
 }
 
@@ -4867,6 +4894,74 @@ class Storage:
                     row["session_count"],
                     row["sample_count"],
                     built_at,
+                ),
+            )
+        await db.commit()
+
+    # ------------------------------------------------------------------
+    # Polar segment grades (#469)
+    # ------------------------------------------------------------------
+
+    async def get_polar_segment_grades(
+        self, session_id: int, polar_source: str, baseline_version: int
+    ) -> list[dict[str, Any]] | None:
+        """Return cached graded segments, or None if cache is missing/stale."""
+        cur = await self._read_conn().execute(
+            "SELECT segment_index, t_start, t_end, lat, lon, tws_kts, twa_deg,"
+            " bsp_kts, target_bsp_kts, pct_target, delta_kts, grade, baseline_version"
+            " FROM polar_segment_grades"
+            " WHERE session_id = ? AND polar_source = ?"
+            " ORDER BY segment_index",
+            (session_id, polar_source),
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        if not rows:
+            return None
+        if any(int(r["baseline_version"]) != baseline_version for r in rows):
+            return None
+        return rows
+
+    async def upsert_polar_segment_grades(
+        self,
+        session_id: int,
+        polar_source: str,
+        rows: list[dict[str, Any]],
+        baseline_version: int,
+    ) -> None:
+        """Replace cached segments for *(session_id, polar_source)* in one txn."""
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "DELETE FROM polar_segment_grades WHERE session_id = ? AND polar_source = ?",
+            (session_id, polar_source),
+        )
+        for r in rows:
+            await db.execute(
+                "INSERT INTO polar_segment_grades"
+                " (session_id, polar_source, segment_index, t_start, t_end, lat, lon,"
+                "  tws_kts, twa_deg, bsp_kts, target_bsp_kts, pct_target, delta_kts,"
+                "  grade, baseline_version, computed_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    polar_source,
+                    r["segment_index"],
+                    r["t_start"],
+                    r["t_end"],
+                    r["lat"],
+                    r["lon"],
+                    r["tws_kts"],
+                    r["twa_deg"],
+                    r["bsp_kts"],
+                    r["target_bsp_kts"],
+                    r["pct_target"],
+                    r["delta_kts"],
+                    r["grade"],
+                    baseline_version,
+                    now,
                 ),
             )
         await db.commit()
