@@ -179,6 +179,42 @@ async def _transcribe_multi_channel(
 # ---------------------------------------------------------------------------
 
 
+async def _persist_sibling_segments(
+    storage: Storage,
+    transcript_id: int,
+    segments: list[dict[str, object]],
+    *,
+    ordinal: int,
+    position_name: str,
+) -> None:
+    """Tag mono-sibling segments with channel_index/position and persist relationally.
+
+    Sibling-card captures (#509) skip the multi-channel split because each
+    WAV is already a single-channel file — but the downstream merge (chunk 3)
+    needs the same ``channel_index``/``position_name``/``speaker`` tags that
+    pt.4's multi-channel path provides, so we annotate and bulk-insert here.
+    """
+    if not segments:
+        return
+    for seg in segments:
+        seg["channel_index"] = ordinal
+        seg["position_name"] = position_name
+        seg["speaker"] = position_name
+    relational = [
+        {
+            "segment_index": idx,
+            "start_time": float(seg.get("start", 0.0)),  # type: ignore[arg-type]
+            "end_time": float(seg.get("end", 0.0)),  # type: ignore[arg-type]
+            "text": str(seg.get("text", "")),
+            "speaker": position_name,
+            "channel_index": ordinal,
+            "position_name": position_name,
+        }
+        for idx, seg in enumerate(segments)
+    ]
+    await storage.insert_transcript_segments(transcript_id, relational)
+
+
 async def transcribe_session(
     storage: Storage,
     audio_session_id: int,
@@ -214,6 +250,16 @@ async def transcribe_session(
     file_path: str = row["file_path"]
     channels: int = row.get("channels", 1)
 
+    # Sibling-card capture (#509): when the session is one of N parallel
+    # mono USB cards, tag its segments with the ordinal + configured
+    # position_name so the downstream merge can stitch them back together.
+    sibling_tag: tuple[int, str] | None = None
+    if row.get("capture_group_id") and channels == 1:
+        cmap = await storage.get_channel_map_for_audio_session(audio_session_id)
+        position = cmap.get(0, f"sib{row.get('capture_ordinal', 0)}")
+        sibling_tag = (int(row.get("capture_ordinal") or 0), position)
+
+    segments_json_str: str | None = None
     try:
         # ----- Multi-channel Isolation Mode (#462 pt.3) -----
         if channels > 1:
@@ -267,6 +313,14 @@ async def transcribe_session(
         )
         if remote is not None:
             text, segments = remote
+            if sibling_tag is not None:
+                await _persist_sibling_segments(
+                    storage,
+                    transcript_id,
+                    segments,
+                    ordinal=sibling_tag[0],
+                    position_name=sibling_tag[1],
+                )
             segments_json_str = json.dumps(segments) if segments else None
             await storage.update_transcript(
                 transcript_id, status="done", text=text, segments_json=segments_json_str
@@ -313,6 +367,22 @@ async def transcribe_session(
                 "Transcription done: audio_session_id={} chars={}",
                 audio_session_id,
                 len(text),
+            )
+
+        # Sibling-card annotation (#509): local single-channel paths reach here
+        # with a plain segments list; tag and persist before trigger scan.
+        if sibling_tag is not None:
+            await _persist_sibling_segments(
+                storage,
+                transcript_id,
+                segments,
+                ordinal=sibling_tag[0],
+                position_name=sibling_tag[1],
+            )
+            # Rewrite segments_json so GET /api/audio/{id}/transcript sees the tags
+            segments_json_str = json.dumps(segments) if segments else None
+            await storage.update_transcript(
+                transcript_id, status="done", segments_json=segments_json_str
             )
 
         # Auto-scan for trigger keywords and create tagged notes
