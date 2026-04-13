@@ -1,0 +1,282 @@
+name: Claude Nightly Review
+
+# Runs once a day at 12:00 UTC (05:00 PDT in summer, 04:00 PST in winter
+# because cron does not know about DST). Reviews commits that landed on
+# main since the last successful review. Skips if nothing relevant changed.
+#
+# State is tracked via the annotated tag `claude-review-baseline` on the
+# repo — set to the tip of main at the end of each successful review. First
+# run self-initializes the tag at current HEAD and exits without reviewing.
+#
+# Scope: only src/helmlog/**/*.py and tests/**/*.py. Other paths (docs,
+# scripts, frontend assets, CI) are handled by the regular per-PR checks
+# and don't need a Claude pass.
+#
+# On FAIL (any HIGH-priority finding) the workflow opens or updates a
+# pinned issue labeled `claude-review` with the findings and a link that
+# kicks off the claude-bisect workflow to pinpoint the bad commit.
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Review even if no relevant changes since baseline'
+        required: false
+        default: 'false'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_changes: ${{ steps.check.outputs.has_changes }}
+      baseline_sha: ${{ steps.check.outputs.baseline_sha }}
+      head_sha: ${{ steps.check.outputs.head_sha }}
+      changed_files: ${{ steps.check.outputs.changed_files }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Resolve baseline and compute diff
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          set -euo pipefail
+          head_sha=$(git rev-parse HEAD)
+          echo "head_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
+
+          if git rev-parse --verify claude-review-baseline >/dev/null 2>&1; then
+            baseline=$(git rev-parse claude-review-baseline)
+            echo "baseline_sha=${baseline}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "No claude-review-baseline tag yet — initializing at HEAD and skipping this run."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a claude-review-baseline -m "Initial claude review baseline" "${head_sha}"
+            git push origin claude-review-baseline
+            echo "baseline_sha=${head_sha}" >> "${GITHUB_OUTPUT}"
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+            echo "changed_files=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${baseline}" = "${head_sha}" ]; then
+            echo "Baseline == HEAD, nothing to review."
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+            echo "changed_files=" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          # Scope: only .py files under src/helmlog or tests.
+          changed=$(git diff --name-only "${baseline}..${head_sha}" -- src/helmlog tests | grep -E '\.py$' || true)
+
+          if [ "${FORCE}" = "true" ]; then
+            echo "Forced run — reviewing even if no in-scope changes."
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+          elif [ -z "${changed}" ]; then
+            echo "No in-scope changes since ${baseline}."
+            echo "has_changes=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "has_changes=true" >> "${GITHUB_OUTPUT}"
+          fi
+
+          # Multiline output — base64-encoded so it survives the action runner.
+          {
+            echo "changed_files<<EOF_CHANGED"
+            echo "${changed}"
+            echo "EOF_CHANGED"
+          } >> "${GITHUB_OUTPUT}"
+
+  review:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Set up Node (for Claude Code CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run nightly review
+        id: review
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          BASELINE_SHA: ${{ needs.detect-changes.outputs.baseline_sha }}
+          HEAD_SHA: ${{ needs.detect-changes.outputs.head_sha }}
+          CHANGED_FILES: ${{ needs.detect-changes.outputs.changed_files }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/prompt.txt <<'PROMPT'
+          You are the nightly code reviewer for the HelmLog project on branch `main`.
+
+          Review every commit between $BASELINE_SHA (exclusive) and $HEAD_SHA (inclusive).
+
+          Run `git log --oneline $BASELINE_SHA..$HEAD_SHA` to see the commits, then
+          `git diff $BASELINE_SHA..$HEAD_SHA -- src/helmlog tests` for the combined diff.
+
+          IMPORTANT SCOPE: only review changes to `src/helmlog/**/*.py` and `tests/**/*.py`.
+          Ignore any changes to docs, scripts, CI, frontend assets (CSS/JS/HTML),
+          notebooks, or config files — the regular per-PR CI (lint/test/typecheck/
+          integration/data-license) already covers those.
+
+          HIGH PRIORITY — flag with severity **HIGH**:
+          - Security issues in auth.py, peer_auth.py, federation.py (Critical tier)
+          - Data licensing violations: PII exposure, missing deletion support,
+            co-op data bulk export, gambling/protest firewall breaches
+            (see docs/data-licensing.md)
+          - Schema migration issues in storage.py: backwards compatibility, FK
+            cascades, missing migration number bumps
+          - Missing or broken type annotations (mypy must pass)
+          - Architecture violations: business logic in main.py, hardware imports
+            outside isolated modules, raw dicts instead of dataclasses/TypedDict
+          - Missing tests for new functionality (project follows TDD)
+
+          MEDIUM PRIORITY — flag with severity **MEDIUM**:
+          - Embargo enforcement gaps when serving co-op track data
+          - Export code that leaks GPS precision or serves data-policy-restricted fields
+          - Auth decorator missing on new web.py endpoints
+          - Rate limiting missing on new API endpoints
+
+          DO NOT comment on:
+          - Code formatting, style, line length, import ordering (Ruff handles it)
+          - Pre-existing mypy errors in web.py (known issues with datetime | None
+            and AudioRecorder | None)
+
+          Output format — exactly this structure, nothing else:
+
+              ## Summary
+              1–2 sentence overall summary.
+
+              ## HIGH findings
+              (bullet list, each with file:line and why it matters; empty list OK)
+
+              ## MEDIUM findings
+              (bullet list; empty list OK)
+
+              ## Commits reviewed
+              (one line per commit: sha — first line of commit message)
+
+              ::VERDICT::PASS
+              (or `::VERDICT::FAIL` if there was at least one HIGH finding)
+
+          The last non-empty line MUST be the verdict marker. The workflow
+          greps for it.
+          PROMPT
+
+          # Expand env vars in the prompt
+          envsubst < /tmp/prompt.txt > /tmp/prompt.final.txt
+
+          claude -p "$(cat /tmp/prompt.final.txt)" --output-format text > /tmp/review.md
+          echo "--- review output ---"
+          cat /tmp/review.md
+
+          verdict=$(grep -E '^::VERDICT::(PASS|FAIL)' /tmp/review.md | tail -1 || echo "::VERDICT::FAIL")
+          echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
+          if [ "${verdict}" = "::VERDICT::FAIL" ]; then
+            echo "status=fail" >> "${GITHUB_OUTPUT}"
+          else
+            echo "status=pass" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Upload review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-nightly-review
+          path: /tmp/review.md
+          retention-days: 30
+
+      - name: Advance baseline on PASS
+        if: steps.review.outputs.status == 'pass'
+        env:
+          HEAD_SHA: ${{ needs.detect-changes.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -fa claude-review-baseline -m "Claude nightly review passed at ${HEAD_SHA}" "${HEAD_SHA}"
+          git push --force origin claude-review-baseline
+          echo "Baseline advanced to ${HEAD_SHA}"
+
+      - name: Close any open review failure issue on PASS
+        if: steps.review.outputs.status == 'pass'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          open=$(gh issue list --label claude-review --state open --json number --jq '.[].number')
+          for n in ${open}; do
+            gh issue close "${n}" --comment "Nightly review passed at $(git rev-parse HEAD) — closing."
+          done
+
+      - name: Open/update failure issue on FAIL
+        if: steps.review.outputs.status == 'fail'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_SHA: ${{ needs.detect-changes.outputs.baseline_sha }}
+          HEAD_SHA: ${{ needs.detect-changes.outputs.head_sha }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          body=$(cat <<EOF
+          The nightly Claude review for \`main\` found HIGH-priority issue(s) between \`${BASELINE_SHA}\` and \`${HEAD_SHA}\`.
+
+          **Review output:** [run ${RUN_ID}](https://github.com/${REPO}/actions/runs/${RUN_ID}) (see the \`claude-nightly-review\` artifact for the full report)
+
+          ---
+
+          $(cat /tmp/review.md)
+
+          ---
+
+          ## Bisect
+
+          To pinpoint the exact commit, [run the bisect workflow](https://github.com/${REPO}/actions/workflows/claude-bisect.yml) with:
+
+          - \`good_sha\`: \`${BASELINE_SHA}\`
+          - \`bad_sha\`: \`${HEAD_SHA}\`
+          - \`issue_number\`: (this issue's number, filled in once it is created)
+
+          Or from the CLI:
+
+              gh workflow run claude-bisect.yml \\
+                -f good_sha=${BASELINE_SHA} \\
+                -f bad_sha=${HEAD_SHA} \\
+                -f issue_number=<THIS ISSUE>
+          EOF
+          )
+
+          existing=$(gh issue list --label claude-review --state open --json number --jq '.[0].number' || echo "")
+          if [ -n "${existing}" ] && [ "${existing}" != "null" ]; then
+            gh issue edit "${existing}" --body "${body}"
+            gh issue comment "${existing}" --body "Nightly review failed again at \`${HEAD_SHA}\` — see latest body."
+          else
+            gh issue create \
+              --title "[claude-review] HIGH finding on main since ${BASELINE_SHA:0:7}" \
+              --label claude-review \
+              --body "${body}"
+          fi
+          # Baseline intentionally NOT advanced — next nightly run will re-review
+          # the same range so you see the issue repeated if nothing was fixed.

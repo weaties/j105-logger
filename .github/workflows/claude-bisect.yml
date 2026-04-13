@@ -1,0 +1,264 @@
+name: Claude Bisect
+
+# Binary-searches a commit range for the one that tripped the Claude
+# nightly review. Invoked manually (or chained from itself) with a
+# known-good commit and a known-bad commit. Reviews the midpoint,
+# records the verdict on the tracking issue, then re-triggers itself
+# with the narrowed range until the range collapses to one commit or
+# the hard depth cap is reached.
+#
+# Hard cap at depth=8 bounds worst-case cost: 2^8 = 256 commits worth
+# of bisect space for ~$24. If you have a delta bigger than that,
+# re-run with a smaller window.
+#
+# Usage:
+#   gh workflow run claude-bisect.yml \
+#     -f good_sha=abc1234 \
+#     -f bad_sha=def5678 \
+#     -f issue_number=42
+
+on:
+  workflow_dispatch:
+    inputs:
+      good_sha:
+        description: 'Known-good commit SHA (or baseline tag ref)'
+        required: true
+      bad_sha:
+        description: 'Known-bad commit SHA (HEAD of the failing range)'
+        required: true
+      issue_number:
+        description: 'Tracking issue number (nightly review failure)'
+        required: true
+      depth:
+        description: 'Internal: current bisect depth (leave 0 when starting)'
+        required: false
+        default: '0'
+
+jobs:
+  bisect-step:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+      actions: write  # needed to re-trigger self via gh workflow run
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Compute midpoint
+        id: mid
+        env:
+          GOOD_SHA: ${{ github.event.inputs.good_sha }}
+          BAD_SHA: ${{ github.event.inputs.bad_sha }}
+          DEPTH: ${{ github.event.inputs.depth }}
+        run: |
+          set -euo pipefail
+
+          good=$(git rev-parse "${GOOD_SHA}")
+          bad=$(git rev-parse "${BAD_SHA}")
+          echo "good_resolved=${good}" >> "${GITHUB_OUTPUT}"
+          echo "bad_resolved=${bad}" >> "${GITHUB_OUTPUT}"
+
+          # List commits strictly between good and bad (excluding good,
+          # including bad).  If good..bad is empty, good == bad or good
+          # is not an ancestor of bad — nothing to bisect.
+          mapfile -t commits < <(git log --reverse --format=%H "${good}..${bad}")
+          count=${#commits[@]}
+          echo "Bisect range has ${count} commit(s) between ${good} and ${bad} (depth=${DEPTH})."
+
+          if [ "${count}" -eq 0 ]; then
+            echo "terminal=empty" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${count}" -eq 1 ]; then
+            # Only one commit between good and bad — it must be the culprit.
+            echo "terminal=found" >> "${GITHUB_OUTPUT}"
+            echo "culprit=${commits[0]}" >> "${GITHUB_OUTPUT}"
+            echo "midpoint=${commits[0]}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [ "${DEPTH}" -ge 8 ]; then
+            echo "terminal=depth-exceeded" >> "${GITHUB_OUTPUT}"
+            echo "midpoint=${commits[0]}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          mid_idx=$(( count / 2 ))
+          mid="${commits[${mid_idx}]}"
+          echo "terminal=continue" >> "${GITHUB_OUTPUT}"
+          echo "midpoint=${mid}" >> "${GITHUB_OUTPUT}"
+          echo "range_size=${count}" >> "${GITHUB_OUTPUT}"
+
+      - name: Report empty range
+        if: steps.mid.outputs.terminal == 'empty'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.inputs.issue_number }}
+          GOOD: ${{ github.event.inputs.good_sha }}
+          BAD: ${{ github.event.inputs.bad_sha }}
+        run: |
+          gh issue comment "${ISSUE}" --body "Bisect aborted: range \`${GOOD}..${BAD}\` is empty. Either \`good_sha\` is not an ancestor of \`bad_sha\` or they point at the same commit."
+
+      - name: Report depth exceeded
+        if: steps.mid.outputs.terminal == 'depth-exceeded'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.inputs.issue_number }}
+          GOOD: ${{ github.event.inputs.good_sha }}
+          BAD: ${{ github.event.inputs.bad_sha }}
+          DEPTH: ${{ github.event.inputs.depth }}
+        run: |
+          gh issue comment "${ISSUE}" --body "Bisect aborted: hit depth cap of 8 steps in range \`${GOOD}..${BAD}\`. Narrow the range and re-run."
+
+      - name: Checkout midpoint
+        if: steps.mid.outputs.terminal == 'continue' || steps.mid.outputs.terminal == 'found'
+        env:
+          MIDPOINT: ${{ steps.mid.outputs.midpoint }}
+        run: git checkout "${MIDPOINT}"
+
+      - name: Set up Node (for Claude Code CLI)
+        if: steps.mid.outputs.terminal == 'continue' || steps.mid.outputs.terminal == 'found'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Claude Code CLI
+        if: steps.mid.outputs.terminal == 'continue' || steps.mid.outputs.terminal == 'found'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Review commit
+        id: review
+        if: steps.mid.outputs.terminal == 'continue' || steps.mid.outputs.terminal == 'found'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GOOD: ${{ steps.mid.outputs.good_resolved }}
+          MID: ${{ steps.mid.outputs.midpoint }}
+        run: |
+          set -euo pipefail
+          cat > /tmp/prompt.txt <<'PROMPT'
+          You are bisecting a Claude nightly review failure on HelmLog.
+
+          Review every commit between $GOOD (exclusive) and $MID (inclusive) using:
+              git log --oneline $GOOD..$MID
+              git diff $GOOD..$MID -- src/helmlog tests
+
+          SCOPE: only .py files under src/helmlog/ and tests/. Ignore everything else.
+
+          Apply the same severity rules as the nightly review:
+          - HIGH: security, data licensing, schema migration, type annotations,
+            architecture violations, missing tests
+          - MEDIUM: embargo gaps, export leaks, missing auth/rate-limit
+          - Ignore style, line length, import ordering, pre-existing web.py mypy errors
+
+          Output format:
+
+              ## Summary
+              1–2 sentences.
+
+              ## HIGH findings
+              (bullet list or empty)
+
+              ## MEDIUM findings
+              (bullet list or empty)
+
+              ::VERDICT::PASS
+              (or ::VERDICT::FAIL if at least one HIGH)
+          PROMPT
+          envsubst < /tmp/prompt.txt > /tmp/prompt.final.txt
+          claude -p "$(cat /tmp/prompt.final.txt)" --output-format text > /tmp/review.md
+          cat /tmp/review.md
+          verdict=$(grep -E '^::VERDICT::(PASS|FAIL)' /tmp/review.md | tail -1 || echo "::VERDICT::FAIL")
+          if [ "${verdict}" = "::VERDICT::FAIL" ]; then
+            echo "step_status=fail" >> "${GITHUB_OUTPUT}"
+          else
+            echo "step_status=pass" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Post terminal result
+        if: steps.mid.outputs.terminal == 'found'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.inputs.issue_number }}
+          CULPRIT: ${{ steps.mid.outputs.culprit }}
+          STEP_STATUS: ${{ steps.review.outputs.step_status }}
+        run: |
+          set -euo pipefail
+          short=$(git rev-parse --short "${CULPRIT}")
+          commit_line=$(git log -1 --format='%h %s' "${CULPRIT}")
+          if [ "${STEP_STATUS}" = "fail" ]; then
+            body=$(cat <<EOF
+          ## Bisect complete
+
+          **Culprit:** [\`${short}\`](../../commit/${CULPRIT}) — ${commit_line}
+
+          Full review:
+
+          \`\`\`
+          $(cat /tmp/review.md)
+          \`\`\`
+          EOF
+          )
+          else
+            body=$(cat <<EOF
+          ## Bisect inconclusive
+
+          Range collapsed to one commit ([\`${short}\`](../../commit/${CULPRIT}) — ${commit_line}) but that commit reviewed as PASS. The nightly failure may have been fixed by a subsequent commit or may be a flaky review.
+
+          Latest review output:
+
+          \`\`\`
+          $(cat /tmp/review.md)
+          \`\`\`
+          EOF
+          )
+          fi
+          gh issue comment "${ISSUE}" --body "${body}"
+
+      - name: Post step progress + re-trigger
+        if: steps.mid.outputs.terminal == 'continue'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE: ${{ github.event.inputs.issue_number }}
+          GOOD: ${{ steps.mid.outputs.good_resolved }}
+          BAD: ${{ steps.mid.outputs.bad_resolved }}
+          MID: ${{ steps.mid.outputs.midpoint }}
+          RANGE_SIZE: ${{ steps.mid.outputs.range_size }}
+          STEP_STATUS: ${{ steps.review.outputs.step_status }}
+          DEPTH: ${{ github.event.inputs.depth }}
+        run: |
+          set -euo pipefail
+          mid_short=$(git rev-parse --short "${MID}")
+          commit_line=$(git log -1 --format='%h %s' "${MID}")
+
+          next_depth=$(( DEPTH + 1 ))
+          if [ "${STEP_STATUS}" = "fail" ]; then
+            # Failure is in [good, mid] — narrow bad to mid.
+            next_good="${GOOD}"
+            next_bad="${MID}"
+            arrow="⬅️ narrow to older half"
+          else
+            # Failure is in (mid, bad] — narrow good to mid.
+            next_good="${MID}"
+            next_bad="${BAD}"
+            arrow="➡️ narrow to newer half"
+          fi
+
+          gh issue comment "${ISSUE}" --body "**Bisect step ${DEPTH} → ${next_depth}** (${RANGE_SIZE} commits in range)
+
+          - Reviewed midpoint: [\`${mid_short}\`](../../commit/${MID}) — ${commit_line}
+          - Verdict: \`${STEP_STATUS}\`
+          - Next range: ${arrow} \`${next_good}..${next_bad}\`
+
+          (auto-triggering next step)"
+
+          gh workflow run claude-bisect.yml \
+            -f good_sha="${next_good}" \
+            -f bad_sha="${next_bad}" \
+            -f issue_number="${ISSUE}" \
+            -f depth="${next_depth}"
