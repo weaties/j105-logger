@@ -146,9 +146,9 @@ def _build_message(
     msg["Subject"] = subject
     msg.set_content(md_body)
     msg.add_alternative(
-        "<!doctype html><html><body style=\"font-family:-apple-system,BlinkMacSystemFont,"
+        '<!doctype html><html><body style="font-family:-apple-system,BlinkMacSystemFont,'
         "'Segoe UI',Roboto,sans-serif;max-width:780px;margin:0 auto;padding:12px;"
-        "color:#222\">" + _markdown_to_html(md_body) + "</body></html>",
+        'color:#222">' + _markdown_to_html(md_body) + "</body></html>",
         subtype="html",
     )
     return msg
