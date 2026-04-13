@@ -393,9 +393,17 @@ async function loadTrack() {
   L.circleMarker(latLngs[latLngs.length - 1], {radius: 6, color: dangerColor, fillColor: dangerColor, fillOpacity: 1})
     .addTo(_map).bindPopup('Finish');
 
-  const cursor = L.circleMarker([0, 0], {
-    radius: 7, color: warningColor, fillColor: warningColor, fillOpacity: 1, weight: 2,
+  // Boat cursor: divIcon with a rotating SVG so we can show heading (boat
+  // orientation) and COG (a separate indicator line) in one marker. The DOM
+  // is built once and mutated in-place on each tick to avoid re-creating
+  // the Leaflet layer at 10 Hz.
+  const cursorIcon = L.divIcon({
+    className: 'boat-cursor',
+    html: _renderBoatCursorSvg(0, 0),
+    iconSize: [40, 40],
+    iconAnchor: [20, 20],
   });
+  const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
   _trackData = {latLngs, timestamps, line, cursor};
 
@@ -649,7 +657,48 @@ function _nearestIndex(latlng) {
 
 function _moveCursorToIndex(idx) {
   if (!_trackData) return;
-  _trackData.cursor.setLatLng(_trackData.latLngs[idx]).addTo(_map);
+  const latLng = _trackData.latLngs[idx];
+  _trackData.cursor.setLatLng(latLng).addTo(_map);
+  // Read HDG/COG from the replay sample closest to the cursor timestamp.
+  // Falls back to null so the SVG simply hides the missing line instead of
+  // drawing a stale direction.
+  let hdg = null, cog = null;
+  const ts = _trackData.timestamps[idx];
+  if (ts && typeof _binarySearchSample === 'function') {
+    const s = _binarySearchSample(ts.getTime());
+    if (s) { hdg = s.hdg; cog = s.cog; }
+  }
+  const el = _trackData.cursor.getElement();
+  if (el) el.innerHTML = _renderBoatCursorSvg(hdg, cog);
+  if (_followBoat && _map) {
+    // animate:false — we may be ticking at 10 Hz, animation would thrash
+    _map.panTo(latLng, {animate: false});
+  }
+}
+
+// Render the boat cursor SVG. The hull is a simplified triangle that
+// rotates with heading so the bow points the way the boat is pointing.
+// A second line extending from the center shows COG, so the offset
+// between heading and COG (leeway, current) is visible at a glance.
+function _renderBoatCursorSvg(hdg, cog) {
+  const hasHdg = hdg != null && !isNaN(hdg);
+  const hasCog = cog != null && !isNaN(cog);
+  const hdgDeg = hasHdg ? hdg : 0;
+  // SVG 0° points up (north) because we use -y for the bow, matching
+  // geographic bearing conventions. viewBox is centered on the anchor.
+  let parts = '<svg width="40" height="40" viewBox="-20 -20 40 40" style="overflow:visible;pointer-events:none">';
+  // COG line (red, slightly longer) — drawn first so it sits under the hull
+  if (hasCog) {
+    parts += '<line x1="0" y1="0" x2="0" y2="-19" stroke="#ef4444" stroke-width="2" stroke-linecap="round" transform="rotate(' + cog + ')"/>';
+  }
+  // Heading line (yellow, stops at bow)
+  if (hasHdg) {
+    parts += '<line x1="0" y1="0" x2="0" y2="-16" stroke="#facc15" stroke-width="2" stroke-linecap="round" transform="rotate(' + hdgDeg + ')"/>';
+  }
+  // Hull — thin triangle, bow at top, stern at bottom, rotated to heading
+  parts += '<polygon points="0,-10 5,7 -5,7" fill="#facc15" stroke="#1f2937" stroke-width="1" stroke-linejoin="round" transform="rotate(' + hdgDeg + ')"/>';
+  parts += '</svg>';
+  return parts;
 }
 
 function _indexForUtc(utcDate) {
@@ -4753,6 +4802,7 @@ let _replaySamples = null; // [{ts: Date, stw, sog, tws, twa, aws, awa, hdg, cog
 let _replayGrades = null;  // [{t_start, t_end, ..., grade}]
 let _gradeSegments = []; // [L.polyline] overlays when polar view is active
 let _gradeViewActive = false;
+let _followBoat = false;  // when true, map re-centers on the boat each tick
 
 const _GRADE_COLORS = {
   red: '#d64545',
@@ -5057,6 +5107,17 @@ function _wireReplayControls() {
   }
   const toggle = document.getElementById('toggle-polar-grades');
   if (toggle) toggle.addEventListener('change', (e) => _setGradeViewActive(e.target.checked));
+  const followToggle = document.getElementById('toggle-follow-boat');
+  if (followToggle) followToggle.addEventListener('change', (e) => {
+    _followBoat = !!e.target.checked;
+    // Snap to the current position immediately when enabled so the user
+    // doesn't have to wait for the next tick.
+    if (_followBoat && _trackData && _playClock.positionUtc) {
+      const idx = _indexForUtc(_playClock.positionUtc);
+      const latLng = _trackData.latLngs[idx];
+      if (latLng && _map) _map.panTo(latLng, {animate: true});
+    }
+  });
 
   // Keyboard shortcuts: space toggles play, arrows seek ±5s
   document.addEventListener('keydown', (e) => {
