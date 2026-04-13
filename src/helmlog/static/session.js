@@ -659,21 +659,90 @@ function _moveCursorToIndex(idx) {
   if (!_trackData) return;
   const latLng = _trackData.latLngs[idx];
   _trackData.cursor.setLatLng(latLng).addTo(_map);
-  // Read HDG/COG from the replay sample closest to the cursor timestamp.
-  // Falls back to null so the SVG simply hides the missing line instead of
-  // drawing a stale direction.
+  // Read HDG/COG from the replay sample closest to the cursor timestamp,
+  // then smooth across a ±5s window so the icon doesn't twitch with every
+  // 1 Hz sample. Circular mean via sin/cos so values near 0°/360° wrap
+  // cleanly instead of averaging to 180°.
   let hdg = null, cog = null;
   const ts = _trackData.timestamps[idx];
-  if (ts && typeof _binarySearchSample === 'function') {
-    const s = _binarySearchSample(ts.getTime());
-    if (s) { hdg = s.hdg; cog = s.cog; }
+  if (ts) {
+    const windowed = _windowedHeadingCog(ts.getTime(), 5000);
+    hdg = windowed.hdg;
+    cog = windowed.cog;
   }
   const el = _trackData.cursor.getElement();
   if (el) el.innerHTML = _renderBoatCursorSvg(hdg, cog);
-  if (_followBoat && _map) {
-    // animate:false — we may be ticking at 10 Hz, animation would thrash
-    _map.panTo(latLng, {animate: false});
+  if (_followBoat && _map) _maybeFollowPan(latLng);
+}
+
+// Circular-mean smoothing of hdg/cog over a window around ts. Returns
+// {hdg, cog} in degrees [0, 360). Null fields if not enough samples.
+function _windowedHeadingCog(tMs, halfMs) {
+  if (!_replaySamples || !_replaySamples.length) return {hdg: null, cog: null};
+  const lo = tMs - halfMs;
+  const hi = tMs + halfMs;
+  let hdgX = 0, hdgY = 0, hdgN = 0;
+  let cogX = 0, cogY = 0, cogN = 0;
+  // _replaySamples is sorted by ts; linear scan around the cursor is
+  // bounded by the window so this is still O(window) not O(n).
+  const startIdx = _sampleLowerBound(lo);
+  for (let i = startIdx; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t > hi) break;
+    if (s.hdg != null && !isNaN(s.hdg)) {
+      const r = (s.hdg * Math.PI) / 180;
+      hdgX += Math.cos(r); hdgY += Math.sin(r); hdgN++;
+    }
+    if (s.cog != null && !isNaN(s.cog)) {
+      const r = (s.cog * Math.PI) / 180;
+      cogX += Math.cos(r); cogY += Math.sin(r); cogN++;
+    }
   }
+  const angle = (x, y, n) => {
+    if (!n) return null;
+    const a = (Math.atan2(y / n, x / n) * 180) / Math.PI;
+    return (a + 360) % 360;
+  };
+  return {hdg: angle(hdgX, hdgY, hdgN), cog: angle(cogX, cogY, cogN)};
+}
+
+function _sampleLowerBound(tMs) {
+  if (!_replaySamples || !_replaySamples.length) return 0;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (_replaySamples[mid].ts.getTime() < tMs) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+// Soft-viewport follow: only recenter when the boat is within 25% of the
+// nearest map edge, otherwise leave the map alone. Prevents the constant
+// 10 Hz panning that caused the page-wide jitter.
+function _maybeFollowPan(latLng) {
+  if (!_map) return;
+  // latLngs are stored as [lat, lng] arrays; normalize.
+  const lat = Array.isArray(latLng) ? latLng[0] : latLng.lat;
+  const lng = Array.isArray(latLng) ? latLng[1] : latLng.lng;
+  const bounds = _map.getBounds();
+  const ne = bounds.getNorthEast();
+  const sw = bounds.getSouthWest();
+  const latSpan = ne.lat - sw.lat;
+  const lngSpan = ne.lng - sw.lng;
+  const margin = 0.25;
+  const latMargin = latSpan * margin;
+  const lngMargin = lngSpan * margin;
+  const nearEdge =
+    lat < sw.lat + latMargin ||
+    lat > ne.lat - latMargin ||
+    lng < sw.lng + lngMargin ||
+    lng > ne.lng - lngMargin;
+  if (!nearEdge) return;
+  // Use Leaflet's panTo with a short animation so the recenter glides
+  // rather than snapping; duration short enough not to overshoot tick.
+  _map.panTo(latLng, {animate: true, duration: 0.4});
 }
 
 // Render the boat cursor SVG. The hull is a simplified triangle that
