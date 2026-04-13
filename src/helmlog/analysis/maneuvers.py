@@ -323,6 +323,11 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session window
 _TRACK_PRE_S = 20  # seconds of track before maneuver_ts
 _TRACK_POST_S = 30  # seconds of track after exit_ts (or maneuver_ts if exit unknown)
+# Normal tacks rotate the bow ~80–100°, gybes ~50–70°. Anything well above
+# that is almost always a mark rounding — including "Mexican" roundings
+# where pre/post TWA mode doesn't change. Threshold chosen at 130° so a
+# clean tack stays a tack.
+_ROUNDING_TURN_THRESHOLD_DEG = 130.0
 
 
 def extract_local_track(
@@ -546,6 +551,23 @@ async def enrich_session_maneuvers(
         # Storage's duration_sec is already present; metrics duration matches it.
         md.pop("duration_sec", None)
         d.update(md)
+
+        # Reclassify large-angle tack/gybe as a rounding. The detector
+        # classifies by pre/post TWA mode, which misses "Mexican" roundings
+        # (e.g. a gybe at a leeward mark where the boat stays downwind on
+        # both sides but the leg direction changes ~180°). Anything with a
+        # turn larger than a normal tack/gybe is much more usefully labeled
+        # as a rounding for debrief — the user explicitly called this out
+        # on race 22 where a 176° "gybe" was actually a leeward rounding.
+        if (
+            d.get("type") in ("tack", "gybe")
+            and metrics.turn_angle_deg is not None
+            and abs(metrics.turn_angle_deg) >= _ROUNDING_TURN_THRESHOLD_DEG
+        ):
+            if not isinstance(d.get("details"), dict):
+                d["details"] = {}
+            d["details"]["original_type"] = d["type"]
+            d["type"] = "rounding"
 
         # Nearest position for the map marker.
         pos = _position_at(positions, m_ts)

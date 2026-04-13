@@ -357,6 +357,115 @@ class TestEnrichSessionManeuversWindRefZero:
         assert m["entry_twa"] is not None
         assert abs(m["entry_twa"] - 40.0) < 1.0
 
+    @pytest.mark.asyncio
+    async def test_enrich_reclassifies_large_turn_gybe_as_rounding(self, storage: Storage) -> None:
+        """A 'gybe' detected with a 176° turn is really a leeward (Mexican)
+        rounding — the boat stays downwind on both sides but the leg
+        direction has changed. Enrichment should upgrade the type and
+        record the original classification in details."""
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (2, 'rounding-test', 'e', 1, ?, 'race', ?, ?)",
+            (start.date().isoformat(), start.isoformat(), end.isoformat()),
+        )
+        # 176° heading swing across the maneuver: 5° → 181°.
+        for i in range(121):
+            ts = (start + timedelta(seconds=i)).isoformat()
+            hdg = 5.0 if i < 60 else 181.0
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts, 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts, 0x05, 5.0),
+            )
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts, 0x05, 10.0, 130.0),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+        # Stored maneuver was classified by the detector as a 'gybe' because
+        # pre/post TWA both > 90° (downwind both sides).
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (2, 'gybe', ?, ?, 10.0, 3.0, NULL, 10, 130, NULL)",
+            (
+                (start + timedelta(seconds=60)).isoformat(),
+                (start + timedelta(seconds=70)).isoformat(),
+            ),
+        )
+        await db.commit()
+
+        enriched, _ = await enrich_session_maneuvers(storage, 2)
+        assert len(enriched) == 1
+        m = enriched[0]
+        assert m["type"] == "rounding"
+        assert isinstance(m.get("details"), dict)
+        assert m["details"].get("original_type") == "gybe"
+
+    @pytest.mark.asyncio
+    async def test_enrich_keeps_normal_tack_classification(self, storage: Storage) -> None:
+        """A clean ~90° tack must stay a tack — the rounding-reclassification
+        threshold of 130° must not catch normal maneuvers."""
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (3, 'tack-test', 'e', 1, ?, 'race', ?, ?)",
+            (start.date().isoformat(), start.isoformat(), end.isoformat()),
+        )
+        # 90° heading swing: 45° → 315° (close-hauled to close-hauled).
+        for i in range(121):
+            ts = (start + timedelta(seconds=i)).isoformat()
+            hdg = 45.0 if i < 60 else 315.0
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts, 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts, 0x05, 6.0),
+            )
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts, 0x05, 12.0, 45.0),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (3, 'tack', ?, ?, 10.0, 3.0, NULL, 12, 45, NULL)",
+            (
+                (start + timedelta(seconds=60)).isoformat(),
+                (start + timedelta(seconds=70)).isoformat(),
+            ),
+        )
+        await db.commit()
+
+        enriched, _ = await enrich_session_maneuvers(storage, 3)
+        assert len(enriched) == 1
+        assert enriched[0]["type"] == "tack"
+
 
 class TestRankManeuvers:
     def _mk(self, distance_loss: float | None, bsp_loss: float | None) -> dict:
