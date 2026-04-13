@@ -4986,6 +4986,7 @@ const _courseOverlay = {
   visible: true,
   marks: [],          // raw [{key,name,lat,lon}] from /course-overlay
   markLayers: [],     // [L.layer]
+  rawStartLine: null, // last payload passed to _drawStartLine (for redraws)
   startLine: null,    // L.polyline
   finishLine: null,   // L.polyline
   laylines: null,     // L.layerGroup — all rounding-mark laylines, static
@@ -5283,13 +5284,16 @@ function _drawCourseMarks() {
 
 function _drawStartLine(line) {
   if (!_map || !line || !line.pin || !line.boat) return;
+  _courseOverlay.rawStartLine = line;
   if (_courseOverlay.startLine) {
     try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ }
   }
-  // Two dashed orange poly segments terminated with circles for pin and boat.
+  // Two dashed orange poly segments terminated with circles for pin and boat,
+  // plus upwind laylines from each end of the line computed from the wind at
+  // gun time — so the user can see the approach geometry at race start.
   const pinLatLng = [line.pin[0], line.pin[1]];
   const boatLatLng = [line.boat[0], line.boat[1]];
-  const layer = L.layerGroup([
+  const layers = [
     L.polyline([pinLatLng, boatLatLng], {
       color: '#fb923c',
       weight: 3,
@@ -5303,7 +5307,35 @@ function _drawStartLine(line) {
     L.circleMarker(boatLatLng, {
       radius: 5, color: '#fb923c', weight: 2, fillColor: '#fb923c', fillOpacity: 1,
     }).bindTooltip('committee', {permanent: false}),
-  ]);
+  ];
+
+  // Start-line laylines: from each end of the line, project a tack layline
+  // on each side at the upwind-approach angle relative to the wind when the
+  // gun went off. "Wind at gun time" = the replay sample at _replayStart.
+  // Only draw when replay samples are loaded and we have a TWD.
+  const startMs = (_replayStart && _replayStart.getTime()) || null;
+  if (startMs != null && typeof _binarySearchSample === 'function') {
+    const sample = _binarySearchSample(startMs);
+    if (sample && sample.hdg != null && sample.twa != null) {
+      const windFromBearing = ((sample.hdg + sample.twa) % 360 + 360) % 360;
+      const windToBearing = (windFromBearing + 180) % 360;
+      const opts = {
+        color: _LAYLINE_TACK_COLOR,
+        weight: _LAYLINE_WEIGHT,
+        opacity: 0.85,
+        dashArray: '6, 6',
+        lineCap: 'butt',
+      };
+      for (const end of [pinLatLng, boatLatLng]) {
+        const stbd = _projectLatLng(end, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
+        const port = _projectLatLng(end, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+        layers.push(L.polyline([end, stbd], opts));
+        layers.push(L.polyline([end, port], opts));
+      }
+    }
+  }
+
+  const layer = L.layerGroup(layers);
   _courseOverlay.startLine = layer;
   if (_courseOverlay.visible) layer.addTo(_map);
 }
@@ -5336,6 +5368,12 @@ function _drawAllLaylines() {
   if (!_maneuvers || !_maneuvers.length) return;
   if (typeof _binarySearchSample !== 'function') return;
 
+  // Only show laylines for roundings that happen after the race start —
+  // pre-start activity (tune-ups, practice tacks, line sightings) gets
+  // detected as maneuvers too, and drawing laylines off those clutters
+  // the course view without adding debrief value.
+  const raceStartMs = (_replayStart && _replayStart.getTime()) || 0;
+
   const layers = [];
   for (const m of _maneuvers) {
     if (!m || m.type !== 'rounding') continue;
@@ -5343,6 +5381,7 @@ function _drawAllLaylines() {
     const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
     const tMs = new Date(tsStr).getTime();
     if (isNaN(tMs)) continue;
+    if (raceStartMs && tMs < raceStartMs) continue;
     // Sample from ~20s before the rounding gives the boat's approach state,
     // before the heading-change transient distorts TWA. Falls back to the
     // sample at the rounding ts if the lookback is out of range.
@@ -5448,6 +5487,11 @@ async function _loadReplayData() {
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     _renderHud(_playClock.positionUtc);
     _updateReplayControls();
+    // Samples + replay window are now loaded — redraw the start line so
+    // its laylines pick up the TWD sample at gun time, and redraw the
+    // rounding laylines so they respect the race-start filter.
+    if (_courseOverlay.rawStartLine) _drawStartLine(_courseOverlay.rawStartLine);
+    if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
   } catch (e) {
     // Non-fatal: replay is best-effort, the rest of the page still works
   }

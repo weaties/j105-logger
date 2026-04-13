@@ -416,6 +416,62 @@ class TestEnrichSessionManeuversWindRefZero:
         assert m["details"].get("original_type") == "gybe"
 
     @pytest.mark.asyncio
+    async def test_enrich_does_not_upgrade_large_tack_to_rounding(
+        self, storage: Storage
+    ) -> None:
+        """A large-angle tack (~175°) stays a tack. Tacks legitimately swing
+        through 80–100°, and on a start-line approach or sharp course change
+        an isolated tack can get much larger without being a mark rounding.
+        The user flagged a 175° tack that was previously mis-upgraded."""
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (4, 'big-tack-test', 'e', 1, ?, 'race', ?, ?)",
+            (start.date().isoformat(), start.isoformat(), end.isoformat()),
+        )
+        for i in range(121):
+            ts = (start + timedelta(seconds=i)).isoformat()
+            hdg = 5.0 if i < 60 else 180.0  # 175° swing
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts, 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts, 0x05, 5.5),
+            )
+            # Upwind both sides — this is what the user ran into on the
+            # start-line tack flagged in race 22.
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts, 0x05, 10.0, 12.0),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (4, 'tack', ?, ?, 10.0, 3.0, NULL, 10, 12, NULL)",
+            (
+                (start + timedelta(seconds=60)).isoformat(),
+                (start + timedelta(seconds=70)).isoformat(),
+            ),
+        )
+        await db.commit()
+
+        enriched, _ = await enrich_session_maneuvers(storage, 4)
+        assert len(enriched) == 1
+        assert enriched[0]["type"] == "tack"
+
+    @pytest.mark.asyncio
     async def test_enrich_keeps_normal_tack_classification(self, storage: Storage) -> None:
         """A clean ~90° tack must stay a tack — the rounding-reclassification
         threshold of 130° must not catch normal maneuvers."""

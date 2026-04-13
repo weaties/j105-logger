@@ -552,15 +552,19 @@ async def enrich_session_maneuvers(
         md.pop("duration_sec", None)
         d.update(md)
 
-        # Reclassify large-angle tack/gybe as a rounding. The detector
+        # Reclassify a wildly-large-turn gybe as a rounding. The detector
         # classifies by pre/post TWA mode, which misses "Mexican" roundings
-        # (e.g. a gybe at a leeward mark where the boat stays downwind on
-        # both sides but the leg direction changes ~180°). Anything with a
-        # turn larger than a normal tack/gybe is much more usefully labeled
-        # as a rounding for debrief — the user explicitly called this out
-        # on race 22 where a 176° "gybe" was actually a leeward rounding.
+        # where the boat stays downwind on both sides of a leeward mark but
+        # the leg direction changes ~180°. A normal gybe swings the bow
+        # 50–70°, so anything ≥ 130° is almost certainly a rounding.
+        #
+        # NB: we do NOT upgrade large tacks — tacks legitimately swing
+        # 80–100° already, and on a start-line approach or a big course
+        # change an isolated tack can get up to ~135° without being a mark
+        # rounding. The user explicitly flagged a 175° tack that was
+        # mis-upgraded by the previous heuristic.
         if (
-            d.get("type") in ("tack", "gybe")
+            d.get("type") == "gybe"
             and metrics.turn_angle_deg is not None
             and abs(metrics.turn_angle_deg) >= _ROUNDING_TURN_THRESHOLD_DEG
         ):
