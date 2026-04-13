@@ -815,8 +815,14 @@ async def api_session_replay(
     return JSONResponse(
         {
             "session_id": session_id,
-            "start_utc": start_utc + ("" if start_utc.endswith("Z") else "Z"),
-            "end_utc": end_utc + ("" if end_utc.endswith("Z") else "Z"),
+            # Normalize for the JS Date() parser: if the row already carries a
+            # timezone indicator (isoformat on an aware UTC datetime produces
+            # "...+00:00") leave it alone, otherwise append "Z". The previous
+            # unconditional-append produced the invalid "...+00:00Z" that made
+            # new Date() return Invalid Date and silently broke the scrubber,
+            # time label, and YT sync.
+            "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
+            "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
             "segment_seconds": _polar.POLAR_SEGMENT_SECONDS,
             "grades": grades_out,
             "samples": samples,
