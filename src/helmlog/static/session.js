@@ -820,6 +820,19 @@ function switchVideo(idx) {
 function _onPlayerStateChange(event) {
   // YT.PlayerState.PLAYING = 1, PAUSED = 2, ENDED = 0, BUFFERING = 3
   if (event.data === 1) {
+    // If the playback clock is paused (user is scrubbing, nothing has been
+    // explicitly played) but the YT embed decided to start on its own — e.g.
+    // because a seekTo resumed playback — clamp it back down immediately so
+    // the video can't escape our paused state. Without this the video keeps
+    // running through every scrub and stepping on the rest of the surfaces.
+    if (_playClock.state !== 'playing') {
+      try {
+        if (typeof _videoSync.player.pauseVideo === 'function') {
+          _videoSync.player.pauseVideo();
+        }
+      } catch (e) { /* swallow */ }
+      return;
+    }
     _stopSyncTimer();
     // Treat YT play as a producer: anchor the clock to the current video time
     if (typeof _videoSync.player.getCurrentTime === 'function') {
