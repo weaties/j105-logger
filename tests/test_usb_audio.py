@@ -244,6 +244,29 @@ def test_detect_all_capture_devices_linux_enriches_with_pyudev() -> None:
     assert [d.sounddevice_index for d in result] == [1, 2]
 
 
+def test_detect_all_capture_devices_linux_reinits_portaudio() -> None:
+    """PortAudio caches the device list at init time and misses USB
+    hot-plug. Detection must force a terminate/initialize cycle on Linux
+    so a receiver plugged in after service startup is picked up without
+    a manual restart (#509 corvopi-tst1 regression)."""
+    fake_pyudev = MagicMock()
+    fake_pyudev.Context.return_value = MagicMock(list_devices=MagicMock(return_value=[]))
+
+    terminate_mock = MagicMock()
+    initialize_mock = MagicMock()
+
+    with (
+        patch.dict(sys.modules, {"pyudev": fake_pyudev}),
+        patch("sounddevice.query_devices", return_value=_FAKE_SD_TWO_MONO),
+        patch("sounddevice._terminate", terminate_mock),
+        patch("sounddevice._initialize", initialize_mock),
+        patch("helmlog.usb_audio._is_linux", return_value=True),
+    ):
+        detect_all_capture_devices(min_channels=1)
+    assert terminate_mock.called
+    assert initialize_mock.called
+
+
 def test_detect_all_capture_devices_linux_skips_controlC_entries() -> None:
     """Regression: the sound subsystem lists both card* and controlC* nodes
     per physical card; walking both would zip two control nodes into the
