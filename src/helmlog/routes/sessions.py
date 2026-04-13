@@ -401,13 +401,34 @@ async def api_session_detail(
     end_utc = datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None
     duration_s = (end_utc - start_utc).total_seconds() if end_utc else None
 
-    # Check for audio
+    # Check for audio — prefer the primary sibling (ordinal 0) so
+    # single-session callers keep the scalar audio_session_id.
     acur = await db.execute(
-        "SELECT id, start_utc, channels FROM audio_sessions"
-        " WHERE race_id = ? AND session_type IN ('race','practice')",
+        "SELECT id, start_utc, channels, capture_group_id, capture_ordinal"
+        " FROM audio_sessions"
+        " WHERE race_id = ? AND session_type IN ('race','practice')"
+        " ORDER BY capture_ordinal ASC, id ASC",
         (session_id,),
     )
     arow = await acur.fetchone()
+
+    # Sibling-card block (#509): when the primary row is part of a capture
+    # group, surface all siblings so session.js can drive N-source Web
+    # Audio playback and show a merged transcript.
+    audio_siblings: list[dict[str, Any]] = []
+    if arow and arow["capture_group_id"]:
+        group_rows = await storage.list_capture_group_siblings(str(arow["capture_group_id"]))
+        for sr in group_rows:
+            cmap = await storage.get_channel_map_for_audio_session(int(sr["id"]))
+            position_name = cmap.get(0, f"sib{sr['capture_ordinal']}")
+            audio_siblings.append(
+                {
+                    "audio_session_id": int(sr["id"]),
+                    "ordinal": int(sr["capture_ordinal"]),
+                    "position_name": position_name,
+                    "stream_url": f"/api/audio/{int(sr['id'])}/stream",
+                }
+            )
 
     # Check for wind field params (synthesized sessions)
     wf_cur = await db.execute(
@@ -434,7 +455,10 @@ async def api_session_detail(
             "audio_start_utc": (
                 datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
             ),
-            "audio_channels": arow["channels"] if arow else None,
+            "audio_channels": (
+                len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
+            ),
+            "audio_siblings": audio_siblings,
             "peer_fingerprint": row["peer_fingerprint"],
             "has_wind_field": has_wind_field,
             "shared_name": row["shared_name"],

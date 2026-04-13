@@ -1732,9 +1732,9 @@ function loadAudio() {
 // ---------------------------------------------------------------------------
 
 let _mcCtx = null;
-let _mcBuffer = null;
-let _mcSource = null;
-let _mcSplitter = null;
+let _mcBuffer = null;          // primary duration/time reference
+let _mcSource = null;          // single-file multi-channel source
+let _mcSplitter = null;        // used only in single-file multi-channel path
 let _mcMerger = null;
 let _mcGains = [];
 let _mcStartTime = 0;        // AudioContext.currentTime when playback started
@@ -1742,6 +1742,12 @@ let _mcStartOffset = 0;       // buffer offset (seconds) when playback started
 let _mcIsPlaying = false;
 let _mcIsolatedChannel = null;
 let _mcIsolationTimer = null;
+// Sibling-card capture (#509): N mono buffers played in parallel, one
+// BufferSource per receiver. Sync is sample-accurate because all sources
+// share the same AudioContext clock via a single start(when, offset).
+let _mcSiblings = false;
+let _mcBuffers = [];
+let _mcSources = [];
 let _mcSticky = false;
 let _mcRafHandle = null;
 
@@ -1774,6 +1780,39 @@ function _mcClearTimer() {
 }
 
 function _mcRebuildSource(offsetSeconds) {
+  // Sibling-card mode: rebuild N BufferSources in parallel, started at the
+  // same AudioContext time so all receivers stay sample-aligned (#509).
+  if (_mcSiblings) {
+    _mcSources.forEach(s => {
+      try { s.stop(); } catch (e) { /* not started */ }
+      try { s.disconnect(); } catch (e) { /* swallow */ }
+    });
+    _mcSources = [];
+    const when = _mcCtx.currentTime + 0.02;  // small lead so start() is atomic
+    _mcBuffers.forEach((buf, i) => {
+      const src = _mcCtx.createBufferSource();
+      src.buffer = buf;
+      src.connect(_mcGains[i]);
+      if (i === 0) {
+        src.onended = () => {
+          if (!_mcSources.length) return;
+          if (_mcCurrentTime() >= _mcBuffer.duration - 0.05) {
+            _mcIsPlaying = false;
+            _mcStartOffset = 0;
+            _mcUpdateButtons();
+          }
+        };
+      }
+      src.start(when, offsetSeconds);
+      _mcSources.push(src);
+    });
+    _mcStartTime = when;
+    _mcStartOffset = offsetSeconds;
+    _mcIsPlaying = true;
+    _mcUpdateButtons();
+    return;
+  }
+
   // AudioBufferSourceNode is single-use: every play/seek requires a fresh one.
   if (_mcSource) {
     try { _mcSource.stop(); } catch (e) { /* not started */ }
@@ -1806,7 +1845,16 @@ function _mcPlay() {
 }
 
 function _mcPause() {
-  if (!_mcSource || !_mcIsPlaying) return;
+  if (!_mcIsPlaying) return;
+  if (_mcSiblings) {
+    _mcStartOffset = _mcCurrentTime();
+    _mcSources.forEach(s => { try { s.stop(); } catch (e) { /* swallow */ } });
+    _mcIsPlaying = false;
+    _mcUpdateButtons();
+    _mcStopProgressTick();
+    return;
+  }
+  if (!_mcSource) return;
   _mcStartOffset = _mcCurrentTime();
   try { _mcSource.stop(); } catch (e) { /* already stopped */ }
   _mcIsPlaying = false;
@@ -1879,6 +1927,39 @@ async function loadMultiChannelAudio() {
       return;
     }
     _mcCtx = new Ctx();
+
+    // Sibling-card capture (#509): N mono WAVs, one BufferSource per
+    // receiver, routed through per-source gains to a common mono merger.
+    const siblings = _session && _session.audio_siblings;
+    if (siblings && siblings.length > 1) {
+      _mcSiblings = true;
+      const decoded = await Promise.all(siblings.map(async s => {
+        const r = await fetch(s.stream_url);
+        if (!r.ok) throw new Error('audio fetch failed: ' + r.status);
+        const ab = await r.arrayBuffer();
+        return await _mcCtx.decodeAudioData(ab);
+      }));
+      _mcBuffers = decoded;
+      // Primary buffer = the longest sibling, so the seek bar covers the
+      // whole recording even if one card's stream ended a few ms early.
+      let longest = decoded[0];
+      for (const b of decoded) { if (b.duration > longest.duration) longest = b; }
+      _mcBuffer = longest;
+      _mcMerger = _mcCtx.createChannelMerger(1);
+      _mcGains = decoded.map(() => {
+        const g = _mcCtx.createGain();
+        g.gain.value = 1;
+        g.connect(_mcMerger, 0, 0);
+        return g;
+      });
+      _mcMerger.connect(_mcCtx.destination);
+      const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`).join(', ');
+      document.getElementById('mc-status').textContent =
+        `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
+      _mcUpdateProgress();
+      return;
+    }
+
     const r = await fetch('/api/audio/' + _session.audio_session_id + '/stream');
     if (!r.ok) throw new Error('audio fetch failed: ' + r.status);
     const buf = await r.arrayBuffer();

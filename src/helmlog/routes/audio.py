@@ -207,7 +207,10 @@ async def api_get_transcript(
 ) -> JSONResponse:
     """Poll transcription status and retrieve the transcript text when done.
 
-    Applies speaker anonymization map if present (#197).
+    Applies speaker anonymization map if present (#197). When the target
+    session is part of a sibling capture group (#509), the segments array
+    is a merged, time-sorted union of every sibling's transcript so the
+    UI sees one continuous timeline across all receivers.
     """
     storage = get_storage(request)
     import json as _json
@@ -215,9 +218,31 @@ async def api_get_transcript(
     t = await storage.get_transcript_with_anon(session_id)
     if t is None:
         raise HTTPException(status_code=404, detail="No transcript job found for this session")
-    if t.get("segments_json"):
+
+    # Sibling merge: if this session has a capture_group_id, union the
+    # segments from every sibling's transcript into a single sorted array.
+    row = await storage.get_audio_session_row(session_id)
+    group_id = row.get("capture_group_id") if row else None
+    if group_id:
+        merged: list[dict[str, Any]] = []
+        siblings = await storage.list_capture_group_siblings(str(group_id))
+        for sr in siblings:
+            st = await storage.get_transcript_with_anon(int(sr["id"]))
+            if st is None:
+                continue
+            sj = st.get("segments_json")
+            if not sj:
+                continue
+            try:
+                segs = _json.loads(sj)
+            except (_json.JSONDecodeError, TypeError):
+                continue
+            merged.extend(segs)
+        merged.sort(key=lambda s: float(s.get("start", 0.0)))
+        t["segments"] = merged
+    elif t.get("segments_json"):
         t["segments"] = _json.loads(t["segments_json"])
-    del t["segments_json"]
+    t.pop("segments_json", None)
     # Remove internal anon map from response
     t.pop("speaker_anon_map", None)
     # Expose speaker_map for UI (crew labels, auto-match info)
