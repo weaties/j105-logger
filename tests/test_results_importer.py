@@ -187,6 +187,124 @@ async def test_reimport_updates_changed_points(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_import_links_local_session_when_one_match(storage: Storage) -> None:
+    """An imported race auto-links to the only local session on its date."""
+    from datetime import UTC, datetime
+
+    db = storage._conn()
+    # Local session on the same date as the fixture's race 1.
+    results = await _fetch_results()
+    race_date = results.races[0].date  # YYYY-MM-DD
+    start = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Local Wed", "Local", 1, race_date, start.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (local_id,) = await cur.fetchone()  # type: ignore[misc]
+
+    await import_results(storage, results)
+
+    cur = await db.execute(
+        "SELECT local_session_id FROM races WHERE source = 'clubspot' AND date = ?",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert rows, "expected imported races on this date"
+    for row in rows:
+        assert row["local_session_id"] == local_id, (
+            f"expected link to {local_id}, got {row['local_session_id']}"
+        )
+
+    # Now list_race_results on the local session should return the
+    # imported results, not the (empty) hand-entered set.
+    rr = await storage.list_race_results(local_id)
+    assert rr, "imported results should supersede empty local results"
+    assert all(row["imported"] for row in rr)
+    _ = UTC  # silence unused
+
+
+@pytest.mark.asyncio
+async def test_import_picks_earliest_when_multiple_local_sessions(
+    storage: Storage,
+) -> None:
+    """Multi-session days link to the earliest local session."""
+    from datetime import datetime
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    early = datetime.fromisoformat(race_date + "T15:00:00+00:00")
+    late = datetime.fromisoformat(race_date + "T22:00:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Morning practice", "Local", 1, race_date, early.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (early_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Afternoon races", "Local", 2, race_date, late.isoformat()),
+    )
+    await db.commit()
+
+    await import_results(storage, results)
+
+    cur = await db.execute(
+        "SELECT local_session_id FROM races WHERE source = 'clubspot' AND date = ?",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert rows
+    for row in rows:
+        assert row["local_session_id"] == early_id
+
+
+@pytest.mark.asyncio
+async def test_reimport_backfills_null_local_session(storage: Storage) -> None:
+    """A re-import populates local_session_id when the prior import left it NULL."""
+    from datetime import datetime
+
+    results = await _fetch_results()
+    db = storage._conn()
+    race_date = results.races[0].date
+
+    # First import — no local session exists yet, so link is NULL.
+    await import_results(storage, results)
+    cur = await db.execute(
+        "SELECT local_session_id FROM races WHERE source = 'clubspot' AND date = ?",
+        (race_date,),
+    )
+    assert all(r["local_session_id"] is None for r in await cur.fetchall())
+
+    # Now create a local session for that date.
+    start = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Backfilled session", "Local", 1, race_date, start.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (local_id,) = await cur.fetchone()  # type: ignore[misc]
+
+    # Re-import should backfill the link.
+    await import_results(storage, results)
+    cur = await db.execute(
+        "SELECT local_session_id FROM races WHERE source = 'clubspot' AND date = ?",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert rows
+    for row in rows:
+        assert row["local_session_id"] == local_id
+
+
+@pytest.mark.asyncio
 async def test_race_with_no_date_skipped(storage: Storage) -> None:
     """R: imported race with no date is rejected, not written."""
     from helmlog.results.base import BoatFinish, RaceData, Regatta, RegattaResults

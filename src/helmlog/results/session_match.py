@@ -17,11 +17,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
-    from datetime import date, datetime
-    from zoneinfo import ZoneInfo
+    from datetime import date, datetime, tzinfo
 
 
 class SessionMatchOutcome(Enum):
@@ -50,7 +49,7 @@ class SessionMatch:
     candidates: tuple[SessionCandidate, ...]
 
 
-def _as_local_date(dt: datetime, tz: ZoneInfo) -> date:
+def _as_local_date(dt: datetime, tz: tzinfo) -> date:
     """Convert an aware datetime to a calendar date in `tz`."""
     if dt.tzinfo is None:
         raise ValueError("session start_utc must be timezone-aware")
@@ -60,7 +59,9 @@ def _as_local_date(dt: datetime, tz: ZoneInfo) -> date:
 def match_race_to_sessions(
     race_date: date,
     sessions: list[SessionCandidate],
-    venue_tz: ZoneInfo,
+    venue_tz: tzinfo,
+    *,
+    ambiguous_policy: Literal["none", "first"] = "none",
 ) -> SessionMatch:
     """Return the match outcome for one imported race.
 
@@ -71,6 +72,11 @@ def match_race_to_sessions(
             those that fall on the exact local date.
         venue_tz: The regatta's venue timezone — used to convert each
             session's UTC timestamp to a local date.
+        ambiguous_policy: How to resolve a multi-match day.
+            ``"none"`` (default) returns AMBIGUOUS and leaves linking to a
+            human. ``"first"`` auto-links to the earliest matching session
+            — the right policy for results imports where a regatta date
+            maps to one sailing day.
     """
     matches = [s for s in sessions if _as_local_date(s.start_utc, venue_tz) == race_date]
     matches.sort(key=lambda s: s.start_utc)
@@ -82,6 +88,12 @@ def match_race_to_sessions(
             candidates=(),
         )
     if len(matches) == 1:
+        return SessionMatch(
+            outcome=SessionMatchOutcome.AUTO_MATCH,
+            auto_linked_id=matches[0].id,
+            candidates=tuple(matches),
+        )
+    if ambiguous_policy == "first":
         return SessionMatch(
             outcome=SessionMatchOutcome.AUTO_MATCH,
             auto_linked_id=matches[0].id,

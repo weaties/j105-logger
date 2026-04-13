@@ -9,10 +9,16 @@ the same data produces zero net changes (R15, R16, R17).
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, tzinfo
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from loguru import logger
+
+from helmlog.results.session_match import (
+    SessionCandidate,
+    match_race_to_sessions,
+)
 
 if TYPE_CHECKING:
     import aiosqlite
@@ -69,6 +75,7 @@ async def import_results(
     }
 
     regatta_id = await _upsert_regatta(db, reg, now)
+    venue_tz = _resolve_venue_tz(reg.venue_tz)
 
     boat_cache: dict[str, int] = {}
 
@@ -81,6 +88,7 @@ async def import_results(
             continue
 
         race_id = await _upsert_race(db, race_data, regatta_id, reg.source)
+        await _maybe_link_local_session(db, race_id, race_data.date, venue_tz)
 
         ranked = _assign_places(race_data.finishes)
         for place, finish in ranked:
@@ -126,6 +134,82 @@ async def import_results(
         counts["standings_upserted"],
     )
     return counts
+
+
+def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
+    """Resolve a venue timezone with sensible fallbacks.
+
+    Order: explicit ``regatta.venue_tz`` → system local tz → UTC.
+    """
+    if venue_tz:
+        try:
+            return ZoneInfo(venue_tz)
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown venue_tz {!r}, falling back", venue_tz)
+    local = datetime.now().astimezone().tzinfo
+    if local is not None:
+        return local
+    return ZoneInfo("UTC")
+
+
+async def _maybe_link_local_session(
+    db: aiosqlite.Connection,
+    race_id: int,
+    race_date: str,
+    venue_tz: tzinfo,
+) -> None:
+    """Link an imported race to a local session if currently unlinked.
+
+    Looks at non-imported races within ±1 day of the race date, asks the
+    session matcher (with ``ambiguous_policy="first"`` so multi-session
+    days resolve to the earliest start), and writes the link if any
+    candidate matches.
+    """
+    cur = await db.execute("SELECT local_session_id FROM races WHERE id = ?", (race_id,))
+    row = await cur.fetchone()
+    if row is None:
+        return
+    if row[0] is not None:
+        return  # already linked — leave it alone
+
+    try:
+        rd = date.fromisoformat(race_date)
+    except ValueError:
+        return
+
+    from datetime import timedelta as _td
+
+    lo = (rd - _td(days=1)).isoformat()
+    hi = (rd + _td(days=1)).isoformat()
+    cur = await db.execute(
+        "SELECT id, start_utc, name FROM races"
+        " WHERE (source IS NULL OR source = 'live')"
+        " AND date >= ? AND date <= ?"
+        " ORDER BY start_utc",
+        (lo, hi),
+    )
+    rows = await cur.fetchall()
+    candidates: list[SessionCandidate] = []
+    for r in rows:
+        try:
+            start = datetime.fromisoformat(r[1].replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=UTC)
+        candidates.append(SessionCandidate(id=r[0], start_utc=start, label=r[2] or ""))
+
+    match = match_race_to_sessions(rd, candidates, venue_tz, ambiguous_policy="first")
+    if match.auto_linked_id is not None:
+        await db.execute(
+            "UPDATE races SET local_session_id = ? WHERE id = ?",
+            (match.auto_linked_id, race_id),
+        )
+        logger.debug(
+            "Linked imported race {} → local session {}",
+            race_id,
+            match.auto_linked_id,
+        )
 
 
 async def _upsert_regatta(db: aiosqlite.Connection, reg: Regatta, now: str) -> int:
