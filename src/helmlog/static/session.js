@@ -5308,25 +5308,24 @@ function _drawStartLine(line) {
   if (_courseOverlay.visible) layer.addTo(_map);
 }
 
-// Draw laylines anchored to each rounding mark (#473). For every detected
-// rounding, we project four lines outward from the mark:
+// Draw laylines anchored to each rounding mark (#473). Mark type (windward
+// vs leeward) is inferred from the boat's TWA in the ~20s leading up to the
+// rounding: |TWA| < 90 = sailing upwind = windward mark = tack laylines;
+// |TWA| >= 90 = sailing downwind = leeward mark = gybe laylines. Each mark
+// gets only its own pair, not all four — windward marks don't get gybe
+// laylines and vice versa.
 //
-//   * Two upwind tack laylines (cyan): from the mark in the downwind
-//     direction, offset by the upwind half-tacking-angle on each side. These
-//     are the lines you must cross on each tack to fetch the mark.
-//   * Two downwind gybe laylines (lavender): from the mark in the upwind
-//     direction, offset by the downwind half-gybing-angle on each side.
-//
-// TWD is captured at the moment of the rounding from the replay sample
-// series, so the laylines reflect the wind state when the mark was actually
-// being approached — not the live cursor wind.
-//
-// The start line is excluded (per user request). Bearings are derived from
-// HDG + TWA without any extra 180° flip — that was the v1 math bug that
-// sent half the laylines astern.
+// TWD comes from that same approach sample, so the laylines reflect the
+// wind state when the boat was actually approaching the mark. Bearings are
+// derived from HDG + TWA without any extra 180° flip (the v1 math bug).
 const _LAYLINE_LENGTH_M = 600;
 const _UPWIND_HALF_ANGLE = 45;   // tacking angle / 2 for typical masthead boat
 const _DOWNWIND_HALF_ANGLE = 30; // gybing angle / 2 for typical kite boat
+// High-contrast colors so they don't get lost on a pale-blue water tile.
+const _LAYLINE_TACK_COLOR = '#e11d48';   // saturated rose for upwind/tack
+const _LAYLINE_GYBE_COLOR = '#84cc16';   // saturated lime for downwind/gybe
+const _LAYLINE_WEIGHT = 3;
+const _APPROACH_LOOKBACK_MS = 20_000;
 
 function _drawAllLaylines() {
   if (!_map) return;
@@ -5344,31 +5343,36 @@ function _drawAllLaylines() {
     const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
     const tMs = new Date(tsStr).getTime();
     if (isNaN(tMs)) continue;
-    const sample = _binarySearchSample(tMs);
-    if (!sample || sample.twa == null || sample.hdg == null) continue;
+    // Sample from ~20s before the rounding gives the boat's approach state,
+    // before the heading-change transient distorts TWA. Falls back to the
+    // sample at the rounding ts if the lookback is out of range.
+    const approach = _binarySearchSample(tMs - _APPROACH_LOOKBACK_MS) || _binarySearchSample(tMs);
+    if (!approach || approach.twa == null || approach.hdg == null) continue;
 
+    const isWindward = Math.abs(approach.twa) < 90;
     // Wind reference frame (north-relative, degrees clockwise from north).
-    // HDG + TWA is the bearing FROM which the wind is blowing. Add 180 to
-    // get the direction the wind is going TO (downwind).
-    const windFromBearing = ((sample.hdg + sample.twa) % 360 + 360) % 360;
+    // HDG + TWA is the bearing FROM which the wind is blowing.
+    const windFromBearing = ((approach.hdg + approach.twa) % 360 + 360) % 360;
     const windToBearing = (windFromBearing + 180) % 360;
-
     const at = [m.lat, m.lon];
-    // Upwind laylines extend from the mark downwind (toward where the boat
-    // was coming from on the upwind leg), spread by ±tacking-half-angle.
-    const upStbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
-    const upPort = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
-    // Downwind laylines extend from the mark upwind (toward where the boat
-    // was coming from on the downwind leg), spread by ±gybing-half-angle.
-    const dnStbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
-    const dnPort = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
 
-    const upOpts = {color: '#7dd3fc', weight: 2, opacity: 0.75, dashArray: '4, 6', lineCap: 'butt'};
-    const dnOpts = {color: '#c4b5fd', weight: 2, opacity: 0.75, dashArray: '4, 6', lineCap: 'butt'};
-    layers.push(L.polyline([at, upStbd], upOpts));
-    layers.push(L.polyline([at, upPort], upOpts));
-    layers.push(L.polyline([at, dnStbd], dnOpts));
-    layers.push(L.polyline([at, dnPort], dnOpts));
+    if (isWindward) {
+      // Tack laylines extend from the mark downwind (where the boat was
+      // coming from on the upwind leg), spread by ±tacking-half-angle.
+      const stbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
+      const port = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+      const opts = {color: _LAYLINE_TACK_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+      layers.push(L.polyline([at, stbd], opts));
+      layers.push(L.polyline([at, port], opts));
+    } else {
+      // Gybe laylines extend from the mark upwind (where the boat was coming
+      // from on the downwind leg), spread by ±gybing-half-angle.
+      const stbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
+      const port = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+      const opts = {color: _LAYLINE_GYBE_COLOR, weight: _LAYLINE_WEIGHT, opacity: 0.85, dashArray: '6, 6', lineCap: 'butt'};
+      layers.push(L.polyline([at, stbd], opts));
+      layers.push(L.polyline([at, port], opts));
+    }
   }
 
   if (!layers.length) return;
