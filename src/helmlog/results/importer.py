@@ -70,7 +70,6 @@ async def import_results(
     }
 
     regatta_id = await _upsert_regatta(db, reg, now)
-    venue_tz = _resolve_venue_tz(reg.venue_tz)
 
     boat_cache: dict[str, int] = {}
 
@@ -92,7 +91,7 @@ async def import_results(
 
         counts["races_upserted"] += 1
 
-    await _link_regatta_races_to_local_sessions(db, regatta_id, venue_tz)
+    await _link_regatta_races_to_local_sessions(db, regatta_id)
 
     for standing in results.standings:
         boat_id = await _upsert_boat_minimal(db, standing.sail_number, boat_cache)
@@ -151,15 +150,13 @@ def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
 async def _link_regatta_races_to_local_sessions(
     db: aiosqlite.Connection,
     regatta_id: int,
-    venue_tz: tzinfo,
 ) -> int:
     """Pair imported races to local race sessions by order within each date.
 
-    For each venue-local date that the regatta has imported races on:
+    For each date that the regatta has imported races on:
       1. List imported races (``regatta_id`` match) sorted by ``race_num``.
       2. List local race-type sessions (``session_type='race'``, non-imported)
-         whose ``start_utc`` falls on that date in ``venue_tz``, sorted by
-         ``start_utc``.
+         whose stored ``date`` matches, sorted by ``start_utc``.
       3. Zip them: imported race N → local session N.  Extra imported races
          or extra local sessions on the fringes are left unlinked.
 
@@ -190,7 +187,7 @@ async def _link_regatta_races_to_local_sessions(
     for d, imported in by_date.items():
         imported.sort(key=lambda x: x[1])  # sort by race_num
 
-        local_sessions = await _list_local_race_sessions_on_date(db, d, venue_tz)
+        local_sessions = await _list_local_race_sessions_on_date(db, d)
         if not local_sessions:
             continue
 
@@ -216,44 +213,25 @@ async def _link_regatta_races_to_local_sessions(
 async def _list_local_race_sessions_on_date(
     db: aiosqlite.Connection,
     target_date: date,
-    venue_tz: tzinfo,
 ) -> list[int]:
-    """Return local race-type session ids whose venue-local date is *target_date*.
+    """Return local race-type session ids whose ``date`` column is *target_date*.
 
-    Queries a ±1 day window around the target date and filters by
-    converting each ``start_utc`` into ``venue_tz`` local time — so a
-    session that straddles midnight UTC but is on *target_date* locally
-    still counts.
+    Compares the stored ``date`` column directly — both helmlog's local
+    race date and the importer's race date are derived from UTC, so
+    matching on the string avoids venue-tz conversion bugs where a
+    session near midnight could shift to a different local date than
+    the imported race reports.
     """
-    from datetime import timedelta as _td
-
-    lo = (target_date - _td(days=1)).isoformat()
-    hi = (target_date + _td(days=1)).isoformat()
     cur = await db.execute(
         "SELECT id, start_utc FROM races"
         " WHERE (source IS NULL OR source = 'live')"
         " AND session_type = 'race'"
-        " AND start_utc IS NOT NULL"
-        " AND date >= ? AND date <= ?"
+        " AND date = ?"
         " ORDER BY start_utc",
-        (lo, hi),
+        (target_date.isoformat(),),
     )
     rows = await cur.fetchall()
-    matched: list[tuple[datetime, int]] = []
-    for r in rows:
-        raw = r[1]
-        if not raw:
-            continue
-        try:
-            start = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except (ValueError, AttributeError):
-            continue
-        if start.tzinfo is None:
-            start = start.replace(tzinfo=UTC)
-        if start.astimezone(venue_tz).date() == target_date:
-            matched.append((start, r[0]))
-    matched.sort(key=lambda x: x[0])
-    return [sid for _, sid in matched]
+    return [r[0] for r in rows]
 
 
 async def _upsert_regatta(db: aiosqlite.Connection, reg: Regatta, now: str) -> int:

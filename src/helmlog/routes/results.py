@@ -212,25 +212,15 @@ async def api_rematch_regatta(
     manual links and prior matches are preserved.  Useful when local
     sessions were created after the import.
     """
-    from helmlog.results.importer import (
-        _link_regatta_races_to_local_sessions,
-        _resolve_venue_tz,
-    )
+    from helmlog.results.importer import _link_regatta_races_to_local_sessions
 
     storage = get_storage(request)
     db = storage._conn()
-    cur = await db.execute("SELECT * FROM regattas WHERE id = ?", (regatta_id,))
-    reg_row = await cur.fetchone()
-    if not reg_row:
+    cur = await db.execute("SELECT id FROM regattas WHERE id = ?", (regatta_id,))
+    if not await cur.fetchone():
         raise HTTPException(404, "Regatta not found")
 
-    venue_tz_str: str | None = None
-    keys = reg_row.keys() if hasattr(reg_row, "keys") else []
-    if "venue_tz" in keys:
-        venue_tz_str = reg_row["venue_tz"]
-    venue_tz = _resolve_venue_tz(venue_tz_str)
-
-    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, venue_tz)
+    linked = await _link_regatta_races_to_local_sessions(db, regatta_id)
     await db.commit()
 
     await audit(
