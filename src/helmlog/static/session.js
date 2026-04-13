@@ -3103,6 +3103,9 @@ async function loadManeuvers() {
   _injectVakarosStartIntoManeuvers();
   renderManeuverCard();
   if (_map && _maneuvers.length) _addManeuverMarkers();
+  // Roundings are now loaded — refresh laylines so they anchor on the
+  // mark positions from this fetch (handles re-detection too).
+  if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
 }
 
 function _manKey(m, idx) {
@@ -4976,16 +4979,16 @@ let _gradeSegments = []; // [L.polyline] overlays when polar view is active
 let _gradeViewActive = false;
 let _followBoat = false;  // when true, map re-centers on the boat each tick
 
-// Course overlay state (#473): marks, start line, finish line, and a pair of
-// laylines from the current cursor position. All Leaflet layers, all owned
-// by _courseOverlay so a single toggle can show/hide them together.
+// Course overlay state (#473): marks, start line, finish line, and laylines
+// anchored to each rounding mark. All Leaflet layers, owned by _courseOverlay
+// so a single toggle shows/hides them together.
 const _courseOverlay = {
   visible: true,
   marks: [],          // raw [{key,name,lat,lon}] from /course-overlay
   markLayers: [],     // [L.layer]
   startLine: null,    // L.polyline
   finishLine: null,   // L.polyline
-  layline: null,      // L.layerGroup (port + starboard)
+  laylines: null,     // L.layerGroup — all rounding-mark laylines, static
 };
 
 const _GRADE_COLORS = {
@@ -5240,9 +5243,12 @@ async function _loadCourseOverlay() {
     _courseOverlay.marks = (data.marks || []).filter(m => m.lat != null && m.lon != null);
     _drawCourseMarks();
     if (data.start_line) _drawStartLine(data.start_line);
-    // Register laylines as a clock consumer so they update every tick/seek
-    registerSurface('layline', function(utc) { _drawLaylines(utc); });
-    if (_playClock.positionUtc) _drawLaylines(_playClock.positionUtc);
+    // Laylines depend on _maneuvers (rounding positions) and _replaySamples
+    // (TWD at each rounding). Both load asynchronously, so try once now and
+    // retry shortly if either is still missing — they'll usually be ready
+    // within a few hundred ms after _loadReplayData/loadManeuvers settle.
+    _drawAllLaylines();
+    setTimeout(_drawAllLaylines, 1500);
     _setCourseOverlayVisible(_courseOverlay.visible);
   } catch (e) {
     // Non-fatal — replay still works without the course overlay.
@@ -5302,47 +5308,73 @@ function _drawStartLine(line) {
   if (_courseOverlay.visible) layer.addTo(_map);
 }
 
-// Compute laylines from the current boat position. A layline is the line you
-// can sail on a single tack to fetch a windward mark — drawn at TWA-tacking
-// angle off the wind direction. v1 uses a fixed 45° tacking angle (close to
-// most masthead boats) and projects 800 m on each tack from the cursor. The
-// upwind direction comes from the boat's TWA + HDG sample, so the layline
-// rotates as the wind shifts during the race.
-function _drawLaylines(utc) {
+// Draw laylines anchored to each rounding mark (#473). For every detected
+// rounding, we project four lines outward from the mark:
+//
+//   * Two upwind tack laylines (cyan): from the mark in the downwind
+//     direction, offset by the upwind half-tacking-angle on each side. These
+//     are the lines you must cross on each tack to fetch the mark.
+//   * Two downwind gybe laylines (lavender): from the mark in the upwind
+//     direction, offset by the downwind half-gybing-angle on each side.
+//
+// TWD is captured at the moment of the rounding from the replay sample
+// series, so the laylines reflect the wind state when the mark was actually
+// being approached — not the live cursor wind.
+//
+// The start line is excluded (per user request). Bearings are derived from
+// HDG + TWA without any extra 180° flip — that was the v1 math bug that
+// sent half the laylines astern.
+const _LAYLINE_LENGTH_M = 600;
+const _UPWIND_HALF_ANGLE = 45;   // tacking angle / 2 for typical masthead boat
+const _DOWNWIND_HALF_ANGLE = 30; // gybing angle / 2 for typical kite boat
+
+function _drawAllLaylines() {
   if (!_map) return;
-  if (_courseOverlay.layline) {
-    try { _map.removeLayer(_courseOverlay.layline); } catch (e) { /* swallow */ }
-    _courseOverlay.layline = null;
+  if (_courseOverlay.laylines) {
+    try { _map.removeLayer(_courseOverlay.laylines); } catch (e) { /* swallow */ }
+    _courseOverlay.laylines = null;
   }
-  if (!_courseOverlay.visible) return;
-  if (!_trackData || !_trackData.latLngs.length) return;
-  // Use the smoothed cursor position (interpolated) so laylines anchor on the
-  // boat's continuous path, not on the nearest discrete fix.
-  const idx = _indexForUtc(utc);
-  const at = _trackData.latLngs[idx];
-  if (!at) return;
-  const sample = (typeof _binarySearchSample === 'function')
-    ? _binarySearchSample(utc.getTime())
-    : null;
-  if (!sample || sample.twa == null || sample.hdg == null) return;
-  // True wind direction in degrees from north. TWA is signed (port negative,
-  // starboard positive); TWD = HDG + TWA gives "the direction the wind is
-  // going to" — for sailing we want where it's coming from, so add 180°.
-  const twd = ((sample.hdg + sample.twa) % 360 + 360) % 360;
-  const windFromBearing = (twd + 180) % 360;
-  const tackingAngle = 45;
-  const portBearing = (windFromBearing + tackingAngle + 360) % 360;
-  const stbdBearing = (windFromBearing - tackingAngle + 360) % 360;
-  const distM = 800;
-  const portEnd = _projectLatLng(at, portBearing, distM);
-  const stbdEnd = _projectLatLng(at, stbdBearing, distM);
-  const opts = {color: '#7eb8f7', weight: 2, opacity: 0.7, dashArray: '4, 6', lineCap: 'butt'};
-  const group = L.layerGroup([
-    L.polyline([at, portEnd], opts),
-    L.polyline([at, stbdEnd], opts),
-  ]);
-  group.addTo(_map);
-  _courseOverlay.layline = group;
+  if (!_maneuvers || !_maneuvers.length) return;
+  if (typeof _binarySearchSample !== 'function') return;
+
+  const layers = [];
+  for (const m of _maneuvers) {
+    if (!m || m.type !== 'rounding') continue;
+    if (m.lat == null || m.lon == null || !m.ts) continue;
+    const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
+    const tMs = new Date(tsStr).getTime();
+    if (isNaN(tMs)) continue;
+    const sample = _binarySearchSample(tMs);
+    if (!sample || sample.twa == null || sample.hdg == null) continue;
+
+    // Wind reference frame (north-relative, degrees clockwise from north).
+    // HDG + TWA is the bearing FROM which the wind is blowing. Add 180 to
+    // get the direction the wind is going TO (downwind).
+    const windFromBearing = ((sample.hdg + sample.twa) % 360 + 360) % 360;
+    const windToBearing = (windFromBearing + 180) % 360;
+
+    const at = [m.lat, m.lon];
+    // Upwind laylines extend from the mark downwind (toward where the boat
+    // was coming from on the upwind leg), spread by ±tacking-half-angle.
+    const upStbd = _projectLatLng(at, (windToBearing + _UPWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
+    const upPort = _projectLatLng(at, (windToBearing - _UPWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+    // Downwind laylines extend from the mark upwind (toward where the boat
+    // was coming from on the downwind leg), spread by ±gybing-half-angle.
+    const dnStbd = _projectLatLng(at, (windFromBearing + _DOWNWIND_HALF_ANGLE) % 360, _LAYLINE_LENGTH_M);
+    const dnPort = _projectLatLng(at, (windFromBearing - _DOWNWIND_HALF_ANGLE + 360) % 360, _LAYLINE_LENGTH_M);
+
+    const upOpts = {color: '#7dd3fc', weight: 2, opacity: 0.75, dashArray: '4, 6', lineCap: 'butt'};
+    const dnOpts = {color: '#c4b5fd', weight: 2, opacity: 0.75, dashArray: '4, 6', lineCap: 'butt'};
+    layers.push(L.polyline([at, upStbd], upOpts));
+    layers.push(L.polyline([at, upPort], upOpts));
+    layers.push(L.polyline([at, dnStbd], dnOpts));
+    layers.push(L.polyline([at, dnPort], dnOpts));
+  }
+
+  if (!layers.length) return;
+  const group = L.layerGroup(layers);
+  if (_courseOverlay.visible) group.addTo(_map);
+  _courseOverlay.laylines = group;
 }
 
 // Project a lat/lng forward by `distM` meters along true bearing `bearingDeg`.
@@ -5367,14 +5399,12 @@ function _setCourseOverlayVisible(visible) {
     if (_courseOverlay.visible) _courseOverlay.startLine.addTo(_map);
     else { try { _map.removeLayer(_courseOverlay.startLine); } catch (e) { /* swallow */ } }
   }
-  // Laylines are drawn on every tick, so visibility is enforced by
-  // _drawLaylines bailing out — but also clear the current layer so they
-  // disappear immediately when the user toggles off.
-  if (!_courseOverlay.visible && _courseOverlay.layline) {
-    try { _map.removeLayer(_courseOverlay.layline); } catch (e) { /* swallow */ }
-    _courseOverlay.layline = null;
-  } else if (_courseOverlay.visible && _playClock.positionUtc) {
-    _drawLaylines(_playClock.positionUtc);
+  if (_courseOverlay.laylines) {
+    if (_courseOverlay.visible) _courseOverlay.laylines.addTo(_map);
+    else { try { _map.removeLayer(_courseOverlay.laylines); } catch (e) { /* swallow */ } }
+  } else if (_courseOverlay.visible) {
+    // First time we're being made visible after maneuvers loaded
+    _drawAllLaylines();
   }
 }
 
