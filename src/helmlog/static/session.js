@@ -1795,10 +1795,11 @@ function loadAudio() {
   // currently-playing audio: it's distracting to have audio keep going from
   // a new spot just because the user clicked somewhere on the page.
   registerSurface('audio', function(utc) {
-    // Playback independence: if a different player is producing updates,
-    // don't move this player's playhead. Scrubs via replay/map/etc still
-    // seek audio so the preview stays in sync with the cursor.
-    if (_playClock.currentSource === 'video' || _playClock.currentSource === 'mc') return;
+    // NB: setting el.currentTime on a paused audio element is safe — it
+    // doesn't start playback — so unlike the video consumer we don't need
+    // to skip based on currentSource. Seeking a paused audio keeps its
+    // scrubber in lockstep with YT/replay even when the user isn't
+    // listening to it.
     const local = utcToAudioLocal(utc);
     if (local < 0 || (el.duration && local > el.duration)) return;
     const delta = Math.abs(el.currentTime - local);
@@ -2118,9 +2119,9 @@ async function loadMultiChannelAudio() {
   // the mc seek bar and start offset. Skipped while playing (avoid fighting
   // natural playback) and while the user is actively dragging the slider.
   registerSurface('mc', function(utc) {
-    // Playback independence: leave mc alone when a different player drives
-    // the update. Only replay/map/scrub-style sources should move mc.
-    if (_playClock.currentSource === 'video' || _playClock.currentSource === 'audio') return;
+    // Moving _mcStartOffset on a paused mc source doesn't start playback,
+    // so we can safely follow updates from any producer. The _mcIsPlaying
+    // guard below still prevents us from interrupting active playback.
     if (!_mcBuffer) return;
     const anchor = _mcSessionStart();
     if (!anchor) return;
