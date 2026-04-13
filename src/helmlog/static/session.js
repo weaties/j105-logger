@@ -5345,11 +5345,15 @@ function _drawAllLaylines() {
   if (!_maneuvers || !_maneuvers.length) return;
   if (typeof _binarySearchSample !== 'function') return;
 
-  // Only show laylines for roundings that happen after the race start —
-  // pre-start activity (tune-ups, practice tacks, line sightings) gets
-  // detected as maneuvers too, and drawing laylines off those clutters
-  // the course view without adding debrief value.
+  // Only show laylines for roundings that happen after the race start,
+  // plus a grace window. The first few seconds after the gun are
+  // typically the start-hardening maneuver (reach → close-hauled) which
+  // the detector classifies as a "rounding" because pre/post TWA mode
+  // differs — but that's not actually rounding a mark. 120s comfortably
+  // excludes that transient without masking a real windward mark (which
+  // will always be at least several minutes of sailing from the line).
   const raceStartMs = (_replayStart && _replayStart.getTime()) || 0;
+  const LAYLINE_START_GRACE_MS = 120_000;
 
   const layers = [];
   for (const m of _maneuvers) {
@@ -5358,7 +5362,7 @@ function _drawAllLaylines() {
     const tsStr = (m.ts.endsWith && (m.ts.endsWith('Z') || m.ts.includes('+'))) ? m.ts : m.ts + 'Z';
     const tMs = new Date(tsStr).getTime();
     if (isNaN(tMs)) continue;
-    if (raceStartMs && tMs < raceStartMs) continue;
+    if (raceStartMs && tMs < raceStartMs + LAYLINE_START_GRACE_MS) continue;
     // Sample from ~20s before the rounding gives the boat's approach state,
     // before the heading-change transient distorts TWA. Falls back to the
     // sample at the rounding ts if the lookback is out of range.
