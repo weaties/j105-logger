@@ -6133,6 +6133,23 @@ class Storage:
         row = await self.get_audio_session_row(audio_session_id)
         if row is None:
             raise ValueError(f"audio session {audio_session_id} not found")
+
+        # Sibling-card dispatch (#509 chunk 4): when the target belongs to a
+        # capture group, "delete channel N" means "delete the sibling with
+        # capture_ordinal=N" — each sibling is its own mono WAV + transcript
+        # + channel_map row, so the data-licensing deletion right reduces to
+        # a full-sibling removal rather than zeroing a channel in a file.
+        if row.get("capture_group_id"):
+            await self._delete_sibling_by_ordinal(
+                row,
+                channel_index=channel_index,
+                user_id=user_id,
+                reason=reason,
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
+            return
+
         channels = int(row.get("channels") or 0)
         if channel_index < 0 or channel_index >= channels:
             raise ValueError(
@@ -6202,6 +6219,61 @@ class Storage:
             "Audio channel deleted: session={} channel={}",
             audio_session_id,
             channel_index,
+        )
+
+    async def _delete_sibling_by_ordinal(
+        self,
+        row: dict[str, Any],
+        *,
+        channel_index: int,
+        user_id: int | None,
+        reason: str | None,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> None:
+        """Sibling-mode branch of ``delete_audio_channel`` (#509 chunk 4).
+
+        Resolves the sibling whose ``capture_ordinal`` matches
+        ``channel_index`` within the same capture group, deletes its
+        audio_sessions row (cascades to transcripts, transcript_segments
+        and channel_map via FK), unlinks its WAV file from disk, and
+        writes an ``audio_channel_delete`` audit entry tagged
+        ``sibling_mode=True``.
+        """
+        group_id = str(row["capture_group_id"])
+        siblings = await self.list_capture_group_siblings(group_id)
+        target = next((s for s in siblings if int(s["capture_ordinal"]) == channel_index), None)
+        if target is None:
+            raise ValueError(f"no sibling with capture_ordinal={channel_index} in group {group_id}")
+        sibling_id = int(target["id"])
+        position_name = await self._channel_position_name(sibling_id, 0)
+        wav_path_str = await self.delete_audio_session(sibling_id)
+        if wav_path_str:
+            p = Path(wav_path_str)
+            if p.exists():
+                with contextlib.suppress(OSError):
+                    p.unlink()
+        await self.log_action(
+            "audio_channel_delete",
+            detail=json.dumps(
+                {
+                    "sibling_mode": True,
+                    "capture_group_id": group_id,
+                    "channel_index": channel_index,
+                    "deleted_audio_session_id": sibling_id,
+                    "position_name": position_name,
+                    "reason": reason,
+                }
+            ),
+            user_id=user_id,
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+        logger.info(
+            "Sibling audio deleted: group={} ordinal={} audio_session_id={}",
+            group_id,
+            channel_index,
+            sibling_id,
         )
 
     async def _channel_position_name(self, audio_session_id: int, channel_index: int) -> str | None:
