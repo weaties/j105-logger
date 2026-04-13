@@ -22,7 +22,7 @@ from loguru import logger
 if TYPE_CHECKING:
     from fastapi.responses import Response
 
-    from helmlog.audio import AudioConfig, AudioRecorder
+    from helmlog.audio import AudioConfig, AudioRecorder, AudioRecorderGroup
     from helmlog.storage import Storage
 
 # Re-export _get_git_info for backward compatibility (used by tests)
@@ -42,7 +42,7 @@ _STATIC_DIR = __import__("pathlib").Path(__file__).parent / "static"
 
 def create_app(
     storage: Storage,
-    recorder: AudioRecorder | None = None,
+    recorder: AudioRecorder | AudioRecorderGroup | None = None,
     audio_config: AudioConfig | None = None,
 ) -> FastAPI:
     """Create and return the FastAPI application bound to the given Storage.

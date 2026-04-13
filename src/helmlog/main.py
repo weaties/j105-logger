@@ -133,13 +133,16 @@ async def _web_loop(
     """
     import uvicorn
 
-    from helmlog.audio import AudioConfig, AudioRecorder
+    from helmlog.audio import AudioConfig, AudioRecorder, AudioRecorderGroup
     from helmlog.races import RaceConfig
     from helmlog.storage import Storage
     from helmlog.web import create_app
 
     assert isinstance(storage, Storage)
-    _recorder = recorder if isinstance(recorder, AudioRecorder) else None
+    # Accept both the single-device recorder and the sibling-card group (#509);
+    # otherwise sibling mode falls through to None and race audio is silently
+    # skipped because the route guard short-circuits on recorder is None.
+    _recorder = recorder if isinstance(recorder, AudioRecorder | AudioRecorderGroup) else None
     _audio_config = audio_config if isinstance(audio_config, AudioConfig) else None
     try:
         cfg = RaceConfig()
