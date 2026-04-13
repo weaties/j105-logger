@@ -164,7 +164,10 @@ jobs:
           - Pre-existing mypy errors in web.py (known issues with datetime | None
             and AudioRecorder | None)
 
-          Output format — exactly this structure, nothing else:
+          Output format — start directly with `## Summary`. Do NOT write any
+          preamble, acknowledgement, or "Let me compile my findings" sentence.
+          The very first character of your response must be `#`. The exact
+          structure is:
 
               ## Summary
               1–2 sentence overall summary.
@@ -188,9 +191,20 @@ jobs:
           # Expand env vars in the prompt
           envsubst < /tmp/prompt.txt > /tmp/prompt.final.txt
 
-          claude -p "$(cat /tmp/prompt.final.txt)" --output-format text > /tmp/review.md
+          claude -p "$(cat /tmp/prompt.final.txt)" --output-format json > /tmp/result.json
+          jq -r '.result' /tmp/result.json > /tmp/review.md
+
+          cost=$(jq -r '.total_cost_usd // "unknown"' /tmp/result.json)
+          turns=$(jq -r '.num_turns // "unknown"' /tmp/result.json)
+          duration=$(jq -r '.duration_ms // "unknown"' /tmp/result.json)
+          echo "cost=${cost}" >> "${GITHUB_OUTPUT}"
+          echo "turns=${turns}" >> "${GITHUB_OUTPUT}"
+          echo "duration_ms=${duration}" >> "${GITHUB_OUTPUT}"
+
           echo "--- review output ---"
           cat /tmp/review.md
+          echo "--- metrics ---"
+          echo "cost_usd=${cost} num_turns=${turns} duration_ms=${duration}"
 
           verdict=$(grep -E '^::VERDICT::(PASS|FAIL)' /tmp/review.md | tail -1 || echo "::VERDICT::FAIL")
           echo "verdict=${verdict}" >> "${GITHUB_OUTPUT}"
@@ -199,6 +213,20 @@ jobs:
           else
             echo "status=pass" >> "${GITHUB_OUTPUT}"
           fi
+
+          # Surface metrics in the run summary
+          {
+            echo "## Claude Nightly Review"
+            echo ""
+            echo "| Metric | Value |"
+            echo "|---|---|"
+            echo "| Verdict | \`${verdict}\` |"
+            echo "| Cost (USD) | \`${cost}\` |"
+            echo "| Turns | \`${turns}\` |"
+            echo "| Duration (ms) | \`${duration}\` |"
+            echo "| Baseline | \`${BASELINE_SHA}\` |"
+            echo "| HEAD | \`${HEAD_SHA}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload review artifact
         uses: actions/upload-artifact@v4

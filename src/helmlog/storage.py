@@ -2515,8 +2515,9 @@ class Storage:
             "INSERT INTO audio_sessions"
             " (file_path, device_name, start_utc, end_utc, sample_rate, channels,"
             "  race_id, session_type, name, channel_map,"
+            "  vendor_id, product_id, serial, usb_port_path,"
             "  capture_group_id, capture_ordinal)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 session.file_path,
                 session.device_name,
@@ -2528,6 +2529,16 @@ class Storage:
                 session_type,
                 name,
                 json.dumps(session.channel_map) if session.channel_map else None,
+                # USB identity carried through from AudioRecorder.start(detected=...) —
+                # previously dropped on insert so sibling/multi-channel sessions
+                # landed with NULL identity and could not resolve the admin-default
+                # channel_map via the v63 composite key. Per-session overrides still
+                # worked because they are keyed by audio_session_id, so this bug was
+                # masked in tests that explicitly seeded overrides.
+                session.vendor_id or None,
+                session.product_id or None,
+                session.serial or None,
+                session.usb_port_path or None,
                 session.capture_group_id,
                 session.capture_ordinal,
             ),
@@ -6234,12 +6245,18 @@ class Storage:
         """Sibling-mode branch of ``delete_audio_channel`` (#509 chunk 4).
 
         Resolves the sibling whose ``capture_ordinal`` matches
-        ``channel_index`` within the same capture group, deletes its
-        audio_sessions row (cascades to transcripts, transcript_segments
-        and channel_map via FK), unlinks its WAV file from disk, and
-        writes an ``audio_channel_delete`` audit entry tagged
-        ``sibling_mode=True``.
+        ``channel_index`` within the same capture group and atomically
+        deletes its ``audio_sessions`` row (cascading to transcripts,
+        transcript_segments, and channel_map via FK) plus writes an
+        ``audio_channel_delete`` audit entry tagged ``sibling_mode=True``
+        in the same transaction. The WAV file is unlinked from disk
+        post-commit on a best-effort basis — the DB is the source of
+        truth for "is this data gone?" and a stale file after commit is
+        a cleanup inconvenience, not a compliance gap.
         """
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
         group_id = str(row["capture_group_id"])
         siblings = await self.list_capture_group_siblings(group_id)
         target = next((s for s in siblings if int(s["capture_ordinal"]) == channel_index), None)
@@ -6247,28 +6264,74 @@ class Storage:
             raise ValueError(f"no sibling with capture_ordinal={channel_index} in group {group_id}")
         sibling_id = int(target["id"])
         position_name = await self._channel_position_name(sibling_id, 0)
-        wav_path_str = await self.delete_audio_session(sibling_id)
-        if wav_path_str:
-            p = Path(wav_path_str)
+
+        # Re-read file_path inside the transaction so a concurrent delete
+        # cannot leave us pointing at nothing.
+        db = self._conn()
+        try:
+            cur = await db.execute(
+                "SELECT file_path FROM audio_sessions WHERE id = ?", (sibling_id,)
+            )
+            file_row = await cur.fetchone()
+            if file_row is None:
+                # Raced with another deletion — nothing to do, still audit.
+                file_path: str | None = None
+            else:
+                file_path = file_row["file_path"]
+
+            # Cascade cleanup (copied from delete_audio_session but without
+            # its own commit — the whole thing is one transaction).
+            # extraction_runs FK to transcripts lacks CASCADE.
+            await db.execute(
+                "DELETE FROM extraction_items WHERE extraction_run_id IN"
+                " (SELECT er.id FROM extraction_runs er"
+                "  JOIN transcripts t ON er.transcript_id = t.id"
+                "  WHERE t.audio_session_id = ?)",
+                (sibling_id,),
+            )
+            await db.execute(
+                "DELETE FROM extraction_runs WHERE transcript_id IN"
+                " (SELECT id FROM transcripts WHERE audio_session_id = ?)",
+                (sibling_id,),
+            )
+            await db.execute("DELETE FROM audio_sessions WHERE id = ?", (sibling_id,))
+            # Audit INSERT inside the same transaction so the audit trail
+            # and the row deletion commit atomically: a failure here
+            # triggers the rollback and leaves the sibling intact.
+            await db.execute(
+                "INSERT INTO audit_log (ts, user_id, action, detail, ip_address, user_agent)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    _datetime.now(UTC).isoformat(),
+                    user_id,
+                    "audio_channel_delete",
+                    json.dumps(
+                        {
+                            "sibling_mode": True,
+                            "capture_group_id": group_id,
+                            "channel_index": channel_index,
+                            "deleted_audio_session_id": sibling_id,
+                            "position_name": position_name,
+                            "reason": reason,
+                        }
+                    ),
+                    ip_address,
+                    user_agent,
+                ),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        # Post-commit file cleanup. By this point the DB commit has
+        # succeeded, so the data is "deleted" from the user's perspective
+        # regardless of whether the unlink succeeds.
+        if file_path:
+            p = Path(file_path)
             if p.exists():
                 with contextlib.suppress(OSError):
                     p.unlink()
-        await self.log_action(
-            "audio_channel_delete",
-            detail=json.dumps(
-                {
-                    "sibling_mode": True,
-                    "capture_group_id": group_id,
-                    "channel_index": channel_index,
-                    "deleted_audio_session_id": sibling_id,
-                    "position_name": position_name,
-                    "reason": reason,
-                }
-            ),
-            user_id=user_id,
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
         logger.info(
             "Sibling audio deleted: group={} ordinal={} audio_session_id={}",
             group_id,
