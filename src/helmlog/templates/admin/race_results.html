@@ -112,11 +112,15 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 </div>
 </div>
 
-<!-- STYC: manual entry (unchanged) -->
+<!-- STYC: paste any page URL → discover -->
 <div id="styc-manual" style="display:none">
-<div class="form-row"><label>Source ID</label><input name="source_id" id="styc-source-id" placeholder="regatta id"></div>
-<div class="form-row"><label>Name</label><input name="name" id="styc-name" placeholder="e.g. Puget Sound Sailing Champs"></div>
-<div class="form-row"><label>URL (STYC base dir)</label><input name="url" id="styc-url" placeholder="https://race.styc.org/..."></div>
+<div class="form-row"><label>STYC regatta URL (any page — race1.htm, series.htm, or base dir)</label><input id="styc-discover-url" type="url" placeholder="https://race.styc.org/race_info/Ballard_Cup/SeriesI/2026/race1.htm"></div>
+<div class="form-row"><button type="button" class="btn-sm btn-fetch" id="styc-discover-btn" onclick="discoverStyc()">Discover</button><span id="styc-discover-status" style="font-size:.8rem;color:var(--text-secondary)"></span></div>
+<div id="styc-discover-result" style="display:none;margin-top:8px">
+<div class="form-row"><label>Source ID</label><input name="source_id" id="styc-source-id" readonly></div>
+<div class="form-row"><label>Name</label><input name="name" id="styc-name" readonly></div>
+<input type="hidden" id="styc-url">
+</div>
 </div>
 
 <div id="add-err" style="color:var(--danger);font-size:.8rem;margin-top:4px"></div>
@@ -173,6 +177,30 @@ async function discoverRegatta(){
     });
     document.getElementById('discover-result').style.display='';
     statusEl.textContent='Found '+((d.classes||[]).length)+' classes';
+  }catch(err){errEl.textContent=err.message;statusEl.textContent=''}
+  finally{btn.disabled=false}
+}
+
+async function discoverStyc(){
+  const url=document.getElementById('styc-discover-url').value.trim();
+  const statusEl=document.getElementById('styc-discover-status');
+  const errEl=document.getElementById('add-err');
+  errEl.textContent='';
+  if(!url){errEl.textContent='Paste a STYC regatta URL first';return}
+  const btn=document.getElementById('styc-discover-btn');
+  btn.disabled=true;statusEl.textContent='Discovering…';
+  try{
+    const fd=new FormData();
+    fd.append('source','styc');
+    fd.append('url',url);
+    const r=await fetch('/api/results/regattas/discover',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Discover failed');
+    document.getElementById('styc-name').value=d.name||'';
+    document.getElementById('styc-source-id').value=d.source_id||'';
+    document.getElementById('styc-url').value=d.url||url;
+    document.getElementById('styc-discover-result').style.display='';
+    statusEl.textContent='Found: '+(d.name||'');
   }catch(err){errEl.textContent=err.message;statusEl.textContent=''}
   finally{btn.disabled=false}
 }
