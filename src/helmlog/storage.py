@@ -165,7 +165,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 67
+_CURRENT_VERSION: int = 68
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1578,6 +1578,18 @@ _MIGRATIONS: dict[int, str] = {
         -- real ISO-8601 UTC timestamp at midnight so _parse_utc returns a
         -- tz-aware datetime. The column is NOT NULL so we cannot use NULL,
         -- and get_current_race filters these placeholders via LIKE '%T%'.
+        UPDATE races
+           SET start_utc = start_utc || 'T00:00:00+00:00'
+         WHERE length(start_utc) = 10;
+        UPDATE races SET end_utc = NULL WHERE end_utc = '';
+    """,
+    68: """
+        -- #532: Belt-and-suspenders re-run of the v67 backfill. On corvopi-live
+        -- the schema_version was observed to advance to 67 while the UPDATE
+        -- payload never touched any rows (likely a partial apply of the first
+        -- buggy v67 text that sqlite rejected mid-migration). Re-running the
+        -- same UPDATEs here guarantees any Pi in the same state gets cleaned
+        -- automatically on next deploy.
         UPDATE races
            SET start_utc = start_utc || 'T00:00:00+00:00'
          WHERE length(start_utc) = 10;
