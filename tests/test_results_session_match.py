@@ -71,6 +71,36 @@ def test_three_or_more_candidates_ambiguous() -> None:
     assert len(result.candidates) == 3
 
 
+def test_ambiguous_policy_first_picks_earliest() -> None:
+    """With ambiguous_policy='first', multi-match days auto-link the earliest.
+
+    Used by the results-import path: a regatta date typically maps to one
+    sailing day, even if there are multiple helmlog sessions that day
+    (e.g. morning practice + afternoon races).
+    """
+    sessions = [
+        _sess(1, datetime(2026, 6, 15, 22, 0, tzinfo=ZoneInfo("UTC"))),
+        _sess(2, datetime(2026, 6, 15, 16, 0, tzinfo=ZoneInfo("UTC"))),
+        _sess(3, datetime(2026, 6, 15, 19, 0, tzinfo=ZoneInfo("UTC"))),
+    ]
+    result = match_race_to_sessions(_RACE_DATE, sessions, _PT, ambiguous_policy="first")
+    assert result.outcome == SessionMatchOutcome.AUTO_MATCH
+    assert result.auto_linked_id == 2  # earliest start_utc
+    assert len(result.candidates) == 3
+
+
+def test_ambiguous_policy_first_one_candidate_still_auto_matches() -> None:
+    sess = _sess(1, datetime(2026, 6, 15, 19, 0, tzinfo=ZoneInfo("UTC")))
+    result = match_race_to_sessions(_RACE_DATE, [sess], _PT, ambiguous_policy="first")
+    assert result.outcome == SessionMatchOutcome.AUTO_MATCH
+    assert result.auto_linked_id == 1
+
+
+def test_ambiguous_policy_first_no_candidates_no_match() -> None:
+    result = match_race_to_sessions(_RACE_DATE, [], _PT, ambiguous_policy="first")
+    assert result.outcome == SessionMatchOutcome.NO_MATCH
+
+
 # ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------

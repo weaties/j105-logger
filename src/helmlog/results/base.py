@@ -23,6 +23,7 @@ class Regatta:
     start_date: str | None = None
     end_date: str | None = None
     default_class: str | None = None
+    venue_tz: str | None = None  # IANA tz name, e.g. "America/Los_Angeles"
     id: int | None = None
 
 
