@@ -3207,11 +3207,7 @@ function setManeuverSelectAll(mode) {
 }
 
 function _maneuverRows() {
-  const items = _maneuvers.filter(m => {
-    if (_maneuverFilter === 'all') return true;
-    if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
-    return m.type === _maneuverFilter;
-  });
+  const items = _maneuvers.filter(_matchesManeuverFilter);
   const key = _maneuverSort.key, dir = _maneuverSort.dir;
   items.sort((a, b) => {
     let av = a[key], bv = b[key];
@@ -3513,12 +3509,19 @@ function hideOverlayTip() {
   _overlayTipIdx = null;
 }
 
+function _matchesManeuverFilter(m) {
+  if (_maneuverFilter === 'all') return true;
+  if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
+  return m.type === _maneuverFilter;
+}
+
 function _renderOverlaySvg() {
   const items = _maneuvers
     .filter((m, i) => _maneuverSelected.has(_manKey(m, i)))
+    .filter(_matchesManeuverFilter)
     .filter(m => m.track && m.track.length);
   if (!items.length) {
-    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers selected for overlay. Tick rows below to include them.</div>';
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers match the current filter. Clear the filter or tick more rows below.</div>';
   }
   const tracks = items.map(m => ({
     points: m.track,
@@ -3530,8 +3533,11 @@ function _renderOverlaySvg() {
     durationSec: m.duration_sec,
   }));
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
+  const totalLabel = _maneuverFilter === 'all'
+    ? _maneuvers.length + ''
+    : _maneuvers.filter(_matchesManeuverFilter).length + ' ' + _maneuverFilter;
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
-    + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
+    + items.length + ' of ' + totalLabel + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
     + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
     + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
