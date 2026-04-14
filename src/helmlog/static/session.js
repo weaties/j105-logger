@@ -3146,7 +3146,12 @@ function renderPolarHeatmap() {
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
 const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
-let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
+// Active filter pills. Multi-select: combined with AND across dimensions
+// (type, rank, time) and OR within a dimension. Empty set == "all".
+let _maneuverFilter = new Set();
+const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const _MANEUVER_RANK_PILLS = ['good', 'bad'];
+const _MANEUVER_TIME_PILLS = ['post-start'];
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
 
@@ -3228,7 +3233,13 @@ function setManeuverSort(key) {
 }
 
 function setManeuverFilter(f) {
-  _maneuverFilter = f;
+  if (f === 'all') {
+    _maneuverFilter.clear();
+  } else if (_maneuverFilter.has(f)) {
+    _maneuverFilter.delete(f);
+  } else {
+    _maneuverFilter.add(f);
+  }
   renderManeuverCard();
 }
 
@@ -3518,15 +3529,19 @@ function _raceStartMs() {
 }
 
 function _matchesManeuverFilter(m) {
-  if (_maneuverFilter === 'all') return true;
-  if (_maneuverFilter === 'post-start') {
+  if (!_maneuverFilter.size) return true;
+  const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
+  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+  const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
+  if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+  if (_maneuverFilter.has('post-start')) {
     const startMs = _raceStartMs();
-    if (startMs == null) return true;
-    const t = _parseUtc(m.ts);
-    return t != null && t.getTime() >= startMs;
+    if (startMs != null) {
+      const t = _parseUtc(m.ts);
+      if (t == null || t.getTime() < startMs) return false;
+    }
   }
-  if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
-  return m.type === _maneuverFilter;
+  return true;
 }
 
 function _renderOverlaySvg() {
@@ -3547,9 +3562,10 @@ function _renderOverlaySvg() {
     durationSec: m.duration_sec,
   }));
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
-  const totalLabel = _maneuverFilter === 'all'
+  const totalLabel = _maneuverFilter.size === 0
     ? _maneuvers.length + ''
-    : _maneuvers.filter(_matchesManeuverFilter).length + ' ' + _maneuverFilter;
+    : _maneuvers.filter(_matchesManeuverFilter).length + ' '
+        + Array.from(_maneuverFilter).join('+');
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
     + items.length + ' of ' + totalLabel + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
@@ -3597,7 +3613,7 @@ function renderManeuverCard() {
   if (_raceStartMs() != null) filters.push('post-start');
   const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
     + filters.map(f => {
-        const active = _maneuverFilter === f;
+        const active = f === 'all' ? _maneuverFilter.size === 0 : _maneuverFilter.has(f);
         const style = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
           + (active ? 'var(--accent)' : 'transparent') + ';color:'
           + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
