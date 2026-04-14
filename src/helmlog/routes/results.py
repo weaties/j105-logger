@@ -225,6 +225,117 @@ async def api_fetch_results(
     return JSONResponse({"ok": True, **counts})
 
 
+@router.get("/api/sessions/{session_id}/imported-candidates", response_class=JSONResponse)
+async def api_session_imported_candidates(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """List imported races that could be linked to this local session.
+
+    Returns imported races (``source IS NOT NULL AND source != 'live'``)
+    whose published date is within ±2 days of the local session's date,
+    and which are either unlinked or already linked to this session.
+    The UI uses this to offer a manual picker when the auto-linker
+    missed a match (typically because STYC publishes local dates while
+    helmlog stores venue-local dates that can differ by one day for
+    evening races).
+    """
+    storage = get_storage(request)
+    db = storage._read_conn()
+
+    cur = await db.execute("SELECT date FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Session not found")
+    session_date = row["date"]
+    if not session_date:
+        return JSONResponse([])
+
+    from datetime import date as _date
+    from datetime import timedelta as _td
+
+    try:
+        center = _date.fromisoformat(session_date)
+    except ValueError:
+        return JSONResponse([])
+
+    window = [(center + _td(days=delta)).isoformat() for delta in (-2, -1, 0, 1, 2)]
+    placeholders = ",".join("?" * len(window))
+    cur = await db.execute(
+        f"SELECT r.id, r.name, r.date, r.event AS class_name, r.race_num, "  # noqa: S608
+        f"r.regatta_id, r.local_session_id, reg.name AS regatta_name, "
+        f"(SELECT COUNT(*) FROM race_results rr WHERE rr.race_id = r.id) AS result_count "
+        f"FROM races r LEFT JOIN regattas reg ON reg.id = r.regatta_id "
+        f"WHERE r.source IS NOT NULL AND r.source != 'live' "
+        f"AND r.date IN ({placeholders}) "
+        f"AND (r.local_session_id IS NULL OR r.local_session_id = ?) "
+        f"ORDER BY r.date, r.race_num, r.event",
+        (*window, session_id),
+    )
+    rows = await cur.fetchall()
+    return JSONResponse([dict(r) for r in rows])
+
+
+@router.post("/api/sessions/{session_id}/link-imported", response_class=JSONResponse)
+async def api_session_link_imported(
+    request: Request,
+    session_id: int,
+    imported_race_id: int = Form(...),
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> JSONResponse:
+    """Link an imported race to this local session so its results show up.
+
+    Passing ``imported_race_id=0`` clears any existing link for races
+    previously pointed at this session.
+    """
+    storage = get_storage(request)
+    db = storage._conn()
+
+    cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+    if not await cur.fetchone():
+        raise HTTPException(404, "Session not found")
+
+    if imported_race_id == 0:
+        await db.execute(
+            "UPDATE races SET local_session_id = NULL WHERE local_session_id = ?",
+            (session_id,),
+        )
+        await db.commit()
+        await audit(
+            request,
+            "results_session_unlink",
+            detail=json.dumps({"session_id": session_id}),
+        )
+        return JSONResponse({"ok": True, "linked": 0})
+
+    cur = await db.execute(
+        "SELECT id FROM races WHERE id = ? AND source IS NOT NULL AND source != 'live'",
+        (imported_race_id,),
+    )
+    if not await cur.fetchone():
+        raise HTTPException(404, "Imported race not found")
+
+    # Clear any previous link on this session so we don't end up pointing
+    # multiple imported rows at the same local session.
+    await db.execute(
+        "UPDATE races SET local_session_id = NULL WHERE local_session_id = ?",
+        (session_id,),
+    )
+    await db.execute(
+        "UPDATE races SET local_session_id = ? WHERE id = ?",
+        (session_id, imported_race_id),
+    )
+    await db.commit()
+
+    await audit(
+        request,
+        "results_session_link",
+        detail=json.dumps({"session_id": session_id, "imported_race_id": imported_race_id}),
+    )
+    return JSONResponse({"ok": True, "linked": 1})
+
+
 @router.post("/api/results/regattas/{regatta_id}/rematch", response_class=JSONResponse)
 async def api_rematch_regatta(
     request: Request,

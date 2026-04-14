@@ -1248,7 +1248,12 @@ async function loadResults() {
   const imported = results.length > 0 && results[0].imported;
   let html = '<div id="results-list">';
   if (imported) {
-    html += '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:6px">Imported from race results</div>';
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;font-size:.75rem;color:var(--text-secondary);margin-bottom:6px">'
+      + '<span>Imported from race results</span>'
+      + '<button class="btn-sm" style="font-size:.7rem;padding:2px 8px" onclick="unlinkImported()">Unlink</button>'
+      + '</div>';
+  } else {
+    html += '<div id="link-imported-slot"></div>';
   }
   html += results.map(res => {
     const name = esc(res.sail_number + (res.boat_name ? ' \u2014 ' + res.boat_name : ''));
@@ -1291,6 +1296,56 @@ async function loadResults() {
   }
 
   body.innerHTML = html;
+  if (!imported) {
+    renderLinkImportedSlot();
+  }
+}
+
+async function renderLinkImportedSlot() {
+  const slot = document.getElementById('link-imported-slot');
+  if (!slot) return;
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/imported-candidates');
+    if (!r.ok) return;
+    const candidates = await r.json();
+    if (!candidates.length) return;
+    const opts = candidates.map(c => {
+      const label = (c.regatta_name || 'Regatta')
+        + ' — ' + (c.class_name || '')
+        + ' — Race ' + (c.race_num || '?')
+        + ' (' + (c.date || '') + ', ' + c.result_count + ' results)';
+      return '<option value="' + c.id + '">' + esc(label) + '</option>';
+    }).join('');
+    slot.innerHTML = '<div style="font-size:.75rem;color:var(--text-secondary);margin-bottom:6px">'
+      + 'Imported race results available near this date:'
+      + '</div>'
+      + '<div style="display:flex;gap:6px;margin-bottom:10px">'
+      + '<select id="imported-picker" style="flex:1;padding:6px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);color:var(--text-primary);font-size:.85rem">'
+      + '<option value="">— pick imported race —</option>'
+      + opts
+      + '</select>'
+      + '<button class="btn-sm btn-add" onclick="linkImported()">Link</button>'
+      + '</div>';
+  } catch (e) {
+    // Silent — the picker is an enhancement; hand entry still works.
+  }
+}
+
+async function linkImported() {
+  const sel = document.getElementById('imported-picker');
+  if (!sel || !sel.value) return;
+  const fd = new FormData();
+  fd.append('imported_race_id', sel.value);
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/link-imported', {method: 'POST', body: fd});
+  if (r.ok) loadResults();
+}
+
+async function unlinkImported() {
+  if (!confirm('Unlink imported results from this session? Hand-entered results will show again.')) return;
+  const fd = new FormData();
+  fd.append('imported_race_id', '0');
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/link-imported', {method: 'POST', body: fd});
+  if (r.ok) loadResults();
 }
 
 async function openPicker() {
