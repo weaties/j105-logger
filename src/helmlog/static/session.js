@@ -3777,14 +3777,12 @@ function renderManeuverCard() {
     const rankDot = m.rank
       ? '<span title="' + m.rank + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + rankColor + ';margin-right:4px"></span>'
       : '';
-    // Direction hint from the signed turn angle: positive = clockwise turn =
-    // left/port → right/starboard tack; negative = the other way. Gybes use
-    // the same convention (which side the stern swings toward).
+    // Direction hint from the signed turn angle.
     let dirHint = '';
     if ((m.type === 'tack' || m.type === 'gybe') && m.turn_angle_deg != null) {
       dirHint = m.turn_angle_deg > 0
-        ? '<span title="Port → Starboard" style="color:var(--text-secondary);margin-left:3px">P→S</span>'
-        : '<span title="Starboard → Port" style="color:var(--text-secondary);margin-left:3px">S→P</span>';
+        ? '<span title="Starboard → Port" style="color:var(--text-secondary);margin-left:3px">S→P</span>'
+        : '<span title="Port → Starboard" style="color:var(--text-secondary);margin-left:3px">P→S</span>';
     }
     const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">'
       + esc(m.type) + '</span>' + dirHint;
