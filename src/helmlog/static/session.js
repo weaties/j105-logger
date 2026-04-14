@@ -3153,6 +3153,7 @@ const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
 const _MANEUVER_TIME_PILLS = ['post-start'];
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
+let _maneuverShowVakaros = false; // toggle to overlay Vakaros tracks on top of SK
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
 
 function _parseUtc(iso) {
@@ -3245,6 +3246,11 @@ function setManeuverFilter(f) {
 
 function toggleManeuverOverlay() {
   _maneuverOverlay = !_maneuverOverlay;
+  renderManeuverCard();
+}
+
+function toggleManeuverShowVakaros() {
+  _maneuverShowVakaros = !_maneuverShowVakaros;
   renderManeuverCard();
 }
 
@@ -3370,6 +3376,7 @@ function _renderTrackSvg(tracks, opts) {
     const width = t.highlight ? 2.5 : 1.4;
     const opacity = t.highlight ? 1 : 0.7;
     let attrs = 'fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '" stroke-linecap="round"';
+    if (t.dashArray) attrs += ' stroke-dasharray="' + t.dashArray + '"';
     if (interactive && t.maneuverIdx != null) {
       attrs += ' data-man-idx="' + t.maneuverIdx + '"'
         + ' style="pointer-events:stroke;cursor:pointer"'
@@ -3552,15 +3559,29 @@ function _renderOverlaySvg() {
   if (!items.length) {
     return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers match the current filter. Clear the filter or tick more rows below.</div>';
   }
-  const tracks = items.map(m => ({
-    points: m.track,
-    color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)',
-    label: m.type,
-    highlight: false,
-    maneuverIdx: _maneuvers.indexOf(m),
-    ghost: m.ghost_m,
-    durationSec: m.duration_sec,
-  }));
+  const tracks = [];
+  items.forEach(m => {
+    const baseColor = _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    tracks.push({
+      points: m.track,
+      color: baseColor,
+      label: m.type,
+      highlight: false,
+      maneuverIdx: _maneuvers.indexOf(m),
+      ghost: m.ghost_m,
+      durationSec: m.duration_sec,
+    });
+    if (_maneuverShowVakaros && m.track_vakaros && m.track_vakaros.length) {
+      tracks.push({
+        points: m.track_vakaros,
+        color: '#8b5cf6',
+        label: m.type + ' (vakaros)',
+        highlight: false,
+        maneuverIdx: _maneuvers.indexOf(m),
+        dashArray: '2,3',
+      });
+    }
+  });
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
   const totalLabel = _maneuverFilter.size === 0
     ? _maneuvers.length + ''
@@ -3600,11 +3621,19 @@ function renderManeuverCard() {
   const overlayBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
     + (_maneuverOverlay ? 'var(--accent)' : 'transparent') + ';color:'
     + (_maneuverOverlay ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const hasVakarosTracks = _maneuvers.some(m => m.track_vakaros && m.track_vakaros.length);
+  const vakarosBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverShowVakaros ? '#8b5cf6' : 'transparent') + ';color:'
+    + (_maneuverShowVakaros ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const vakarosBtn = hasVakarosTracks
+    ? '<button style="' + vakarosBtnStyle + '" onclick="toggleManeuverShowVakaros()" title="Overlay Vakaros GPS tracks on top of SK tracks">vakaros</button>'
+    : '';
   const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
     + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
     + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
     + '<span style="flex:1"></span>'
+    + vakarosBtn
     + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
@@ -3749,15 +3778,28 @@ function _renderManeuverDetail(m) {
   const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
     + '</div>';
-  const diagram = (m.track && m.track.length)
-    ? _renderTrackSvg([{
-        points: m.track,
-        color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
-        label: m.type,
-        highlight: true,
-        ghost: m.ghost_m,
-        durationSec: m.duration_sec,
-      }], { width: 300, height: 240 })
+  const detailTracks = [];
+  if (m.track && m.track.length) {
+    detailTracks.push({
+      points: m.track,
+      color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
+      label: m.type,
+      highlight: true,
+      ghost: m.ghost_m,
+      durationSec: m.duration_sec,
+    });
+  }
+  if (_maneuverShowVakaros && m.track_vakaros && m.track_vakaros.length) {
+    detailTracks.push({
+      points: m.track_vakaros,
+      color: '#8b5cf6',
+      label: 'vakaros',
+      highlight: false,
+      dashArray: '2,3',
+    });
+  }
+  const diagram = detailTracks.length
+    ? _renderTrackSvg(detailTracks, { width: 300, height: 240 })
     : '';
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
