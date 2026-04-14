@@ -6119,6 +6119,8 @@ async function _loadReplayData() {
       delta: g.delta,
       tws: g.tws,
       twa: g.twa,
+      bsp: g.bsp,
+      target: g.target,
       tack: g.tack,
       point_of_sail: g.point_of_sail,
     }));
