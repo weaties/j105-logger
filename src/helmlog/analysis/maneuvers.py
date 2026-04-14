@@ -321,6 +321,11 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session window
+
+# Bump this when the shape of the enriched maneuver payload changes (new
+# fields, recomputed ranks, changed ghost/track math). All cached payloads
+# with a different code_version are treated as a cache miss and rebuilt.
+ENRICH_CACHE_VERSION = 1
 _TRACK_PRE_S = 20  # seconds of track before maneuver_ts
 _TRACK_POST_S = 30  # seconds of track after exit_ts (or maneuver_ts if exit unknown)
 # Normal tacks rotate the bow ~80–100°, gybes ~50–70°. Anything well above
@@ -411,7 +416,16 @@ async def enrich_session_maneuvers(
     ``None`` if no video is linked. Maneuvers are returned as JSON-ready
     dicts with all metric fields rounded, plus ``lat``/``lon`` and — when
     a video is available — ``youtube_url``.
+
+    The enriched payload is cached in ``maneuver_cache`` keyed on
+    ``session_id``; the cache is invalidated when maneuvers are re-detected
+    or the linked race video changes, and force-rebuilt whenever
+    :data:`ENRICH_CACHE_VERSION` is bumped.
     """
+    cached = await storage.get_cached_enriched_maneuvers(session_id, ENRICH_CACHE_VERSION)
+    if cached is not None:
+        return cached.get("maneuvers", []), cached.get("video_sync")
+
     rows = await storage.get_session_maneuvers(session_id)
     if not rows:
         return [], None
@@ -666,4 +680,9 @@ async def enrich_session_maneuvers(
         enriched.append(d)
 
     rank_maneuvers(enriched)
+    await storage.put_cached_enriched_maneuvers(
+        session_id,
+        ENRICH_CACHE_VERSION,
+        {"maneuvers": enriched, "video_sync": video_sync},
+    )
     return enriched, video_sync
