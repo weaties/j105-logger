@@ -74,6 +74,29 @@ async def test_import_creates_races(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_import_races_have_full_iso_start_utc(storage: Storage) -> None:
+    """Regression for #532: importer must not write a bare date into start_utc.
+
+    Prior to the fix, _upsert_race stored race.date (e.g. "2026-04-13") in the
+    start_utc column, which hydrated to a naive datetime downstream and broke
+    /api/state with a tz-aware/naive subtraction TypeError. Imported rows must
+    carry a full ISO-8601 timestamp (date + time + offset)."""
+    results = await _fetch_results()
+    await import_results(storage, results)
+    db = storage._conn()
+    async with db.execute("SELECT start_utc FROM races WHERE source = 'clubspot'") as cur:
+        rows = await cur.fetchall()
+    assert rows, "expected imported races"
+    for row in rows:
+        s = row["start_utc"]
+        assert s is not None
+        # Must be longer than a bare YYYY-MM-DD (10 chars) and contain a 'T'
+        # separator — i.e. a real ISO datetime, not just a date.
+        assert len(s) > 10, f"start_utc too short: {s!r}"
+        assert "T" in s, f"start_utc missing time separator: {s!r}"
+
+
+@pytest.mark.asyncio
 async def test_import_creates_boats(storage: Storage) -> None:
     results = await _fetch_results()
     await import_results(storage, results)

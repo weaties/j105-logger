@@ -12,6 +12,7 @@ import json
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -20,7 +21,6 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
 
     from helmlog.audio import AudioSession
     from helmlog.external import TideReading, WeatherReading
@@ -39,6 +39,37 @@ from helmlog.nmea2000 import (
     WindRecord,
 )
 from helmlog.video import VideoSession
+
+# ---------------------------------------------------------------------------
+# Parsing helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_utc(s: str | None) -> datetime | None:
+    """Parse an ISO-8601 string from the DB into a tz-aware UTC datetime (#532).
+
+    Normalizes at the storage boundary so downstream consumers never receive
+    a naive ``datetime`` that would blow up on arithmetic against
+    ``datetime.now(UTC)``.
+
+    Behavior:
+    - ``None`` / empty string → ``None``
+    - Naive ISO datetime → treated as UTC
+    - Aware ISO datetime → converted to UTC
+    - Date-only string (``"YYYY-MM-DD"``) → midnight UTC of that date
+    - Malformed string → ``None`` (logged at WARNING)
+    """
+    if not s:
+        return None
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        logger.warning("_parse_utc: could not parse timestamp {!r}", s)
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -1540,6 +1571,17 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_polar_segment_grades_session
             ON polar_segment_grades(session_id, polar_source);
+    """,
+    67: """
+        -- #532: Backfill imported-results races whose start_utc was written
+        -- as a bare date by the Clubspot/STYC importer. Rewrite them to a
+        -- real ISO-8601 UTC timestamp at midnight so _parse_utc returns a
+        -- tz-aware datetime. The column is NOT NULL so we cannot use NULL,
+        -- and get_current_race filters these placeholders via LIKE '%T%'.
+        UPDATE races
+           SET start_utc = start_utc || 'T00:00:00+00:00'
+         WHERE length(start_utc) = 10;
+        UPDATE races SET end_utc = NULL WHERE end_utc = '';
     """,
 }
 
@@ -3152,21 +3194,27 @@ class Storage:
 
     @staticmethod
     def _row_to_race(row: Any) -> Race:  # noqa: ANN401
-        from datetime import datetime as _datetime
-
         from helmlog.races import Race as _Race
 
+        # Normalize at the storage boundary so downstream arithmetic against
+        # datetime.now(UTC) never hits a naive/aware mismatch (#532). Imported
+        # results rows carry a date-only or empty start_utc — coerce those to
+        # midnight UTC rather than raise, so the bad row is merely inert
+        # instead of 500-ing /api/state.
+        start = _parse_utc(row["start_utc"])
+        if start is None:
+            start = datetime(1970, 1, 1, tzinfo=UTC)
         return _Race(
             id=row["id"],
             name=row["name"],
             event=row["event"],
             race_num=row["race_num"],
             date=row["date"],
-            start_utc=_datetime.fromisoformat(row["start_utc"]),
-            end_utc=_datetime.fromisoformat(row["end_utc"]) if row["end_utc"] else None,
+            start_utc=start,
+            end_utc=_parse_utc(row["end_utc"]),
             session_type=row["session_type"],
             slug=row["slug"] or "",
-            renamed_at=(_datetime.fromisoformat(row["renamed_at"]) if row["renamed_at"] else None),
+            renamed_at=(datetime.fromisoformat(row["renamed_at"]) if row["renamed_at"] else None),
         )
 
     _RACE_COLS = (
@@ -3250,11 +3298,18 @@ class Storage:
         return int(row["race_id"]), _datetime.fromisoformat(row["retired_at"])
 
     async def get_current_race(self) -> Race | None:
-        """Return the most recent race with no end_utc, or None."""
+        """Return the most recent race with no end_utc, or None.
+
+        Excludes rows whose ``start_utc`` is empty or date-only — those are
+        imported results placeholders (#532), not genuinely open sessions,
+        and reporting one as "current" would surface a stale race on the UI.
+        """
         db = self._read_conn()
         cur = await db.execute(
             f"SELECT {self._RACE_COLS}"
-            " FROM races WHERE end_utc IS NULL ORDER BY start_utc DESC LIMIT 1"
+            " FROM races WHERE end_utc IS NULL"
+            "   AND start_utc IS NOT NULL AND start_utc LIKE '%T%'"
+            " ORDER BY start_utc DESC LIMIT 1"
         )
         row = await cur.fetchone()
         return self._row_to_race(row) if row else None
