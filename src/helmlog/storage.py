@@ -9054,18 +9054,15 @@ class Storage:
         # Wind-relative line bias.
         # The "square" line is perpendicular to the wind direction (TWD).
         # We measure the line bearing pin→boat against TWD; the offset from
-        # square tells you which end is favoured.
+        # square tells you which end is favoured (more upwind).
         #
-        # Convention here:
-        #   bias_deg = (line_bearing_pin_to_boat - TWD - 90) wrapped to [-90, 90]
-        #     0          → square (no bias)
-        #     positive   → boat end favoured (line tilted toward downwind on
-        #                  the boat side, so the boat end is closer to wind
-        #                  origin... actually depends; see below)
-        #
-        # Sign convention picked so positive == pin favoured, negative ==
-        # committee-boat favoured. Verified by the test fixture: line at 90°
-        # T, TWD 45° → bias = (90 - 45 - 90) = -45 → wrapped → +45 → pin.
+        # Derivation: with line_bearing = B (pin→boat) and wind FROM = TWD,
+        # raw = (B - TWD - 90) wrapped to [-90, 90].
+        #   raw > 0 → pin  end is more upwind → pin  favoured
+        #   raw < 0 → boat end is more upwind → boat favoured
+        # Example: B=80, TWD=0 (wind from N). Pin at origin, boat at bearing
+        # 80° is 0.17d north of pin → boat more upwind → boat favoured.
+        # raw = 80 - 0 - 90 = -10 → boat, matches.
         line_bias_deg: float | None = None
         favored_end: str | None = None
         if line is not None and twd_deg is not None:
@@ -9078,8 +9075,8 @@ class Storage:
                 raw -= 180.0
             elif raw < -90.0:
                 raw += 180.0
-            # Make positive == pin favoured.
-            line_bias_deg = round(-raw, 1)
+            # Positive == boat favoured, negative == pin favoured.
+            line_bias_deg = round(raw, 1)
             if abs(line_bias_deg) < 1.0:
                 favored_end = "square"
             elif line_bias_deg > 0:
