@@ -3153,7 +3153,8 @@ const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
 const _MANEUVER_TIME_PILLS = ['post-start'];
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
-let _maneuverShowVakaros = false; // toggle to overlay Vakaros tracks on top of SK
+let _maneuverShowSK = true; // toggle SK-derived tracks in the overlay
+let _maneuverShowVakaros = false; // toggle Vakaros tracks in the overlay
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
 
 function _parseUtc(iso) {
@@ -3251,6 +3252,13 @@ function toggleManeuverOverlay() {
 
 function toggleManeuverShowVakaros() {
   _maneuverShowVakaros = !_maneuverShowVakaros;
+  if (!_maneuverShowSK && !_maneuverShowVakaros) _maneuverShowSK = true;
+  renderManeuverCard();
+}
+
+function toggleManeuverShowSK() {
+  _maneuverShowSK = !_maneuverShowSK;
+  if (!_maneuverShowSK && !_maneuverShowVakaros) _maneuverShowVakaros = true;
   renderManeuverCard();
 }
 
@@ -3437,6 +3445,25 @@ function _highlightManeuverRow(idx, on) {
   }
 }
 
+function _highlightOverlayTrack(idx, on) {
+  // Bump the matching overlay paths when a table row is hovered, so the
+  // link from row → track is as obvious as track → row. Uses inline
+  // styles so the override wins over the attribute-level stroke-width.
+  const paths = document.querySelectorAll(
+    '#maneuvers-body svg path[data-man-idx="' + idx + '"]'
+  );
+  paths.forEach(p => {
+    if (p.getAttribute('stroke') === 'rgba(0,0,0,0)') return;  // skip hover underlay
+    if (on) {
+      p.style.strokeWidth = '3.5';
+      p.style.opacity = '1';
+    } else {
+      p.style.strokeWidth = '';
+      p.style.opacity = '';
+    }
+  });
+}
+
 function showOverlayTip(ev, idx) {
   cancelOverlayTipHide();
   const m = _maneuvers[idx];
@@ -3561,27 +3588,35 @@ function _renderOverlaySvg() {
   }
   const tracks = [];
   items.forEach(m => {
+    const idx = _maneuvers.indexOf(m);
     const baseColor = _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
-    tracks.push({
-      points: m.track,
-      color: baseColor,
-      label: m.type,
-      highlight: false,
-      maneuverIdx: _maneuvers.indexOf(m),
-      ghost: m.ghost_m,
-      durationSec: m.duration_sec,
-    });
+    if (_maneuverShowSK && m.track && m.track.length) {
+      tracks.push({
+        points: m.track,
+        color: baseColor,
+        label: m.type,
+        highlight: false,
+        maneuverIdx: idx,
+        ghost: m.ghost_m,
+        durationSec: m.duration_sec,
+      });
+    }
     if (_maneuverShowVakaros && m.track_vakaros && m.track_vakaros.length) {
       tracks.push({
         points: m.track_vakaros,
         color: '#8b5cf6',
         label: m.type + ' (vakaros)',
         highlight: false,
-        maneuverIdx: _maneuvers.indexOf(m),
+        maneuverIdx: idx,
+        ghost: _maneuverShowSK ? null : m.ghost_m,
+        durationSec: _maneuverShowSK ? null : m.duration_sec,
         dashArray: '2,3',
       });
     }
   });
+  if (!tracks.length) {
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No tracks to show — enable SK or Vakaros.</div>';
+  }
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
   const totalLabel = _maneuverFilter.size === 0
     ? _maneuvers.length + ''
@@ -3622,18 +3657,22 @@ function renderManeuverCard() {
     + (_maneuverOverlay ? 'var(--accent)' : 'transparent') + ';color:'
     + (_maneuverOverlay ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
   const hasVakarosTracks = _maneuvers.some(m => m.track_vakaros && m.track_vakaros.length);
+  const skBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverShowSK ? 'var(--accent)' : 'transparent') + ';color:'
+    + (_maneuverShowSK ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
   const vakarosBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
     + (_maneuverShowVakaros ? '#8b5cf6' : 'transparent') + ';color:'
     + (_maneuverShowVakaros ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
-  const vakarosBtn = hasVakarosTracks
-    ? '<button style="' + vakarosBtnStyle + '" onclick="toggleManeuverShowVakaros()" title="Overlay Vakaros GPS tracks on top of SK tracks">vakaros</button>'
+  const sourceBtns = hasVakarosTracks
+    ? '<button style="' + skBtnStyle + '" onclick="toggleManeuverShowSK()" title="Show SK-derived tracks">sk</button>'
+      + '<button style="' + vakarosBtnStyle + '" onclick="toggleManeuverShowVakaros()" title="Show Vakaros GPS tracks">vakaros</button>'
     : '';
   const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
     + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
     + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
     + '<span style="flex:1"></span>'
-    + vakarosBtn
+    + sourceBtns
     + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
@@ -3676,7 +3715,10 @@ function renderManeuverCard() {
     const yt = m.youtube_url
       ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
       : '';
-    return '<tr id="mrow-' + idx + '" style="cursor:pointer" onclick="highlightManeuver(' + idx + ')">'
+    return '<tr id="mrow-' + idx + '" style="cursor:pointer"'
+      + ' onclick="highlightManeuver(' + idx + ')"'
+      + ' onmouseenter="_highlightOverlayTrack(' + idx + ',true)"'
+      + ' onmouseleave="_highlightOverlayTrack(' + idx + ',false)">'
       + '<td>' + cbox + '</td>'
       + '<td>' + typeBadge + '</td>'
       + '<td style="font-variant-numeric:tabular-nums">' + elapsed + '</td>'
@@ -3779,7 +3821,7 @@ function _renderManeuverDetail(m) {
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
     + '</div>';
   const detailTracks = [];
-  if (m.track && m.track.length) {
+  if (_maneuverShowSK && m.track && m.track.length) {
     detailTracks.push({
       points: m.track,
       color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
@@ -3794,7 +3836,9 @@ function _renderManeuverDetail(m) {
       points: m.track_vakaros,
       color: '#8b5cf6',
       label: 'vakaros',
-      highlight: false,
+      highlight: !_maneuverShowSK,
+      ghost: _maneuverShowSK ? null : m.ghost_m,
+      durationSec: _maneuverShowSK ? null : m.duration_sec,
       dashArray: '2,3',
     });
   }
