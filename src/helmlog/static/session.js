@@ -3059,6 +3059,7 @@ function renderPolarDiagram() {
   }
 
   // Session points, placed on the side that matches the cell's tack.
+  _polarDotHitboxes = [];
   for (const c of _polarData.cells) {
     if (c.session_mean == null) continue;
     const side = c.tack === 'port' ? -1 : 1;
@@ -3078,7 +3079,18 @@ function renderPolarDiagram() {
     ctx.strokeStyle = cssVar('--bg-primary');
     ctx.lineWidth = 1;
     ctx.stroke();
+
+    _polarDotHitboxes.push({x: x, y: y, r: dotSize, cell: c});
+
+    if (_polarSelectedCells.has(_polarCellKey(c))) {
+      ctx.beginPath();
+      ctx.arc(x, y, dotSize + 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
   }
+  _bindPolarCanvasHandler();
 
   const legend = document.getElementById('polar-legend');
   if (legend && drawnTws.length) {
@@ -3147,7 +3159,7 @@ function _polarSubgridHtml(title, cells, twaBins, twsRange) {
         + '\nP90: ' + (c.baseline_p90 != null ? c.baseline_p90.toFixed(2) : 'n/a')
         + '\nSamples: ' + c.samples
         + (c.delta != null ? '\n\nClick to highlight matching replay segments' : '');
-      const onclick = 'highlightPolarCellSegments(' + tws + ",'" + c.point_of_sail + "','" + c.tack + "')";
+      const onclick = 'highlightPolarCellSegments(' + tws + ",'" + c.point_of_sail + "','" + c.tack + "'," + twa + ')';
       const cursor = c.delta != null ? 'pointer' : 'default';
       html += '<td style="padding:2px 4px;background:' + bg + ';border:1px solid var(--bg-input);'
         + 'color:' + textColor + ';text-align:center;cursor:' + cursor + '" title="' + ttl + '"'
@@ -3190,9 +3202,11 @@ function renderPolarHeatmap() {
   container.innerHTML = html;
 }
 
-// Highlight all graded replay segments that match a (tws_bin, point_of_sail,
-// tack) polar cell. Called from the heatmap cell click handler (#534).
-function highlightPolarCellSegments(twsBin, pointOfSail, tack) {
+// Highlight all graded replay segments that match a polar cell (#534).
+// twaBin is optional: when omitted, matches all TWA bins in that TWS/pos/tack
+// (heatmap row/col click); when provided, restricts to a single cell (diagram
+// dot click).
+function highlightPolarCellSegments(twsBin, pointOfSail, tack, twaBin) {
   const grades = (typeof _replayGrades !== 'undefined' && _replayGrades) ? _replayGrades : null;
   const st = document.getElementById('polar-highlight-status');
   if (!grades || !grades.length) {
@@ -3201,14 +3215,92 @@ function highlightPolarCellSegments(twsBin, pointOfSail, tack) {
   }
   const matching = grades.filter(g => {
     if (g.tws == null || g.tack == null || g.point_of_sail == null) return false;
-    return Math.floor(g.tws) === twsBin
-      && g.point_of_sail === pointOfSail
-      && g.tack === tack;
+    if (Math.floor(g.tws) !== twsBin) return false;
+    if (g.point_of_sail !== pointOfSail) return false;
+    if (g.tack !== tack) return false;
+    if (twaBin != null) {
+      if (g.twa == null) return false;
+      if (Math.floor(g.twa / 5) * 5 !== twaBin) return false;
+    }
+    return true;
   });
+  const label = twsBin + ' kt / ' + pointOfSail + ' / ' + tack
+    + (twaBin != null ? ' / TWA ' + twaBin + '\u00b0' : '');
   if (st) {
     st.textContent = matching.length
-      ? matching.length + ' segments highlighted (' + twsBin + ' kt / ' + pointOfSail + ' / ' + tack + ')'
-      : 'No matching segments in replay';
+      ? matching.length + ' segments highlighted (' + label + ')'
+      : 'No matching segments for ' + label;
+  }
+  _setPolarHighlightSegments(matching);
+}
+
+// Dot click-selection state for the polar diagram.
+let _polarDotHitboxes = [];  // [{x, y, r, cell}]
+let _polarSelectedCells = new Set(); // keys "tws|twa|pos|tack"
+let _polarCanvasHandlerBound = false;
+
+function _polarCellKey(c) {
+  return c.tws + '|' + c.twa + '|' + c.point_of_sail + '|' + c.tack;
+}
+
+function _bindPolarCanvasHandler() {
+  if (_polarCanvasHandlerBound) return;
+  const canvas = document.getElementById('polar-canvas');
+  if (!canvas) return;
+  canvas.addEventListener('click', function(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    let best = null;
+    let bestDist = Infinity;
+    for (const hb of _polarDotHitboxes) {
+      const dx = x - hb.x;
+      const dy = y - hb.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d <= hb.r + 4 && d < bestDist) { best = hb; bestDist = d; }
+    }
+    if (!best) {
+      if (!e.shiftKey) {
+        _polarSelectedCells.clear();
+        _applyPolarDotSelection();
+      }
+      return;
+    }
+    const key = _polarCellKey(best.cell);
+    if (e.shiftKey) {
+      if (_polarSelectedCells.has(key)) _polarSelectedCells.delete(key);
+      else _polarSelectedCells.add(key);
+    } else {
+      _polarSelectedCells.clear();
+      _polarSelectedCells.add(key);
+    }
+    _applyPolarDotSelection();
+  });
+  _polarCanvasHandlerBound = true;
+}
+
+function _applyPolarDotSelection() {
+  renderPolarDiagram();  // redraws rings around selected dots
+  const grades = (typeof _replayGrades !== 'undefined' && _replayGrades) ? _replayGrades : null;
+  const st = document.getElementById('polar-highlight-status');
+  if (!grades) return;
+  if (!_polarSelectedCells.size) {
+    if (st) st.textContent = '';
+    _setPolarHighlightSegments([]);
+    return;
+  }
+  const matching = grades.filter(g => {
+    if (g.tws == null || g.tack == null || g.point_of_sail == null || g.twa == null) return false;
+    const tws = Math.floor(g.tws);
+    const twa = Math.floor(g.twa / 5) * 5;
+    const key = tws + '|' + twa + '|' + g.point_of_sail + '|' + g.tack;
+    return _polarSelectedCells.has(key);
+  });
+  if (st) {
+    st.textContent = _polarSelectedCells.size + ' cell(s) selected \u2014 '
+      + matching.length + ' segments highlighted';
   }
   _setPolarHighlightSegments(matching);
 }
