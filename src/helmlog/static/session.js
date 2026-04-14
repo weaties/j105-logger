@@ -2878,7 +2878,8 @@ async function runAbCompare() {
 // Polar Performance
 // ---------------------------------------------------------------------------
 
-let _polarData = null;
+let _polarData = null;       // full-session cells from /api/sessions/:id/polar
+let _polarDataRaw = null;    // untouched API response (for reset)
 
 async function loadPolar() {
   try {
@@ -2887,6 +2888,7 @@ async function loadPolar() {
     const data = await r.json();
     if (!data.cells || !data.cells.length) return;
 
+    _polarDataRaw = data;
     _polarData = data;
     document.getElementById('polar-card').style.display = '';
     renderPolarDiagram();
@@ -3232,6 +3234,117 @@ function highlightPolarCellSegments(twsBin, pointOfSail, tack, twaBin) {
       : 'No matching segments for ' + label;
   }
   _setPolarHighlightSegments(matching);
+}
+
+// Polar filters (#534). All client-side — no API calls.
+function _readPolarFilters() {
+  const el = id => document.getElementById(id);
+  return {
+    pos: el('pf-pos') ? el('pf-pos').value : 'all',
+    tack: el('pf-tack') ? el('pf-tack').value : 'all',
+    twsMin: el('pf-tws-min') ? parseFloat(el('pf-tws-min').value) : 0,
+    twsMax: el('pf-tws-max') ? parseFloat(el('pf-tws-max').value) : 40,
+    delta: el('pf-delta') ? el('pf-delta').value : 'all',
+    phase: el('pf-phase') ? el('pf-phase').value : 'all',
+  };
+}
+
+function _rebuildCellsFromGrades(grades) {
+  // Re-aggregate segments into (tws, twa, pos, tack) cells. Used when a
+  // time-window filter (race phase) restricts which segments count.
+  // Target BSP is constant per (tws, twa) since the baseline is symmetric,
+  // so we just reuse the first non-null target seen in the bucket.
+  const buckets = {};
+  for (const g of grades) {
+    if (g.tws == null || g.twa == null || g.tack == null || g.point_of_sail == null) continue;
+    const tws = Math.floor(g.tws);
+    const twa = Math.floor(g.twa / 5) * 5;
+    const key = tws + '|' + twa + '|' + g.point_of_sail + '|' + g.tack;
+    let b = buckets[key];
+    if (!b) {
+      b = {
+        tws: tws, twa: twa, point_of_sail: g.point_of_sail, tack: g.tack,
+        bspSum: 0, bspCount: 0, target: null,
+      };
+      buckets[key] = b;
+    }
+    if (g.bsp != null) { b.bspSum += g.bsp; b.bspCount += 1; }
+    if (b.target == null && g.target != null) b.target = g.target;
+  }
+  const cells = [];
+  for (const b of Object.values(buckets)) {
+    const session_mean = b.bspCount ? b.bspSum / b.bspCount : null;
+    const delta = (session_mean != null && b.target != null)
+      ? Math.round((session_mean - b.target) * 10000) / 10000 : null;
+    cells.push({
+      tws: b.tws, twa: b.twa,
+      point_of_sail: b.point_of_sail, tack: b.tack,
+      baseline_mean: b.target, baseline_p90: null,
+      session_mean: session_mean != null ? Math.round(session_mean * 10000) / 10000 : null,
+      samples: b.bspCount,
+      delta: delta,
+    });
+  }
+  cells.sort((a, b) => a.tws - b.tws || a.twa - b.twa);
+  return cells;
+}
+
+function _applyPolarFilters() {
+  if (!_polarDataRaw) return;
+  const f = _readPolarFilters();
+
+  // 1. Decide the cell source: raw API cells or re-aggregate from replay grades
+  //    when a race-phase filter is active.
+  let cells;
+  if (f.phase !== 'all'
+      && typeof _replayGrades !== 'undefined' && _replayGrades && _replayGrades.length) {
+    const gun = (typeof _raceGun !== 'undefined' && _raceGun) ? _raceGun : _replayStart;
+    const finish = _replayEnd;
+    const subset = _replayGrades.filter(g => {
+      const t = g.t_start.getTime();
+      if (f.phase === 'prestart') return t < gun.getTime();
+      if (f.phase === 'racing') return t >= gun.getTime() && t <= finish.getTime();
+      if (f.phase === 'postfinish') return t > finish.getTime();
+      return true;
+    });
+    cells = _rebuildCellsFromGrades(subset);
+  } else {
+    cells = _polarDataRaw.cells.slice();
+  }
+
+  // 2. Apply client-side hides.
+  cells = cells.filter(c => {
+    if (f.pos !== 'all' && c.point_of_sail !== f.pos) return false;
+    if (f.tack !== 'all' && c.tack !== f.tack) return false;
+    if (c.tws < f.twsMin || c.tws > f.twsMax) return false;
+    if (f.delta === 'faster' && !(c.delta != null && c.delta > 0)) return false;
+    if (f.delta === 'slower' && !(c.delta != null && c.delta < 0)) return false;
+    if (f.delta === 'big' && !(c.delta != null && Math.abs(c.delta) >= 0.5)) return false;
+    return true;
+  });
+
+  _polarData = Object.assign({}, _polarDataRaw, {
+    cells: cells,
+    tws_bins: Array.from(new Set(cells.map(c => c.tws))).sort((a, b) => a - b),
+    twa_bins: Array.from(new Set(cells.map(c => c.twa))).sort((a, b) => a - b),
+    session_sample_count: cells.reduce((s, c) => s + (c.samples || 0), 0),
+  });
+  _polarSelectedCells.clear();
+  renderPolarDiagram();
+  renderPolarHeatmap();
+}
+
+function _onPolarFiltersChanged() { _applyPolarFilters(); }
+
+function _resetPolarFilters() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('pf-pos', 'all');
+  set('pf-tack', 'all');
+  set('pf-tws-min', '0');
+  set('pf-tws-max', '40');
+  set('pf-delta', 'all');
+  set('pf-phase', 'all');
+  _applyPolarFilters();
 }
 
 // Dot click-selection state for the polar diagram.
