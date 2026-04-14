@@ -11,6 +11,10 @@ inject a mock client that returns saved fixture JSON.
 
 from __future__ import annotations
 
+import html
+import json
+import re
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -28,7 +32,53 @@ if TYPE_CHECKING:
     import httpx
 
 _API_BASE = "https://results.theclubspot.com/clubspot-results-v4"
+_LANDING_BASE = "https://www.theclubspot.com/regatta"
 _TIMEOUT = 30.0
+
+# Clubspot regatta objectIds are 10-char alphanumeric Parse objectIds.
+_OBJECT_ID_RE = re.compile(r"^[A-Za-z0-9]{10}$")
+_URL_REGATTA_RE = re.compile(r"/regatta/([A-Za-z0-9]{10})(?:[/?#]|$)")
+
+
+@dataclass(frozen=True)
+class ClubspotClassInfo:
+    """One discovered class within a Clubspot regatta."""
+
+    id: str
+    name: str
+
+
+@dataclass(frozen=True)
+class ClubspotRegattaInfo:
+    """Result of :meth:`ClubspotProvider.discover_regatta`."""
+
+    source_id: str
+    name: str
+    url: str
+    classes: tuple[ClubspotClassInfo, ...] = field(default_factory=tuple)
+
+
+def parse_regatta_url(url: str) -> str:
+    """Extract a Clubspot regatta objectId from a pasted URL or bare id.
+
+    Accepts:
+    - ``https://www.theclubspot.com/regatta/<id>/results``
+    - club-branded subdomains like ``https://cycseattle.org/regatta/<id>/results``
+    - the raw 10-char objectId on its own
+
+    Raises ``ValueError`` if no objectId can be extracted.
+    """
+    if url is None:
+        raise ValueError("Could not parse Clubspot regatta URL: empty")
+    s = url.strip()
+    if not s:
+        raise ValueError("Could not parse Clubspot regatta URL: empty")
+    if _OBJECT_ID_RE.match(s):
+        return s
+    m = _URL_REGATTA_RE.search(s)
+    if not m:
+        raise ValueError(f"Could not parse Clubspot regatta objectId from {url!r}")
+    return m.group(1)
 
 
 class ClubspotProvider:
@@ -83,6 +133,56 @@ class ClubspotProvider:
             regatta=regatta,
             races=tuple(all_races.values()),
             standings=tuple(standings_by_key.values()),
+        )
+
+    async def discover_regatta(self, url: str) -> ClubspotRegattaInfo:
+        """Discover a Clubspot regatta's name and classes from a pasted URL.
+
+        Mechanism (reverse-engineered from Clubspot's public SPA):
+
+        1. Extract the regatta objectId from the URL (supports both
+           ``theclubspot.com/regatta/<id>`` and club subdomains).
+        2. GET the canonical ``www.theclubspot.com/regatta/<id>/results``
+           page — Clubspot embeds the full regatta record as an
+           HTML-escaped JSON blob in a ``data-regatta="..."`` attribute,
+           including a ``boatClassesArray`` of Parse pointers to
+           ``boatClasses`` objects.  This gives us the regatta name and
+           the list of class objectIds with no auth required.
+        3. The inline blob only stores class pointers (objectId without
+           name).  To resolve human names we call the public results
+           endpoint once per class — the first registration in the
+           payload carries ``boatClassObject.name`` (e.g. ``"J/105"``).
+           Classes with zero registrations fall back to their objectId
+           as the display label.
+        """
+        source_id = parse_regatta_url(url)
+        canonical_url = (
+            url.strip()
+            if _URL_REGATTA_RE.search(url or "")
+            else (f"{_LANDING_BASE}/{source_id}/results")
+        )
+        landing_url = f"{_LANDING_BASE}/{source_id}/results"
+
+        resp = await self._http().get(landing_url, timeout=_TIMEOUT, follow_redirects=True)
+        resp.raise_for_status()
+        name, class_ids = _extract_regatta_payload(resp.text)
+
+        classes: list[ClubspotClassInfo] = []
+        for cid in class_ids:
+            try:
+                payload = await self._fetch_class(source_id, cid)
+            except Exception as exc:  # noqa: BLE001 - tolerant of per-class errors
+                logger.warning("Clubspot discover class {} failed: {}", cid, exc)
+                classes.append(ClubspotClassInfo(id=cid, name=cid))
+                continue
+            cname = _class_name_from_payload(payload) or cid
+            classes.append(ClubspotClassInfo(id=cid, name=cname))
+
+        return ClubspotRegattaInfo(
+            source_id=source_id,
+            name=name,
+            url=canonical_url,
+            classes=tuple(classes),
         )
 
     async def _fetch_class(self, regatta_id: str, class_id: str) -> dict[str, Any]:
@@ -206,6 +306,49 @@ def _parse_class_payload(
         )
 
     return races, standings
+
+
+_DATA_REGATTA_RE = re.compile(r'data-regatta="([^"]*)"')
+
+
+def _extract_regatta_payload(doc: str) -> tuple[str, list[str]]:
+    """Pull the embedded JSON blob out of a Clubspot results landing page.
+
+    Returns ``(regatta_name, [class_object_ids])``.  Raises ``ValueError``
+    if the blob is missing or malformed.
+    """
+    m = _DATA_REGATTA_RE.search(doc)
+    if not m:
+        raise ValueError("Clubspot landing page missing data-regatta attribute")
+    raw = html.unescape(m.group(1))
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Could not decode Clubspot data-regatta JSON: {exc}") from exc
+    name = data.get("name") or ""
+    classes_raw = data.get("boatClassesArray") or []
+    class_ids: list[str] = []
+    for entry in classes_raw:
+        if isinstance(entry, dict):
+            cid = entry.get("objectId")
+            if isinstance(cid, str) and cid:
+                class_ids.append(cid)
+    return str(name), class_ids
+
+
+def _class_name_from_payload(payload: dict[str, Any]) -> str | None:
+    """Return the human class name from a clubspot-results-v4 payload.
+
+    The first registration's ``boatClassObject.name`` is used.  Returns
+    ``None`` when the class has no registrations yet.
+    """
+    regs = payload.get("scoresByRegistration") or []
+    for reg in regs:
+        bc = (reg or {}).get("registrationObject", {}).get("boatClassObject", {})
+        name = bc.get("name")
+        if isinstance(name, str) and name:
+            return name
+    return None
 
 
 def _extract_date(iso_str: str | None) -> str:

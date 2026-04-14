@@ -42,7 +42,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
 <div class="label">Saved Regattas</div>
-<div style="display:flex;gap:6px"><button class="btn-sm" onclick="discoverRegatta()">Discover from URL</button><button class="btn-sm btn-add" onclick="addDlg.showModal()">+ Add Regatta</button></div>
+<button class="btn-sm btn-add" onclick="addDlg.showModal()">+ Add Regatta</button>
 </div>
 <table id="regatta-tbl">
 <thead><tr><th>Name</th><th>Source</th><th>Races</th><th>Results</th><th>Last Fetched</th><th></th></tr></thead>
@@ -56,6 +56,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <td>{{ r.last_fetched_at or "—" }}</td>
 <td style="white-space:nowrap">
 <button class="btn-sm btn-fetch" onclick="fetchResults({{ r.id }},this)">Fetch</button>
+<button class="btn-sm" onclick="rematchRegatta({{ r.id }},this)" title="Re-link imported races to local sessions">Rematch</button>
 <button class="btn-sm btn-del" onclick="deleteRegatta({{ r.id }},'{{ r.name | e }}')">×</button>
 </td>
 </tr>
@@ -97,13 +98,33 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <dialog id="addDlg">
 <form method="dialog" onsubmit="return addRegatta(event)">
 <div style="font-weight:600;margin-bottom:12px">Add Regatta</div>
-<div class="form-row"><label>Source</label><select name="source" required><option value="clubspot">Clubspot</option><option value="styc">STYC</option></select></div>
-<div class="form-row"><label>Source ID</label><input name="source_id" placeholder="e.g. wYFzQvmG4R" required></div>
-<div class="form-row"><label>Name</label><input name="name" placeholder="e.g. CYC Sound Wednesday" required></div>
-<div class="form-row"><label>URL (STYC base dir)</label><input name="url" placeholder="https://race.styc.org/..."></div>
-<div class="form-row"><label>Clubspot class objectIds (NOT class names — find in results URL)</label><input name="default_class" placeholder="e.g. 7q1o9ikhPH,EvS9obW8uC (NOT J/105)"></div>
+<div class="form-row"><label>Source</label><select name="source" id="add-source" required onchange="onSourceChange()"><option value="clubspot">Clubspot</option><option value="styc">STYC</option></select></div>
+
+<!-- Clubspot: paste URL → discover -->
+<div id="clubspot-discover">
+<div class="form-row"><label>Clubspot regatta URL</label><input id="discover-url" type="url" placeholder="https://www.theclubspot.com/regatta/wYFzQvmG4R/results"></div>
+<div class="form-row"><button type="button" class="btn-sm btn-fetch" id="discover-btn" onclick="discoverRegatta()">Discover</button><span id="discover-status" style="font-size:.8rem;color:var(--text-secondary)"></span></div>
+<div id="discover-result" style="display:none;margin-top:8px">
+<div class="form-row"><label>Name</label><input name="name" id="add-name" readonly></div>
+<div class="form-row"><label>Source ID</label><input name="source_id" id="add-source-id" readonly></div>
+<input type="hidden" name="url" id="add-url">
+<div class="form-row"><label>Classes (pick which to import)</label><div id="class-checkboxes" style="display:flex;flex-direction:column;gap:4px;max-height:200px;overflow-y:auto;padding:6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input)"></div></div>
+</div>
+</div>
+
+<!-- STYC: paste any page URL → discover -->
+<div id="styc-manual" style="display:none">
+<div class="form-row"><label>STYC regatta URL (any page — race1.htm, series.htm, or base dir)</label><input id="styc-discover-url" type="url" placeholder="https://race.styc.org/race_info/Ballard_Cup/SeriesI/2026/race1.htm"></div>
+<div class="form-row"><button type="button" class="btn-sm btn-fetch" id="styc-discover-btn" onclick="discoverStyc()">Discover</button><span id="styc-discover-status" style="font-size:.8rem;color:var(--text-secondary)"></span></div>
+<div id="styc-discover-result" style="display:none;margin-top:8px">
+<div class="form-row"><label>Source ID</label><input name="source_id" id="styc-source-id" readonly></div>
+<div class="form-row"><label>Name</label><input name="name" id="styc-name" readonly></div>
+<input type="hidden" id="styc-url">
+</div>
+</div>
+
 <div id="add-err" style="color:var(--danger);font-size:.8rem;margin-top:4px"></div>
-<div class="btn-row"><button type="button" onclick="addDlg.close()">Cancel</button><button type="submit" class="btn-sm btn-add">Add</button></div>
+<div class="btn-row"><button type="button" onclick="addDlg.close()">Cancel</button><button type="submit" class="btn-sm btn-add" id="add-submit">Add</button></div>
 </form>
 </dialog>
 
@@ -116,36 +137,101 @@ try{sailNumber=document.body.dataset.sailNumber||null}catch(e){}
 
 function showMsg(text,ok){msg.textContent=text;msg.className=ok?'msg-ok':'msg-err'}
 
+function onSourceChange(){
+  const src=document.getElementById('add-source').value;
+  document.getElementById('clubspot-discover').style.display=src==='clubspot'?'':'none';
+  document.getElementById('styc-manual').style.display=src==='styc'?'':'none';
+  document.getElementById('add-err').textContent='';
+}
+
 async function discoverRegatta(){
-  const url=prompt('Paste a STYC regatta URL (any page works — race1.htm, series.htm, or the base directory):');
-  if(!url)return;
-  showMsg('Discovering…',true);
+  const url=document.getElementById('discover-url').value.trim();
+  const statusEl=document.getElementById('discover-status');
+  const errEl=document.getElementById('add-err');
+  errEl.textContent='';
+  if(!url){errEl.textContent='Paste a Clubspot regatta URL first';return}
+  const btn=document.getElementById('discover-btn');
+  btn.disabled=true;statusEl.textContent='Discovering…';
   try{
-    const fd=new FormData();fd.append('url',url.trim());
+    const fd=new FormData();
+    fd.append('source','clubspot');
+    fd.append('url',url);
     const r=await fetch('/api/results/regattas/discover',{method:'POST',body:fd});
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||'Discover failed');
-    const f=addDlg.querySelector('form');
-    f.source.value=d.source;
-    f.source_id.value=d.source_id;
-    f.name.value=d.name;
-    f.url.value=d.url;
-    f.default_class.value=d.default_class||'';
-    showMsg('Discovered: '+d.name,true);
-    addDlg.showModal();
-  }catch(err){showMsg(err.message,false)}
+    document.getElementById('add-name').value=d.name||'';
+    document.getElementById('add-source-id').value=d.source_id||'';
+    document.getElementById('add-url').value=d.url||url;
+    const box=document.getElementById('class-checkboxes');
+    box.innerHTML='';
+    (d.classes||[]).forEach((c,i)=>{
+      const id='cls-'+c.id;
+      const wrap=document.createElement('label');
+      wrap.style.cursor='pointer';wrap.style.fontSize='.88rem';
+      const cb=document.createElement('input');
+      cb.type='checkbox';cb.value=c.id;cb.name='class_id';cb.id=id;cb.checked=true;
+      cb.style.marginRight='6px';
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode(c.name+(c.name!==c.id?' ('+c.id+')':'')));
+      box.appendChild(wrap);
+    });
+    document.getElementById('discover-result').style.display='';
+    statusEl.textContent='Found '+((d.classes||[]).length)+' classes';
+  }catch(err){errEl.textContent=err.message;statusEl.textContent=''}
+  finally{btn.disabled=false}
+}
+
+async function discoverStyc(){
+  const url=document.getElementById('styc-discover-url').value.trim();
+  const statusEl=document.getElementById('styc-discover-status');
+  const errEl=document.getElementById('add-err');
+  errEl.textContent='';
+  if(!url){errEl.textContent='Paste a STYC regatta URL first';return}
+  const btn=document.getElementById('styc-discover-btn');
+  btn.disabled=true;statusEl.textContent='Discovering…';
+  try{
+    const fd=new FormData();
+    fd.append('source','styc');
+    fd.append('url',url);
+    const r=await fetch('/api/results/regattas/discover',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Discover failed');
+    document.getElementById('styc-name').value=d.name||'';
+    document.getElementById('styc-source-id').value=d.source_id||'';
+    document.getElementById('styc-url').value=d.url||url;
+    document.getElementById('styc-discover-result').style.display='';
+    statusEl.textContent='Found: '+(d.name||'');
+  }catch(err){errEl.textContent=err.message;statusEl.textContent=''}
+  finally{btn.disabled=false}
 }
 
 async function addRegatta(e){
   e.preventDefault();
-  const f=addDlg.querySelector('form');
-  const fd=new FormData(f);
+  const src=document.getElementById('add-source').value;
+  const errEl=document.getElementById('add-err');
+  errEl.textContent='';
+  const fd=new FormData();
+  fd.append('source',src);
+  if(src==='clubspot'){
+    const sid=document.getElementById('add-source-id').value;
+    if(!sid){errEl.textContent='Click Discover first to resolve the regatta';return false}
+    const checked=Array.from(document.querySelectorAll('#class-checkboxes input:checked')).map(c=>c.value);
+    if(!checked.length){errEl.textContent='Select at least one class to import';return false}
+    fd.append('source_id',sid);
+    fd.append('name',document.getElementById('add-name').value);
+    fd.append('url',document.getElementById('add-url').value);
+    fd.append('default_class',checked.join(','));
+  }else{
+    fd.append('source_id',document.getElementById('styc-source-id').value);
+    fd.append('name',document.getElementById('styc-name').value);
+    fd.append('url',document.getElementById('styc-url').value);
+  }
   try{
     const r=await fetch('/api/results/regattas',{method:'POST',body:fd});
     const d=await r.json();
     if(!r.ok)throw new Error(d.detail||'Failed');
     location.reload();
-  }catch(err){document.getElementById('add-err').textContent=err.message}
+  }catch(err){errEl.textContent=err.message}
   return false;
 }
 
@@ -169,6 +255,19 @@ async function fetchResults(id,btn){
     setTimeout(()=>location.reload(),1500);
   }catch(err){showMsg(err.message,false)}
   finally{btn.disabled=false;btn.textContent='Fetch'}
+}
+
+async function rematchRegatta(id,btn){
+  btn.disabled=true;btn.textContent='Rematching…';
+  showMsg('',true);
+  try{
+    const r=await fetch('/api/results/regattas/'+id+'/rematch',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Rematch failed');
+    showMsg('Rematch: linked '+d.linked+' of '+d.races_checked+' unlinked races',true);
+    setTimeout(()=>location.reload(),1000);
+  }catch(err){showMsg(err.message,false)}
+  finally{btn.disabled=false;btn.textContent='Rematch'}
 }
 
 async function loadClasses(regattaId){

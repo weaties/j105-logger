@@ -3914,6 +3914,49 @@ class Storage:
             for row in rows
         ]
 
+    async def set_race_local_session(self, race_id: int, local_session_id: int | None) -> None:
+        """Set or clear the ``local_session_id`` link on a race row."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE races SET local_session_id = ? WHERE id = ?",
+            (local_session_id, race_id),
+        )
+        await db.commit()
+        logger.debug("Race {} local_session_id set to {}", race_id, local_session_id)
+
+    async def list_local_session_candidates(
+        self,
+        date_iso: str,
+    ) -> list[dict[str, Any]]:
+        """Return non-imported races (local sessions) within ±1 day of *date_iso*.
+
+        The caller filters by venue local date — this method only narrows
+        the row set down to a small candidate window. Imported races
+        (``source IS NOT NULL``) are excluded.
+        """
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        try:
+            d = _date.fromisoformat(date_iso)
+        except ValueError:
+            return []
+        lo = (d - _td(days=1)).isoformat()
+        hi = (d + _td(days=1)).isoformat()
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, start_utc, name FROM races"
+            " WHERE (source IS NULL OR source = 'live')"
+            " AND date >= ? AND date <= ?"
+            " ORDER BY start_utc",
+            (lo, hi),
+        )
+        rows = await cur.fetchall()
+        return [
+            {"id": row["id"], "start_utc": row["start_utc"], "name": row["name"]} for row in rows
+        ]
+
     async def delete_race_result(self, result_id: int) -> None:
         """Delete a single race result row by id."""
         db = self._conn()

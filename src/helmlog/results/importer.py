@@ -9,8 +9,9 @@ the same data produces zero net changes (R15, R16, R17).
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, tzinfo
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from loguru import logger
 
@@ -90,6 +91,8 @@ async def import_results(
 
         counts["races_upserted"] += 1
 
+    await _link_regatta_races_to_local_sessions(db, regatta_id)
+
     for standing in results.standings:
         boat_id = await _upsert_boat_minimal(db, standing.sail_number, boat_cache)
         await _upsert_series_result(db, regatta_id, boat_id, standing, now)
@@ -126,6 +129,104 @@ async def import_results(
         counts["standings_upserted"],
     )
     return counts
+
+
+def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
+    """Resolve a venue timezone with sensible fallbacks.
+
+    Order: explicit ``regatta.venue_tz`` → system local tz → UTC.
+    """
+    if venue_tz:
+        try:
+            return ZoneInfo(venue_tz)
+        except ZoneInfoNotFoundError:
+            logger.warning("Unknown venue_tz {!r}, falling back", venue_tz)
+    local = datetime.now().astimezone().tzinfo
+    if local is not None:
+        return local
+    return ZoneInfo("UTC")
+
+
+async def _link_regatta_races_to_local_sessions(
+    db: aiosqlite.Connection,
+    regatta_id: int,
+) -> int:
+    """Link imported races to the earliest local race session on the same date.
+
+    For each date that the regatta has imported races on, every imported
+    race is linked to the earliest local race-type session recorded on
+    that date. A regatta date maps to one sailing day, so multiple
+    imported races (race 1, race 2, ...) share a single local session.
+
+    Only rows with ``local_session_id IS NULL`` are updated, so manual
+    links and prior matches are preserved.
+
+    Returns the number of links written.
+    """
+    cur = await db.execute(
+        "SELECT id, date, local_session_id FROM races"
+        " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'"
+        " AND date IS NOT NULL",
+        (regatta_id,),
+    )
+    imported_rows = await cur.fetchall()
+    if not imported_rows:
+        return 0
+
+    by_date: dict[date, list[tuple[int, int | None]]] = {}
+    for r in imported_rows:
+        try:
+            d = date.fromisoformat(r[1])
+        except (ValueError, TypeError):
+            continue
+        by_date.setdefault(d, []).append((r[0], r[2]))
+
+    linked_count = 0
+    for d, imported in by_date.items():
+        local_sessions = await _list_local_race_sessions_on_date(db, d)
+        if not local_sessions:
+            continue
+        local_id = local_sessions[0]
+
+        for imp_id, existing_link in imported:
+            if existing_link is not None:
+                continue
+            await db.execute(
+                "UPDATE races SET local_session_id = ? WHERE id = ?",
+                (local_id, imp_id),
+            )
+            logger.debug(
+                "Linked imported race {} → local session {} (date {})",
+                imp_id,
+                local_id,
+                d.isoformat(),
+            )
+            linked_count += 1
+    return linked_count
+
+
+async def _list_local_race_sessions_on_date(
+    db: aiosqlite.Connection,
+    target_date: date,
+) -> list[int]:
+    """Return local race-type session ids whose ``date`` column is *target_date*.
+
+    Compares the stored ``date`` column directly — both helmlog's local
+    race date and the importer's race date are derived from UTC, so
+    matching on the string avoids venue-tz conversion bugs where a
+    session near midnight could shift to a different local date than
+    the imported race reports.
+    """
+    cur = await db.execute(
+        "SELECT id, start_utc FROM races"
+        " WHERE (source IS NULL OR source = 'live')"
+        " AND session_type = 'race'"
+        " AND date = ?"
+        " ORDER BY start_utc",
+        (target_date.isoformat(),),
+    )
+    rows = await cur.fetchall()
+    return [r[0] for r in rows]
 
 
 async def _upsert_regatta(db: aiosqlite.Connection, reg: Regatta, now: str) -> int:

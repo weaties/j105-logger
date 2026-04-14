@@ -85,38 +85,65 @@ async def api_add_regatta(
 async def api_discover_regatta(
     request: Request,
     url: str = Form(...),
+    source: str = Form(""),
     _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
-    """Auto-discover regatta metadata from a single URL.
+    """Discover a regatta's metadata from a pasted URL.
 
-    Only STYC is supported today — the user pastes any page inside a STYC
-    regatta directory (race page, series page, or base dir) and we return
-    the pre-filled ``source``/``source_id``/``name``/``url`` fields.
+    Supports both Clubspot (returns the regatta's class list so the admin
+    can pick which to import) and STYC (scrapes the race/series HTML for
+    the regatta name).  The source is auto-detected from the URL when not
+    supplied explicitly.
     """
     import httpx
 
-    from helmlog.results.styc import discover_styc_url
+    detected = source or _detect_source(url)
+    if detected not in ("clubspot", "styc"):
+        raise HTTPException(400, f"Cannot detect a known results source in URL {url!r}")
 
-    if "styc.org" not in url:
-        raise HTTPException(400, "Only STYC URLs are supported for discovery")
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        try:
+            if detected == "clubspot":
+                from helmlog.results.clubspot import ClubspotProvider
 
-    try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+                provider = ClubspotProvider(client=client)
+                info = await provider.discover_regatta(url)
+                return JSONResponse(
+                    {
+                        "source": "clubspot",
+                        "source_id": info.source_id,
+                        "name": info.name,
+                        "url": info.url,
+                        "classes": [{"id": c.id, "name": c.name} for c in info.classes],
+                    }
+                )
+
+            from helmlog.results.styc import discover_styc_url
+
             discovery = await discover_styc_url(url, client=client)
-    except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except httpx.HTTPError as exc:
-        raise HTTPException(502, f"Fetch failed: {exc}") from exc
+            return JSONResponse(
+                {
+                    "source": "styc",
+                    "source_id": discovery.source_id,
+                    "name": discovery.name,
+                    "url": discovery.url,
+                    "classes": [],
+                }
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, f"Upstream error: {exc}") from exc
 
-    return JSONResponse(
-        {
-            "source": discovery.source,
-            "source_id": discovery.source_id,
-            "name": discovery.name,
-            "url": discovery.url,
-            "default_class": "",
-        }
-    )
+
+def _detect_source(url: str) -> str:
+    """Map a URL to a known results source, or ``""`` if unrecognized."""
+    lowered = url.lower()
+    if "styc.org" in lowered:
+        return "styc"
+    if "clubspot" in lowered or "theclubspot" in lowered:
+        return "clubspot"
+    return ""
 
 
 @router.delete("/api/results/regattas/{regatta_id}", response_class=JSONResponse)
@@ -196,6 +223,48 @@ async def api_fetch_results(
 
     counts = await import_results(storage, results, user_id=_user.get("id"))
     return JSONResponse({"ok": True, **counts})
+
+
+@router.post("/api/results/regattas/{regatta_id}/rematch", response_class=JSONResponse)
+async def api_rematch_regatta(
+    request: Request,
+    regatta_id: int,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Re-run local-session matching over an already-imported regatta's races.
+
+    Pairs imported races to local race-type sessions by order within each
+    venue-local date.  Only updates rows with ``local_session_id IS NULL``;
+    manual links and prior matches are preserved.  Useful when local
+    sessions were created after the import.
+    """
+    from helmlog.results.importer import _link_regatta_races_to_local_sessions
+
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT id FROM regattas WHERE id = ?", (regatta_id,))
+    if not await cur.fetchone():
+        raise HTTPException(404, "Regatta not found")
+
+    cur = await db.execute(
+        "SELECT COUNT(*) FROM races"
+        " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'",
+        (regatta_id,),
+    )
+    row = await cur.fetchone()
+    races_checked = int(row[0]) if row else 0
+
+    linked = await _link_regatta_races_to_local_sessions(db, regatta_id)
+    await db.commit()
+
+    await audit(
+        request,
+        "results_regatta_rematch",
+        detail=json.dumps(
+            {"regatta_id": regatta_id, "races_checked": races_checked, "linked": linked}
+        ),
+    )
+    return JSONResponse({"ok": True, "races_checked": races_checked, "linked": linked})
 
 
 @router.get("/api/results/races", response_class=JSONResponse)
