@@ -3509,8 +3509,22 @@ function hideOverlayTip() {
   _overlayTipIdx = null;
 }
 
+function _raceStartMs() {
+  if (_vakarosSyntheticStart && _vakarosSyntheticStart.ts) {
+    const d = _parseUtc(_vakarosSyntheticStart.ts);
+    if (d) return d.getTime();
+  }
+  return null;
+}
+
 function _matchesManeuverFilter(m) {
   if (_maneuverFilter === 'all') return true;
+  if (_maneuverFilter === 'post-start') {
+    const startMs = _raceStartMs();
+    if (startMs == null) return true;
+    const t = _parseUtc(m.ts);
+    return t != null && t.getTime() >= startMs;
+  }
   if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
   return m.type === _maneuverFilter;
 }
@@ -3580,6 +3594,7 @@ function renderManeuverCard() {
     + '</div>';
 
   const filters = ['all', 'tack', 'gybe', 'rounding', 'good', 'bad'];
+  if (_raceStartMs() != null) filters.push('post-start');
   const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
     + filters.map(f => {
         const active = _maneuverFilter === f;
