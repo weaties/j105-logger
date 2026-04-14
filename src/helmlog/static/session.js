@@ -3091,29 +3091,26 @@ function _deltaColor(delta) {
   }
 }
 
-function renderPolarHeatmap() {
-  const container = document.getElementById('polar-heatmap');
-  if (!container || !_polarData) return;
+// Max TWS bin to always show in the heatmap (even when session has no data
+// there) so the wind range up to 20 kt is always visible (#534).
+const POLAR_HEATMAP_MAX_TWS = 20;
 
-  const data = _polarData;
+function _polarSubgridHtml(title, cells, twaBins, twsRange) {
   const cellMap = {};
-  for (const c of data.cells) {
-    cellMap[c.tws + ',' + c.twa] = c;
-  }
+  for (const c of cells) cellMap[c.tws + ',' + c.twa] = c;
 
-  let html = '<table style="border-collapse:collapse;font-size:.72rem;width:100%">';
-
-  // Header row: TWA labels
+  let html = '<div class="polar-subgrid"><h4 style="margin:.5rem 0 .25rem;font-size:.78rem;'
+    + 'color:var(--text-secondary);font-weight:600">' + title + '</h4>';
+  html += '<table style="border-collapse:collapse;font-size:.72rem;width:100%">';
   html += '<tr><th style="padding:2px 4px;color:var(--text-secondary);text-align:right;font-weight:normal">TWS\\TWA</th>';
-  for (const twa of data.twa_bins) {
+  for (const twa of twaBins) {
     html += '<th style="padding:2px 4px;color:var(--text-secondary);font-weight:normal;min-width:36px">' + twa + '\u00b0</th>';
   }
   html += '</tr>';
 
-  // One row per TWS
-  for (const tws of data.tws_bins) {
+  for (const tws of twsRange) {
     html += '<tr><td style="padding:2px 4px;color:var(--text-secondary);text-align:right;white-space:nowrap">' + tws + ' kt</td>';
-    for (const twa of data.twa_bins) {
+    for (const twa of twaBins) {
       const c = cellMap[tws + ',' + twa];
       if (!c) {
         html += '<td style="padding:2px 4px;background:var(--bg-secondary);border:1px solid var(--bg-input)"></td>';
@@ -3124,19 +3121,110 @@ function renderPolarHeatmap() {
       const text = c.delta != null
         ? (c.delta >= 0 ? '+' : '') + c.delta.toFixed(2)
         : c.session_mean != null ? c.session_mean.toFixed(1) : '';
-      const title = 'TWS=' + tws + ' TWA=' + twa + '\u00b0'
+      const ttl = 'TWS=' + tws + ' TWA=' + twa + '\u00b0 (' + c.point_of_sail + '/' + c.tack + ')'
         + '\nSession BSP: ' + (c.session_mean != null ? c.session_mean.toFixed(2) : 'n/a')
         + '\nBaseline: ' + (c.baseline_mean != null ? c.baseline_mean.toFixed(2) : 'n/a')
         + '\nP90: ' + (c.baseline_p90 != null ? c.baseline_p90.toFixed(2) : 'n/a')
-        + '\nSamples: ' + c.samples;
+        + '\nSamples: ' + c.samples
+        + (c.delta != null ? '\n\nClick to highlight matching replay segments' : '');
+      const onclick = 'highlightPolarCellSegments(' + tws + ",'" + c.point_of_sail + "','" + c.tack + "')";
+      const cursor = c.delta != null ? 'pointer' : 'default';
       html += '<td style="padding:2px 4px;background:' + bg + ';border:1px solid var(--bg-input);'
-        + 'color:' + textColor + ';text-align:center;cursor:default" title="' + title + '">'
-        + text + '</td>';
+        + 'color:' + textColor + ';text-align:center;cursor:' + cursor + '" title="' + ttl + '"'
+        + ' onclick="' + onclick + '">' + text + '</td>';
     }
     html += '</tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
+  return html;
+}
+
+function renderPolarHeatmap() {
+  const container = document.getElementById('polar-heatmap');
+  if (!container || !_polarData) return;
+
+  const data = _polarData;
+  const split = { 'upwind-starboard': [], 'upwind-port': [], 'downwind-starboard': [], 'downwind-port': [] };
+  let maxTws = 0;
+  for (const c of data.cells) {
+    const key = c.point_of_sail + '-' + c.tack;
+    if (split[key]) split[key].push(c);
+    if (c.tws > maxTws) maxTws = c.tws;
+  }
+
+  const topTws = Math.max(POLAR_HEATMAP_MAX_TWS, maxTws);
+  const twsRange = [];
+  for (let t = 0; t <= topTws; t++) twsRange.push(t);
+
+  const upwindTwa = [];
+  for (let a = 0; a < 90; a += 5) upwindTwa.push(a);
+  const downwindTwa = [];
+  for (let a = 90; a <= 180; a += 5) downwindTwa.push(a);
+
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
+  html += _polarSubgridHtml('Upwind \u2014 Starboard tack', split['upwind-starboard'], upwindTwa, twsRange);
+  html += _polarSubgridHtml('Upwind \u2014 Port tack', split['upwind-port'], upwindTwa, twsRange);
+  html += _polarSubgridHtml('Downwind \u2014 Starboard tack', split['downwind-starboard'], downwindTwa, twsRange);
+  html += _polarSubgridHtml('Downwind \u2014 Port tack', split['downwind-port'], downwindTwa, twsRange);
+  html += '</div>';
   container.innerHTML = html;
+}
+
+// Highlight all graded replay segments that match a (tws_bin, point_of_sail,
+// tack) polar cell. Called from the heatmap cell click handler (#534).
+function highlightPolarCellSegments(twsBin, pointOfSail, tack) {
+  const grades = (typeof _replayGrades !== 'undefined' && _replayGrades) ? _replayGrades : null;
+  const st = document.getElementById('polar-highlight-status');
+  if (!grades || !grades.length) {
+    if (st) st.textContent = 'Replay not loaded \u2014 highlight unavailable';
+    return;
+  }
+  const matching = grades.filter(g => {
+    if (g.tws == null || g.tack == null || g.point_of_sail == null) return false;
+    return Math.floor(g.tws) === twsBin
+      && g.point_of_sail === pointOfSail
+      && g.tack === tack;
+  });
+  if (st) {
+    st.textContent = matching.length
+      ? matching.length + ' segments highlighted (' + twsBin + ' kt / ' + pointOfSail + ' / ' + tack + ')'
+      : 'No matching segments in replay';
+  }
+  _setPolarHighlightSegments(matching);
+}
+
+// Bright overlay polylines for segments matching a clicked polar cell.
+// Drawn on top of the base track; cleared on next call.
+let _polarHighlightLayers = [];
+
+function _clearPolarHighlight() {
+  for (const l of _polarHighlightLayers) {
+    try { _map && _map.removeLayer(l); } catch (e) { /* ignore */ }
+  }
+  _polarHighlightLayers = [];
+}
+
+function _setPolarHighlightSegments(grades) {
+  _clearPolarHighlight();
+  if (!_map || !_trackData || !_trackData.timestamps || !_trackData.latLngs) return;
+  if (!grades || !grades.length) return;
+  const timestamps = _trackData.timestamps;
+  const latLngs = _trackData.latLngs;
+  for (const g of grades) {
+    const tStart = g.t_start.getTime();
+    const tEnd = g.t_end.getTime();
+    const slice = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const t = timestamps[i].getTime();
+      if (t >= tStart && t <= tEnd) slice.push(latLngs[i]);
+    }
+    if (slice.length >= 2) {
+      const line = L.polyline(slice, {
+        color: '#facc15', weight: 8, opacity: 0.95,
+      }).addTo(_map);
+      _polarHighlightLayers.push(line);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5798,11 +5886,16 @@ async function _loadReplayData() {
       cog: s.cog,
     }));
     _replayGrades = (data.grades || []).map(g => ({
+      i: g.i,
       t_start: new Date(g.t_start),
       t_end: new Date(g.t_end),
       grade: g.grade,
       pct: g.pct,
       delta: g.delta,
+      tws: g.tws,
+      twa: g.twa,
+      tack: g.tack,
+      point_of_sail: g.point_of_sail,
     }));
     // Register HUD as a clock consumer so it updates on every tick/seek
     registerSurface('hud', function(utc) { _renderHud(utc); });

@@ -349,6 +349,117 @@ async def test_session_polar_tws_and_twa_bins_sorted(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session polar splits (#534) — point-of-sail × tack
+# ---------------------------------------------------------------------------
+
+
+async def _make_session_split(
+    storage: Storage,
+    race_num: int,
+    bsp: float,
+    tws: float,
+    wind_angle: float,  # ref=0 boat-relative, signed
+) -> int:
+    start = _BASE_TS + timedelta(hours=race_num)
+    end = start + timedelta(seconds=10)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES (?, 'SplitEvt', ?, ?, ?, ?)",
+        (
+            f"Split-R{race_num}",
+            race_num,
+            start.date().isoformat(),
+            start.isoformat(),
+            end.isoformat(),
+        ),
+    )
+    await db.commit()
+    for i in range(10):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, bsp))
+        await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, tws, wind_angle, 0))
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    row = await cur.fetchone()
+    return int(row["id"])
+
+
+@pytest.mark.asyncio
+async def test_split_starboard_upwind(storage: Storage) -> None:
+    sid = await _make_session_split(storage, 30, bsp=6.0, tws=10.0, wind_angle=45.0)
+    result = await session_polar_comparison(storage, sid)
+    assert result is not None
+    assert len(result.cells) == 1
+    c = result.cells[0]
+    assert c.tack == "starboard"
+    assert c.point_of_sail == "upwind"
+    assert c.twa_bin == 45
+
+
+@pytest.mark.asyncio
+async def test_split_port_downwind(storage: Storage) -> None:
+    sid = await _make_session_split(storage, 31, bsp=5.0, tws=12.0, wind_angle=-140.0)
+    result = await session_polar_comparison(storage, sid)
+    assert result is not None
+    assert len(result.cells) == 1
+    c = result.cells[0]
+    assert c.tack == "port"
+    assert c.point_of_sail == "downwind"
+    # abs(140) → bin 140
+    assert c.twa_bin == 140
+
+
+@pytest.mark.asyncio
+async def test_split_same_twa_bin_different_tacks(storage: Storage) -> None:
+    """Port and starboard at the same angle produce two distinct cells."""
+    start = _BASE_TS + timedelta(hours=32)
+    end = start + timedelta(seconds=20)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('Both', 'E', 32, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    for i in range(10):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 6.0))
+        await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+    for i in range(10, 20):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 5.8))
+        await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, -45.0, 0))
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    row = await cur.fetchone()
+    result = await session_polar_comparison(storage, int(row["id"]))
+    assert result is not None
+    assert len(result.cells) == 2
+    by_tack = {c.tack: c for c in result.cells}
+    assert set(by_tack) == {"port", "starboard"}
+    assert by_tack["starboard"].session_mean_bsp == pytest.approx(6.0, rel=1e-3)
+    assert by_tack["port"].session_mean_bsp == pytest.approx(5.8, rel=1e-3)
+    assert all(c.twa_bin == 45 for c in result.cells)
+    assert all(c.point_of_sail == "upwind" for c in result.cells)
+
+
+@pytest.mark.asyncio
+async def test_split_shares_symmetric_baseline(storage: Storage) -> None:
+    """Baseline is still keyed on abs(TWA); both tacks read the same target."""
+    for i in range(1, 4):
+        await _make_session(storage, i, bsp=6.0, tws=10.0, twa=45.0)
+    await build_polar_baseline(storage)
+
+    sid = await _make_session_split(storage, 33, bsp=6.5, tws=10.0, wind_angle=-45.0)
+    result = await session_polar_comparison(storage, sid)
+    assert result is not None
+    assert len(result.cells) == 1
+    c = result.cells[0]
+    assert c.tack == "port"
+    assert c.baseline_mean_bsp == pytest.approx(6.0, rel=1e-3)
+    assert c.delta == pytest.approx(0.5, rel=1e-2)
+
+
+# ---------------------------------------------------------------------------
 # Per-segment grading (#469)
 # ---------------------------------------------------------------------------
 
