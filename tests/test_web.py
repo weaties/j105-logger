@@ -3971,3 +3971,35 @@ async def test_course_overlay_returns_marks_and_empty_line(storage: Storage) -> 
     assert {m["name"] for m in data["marks"]} == {"Windward", "Leeward"}
     assert data["start_line"] is None
     assert data["finish_line"] is None
+
+
+@pytest.mark.asyncio
+async def test_api_state_tolerates_date_only_start_utc(storage: Storage) -> None:
+    """Regression for #532: /api/state must return 200 even when a race row
+    on today's date has a date-only (naive, no time) start_utc value left
+    behind by the imported-results path."""
+    db = storage._conn()
+    from helmlog.races import local_today
+
+    today = local_today().isoformat()
+    await db.execute(
+        "INSERT INTO races"
+        " (name, event, race_num, date, start_utc, end_utc, session_type)"
+        " VALUES (?, 'Flying Sails', 1, ?, ?, '', 'race')",
+        (f"Imported-{today}", today, today),
+    )
+    await db.commit()
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/state")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    # Imported row with only a date must not be reported as current.
+    assert data["current_race"] is None
+    # But it should still appear in today_races with a valid ISO timestamp.
+    assert len(data["today_races"]) == 1
+    assert "T" in data["today_races"][0]["start_utc"]
