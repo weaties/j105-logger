@@ -2958,12 +2958,14 @@ function renderPolarDiagram() {
   if (!canvas || !_polarData) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  const cx = W / 2, cy = 30;
-  const maxRadius = H - 50;
+  // Full-circle layout: starboard on the right (positive x), port mirrored
+  // on the left (negative x) — lets the diagram show port/starboard asymmetry
+  // alongside the heatmap split (#534).
+  const cx = W / 2, cy = H / 2;
+  const maxRadius = Math.min(cx, cy) - 30;
 
   ctx.clearRect(0, 0, W, H);
 
-  // Determine BSP range for scaling
   let maxBsp = 0;
   for (const c of _polarData.cells) {
     if (c.session_mean != null) maxBsp = Math.max(maxBsp, c.session_mean);
@@ -2974,7 +2976,6 @@ function renderPolarDiagram() {
   if (maxBsp < 4) maxBsp = 4;
   const scale = maxRadius / maxBsp;
 
-  // Draw concentric BSP circles
   const polarBorder = cssVar('--border');
   const polarTextSec = cssVar('--text-secondary');
   ctx.strokeStyle = polarBorder;
@@ -2985,40 +2986,57 @@ function renderPolarDiagram() {
   for (let bsp = 1; bsp <= maxBsp; bsp++) {
     const r = bsp * scale;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI);
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
     ctx.stroke();
     ctx.fillText(bsp + '', cx + r + 3, cy + 4);
   }
 
-  // Draw radial TWA lines
+  // Radial TWA lines on both sides.
   ctx.strokeStyle = polarBorder;
-  for (let deg = 0; deg <= 180; deg += 30) {
-    const rad = deg * Math.PI / 180;
-    const x2 = cx + maxBsp * scale * Math.sin(rad);
-    const y2 = cy + maxBsp * scale * Math.cos(rad);
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-    // Label
-    const lx = cx + (maxBsp * scale + 14) * Math.sin(rad);
-    const ly = cy + (maxBsp * scale + 14) * Math.cos(rad);
-    ctx.fillText(deg + '\u00b0', lx - 10, ly + 4);
+  for (const side of [1, -1]) {
+    for (let deg = 0; deg <= 180; deg += 30) {
+      const rad = deg * Math.PI / 180;
+      const x2 = cx + side * maxBsp * scale * Math.sin(rad);
+      const y2 = cy - maxBsp * scale * Math.cos(rad);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      const lx = cx + side * (maxBsp * scale + 14) * Math.sin(rad);
+      const ly = cy - (maxBsp * scale + 14) * Math.cos(rad);
+      ctx.fillText(deg + '\u00b0', lx - 10, ly + 4);
+    }
   }
+  // Horizontal upwind/downwind divider at TWA = 90°.
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = polarTextSec;
+  ctx.beginPath();
+  ctx.moveTo(cx - maxBsp * scale, cy);
+  ctx.lineTo(cx + maxBsp * scale, cy);
+  ctx.stroke();
   ctx.setLineDash([]);
+  ctx.fillStyle = polarTextSec;
+  ctx.fillText('PORT', cx - maxBsp * scale - 4, cy - maxBsp * scale - 6);
+  ctx.fillText('STBD', cx + maxBsp * scale - 26, cy - maxBsp * scale - 6);
 
-  // Group baseline cells by TWS
+  // Baseline curves — symmetric, so draw mirrored on both sides.
   const baselineByTws = {};
   for (const c of _polarData.cells) {
     if (c.baseline_mean == null) continue;
     if (!baselineByTws[c.tws]) baselineByTws[c.tws] = [];
     baselineByTws[c.tws].push(c);
   }
-
-  // Draw baseline curves
+  // Dedup baseline points per TWS so mirrored draws don't double up.
   const drawnTws = [];
   for (const tws of Object.keys(baselineByTws).map(Number).sort((a, b) => a - b)) {
-    const pts = baselineByTws[tws].sort((a, b) => a.twa - b.twa);
+    const seen = {};
+    const uniq = [];
+    for (const p of baselineByTws[tws]) {
+      if (seen[p.twa]) continue;
+      seen[p.twa] = true;
+      uniq.push(p);
+    }
+    const pts = uniq.sort((a, b) => a.twa - b.twa);
     if (pts.length < 2) continue;
     const color = _twsColor(tws);
     drawnTws.push({tws, color});
@@ -3026,25 +3044,28 @@ function renderPolarDiagram() {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.7;
-    ctx.beginPath();
-    for (let i = 0; i < pts.length; i++) {
-      const rad = pts[i].twa * Math.PI / 180;
-      const r = pts[i].baseline_mean * scale;
-      const x = cx + r * Math.sin(rad);
-      const y = cy + r * Math.cos(rad);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    for (const side of [1, -1]) {
+      ctx.beginPath();
+      for (let i = 0; i < pts.length; i++) {
+        const rad = pts[i].twa * Math.PI / 180;
+        const r = pts[i].baseline_mean * scale;
+        const x = cx + side * r * Math.sin(rad);
+        const y = cy - r * Math.cos(rad);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     ctx.globalAlpha = 1;
   }
 
-  // Draw session points
+  // Session points, placed on the side that matches the cell's tack.
   for (const c of _polarData.cells) {
     if (c.session_mean == null) continue;
+    const side = c.tack === 'port' ? -1 : 1;
     const rad = c.twa * Math.PI / 180;
     const r = c.session_mean * scale;
-    const x = cx + r * Math.sin(rad);
-    const y = cy + r * Math.cos(rad);
+    const x = cx + side * r * Math.sin(rad);
+    const y = cy - r * Math.cos(rad);
 
     const dotColor = c.delta == null ? cssVar('--text-muted')
       : c.delta >= 0 ? cssVar('--success') : cssVar('--danger');
@@ -3059,14 +3080,13 @@ function renderPolarDiagram() {
     ctx.stroke();
   }
 
-  // Legend
   const legend = document.getElementById('polar-legend');
   if (legend && drawnTws.length) {
     legend.innerHTML = 'Baseline curves: '
       + drawnTws.map(d =>
         '<span style="color:' + d.color + '">\u25cf ' + d.tws + ' kt</span>'
       ).join(' &nbsp; ')
-      + ' &nbsp; Session: '
+      + ' &nbsp; Session (left = port, right = stbd): '
       + '<span style="color:var(--success)">\u25cf faster</span> '
       + '<span style="color:var(--danger)">\u25cf slower</span> '
       + '<span style="color:var(--text-muted)">\u25cf no baseline</span>';
