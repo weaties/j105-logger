@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from loguru import logger
 
 from helmlog.auth import require_auth, require_developer
+from helmlog.current import compute_set_drift
 from helmlog.routes._helpers import audit, get_storage, limiter
 
 router = APIRouter()
@@ -955,17 +956,26 @@ async def api_session_replay(
         sp = speeds_by_s.get(k)
         cs = cogsog_by_s.get(k)
         hd = hdgs_by_s.get(k)
+        stw_v = float(sp["speed_kts"]) if sp else None
+        sog_v = float(cs["sog_kts"]) if cs else None
+        cog_v = float(cs["cog_deg"]) if cs else None
+        hdg_v = float(hd["heading_deg"]) if hd else None
+        sd = compute_set_drift(sog=sog_v, cog=cog_v, stw=stw_v, hdg=hdg_v)
+        set_v: float | None = sd[0] if sd is not None else None
+        drift_v: float | None = sd[1] if sd is not None else None
         samples.append(
             {
                 "ts": k + "Z",
-                "stw": float(sp["speed_kts"]) if sp else None,
-                "sog": float(cs["sog_kts"]) if cs else None,
-                "cog": float(cs["cog_deg"]) if cs else None,
-                "hdg": float(hd["heading_deg"]) if hd else None,
+                "stw": stw_v,
+                "sog": sog_v,
+                "cog": cog_v,
+                "hdg": hdg_v,
                 "tws": tws,
                 "twa": twa,
                 "aws": aws,
                 "awa": awa,
+                "set": set_v,
+                "drift": drift_v,
             }
         )
 
