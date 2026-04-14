@@ -197,13 +197,53 @@
       <button class="filter-btn active" id="polar-tab-diagram" onclick="setPolarView('diagram')">Polar Diagram</button>
       <button class="filter-btn" id="polar-tab-heatmap" onclick="setPolarView('heatmap')">Heatmap</button>
     </div>
+    <div id="polar-filters" style="display:flex;flex-wrap:wrap;gap:.75rem;align-items:center;margin-bottom:8px;font-size:.72rem;color:var(--text-secondary)">
+      <label>Point of sail
+        <select id="pf-pos" onchange="_onPolarFiltersChanged()">
+          <option value="all">All</option>
+          <option value="upwind">Upwind</option>
+          <option value="downwind">Downwind</option>
+        </select>
+      </label>
+      <label>Tack
+        <select id="pf-tack" onchange="_onPolarFiltersChanged()">
+          <option value="all">All</option>
+          <option value="port">Port</option>
+          <option value="starboard">Starboard</option>
+        </select>
+      </label>
+      <label>TWS
+        <input id="pf-tws-min" type="number" min="0" max="40" value="0" style="width:3.5em" onchange="_onPolarFiltersChanged()">
+        &ndash;
+        <input id="pf-tws-max" type="number" min="0" max="40" value="40" style="width:3.5em" onchange="_onPolarFiltersChanged()">
+        kt
+      </label>
+      <label>Performance
+        <select id="pf-delta" onchange="_onPolarFiltersChanged()">
+          <option value="all">All</option>
+          <option value="faster">Faster than baseline</option>
+          <option value="slower">Slower than baseline</option>
+          <option value="big">|&Delta;| &ge; 0.5 kt</option>
+        </select>
+      </label>
+      <label>Race phase
+        <select id="pf-phase" onchange="_onPolarFiltersChanged()">
+          <option value="all">Full session</option>
+          <option value="prestart">Pre-start</option>
+          <option value="racing">Racing</option>
+          <option value="postfinish">Post-finish</option>
+        </select>
+      </label>
+      <button class="filter-btn" onclick="_resetPolarFilters()" style="padding:2px 8px">Reset</button>
+    </div>
     <div id="polar-diagram-view">
       <canvas id="polar-canvas" width="600" height="600" style="width:100%;max-width:600px;display:block;margin:0 auto"></canvas>
       <div id="polar-legend" style="font-size:.72rem;color:var(--text-secondary);margin-top:6px;text-align:center"></div>
     </div>
     <div id="polar-heatmap-view" style="display:none">
       <div id="polar-heatmap" style="overflow-x:auto"></div>
-      <div style="font-size:.72rem;color:var(--text-secondary);margin-top:6px;text-align:center">Green = faster than baseline &middot; Red = slower &middot; Gray = no baseline</div>
+      <div style="font-size:.72rem;color:var(--text-secondary);margin-top:6px;text-align:center">Green = faster than baseline &middot; Red = slower &middot; Gray = no baseline &middot; Click a cell to highlight matching replay segments</div>
+      <div id="polar-highlight-status" style="font-size:.72rem;color:var(--accent);margin-top:4px;text-align:center"></div>
     </div>
     <div id="polar-summary" style="font-size:.78rem;color:var(--text-secondary);margin-top:8px;text-align:center"></div>
   </div>

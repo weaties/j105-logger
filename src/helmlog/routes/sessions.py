@@ -739,6 +739,8 @@ async def api_session_polar(
                 {
                     "tws": c.tws_bin,
                     "twa": c.twa_bin,
+                    "point_of_sail": c.point_of_sail,
+                    "tack": c.tack,
                     "baseline_mean": c.baseline_mean_bsp,
                     "baseline_p90": c.baseline_p90_bsp,
                     "session_mean": c.session_mean_bsp,
@@ -813,23 +815,73 @@ async def api_session_replay(
         logger.warning("replay: grading failed for session {}: {}", session_id, e)
         graded = []
 
-    grades_out = [
-        {
-            "i": g.segment_index,
-            "t_start": g.t_start.isoformat(),
-            "t_end": g.t_end.isoformat(),
-            "lat": g.lat,
-            "lon": g.lon,
-            "tws": g.tws_kts,
-            "twa": g.twa_deg,
-            "bsp": g.bsp_kts,
-            "target": g.target_bsp_kts,
-            "pct": g.pct_target,
-            "delta": g.delta_kts,
-            "grade": g.grade,
-        }
-        for g in graded
-    ]
+    # Enrich each grade with tack + point_of_sail (#534). Cached grades carry
+    # only unsigned TWA, so we re-derive tack from raw wind records. Parse
+    # once, then sweep segments with a single pointer — O(n + m), not O(n*m).
+    start_dt = datetime.fromisoformat(str(start_utc)).replace(tzinfo=UTC)
+    end_dt = datetime.fromisoformat(str(end_utc)).replace(tzinfo=UTC)
+    tack_winds_raw = await storage.query_range("winds", start_dt, end_dt)
+    tack_hdgs_raw = await storage.query_range("headings", start_dt, end_dt)
+
+    hdg_by_key: dict[str, float] = {}
+    for hrec in tack_hdgs_raw:
+        hdg_by_key.setdefault(str(hrec["ts"])[:19], float(hrec["heading_deg"]))
+
+    wind_tacks: list[tuple[datetime, str]] = []
+    for w in tack_winds_raw:
+        ref = int(w.get("reference", -1))
+        if ref not in (0, 4):
+            continue
+        heading = hdg_by_key.get(str(w["ts"])[:19]) if ref == 4 else None
+        result = _polar._compute_twa_with_tack(float(w["wind_angle_deg"]), ref, heading)
+        if result is None:
+            continue
+        _, tk = result
+        wind_tacks.append((datetime.fromisoformat(str(w["ts"])).replace(tzinfo=UTC), tk))
+    wind_tacks.sort(key=lambda x: x[0])
+
+    grades_sorted = sorted(graded, key=lambda g: g.t_start)
+    tacks_by_segment: dict[int, str | None] = {}
+    wi = 0
+    for g in grades_sorted:
+        port = 0
+        stbd = 0
+        while wi < len(wind_tacks) and wind_tacks[wi][0] < g.t_start:
+            wi += 1
+        j = wi
+        while j < len(wind_tacks) and wind_tacks[j][0] < g.t_end:
+            if wind_tacks[j][1] == "port":
+                port += 1
+            else:
+                stbd += 1
+            j += 1
+        if port == 0 and stbd == 0:
+            tacks_by_segment[g.segment_index] = None
+        else:
+            tacks_by_segment[g.segment_index] = "starboard" if stbd >= port else "port"
+
+    grades_out = []
+    for g in graded:
+        tack = tacks_by_segment.get(g.segment_index)
+        pos = _polar._point_of_sail(g.twa_deg) if g.twa_deg is not None else None
+        grades_out.append(
+            {
+                "i": g.segment_index,
+                "t_start": g.t_start.isoformat(),
+                "t_end": g.t_end.isoformat(),
+                "lat": g.lat,
+                "lon": g.lon,
+                "tws": g.tws_kts,
+                "twa": g.twa_deg,
+                "bsp": g.bsp_kts,
+                "target": g.target_bsp_kts,
+                "pct": g.pct_target,
+                "delta": g.delta_kts,
+                "grade": g.grade,
+                "tack": tack,
+                "point_of_sail": pos,
+            }
+        )
 
     # Thin instrument series for HUD. 1 Hz dedup by truncated timestamp key.
     async def _series(table: str, fields: list[str]) -> dict[str, dict[str, Any]]:

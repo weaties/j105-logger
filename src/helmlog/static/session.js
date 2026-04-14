@@ -2878,7 +2878,8 @@ async function runAbCompare() {
 // Polar Performance
 // ---------------------------------------------------------------------------
 
-let _polarData = null;
+let _polarData = null;       // full-session cells from /api/sessions/:id/polar
+let _polarDataRaw = null;    // untouched API response (for reset)
 
 async function loadPolar() {
   try {
@@ -2887,6 +2888,7 @@ async function loadPolar() {
     const data = await r.json();
     if (!data.cells || !data.cells.length) return;
 
+    _polarDataRaw = data;
     _polarData = data;
     document.getElementById('polar-card').style.display = '';
     renderPolarDiagram();
@@ -2958,12 +2960,14 @@ function renderPolarDiagram() {
   if (!canvas || !_polarData) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
-  const cx = W / 2, cy = 30;
-  const maxRadius = H - 50;
+  // Full-circle layout: starboard on the right (positive x), port mirrored
+  // on the left (negative x) — lets the diagram show port/starboard asymmetry
+  // alongside the heatmap split (#534).
+  const cx = W / 2, cy = H / 2;
+  const maxRadius = Math.min(cx, cy) - 30;
 
   ctx.clearRect(0, 0, W, H);
 
-  // Determine BSP range for scaling
   let maxBsp = 0;
   for (const c of _polarData.cells) {
     if (c.session_mean != null) maxBsp = Math.max(maxBsp, c.session_mean);
@@ -2974,7 +2978,6 @@ function renderPolarDiagram() {
   if (maxBsp < 4) maxBsp = 4;
   const scale = maxRadius / maxBsp;
 
-  // Draw concentric BSP circles
   const polarBorder = cssVar('--border');
   const polarTextSec = cssVar('--text-secondary');
   ctx.strokeStyle = polarBorder;
@@ -2985,40 +2988,57 @@ function renderPolarDiagram() {
   for (let bsp = 1; bsp <= maxBsp; bsp++) {
     const r = bsp * scale;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI);
+    ctx.arc(cx, cy, r, 0, 2 * Math.PI);
     ctx.stroke();
     ctx.fillText(bsp + '', cx + r + 3, cy + 4);
   }
 
-  // Draw radial TWA lines
+  // Radial TWA lines on both sides.
   ctx.strokeStyle = polarBorder;
-  for (let deg = 0; deg <= 180; deg += 30) {
-    const rad = deg * Math.PI / 180;
-    const x2 = cx + maxBsp * scale * Math.sin(rad);
-    const y2 = cy + maxBsp * scale * Math.cos(rad);
-    ctx.beginPath();
-    ctx.moveTo(cx, cy);
-    ctx.lineTo(x2, y2);
-    ctx.stroke();
-    // Label
-    const lx = cx + (maxBsp * scale + 14) * Math.sin(rad);
-    const ly = cy + (maxBsp * scale + 14) * Math.cos(rad);
-    ctx.fillText(deg + '\u00b0', lx - 10, ly + 4);
+  for (const side of [1, -1]) {
+    for (let deg = 0; deg <= 180; deg += 30) {
+      const rad = deg * Math.PI / 180;
+      const x2 = cx + side * maxBsp * scale * Math.sin(rad);
+      const y2 = cy - maxBsp * scale * Math.cos(rad);
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      const lx = cx + side * (maxBsp * scale + 14) * Math.sin(rad);
+      const ly = cy - (maxBsp * scale + 14) * Math.cos(rad);
+      ctx.fillText(deg + '\u00b0', lx - 10, ly + 4);
+    }
   }
+  // Horizontal upwind/downwind divider at TWA = 90°.
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = polarTextSec;
+  ctx.beginPath();
+  ctx.moveTo(cx - maxBsp * scale, cy);
+  ctx.lineTo(cx + maxBsp * scale, cy);
+  ctx.stroke();
   ctx.setLineDash([]);
+  ctx.fillStyle = polarTextSec;
+  ctx.fillText('PORT', cx - maxBsp * scale - 4, cy - maxBsp * scale - 6);
+  ctx.fillText('STBD', cx + maxBsp * scale - 26, cy - maxBsp * scale - 6);
 
-  // Group baseline cells by TWS
+  // Baseline curves — symmetric, so draw mirrored on both sides.
   const baselineByTws = {};
   for (const c of _polarData.cells) {
     if (c.baseline_mean == null) continue;
     if (!baselineByTws[c.tws]) baselineByTws[c.tws] = [];
     baselineByTws[c.tws].push(c);
   }
-
-  // Draw baseline curves
+  // Dedup baseline points per TWS so mirrored draws don't double up.
   const drawnTws = [];
   for (const tws of Object.keys(baselineByTws).map(Number).sort((a, b) => a - b)) {
-    const pts = baselineByTws[tws].sort((a, b) => a.twa - b.twa);
+    const seen = {};
+    const uniq = [];
+    for (const p of baselineByTws[tws]) {
+      if (seen[p.twa]) continue;
+      seen[p.twa] = true;
+      uniq.push(p);
+    }
+    const pts = uniq.sort((a, b) => a.twa - b.twa);
     if (pts.length < 2) continue;
     const color = _twsColor(tws);
     drawnTws.push({tws, color});
@@ -3026,25 +3046,36 @@ function renderPolarDiagram() {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.7;
-    ctx.beginPath();
-    for (let i = 0; i < pts.length; i++) {
-      const rad = pts[i].twa * Math.PI / 180;
-      const r = pts[i].baseline_mean * scale;
-      const x = cx + r * Math.sin(rad);
-      const y = cy + r * Math.cos(rad);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    // Split upwind (<90°) from downwind (≥90°) so the baseline curve
+    // doesn't cross the beam line — a boat never sails that shape.
+    const upwind = pts.filter(p => p.twa < 90);
+    const downwind = pts.filter(p => p.twa >= 90);
+    for (const side of [1, -1]) {
+      for (const leg of [upwind, downwind]) {
+        if (leg.length < 2) continue;
+        ctx.beginPath();
+        for (let i = 0; i < leg.length; i++) {
+          const rad = leg[i].twa * Math.PI / 180;
+          const r = leg[i].baseline_mean * scale;
+          const x = cx + side * r * Math.sin(rad);
+          const y = cy - r * Math.cos(rad);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
     }
-    ctx.stroke();
     ctx.globalAlpha = 1;
   }
 
-  // Draw session points
+  // Session points, placed on the side that matches the cell's tack.
+  _polarDotHitboxes = [];
   for (const c of _polarData.cells) {
     if (c.session_mean == null) continue;
+    const side = c.tack === 'port' ? -1 : 1;
     const rad = c.twa * Math.PI / 180;
     const r = c.session_mean * scale;
-    const x = cx + r * Math.sin(rad);
-    const y = cy + r * Math.cos(rad);
+    const x = cx + side * r * Math.sin(rad);
+    const y = cy - r * Math.cos(rad);
 
     const dotColor = c.delta == null ? cssVar('--text-muted')
       : c.delta >= 0 ? cssVar('--success') : cssVar('--danger');
@@ -3057,16 +3088,26 @@ function renderPolarDiagram() {
     ctx.strokeStyle = cssVar('--bg-primary');
     ctx.lineWidth = 1;
     ctx.stroke();
-  }
 
-  // Legend
+    _polarDotHitboxes.push({x: x, y: y, r: dotSize, cell: c});
+
+    if (_polarSelectedCells.has(_polarCellKey(c))) {
+      ctx.beginPath();
+      ctx.arc(x, y, dotSize + 4, 0, 2 * Math.PI);
+      ctx.strokeStyle = '#facc15';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+  }
+  _bindPolarCanvasHandler();
+
   const legend = document.getElementById('polar-legend');
   if (legend && drawnTws.length) {
     legend.innerHTML = 'Baseline curves: '
       + drawnTws.map(d =>
         '<span style="color:' + d.color + '">\u25cf ' + d.tws + ' kt</span>'
       ).join(' &nbsp; ')
-      + ' &nbsp; Session: '
+      + ' &nbsp; Session (left = port, right = stbd): '
       + '<span style="color:var(--success)">\u25cf faster</span> '
       + '<span style="color:var(--danger)">\u25cf slower</span> '
       + '<span style="color:var(--text-muted)">\u25cf no baseline</span>';
@@ -3091,29 +3132,26 @@ function _deltaColor(delta) {
   }
 }
 
-function renderPolarHeatmap() {
-  const container = document.getElementById('polar-heatmap');
-  if (!container || !_polarData) return;
+// Max TWS bin to always show in the heatmap (even when session has no data
+// there) so the wind range up to 20 kt is always visible (#534).
+const POLAR_HEATMAP_MAX_TWS = 20;
 
-  const data = _polarData;
+function _polarSubgridHtml(title, cells, twaBins, twsRange) {
   const cellMap = {};
-  for (const c of data.cells) {
-    cellMap[c.tws + ',' + c.twa] = c;
-  }
+  for (const c of cells) cellMap[c.tws + ',' + c.twa] = c;
 
-  let html = '<table style="border-collapse:collapse;font-size:.72rem;width:100%">';
-
-  // Header row: TWA labels
+  let html = '<div class="polar-subgrid"><h4 style="margin:.5rem 0 .25rem;font-size:.78rem;'
+    + 'color:var(--text-secondary);font-weight:600">' + title + '</h4>';
+  html += '<table style="border-collapse:collapse;font-size:.72rem;width:100%">';
   html += '<tr><th style="padding:2px 4px;color:var(--text-secondary);text-align:right;font-weight:normal">TWS\\TWA</th>';
-  for (const twa of data.twa_bins) {
+  for (const twa of twaBins) {
     html += '<th style="padding:2px 4px;color:var(--text-secondary);font-weight:normal;min-width:36px">' + twa + '\u00b0</th>';
   }
   html += '</tr>';
 
-  // One row per TWS
-  for (const tws of data.tws_bins) {
+  for (const tws of twsRange) {
     html += '<tr><td style="padding:2px 4px;color:var(--text-secondary);text-align:right;white-space:nowrap">' + tws + ' kt</td>';
-    for (const twa of data.twa_bins) {
+    for (const twa of twaBins) {
       const c = cellMap[tws + ',' + twa];
       if (!c) {
         html += '<td style="padding:2px 4px;background:var(--bg-secondary);border:1px solid var(--bg-input)"></td>';
@@ -3124,19 +3162,301 @@ function renderPolarHeatmap() {
       const text = c.delta != null
         ? (c.delta >= 0 ? '+' : '') + c.delta.toFixed(2)
         : c.session_mean != null ? c.session_mean.toFixed(1) : '';
-      const title = 'TWS=' + tws + ' TWA=' + twa + '\u00b0'
+      const ttl = 'TWS=' + tws + ' TWA=' + twa + '\u00b0 (' + c.point_of_sail + '/' + c.tack + ')'
         + '\nSession BSP: ' + (c.session_mean != null ? c.session_mean.toFixed(2) : 'n/a')
         + '\nBaseline: ' + (c.baseline_mean != null ? c.baseline_mean.toFixed(2) : 'n/a')
         + '\nP90: ' + (c.baseline_p90 != null ? c.baseline_p90.toFixed(2) : 'n/a')
-        + '\nSamples: ' + c.samples;
+        + '\nSamples: ' + c.samples
+        + (c.delta != null ? '\n\nClick to highlight matching replay segments' : '');
+      const onclick = 'highlightPolarCellSegments(' + tws + ",'" + c.point_of_sail + "','" + c.tack + "'," + twa + ')';
+      const cursor = c.delta != null ? 'pointer' : 'default';
       html += '<td style="padding:2px 4px;background:' + bg + ';border:1px solid var(--bg-input);'
-        + 'color:' + textColor + ';text-align:center;cursor:default" title="' + title + '">'
-        + text + '</td>';
+        + 'color:' + textColor + ';text-align:center;cursor:' + cursor + '" title="' + ttl + '"'
+        + ' onclick="' + onclick + '">' + text + '</td>';
     }
     html += '</tr>';
   }
-  html += '</table>';
+  html += '</table></div>';
+  return html;
+}
+
+function renderPolarHeatmap() {
+  const container = document.getElementById('polar-heatmap');
+  if (!container || !_polarData) return;
+
+  const data = _polarData;
+  const split = { 'upwind-starboard': [], 'upwind-port': [], 'downwind-starboard': [], 'downwind-port': [] };
+  let maxTws = 0;
+  for (const c of data.cells) {
+    const key = c.point_of_sail + '-' + c.tack;
+    if (split[key]) split[key].push(c);
+    if (c.tws > maxTws) maxTws = c.tws;
+  }
+
+  const topTws = Math.max(POLAR_HEATMAP_MAX_TWS, maxTws);
+  const twsRange = [];
+  for (let t = 0; t <= topTws; t++) twsRange.push(t);
+
+  const upwindTwa = [];
+  for (let a = 0; a < 90; a += 5) upwindTwa.push(a);
+  const downwindTwa = [];
+  for (let a = 90; a <= 180; a += 5) downwindTwa.push(a);
+
+  let html = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">';
+  html += _polarSubgridHtml('Upwind \u2014 Starboard tack', split['upwind-starboard'], upwindTwa, twsRange);
+  html += _polarSubgridHtml('Upwind \u2014 Port tack', split['upwind-port'], upwindTwa, twsRange);
+  html += _polarSubgridHtml('Downwind \u2014 Starboard tack', split['downwind-starboard'], downwindTwa, twsRange);
+  html += _polarSubgridHtml('Downwind \u2014 Port tack', split['downwind-port'], downwindTwa, twsRange);
+  html += '</div>';
   container.innerHTML = html;
+}
+
+// Highlight all graded replay segments that match a polar cell (#534).
+// twaBin is optional: when omitted, matches all TWA bins in that TWS/pos/tack
+// (heatmap row/col click); when provided, restricts to a single cell (diagram
+// dot click).
+function highlightPolarCellSegments(twsBin, pointOfSail, tack, twaBin) {
+  const grades = (typeof _replayGrades !== 'undefined' && _replayGrades) ? _replayGrades : null;
+  const st = document.getElementById('polar-highlight-status');
+  if (!grades || !grades.length) {
+    if (st) st.textContent = 'Replay not loaded \u2014 highlight unavailable';
+    return;
+  }
+  const matching = grades.filter(g => {
+    if (g.tws == null || g.tack == null || g.point_of_sail == null) return false;
+    if (Math.floor(g.tws) !== twsBin) return false;
+    if (g.point_of_sail !== pointOfSail) return false;
+    if (g.tack !== tack) return false;
+    if (twaBin != null) {
+      if (g.twa == null) return false;
+      if (Math.floor(g.twa / 5) * 5 !== twaBin) return false;
+    }
+    return true;
+  });
+  const label = twsBin + ' kt / ' + pointOfSail + ' / ' + tack
+    + (twaBin != null ? ' / TWA ' + twaBin + '\u00b0' : '');
+  if (st) {
+    st.textContent = matching.length
+      ? matching.length + ' segments highlighted (' + label + ')'
+      : 'No matching segments for ' + label;
+  }
+  _setPolarHighlightSegments(matching);
+}
+
+// Polar filters (#534). All client-side — no API calls.
+function _readPolarFilters() {
+  const el = id => document.getElementById(id);
+  return {
+    pos: el('pf-pos') ? el('pf-pos').value : 'all',
+    tack: el('pf-tack') ? el('pf-tack').value : 'all',
+    twsMin: el('pf-tws-min') ? parseFloat(el('pf-tws-min').value) : 0,
+    twsMax: el('pf-tws-max') ? parseFloat(el('pf-tws-max').value) : 40,
+    delta: el('pf-delta') ? el('pf-delta').value : 'all',
+    phase: el('pf-phase') ? el('pf-phase').value : 'all',
+  };
+}
+
+function _rebuildCellsFromGrades(grades) {
+  // Re-aggregate segments into (tws, twa, pos, tack) cells. Used when a
+  // time-window filter (race phase) restricts which segments count.
+  // Target BSP is constant per (tws, twa) since the baseline is symmetric,
+  // so we just reuse the first non-null target seen in the bucket.
+  const buckets = {};
+  for (const g of grades) {
+    if (g.tws == null || g.twa == null || g.tack == null || g.point_of_sail == null) continue;
+    const tws = Math.floor(g.tws);
+    const twa = Math.floor(g.twa / 5) * 5;
+    const key = tws + '|' + twa + '|' + g.point_of_sail + '|' + g.tack;
+    let b = buckets[key];
+    if (!b) {
+      b = {
+        tws: tws, twa: twa, point_of_sail: g.point_of_sail, tack: g.tack,
+        bspSum: 0, bspCount: 0, target: null,
+      };
+      buckets[key] = b;
+    }
+    if (g.bsp != null) { b.bspSum += g.bsp; b.bspCount += 1; }
+    if (b.target == null && g.target != null) b.target = g.target;
+  }
+  const cells = [];
+  for (const b of Object.values(buckets)) {
+    const session_mean = b.bspCount ? b.bspSum / b.bspCount : null;
+    const delta = (session_mean != null && b.target != null)
+      ? Math.round((session_mean - b.target) * 10000) / 10000 : null;
+    cells.push({
+      tws: b.tws, twa: b.twa,
+      point_of_sail: b.point_of_sail, tack: b.tack,
+      baseline_mean: b.target, baseline_p90: null,
+      session_mean: session_mean != null ? Math.round(session_mean * 10000) / 10000 : null,
+      samples: b.bspCount,
+      delta: delta,
+    });
+  }
+  cells.sort((a, b) => a.tws - b.tws || a.twa - b.twa);
+  return cells;
+}
+
+function _applyPolarFilters() {
+  if (!_polarDataRaw) return;
+  const f = _readPolarFilters();
+
+  // 1. Decide the cell source: raw API cells or re-aggregate from replay grades
+  //    when a race-phase filter is active.
+  let cells;
+  if (f.phase !== 'all'
+      && typeof _replayGrades !== 'undefined' && _replayGrades && _replayGrades.length) {
+    const gun = (typeof _raceGun !== 'undefined' && _raceGun) ? _raceGun : _replayStart;
+    const finish = _replayEnd;
+    const subset = _replayGrades.filter(g => {
+      const t = g.t_start.getTime();
+      if (f.phase === 'prestart') return t < gun.getTime();
+      if (f.phase === 'racing') return t >= gun.getTime() && t <= finish.getTime();
+      if (f.phase === 'postfinish') return t > finish.getTime();
+      return true;
+    });
+    cells = _rebuildCellsFromGrades(subset);
+  } else {
+    cells = _polarDataRaw.cells.slice();
+  }
+
+  // 2. Apply client-side hides.
+  cells = cells.filter(c => {
+    if (f.pos !== 'all' && c.point_of_sail !== f.pos) return false;
+    if (f.tack !== 'all' && c.tack !== f.tack) return false;
+    if (c.tws < f.twsMin || c.tws > f.twsMax) return false;
+    if (f.delta === 'faster' && !(c.delta != null && c.delta > 0)) return false;
+    if (f.delta === 'slower' && !(c.delta != null && c.delta < 0)) return false;
+    if (f.delta === 'big' && !(c.delta != null && Math.abs(c.delta) >= 0.5)) return false;
+    return true;
+  });
+
+  _polarData = Object.assign({}, _polarDataRaw, {
+    cells: cells,
+    tws_bins: Array.from(new Set(cells.map(c => c.tws))).sort((a, b) => a - b),
+    twa_bins: Array.from(new Set(cells.map(c => c.twa))).sort((a, b) => a - b),
+    session_sample_count: cells.reduce((s, c) => s + (c.samples || 0), 0),
+  });
+  _polarSelectedCells.clear();
+  renderPolarDiagram();
+  renderPolarHeatmap();
+}
+
+function _onPolarFiltersChanged() { _applyPolarFilters(); }
+
+function _resetPolarFilters() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+  set('pf-pos', 'all');
+  set('pf-tack', 'all');
+  set('pf-tws-min', '0');
+  set('pf-tws-max', '40');
+  set('pf-delta', 'all');
+  set('pf-phase', 'all');
+  _applyPolarFilters();
+}
+
+// Dot click-selection state for the polar diagram.
+let _polarDotHitboxes = [];  // [{x, y, r, cell}]
+let _polarSelectedCells = new Set(); // keys "tws|twa|pos|tack"
+let _polarCanvasHandlerBound = false;
+
+function _polarCellKey(c) {
+  return c.tws + '|' + c.twa + '|' + c.point_of_sail + '|' + c.tack;
+}
+
+function _bindPolarCanvasHandler() {
+  if (_polarCanvasHandlerBound) return;
+  const canvas = document.getElementById('polar-canvas');
+  if (!canvas) return;
+  canvas.addEventListener('click', function(e) {
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const x = (e.clientX - rect.left) * scaleX;
+    const y = (e.clientY - rect.top) * scaleY;
+    let best = null;
+    let bestDist = Infinity;
+    for (const hb of _polarDotHitboxes) {
+      const dx = x - hb.x;
+      const dy = y - hb.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d <= hb.r + 4 && d < bestDist) { best = hb; bestDist = d; }
+    }
+    if (!best) {
+      if (!e.shiftKey) {
+        _polarSelectedCells.clear();
+        _applyPolarDotSelection();
+      }
+      return;
+    }
+    const key = _polarCellKey(best.cell);
+    if (e.shiftKey) {
+      if (_polarSelectedCells.has(key)) _polarSelectedCells.delete(key);
+      else _polarSelectedCells.add(key);
+    } else {
+      _polarSelectedCells.clear();
+      _polarSelectedCells.add(key);
+    }
+    _applyPolarDotSelection();
+  });
+  _polarCanvasHandlerBound = true;
+}
+
+function _applyPolarDotSelection() {
+  renderPolarDiagram();  // redraws rings around selected dots
+  const grades = (typeof _replayGrades !== 'undefined' && _replayGrades) ? _replayGrades : null;
+  const st = document.getElementById('polar-highlight-status');
+  if (!grades) return;
+  if (!_polarSelectedCells.size) {
+    if (st) st.textContent = '';
+    _setPolarHighlightSegments([]);
+    return;
+  }
+  const matching = grades.filter(g => {
+    if (g.tws == null || g.tack == null || g.point_of_sail == null || g.twa == null) return false;
+    const tws = Math.floor(g.tws);
+    const twa = Math.floor(g.twa / 5) * 5;
+    const key = tws + '|' + twa + '|' + g.point_of_sail + '|' + g.tack;
+    return _polarSelectedCells.has(key);
+  });
+  if (st) {
+    st.textContent = _polarSelectedCells.size + ' cell(s) selected \u2014 '
+      + matching.length + ' segments highlighted';
+  }
+  _setPolarHighlightSegments(matching);
+}
+
+// Bright overlay polylines for segments matching a clicked polar cell.
+// Drawn on top of the base track; cleared on next call.
+let _polarHighlightLayers = [];
+
+function _clearPolarHighlight() {
+  for (const l of _polarHighlightLayers) {
+    try { _map && _map.removeLayer(l); } catch (e) { /* ignore */ }
+  }
+  _polarHighlightLayers = [];
+}
+
+function _setPolarHighlightSegments(grades) {
+  _clearPolarHighlight();
+  if (!_map || !_trackData || !_trackData.timestamps || !_trackData.latLngs) return;
+  if (!grades || !grades.length) return;
+  const timestamps = _trackData.timestamps;
+  const latLngs = _trackData.latLngs;
+  for (const g of grades) {
+    const tStart = g.t_start.getTime();
+    const tEnd = g.t_end.getTime();
+    const slice = [];
+    for (let i = 0; i < timestamps.length; i++) {
+      const t = timestamps[i].getTime();
+      if (t >= tStart && t <= tEnd) slice.push(latLngs[i]);
+    }
+    if (slice.length >= 2) {
+      const line = L.polyline(slice, {
+        color: '#facc15', weight: 8, opacity: 0.95,
+      }).addTo(_map);
+      _polarHighlightLayers.push(line);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5798,11 +6118,18 @@ async function _loadReplayData() {
       cog: s.cog,
     }));
     _replayGrades = (data.grades || []).map(g => ({
+      i: g.i,
       t_start: new Date(g.t_start),
       t_end: new Date(g.t_end),
       grade: g.grade,
       pct: g.pct,
       delta: g.delta,
+      tws: g.tws,
+      twa: g.twa,
+      bsp: g.bsp,
+      target: g.target,
+      tack: g.tack,
+      point_of_sail: g.point_of_sail,
     }));
     // Register HUD as a clock consumer so it updates on every tick/seek
     registerSurface('hud', function(utc) { _renderHud(utc); });

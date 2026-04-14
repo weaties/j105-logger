@@ -46,6 +46,12 @@ POLAR_BASELINE_VERSION_KEY: str = "polar_baseline_version"
 
 GradeLabel = Literal["green", "yellow", "red", "suspicious", "unknown"]
 
+PointOfSail = Literal["upwind", "downwind"]
+Tack = Literal["port", "starboard"]
+
+# Upwind/downwind cutoff (#534). TWAs strictly below this are upwind.
+UPWIND_CUTOFF_DEG: float = 90.0
+
 # ---------------------------------------------------------------------------
 # Pure helpers (all unit-testable without Storage)
 # ---------------------------------------------------------------------------
@@ -82,6 +88,33 @@ def _compute_twa(
         twa_raw = (wind_angle_deg - heading_deg + 360) % 360
         return twa_raw if twa_raw <= 180 else 360 - twa_raw
     return None  # apparent wind or unknown reference
+
+
+def _compute_twa_with_tack(
+    wind_angle_deg: float,
+    reference: int,
+    heading_deg: float | None,
+) -> tuple[float, Tack] | None:
+    """Return (abs_twa, tack) or None.
+
+    Positive signed TWA (wind from the starboard side) → starboard tack.
+    """
+    if reference == _WIND_REF_BOAT:
+        signed = wind_angle_deg % 360
+    elif reference == _WIND_REF_NORTH:
+        if heading_deg is None:
+            return None
+        signed = (wind_angle_deg - heading_deg) % 360
+    else:
+        return None
+    if signed > 180:
+        signed -= 360  # now in (-180, 180]
+    tack: Tack = "starboard" if signed >= 0 else "port"
+    return abs(signed), tack
+
+
+def _point_of_sail(abs_twa_deg: float) -> PointOfSail:
+    return "upwind" if abs_twa_deg < UPWIND_CUTOFF_DEG else "downwind"
 
 
 # ---------------------------------------------------------------------------
@@ -264,10 +297,17 @@ async def lookup_polar(
 
 @dataclass
 class PolarCell:
-    """One (TWS, TWA) cell with baseline and session data."""
+    """One (TWS, TWA, point-of-sail, tack) cell with baseline and session data.
+
+    The baseline is symmetric across port/starboard (keyed on abs TWA), but
+    the session cell carries its own point-of-sail and tack so the panel can
+    show asymmetries without rebuilding the baseline (#534).
+    """
 
     tws_bin: int
     twa_bin: int
+    point_of_sail: PointOfSail
+    tack: Tack
     baseline_mean_bsp: float | None
     baseline_p90_bsp: float | None
     session_mean_bsp: float | None
@@ -326,8 +366,9 @@ async def session_polar_comparison(
             continue
         tw_by_s.setdefault(str(w["ts"])[:19], w)
 
-    # Bin session samples
-    bin_samples: dict[tuple[int, int], list[float]] = defaultdict(list)
+    # Bin session samples by (tws, twa, point_of_sail, tack)
+    SplitKey = tuple[int, int, PointOfSail, Tack]
+    bin_samples: dict[SplitKey, list[float]] = defaultdict(list)
     for sk, spd_row in spd_by_s.items():
         wind_row = tw_by_s.get(sk)
         if wind_row is None:
@@ -341,63 +382,55 @@ async def session_polar_comparison(
         hdg_row = hdg_by_s.get(sk)
         heading = float(hdg_row["heading_deg"]) if hdg_row else None
 
-        twa = _compute_twa(wind_angle, ref, heading)
-        if twa is None:
+        twa_tack = _compute_twa_with_tack(wind_angle, ref, heading)
+        if twa_tack is None:
             continue
+        twa, tack = twa_tack
 
         tb = _tws_bin(tws_kts)
         ab = _twa_bin(twa)
-        bin_samples[(tb, ab)].append(bsp_kts)
+        pos = _point_of_sail(twa)
+        bin_samples[(tb, ab, pos, tack)].append(bsp_kts)
 
-    # Load full baseline
+    # Load full baseline (symmetric, no min_sessions gate — #534)
     baseline: dict[tuple[int, int], dict[str, Any]] = {}
     try:
-        bcur = await db.execute(
-            "SELECT tws_bin, twa_bin, mean_bsp, p90_bsp"
-            " FROM polar_baseline WHERE session_count >= 3"
-        )
+        bcur = await db.execute("SELECT tws_bin, twa_bin, mean_bsp, p90_bsp FROM polar_baseline")
         for br in await bcur.fetchall():
             baseline[(int(br["tws_bin"]), int(br["twa_bin"]))] = dict(br)
     except Exception:
         pass  # no baseline table on un-migrated DB
 
-    # Merge session + baseline into cells
-    all_keys = set(bin_samples.keys()) | set(baseline.keys())
     cells: list[PolarCell] = []
     total_samples = 0
 
-    for key in all_keys:
-        tws_b, twa_b = key
-        samples = bin_samples.get(key, [])
-        bl = baseline.get(key)
+    for key, samples in bin_samples.items():
+        tws_b, twa_b, pos, tack = key
+        bl = baseline.get((tws_b, twa_b))
 
-        session_mean = round(sum(samples) / len(samples), 4) if samples else None
+        session_mean = round(sum(samples) / len(samples), 4)
         bl_mean = float(bl["mean_bsp"]) if bl else None
         bl_p90 = float(bl["p90_bsp"]) if bl else None
-        delta = (
-            round(session_mean - bl_mean, 4)
-            if session_mean is not None and bl_mean is not None
-            else None
-        )
+        delta = round(session_mean - bl_mean, 4) if bl_mean is not None else None
 
         n = len(samples)
         total_samples += n
 
-        # Only include cells where the session has data
-        if n > 0:
-            cells.append(
-                PolarCell(
-                    tws_bin=tws_b,
-                    twa_bin=twa_b,
-                    baseline_mean_bsp=bl_mean,
-                    baseline_p90_bsp=bl_p90,
-                    session_mean_bsp=session_mean,
-                    session_sample_count=n,
-                    delta=delta,
-                )
+        cells.append(
+            PolarCell(
+                tws_bin=tws_b,
+                twa_bin=twa_b,
+                point_of_sail=pos,
+                tack=tack,
+                baseline_mean_bsp=bl_mean,
+                baseline_p90_bsp=bl_p90,
+                session_mean_bsp=session_mean,
+                session_sample_count=n,
+                delta=delta,
             )
+        )
 
-    cells.sort(key=lambda c: (c.tws_bin, c.twa_bin))
+    cells.sort(key=lambda c: (c.tws_bin, c.point_of_sail, c.tack, c.twa_bin))
     tws_bins = sorted({c.tws_bin for c in cells})
     twa_bins = sorted({c.twa_bin for c in cells})
 
