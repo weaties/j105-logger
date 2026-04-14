@@ -2466,6 +2466,52 @@ function _mcStopProgressTick() {
   }
 }
 
+// Sibling-card capture (#525): in addition to the mixed MC player, render one
+// native <audio controls> per sibling WAV so each receiver is independently
+// playable, scrubbable, and downloadable. Pausing one native player also
+// pauses the MC mix so they don't fight for the listener's ears.
+function _renderSiblingPlayers(siblings) {
+  const body = document.getElementById('audio-body');
+  if (!body) return;
+  const existing = document.getElementById('sibling-players');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'sibling-players';
+  wrap.style.marginTop = '10px';
+  wrap.innerHTML =
+    '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">' +
+    'Per-receiver playback</div>';
+  siblings.forEach(s => {
+    const label = s.position_name || `sib${s.ordinal}`;
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.alignItems = 'center';
+    row.style.gap = '8px';
+    row.style.marginBottom = '4px';
+    row.innerHTML =
+      '<span style="font-size:.78rem;min-width:90px">' + label + '</span>' +
+      '<audio controls preload="metadata" style="flex:1;min-width:0">' +
+      '<source src="' + s.stream_url + '" type="audio/wav"></audio>' +
+      '<a class="btn-sm" href="/api/audio/' + s.audio_session_id + '/download" ' +
+      'style="font-size:.72rem;text-decoration:none" title="Download WAV">&#8595;</a>';
+    wrap.appendChild(row);
+    const el = row.querySelector('audio');
+    if (el) {
+      el.addEventListener('play', function () {
+        // Stop the mixed MC player so only one surface is audible at a time.
+        try { if (_mcIsPlaying) _mcPause(); } catch (e) { /* swallow */ }
+        // Pause any other sibling players already playing.
+        wrap.querySelectorAll('audio').forEach(other => {
+          if (other !== el && !other.paused) {
+            try { other.pause(); } catch (e) { /* swallow */ }
+          }
+        });
+      });
+    }
+  });
+  body.appendChild(wrap);
+}
+
 async function loadMultiChannelAudio() {
   const body = document.getElementById('audio-body');
   body.innerHTML =
@@ -2519,6 +2565,7 @@ async function loadMultiChannelAudio() {
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
+      _renderSiblingPlayers(siblings);
       return;
     }
 
