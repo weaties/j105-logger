@@ -440,6 +440,7 @@ async function loadTrack() {
     if (!_trackData) return;
     _moveCursorToUtc(utc);
     _updateBoatSettingsForUtc(utc);
+    _updateBoatCurrentMarker(utc);
   });
 
   // Click track → seek the playback clock (which then seeks video, audio, etc.)
@@ -832,6 +833,151 @@ function _maybeFollowPan(latLng) {
   // Use Leaflet's panTo with a short animation so the recenter glides
   // rather than snapping; duration short enough not to overshoot tick.
   _map.panTo(latLng, {animate: true, duration: 0.4});
+}
+
+// -----------------------------------------------------------------------
+// Current overlay (#523). Toggleable layer showing derived water current
+// (set/drift) from the boat's own track. Phase 1 renders arrows along the
+// sailed track and a live boat-adjacent indicator during replay. The
+// extrapolated field beyond the sailed area is deferred to a follow-up.
+// -----------------------------------------------------------------------
+
+let _currentLayer = null;         // L.LayerGroup for along-track arrows
+let _currentBoatMarker = null;    // L.marker for boat-adjacent indicator
+let _currentEnabled = false;
+let _currentOverlayBuilt = false;
+
+function _renderCurrentArrowSvg(setDeg, driftKts, color) {
+  // Length in px scales with drift, clamped for readability. 1 kt -> 18 px,
+  // capped at ~44 px so heavy current doesn't swamp the map.
+  const len = Math.min(44, Math.max(10, 8 + driftKts * 18));
+  const tail = Math.max(0, len - 6);
+  const c = color || '#2563eb';
+  // Compass rotation: set_deg is the direction the current flows *toward*
+  // (0=N, 90=E). SVG x-axis points east so rotate by (setDeg - 90).
+  const rot = setDeg - 90;
+  const w = len + 4;
+  return (
+    '<svg width="' + w + '" height="12" viewBox="-2 -6 ' + w + ' 12" ' +
+    'style="overflow:visible;pointer-events:none;transform:rotate(' + rot + 'deg);transform-origin:0 0">' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.5" stroke-width="4" stroke-linecap="round"/>' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>' +
+    '<polygon points="' + len + ',0 ' + tail + ',-4 ' + tail + ',4" fill="' + c + '" stroke="#000" stroke-opacity="0.5" stroke-width="0.5"/>' +
+    '</svg>'
+  );
+}
+
+function _currentArrowDivIcon(setDeg, driftKts, color) {
+  return L.divIcon({
+    className: 'current-arrow',
+    html: _renderCurrentArrowSvg(setDeg, driftKts, color),
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
+
+// Locate the track position for a given UTC by bracketing the track
+// timestamps (same bracket-and-lerp approach as _moveCursorToUtc).
+function _trackLatLngAtUtc(tMs) {
+  if (!_trackData) return null;
+  const {latLngs, timestamps} = _trackData;
+  if (!latLngs.length) return null;
+  let hi = _trackLowerBound(tMs);
+  if (hi <= 0) hi = 1;
+  if (hi >= timestamps.length) hi = timestamps.length - 1;
+  const lo = hi - 1;
+  const t0 = timestamps[lo].getTime();
+  const t1 = timestamps[hi].getTime();
+  let frac = t1 > t0 ? (tMs - t0) / (t1 - t0) : 0;
+  if (frac < 0) frac = 0; else if (frac > 1) frac = 1;
+  const a = latLngs[lo];
+  const b = latLngs[hi];
+  return [a[0] + (b[0] - a[0]) * frac, a[1] + (b[1] - a[1]) * frac];
+}
+
+// Circular-mean of set/drift across a ±halfMs window. Used both for
+// along-track thinning (damp noise) and the live boat-adjacent indicator.
+function _windowedSetDrift(tMs, halfMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  const lo = tMs - halfMs;
+  const hi = tMs + halfMs;
+  let x = 0, y = 0, n = 0;
+  const startIdx = _sampleLowerBound(lo);
+  for (let i = startIdx; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t > hi) break;
+    if (s.set == null || s.drift == null) continue;
+    if (isNaN(s.set) || isNaN(s.drift)) continue;
+    // Vector mean: average the (set, drift) vectors in N/E components.
+    const r = (s.set * Math.PI) / 180;
+    x += s.drift * Math.cos(r);
+    y += s.drift * Math.sin(r);
+    n++;
+  }
+  if (!n) return null;
+  x /= n; y /= n;
+  const drift = Math.hypot(x, y);
+  if (drift < 1e-6) return {set: 0, drift: 0};
+  const setDeg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+  return {set: setDeg, drift: drift};
+}
+
+function _rebuildCurrentOverlay() {
+  if (!_map || !_trackData || !_replaySamples || !_replaySamples.length) return;
+  if (_currentLayer) { _map.removeLayer(_currentLayer); _currentLayer = null; }
+  _currentLayer = L.layerGroup();
+
+  // Sample every ~20 seconds along the track and use a ±10s window mean
+  // to damp sample-to-sample noise (STW + HDG are both noisy at 1 Hz).
+  const stepMs = 20000;
+  const halfMs = 10000;
+  const t0 = _trackData.timestamps[0].getTime();
+  const tEnd = _trackData.timestamps[_trackData.timestamps.length - 1].getTime();
+  for (let t = t0; t <= tEnd; t += stepMs) {
+    const sd = _windowedSetDrift(t, halfMs);
+    if (!sd || sd.drift < 0.08) continue; // noise floor
+    const pos = _trackLatLngAtUtc(t);
+    if (!pos) continue;
+    const marker = L.marker(pos, {
+      icon: _currentArrowDivIcon(sd.set, sd.drift, '#2563eb'),
+      interactive: false,
+      keyboard: false,
+    });
+    _currentLayer.addLayer(marker);
+  }
+
+  if (_currentEnabled) _currentLayer.addTo(_map);
+  _currentOverlayBuilt = true;
+}
+
+function _updateBoatCurrentMarker(utc) {
+  if (!_currentEnabled || !_map || !_trackData) return;
+  const tMs = utc.getTime();
+  const sd = _windowedSetDrift(tMs, 15000);
+  const pos = _trackLatLngAtUtc(tMs);
+  if (!pos || !sd || sd.drift < 0.05) {
+    if (_currentBoatMarker) { _map.removeLayer(_currentBoatMarker); _currentBoatMarker = null; }
+    return;
+  }
+  const icon = _currentArrowDivIcon(sd.set, sd.drift, '#f59e0b');
+  if (!_currentBoatMarker) {
+    _currentBoatMarker = L.marker(pos, {icon: icon, interactive: false, keyboard: false}).addTo(_map);
+  } else {
+    _currentBoatMarker.setLatLng(pos);
+    _currentBoatMarker.setIcon(icon);
+  }
+}
+
+function _setCurrentOverlayEnabled(on) {
+  _currentEnabled = !!on;
+  if (_currentEnabled) {
+    if (!_currentOverlayBuilt) _rebuildCurrentOverlay();
+    if (_currentLayer && _map) _currentLayer.addTo(_map);
+  } else {
+    if (_currentLayer && _map) _map.removeLayer(_currentLayer);
+    if (_currentBoatMarker && _map) { _map.removeLayer(_currentBoatMarker); _currentBoatMarker = null; }
+  }
 }
 
 // Render the boat cursor SVG. The hull is a simplified triangle that
@@ -6116,7 +6262,10 @@ async function _loadReplayData() {
       awa: s.awa,
       hdg: s.hdg,
       cog: s.cog,
+      set: s.set,
+      drift: s.drift,
     }));
+    if (typeof _rebuildCurrentOverlay === 'function') _rebuildCurrentOverlay();
     _replayGrades = (data.grades || []).map(g => ({
       i: g.i,
       t_start: new Date(g.t_start),
@@ -6186,6 +6335,13 @@ function _wireReplayControls() {
   const courseToggle = document.getElementById('toggle-course-overlay');
   if (courseToggle) courseToggle.addEventListener('change', (e) => {
     _setCourseOverlayVisible(e.target.checked);
+  });
+  const currentToggle = document.getElementById('toggle-current-overlay');
+  if (currentToggle) currentToggle.addEventListener('change', (e) => {
+    _setCurrentOverlayEnabled(e.target.checked);
+    if (e.target.checked && _playClock && _playClock.positionUtc) {
+      _updateBoatCurrentMarker(_playClock.positionUtc);
+    }
   });
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
