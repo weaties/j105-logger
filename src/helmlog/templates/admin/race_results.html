@@ -42,7 +42,7 @@ dialog .btn-row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
 <div class="card">
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
 <div class="label">Saved Regattas</div>
-<button class="btn-sm btn-add" onclick="addDlg.showModal()">+ Add Regatta</button>
+<div style="display:flex;gap:6px"><button class="btn-sm" onclick="discoverRegatta()">Discover from URL</button><button class="btn-sm btn-add" onclick="addDlg.showModal()">+ Add Regatta</button></div>
 </div>
 <table id="regatta-tbl">
 <thead><tr><th>Name</th><th>Source</th><th>Races</th><th>Results</th><th>Last Fetched</th><th></th></tr></thead>
@@ -115,6 +115,26 @@ let sailNumber=null;
 try{sailNumber=document.body.dataset.sailNumber||null}catch(e){}
 
 function showMsg(text,ok){msg.textContent=text;msg.className=ok?'msg-ok':'msg-err'}
+
+async function discoverRegatta(){
+  const url=prompt('Paste a STYC regatta URL (any page works — race1.htm, series.htm, or the base directory):');
+  if(!url)return;
+  showMsg('Discovering…',true);
+  try{
+    const fd=new FormData();fd.append('url',url.trim());
+    const r=await fetch('/api/results/regattas/discover',{method:'POST',body:fd});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'Discover failed');
+    const f=addDlg.querySelector('form');
+    f.source.value=d.source;
+    f.source_id.value=d.source_id;
+    f.name.value=d.name;
+    f.url.value=d.url;
+    f.default_class.value=d.default_class||'';
+    showMsg('Discovered: '+d.name,true);
+    addDlg.showModal();
+  }catch(err){showMsg(err.message,false)}
+}
 
 async function addRegatta(e){
   e.preventDefault();

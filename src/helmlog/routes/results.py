@@ -81,6 +81,44 @@ async def api_add_regatta(
     return JSONResponse({"ok": True, "id": cur.lastrowid})
 
 
+@router.post("/api/results/regattas/discover", response_class=JSONResponse)
+async def api_discover_regatta(
+    request: Request,
+    url: str = Form(...),
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Auto-discover regatta metadata from a single URL.
+
+    Only STYC is supported today — the user pastes any page inside a STYC
+    regatta directory (race page, series page, or base dir) and we return
+    the pre-filled ``source``/``source_id``/``name``/``url`` fields.
+    """
+    import httpx
+
+    from helmlog.results.styc import discover_styc_url
+
+    if "styc.org" not in url:
+        raise HTTPException(400, "Only STYC URLs are supported for discovery")
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            discovery = await discover_styc_url(url, client=client)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(502, f"Fetch failed: {exc}") from exc
+
+    return JSONResponse(
+        {
+            "source": discovery.source,
+            "source_id": discovery.source_id,
+            "name": discovery.name,
+            "url": discovery.url,
+            "default_class": "",
+        }
+    )
+
+
 @router.delete("/api/results/regattas/{regatta_id}", response_class=JSONResponse)
 async def api_delete_regatta(
     request: Request,

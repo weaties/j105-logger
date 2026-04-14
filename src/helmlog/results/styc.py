@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import html
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlparse, urlunparse
 
 from loguru import logger
 from selectolax.parser import HTMLParser
@@ -31,6 +33,101 @@ if TYPE_CHECKING:
     import httpx
 
 _TIMEOUT = 30.0
+
+
+@dataclass(frozen=True)
+class StycDiscovery:
+    """Result of auto-discovering a STYC regatta from a single URL."""
+
+    source: str
+    source_id: str
+    name: str
+    url: str
+
+
+def _base_url_from(url: str) -> str:
+    """Strip any ``raceN.htm``/``series.htm`` filename and query/fragment,
+    returning the regatta base directory without a trailing slash.
+    """
+    parsed = urlparse(url)
+    path = parsed.path
+    if path.endswith(".htm") or path.endswith(".html"):
+        path = path.rsplit("/", 1)[0]
+    path = path.rstrip("/")
+    return urlunparse((parsed.scheme, parsed.netloc, path, "", "", ""))
+
+
+def _source_id_from(base_url: str) -> str:
+    """Derive a stable, human-readable source_id from the URL path.
+
+    ``.../race_info/Ballard_Cup/SeriesI/2026`` → ``Ballard_Cup_SeriesI_2026``
+    """
+    path = urlparse(base_url).path.strip("/")
+    parts = [p for p in path.split("/") if p and p != "race_info"]
+    return "_".join(parts) or "styc_regatta"
+
+
+def _extract_racetitle(html_text: str) -> str:
+    """Extract regatta name from ``<p class=racetitle>...</p>``."""
+    m = re.search(
+        r"<p[^>]*class=[\"']?racetitle[\"']?[^>]*>([^<]+)</p>",
+        html_text,
+        re.IGNORECASE,
+    )
+    return _decode(m.group(1)).strip() if m else ""
+
+
+async def discover_styc_url(
+    url: str,
+    client: httpx.AsyncClient,
+) -> StycDiscovery:
+    """Auto-discover a STYC regatta from any page URL in its directory.
+
+    Accepts a race page (``raceN.htm``), series page, or the base directory
+    itself. Returns a populated ``StycDiscovery`` the admin UI can drop
+    straight into the Add Regatta form.
+    """
+    base_url = _base_url_from(url)
+    if not base_url or "styc.org" not in urlparse(base_url).netloc:
+        raise ValueError(f"Not a STYC results URL: {url!r}")
+
+    source_id = _source_id_from(base_url)
+
+    # Prefer whatever the user actually pasted — it's the page most likely
+    # to exist. Fall back to series.htm then race1.htm.
+    candidates: list[str] = []
+    if url not in candidates:
+        candidates.append(url)
+    candidates.append(f"{base_url}/series.htm")
+    candidates.append(f"{base_url}/race1.htm")
+
+    name = ""
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            resp = await client.get(candidate, timeout=_TIMEOUT)
+            resp.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            continue
+        title = _extract_racetitle(resp.text)
+        if title:
+            name = title
+            break
+
+    if not name:
+        if last_error is not None:
+            raise ValueError(f"Could not discover STYC regatta at {base_url!r}: {last_error}")
+        # Fall back to the derived source_id prettified.
+        name = source_id.replace("_", " ")
+
+    logger.debug("STYC discover {} → {!r} @ {}", url, name, base_url)
+    return StycDiscovery(
+        source="styc",
+        source_id=source_id,
+        name=name,
+        url=base_url,
+    )
 
 
 class StycProvider:
