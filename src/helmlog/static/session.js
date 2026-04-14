@@ -3046,16 +3046,23 @@ function renderPolarDiagram() {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
     ctx.globalAlpha = 0.7;
+    // Split upwind (<90°) from downwind (≥90°) so the baseline curve
+    // doesn't cross the beam line — a boat never sails that shape.
+    const upwind = pts.filter(p => p.twa < 90);
+    const downwind = pts.filter(p => p.twa >= 90);
     for (const side of [1, -1]) {
-      ctx.beginPath();
-      for (let i = 0; i < pts.length; i++) {
-        const rad = pts[i].twa * Math.PI / 180;
-        const r = pts[i].baseline_mean * scale;
-        const x = cx + side * r * Math.sin(rad);
-        const y = cy - r * Math.cos(rad);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      for (const leg of [upwind, downwind]) {
+        if (leg.length < 2) continue;
+        ctx.beginPath();
+        for (let i = 0; i < leg.length; i++) {
+          const rad = leg[i].twa * Math.PI / 180;
+          const r = leg[i].baseline_mean * scale;
+          const x = cx + side * r * Math.sin(rad);
+          const y = cy - r * Math.cos(rad);
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
       }
-      ctx.stroke();
     }
     ctx.globalAlpha = 1;
   }
