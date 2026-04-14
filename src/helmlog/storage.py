@@ -134,7 +134,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 66
+_CURRENT_VERSION: int = 67
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1497,6 +1497,22 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE audio_sessions ADD COLUMN capture_ordinal INTEGER NOT NULL DEFAULT 0;
         CREATE INDEX IF NOT EXISTS idx_audio_sessions_capture_group
             ON audio_sessions(capture_group_id);
+    """,
+    67: """
+        -- Enriched maneuver payload cache (#530). The per-session GET
+        -- /api/sessions/{id}/maneuvers endpoint re-runs the full enrichment
+        -- pipeline (load instrument series, rank, build tracks, attach video
+        -- sync) on every request. This table stores the JSON-ready payload
+        -- and is invalidated when maneuvers are re-detected or the linked
+        -- race video changes. ``code_version`` lets us force-refresh all
+        -- entries when the enrichment logic changes — bump
+        -- ENRICH_CACHE_VERSION in analysis/maneuvers.py.
+        CREATE TABLE IF NOT EXISTS maneuver_cache (
+            session_id   INTEGER PRIMARY KEY REFERENCES races(id) ON DELETE CASCADE,
+            payload      TEXT    NOT NULL,
+            code_version INTEGER NOT NULL,
+            computed_at  TEXT    NOT NULL
+        );
     """,
     66: """
         -- Per-segment polar grading cache for race replay (#469).
@@ -4126,6 +4142,7 @@ class Storage:
                 user_id,
             ),
         )
+        await db.execute("DELETE FROM maneuver_cache WHERE session_id = ?", (race_id,))
         await db.commit()
         assert cur.lastrowid is not None
         logger.info(
@@ -4169,17 +4186,31 @@ class Storage:
             return True  # nothing to do
         params.append(video_row_id)
         db = self._conn()
+        race_cur = await db.execute("SELECT race_id FROM race_videos WHERE id = ?", (video_row_id,))
+        race_row = await race_cur.fetchone()
         cur = await db.execute(
             f"UPDATE race_videos SET {', '.join(updates)} WHERE id = ?",  # noqa: S608
             params,
         )
+        if race_row is not None:
+            await db.execute(
+                "DELETE FROM maneuver_cache WHERE session_id = ?",
+                (race_row["race_id"],),
+            )
         await db.commit()
         return (cur.rowcount or 0) > 0
 
     async def delete_race_video(self, video_row_id: int) -> bool:
         """Delete a race video by id.  Returns True if deleted."""
         db = self._conn()
+        race_cur = await db.execute("SELECT race_id FROM race_videos WHERE id = ?", (video_row_id,))
+        race_row = await race_cur.fetchone()
         cur = await db.execute("DELETE FROM race_videos WHERE id = ?", (video_row_id,))
+        if race_row is not None:
+            await db.execute(
+                "DELETE FROM maneuver_cache WHERE session_id = ?",
+                (race_row["race_id"],),
+            )
         await db.commit()
         return (cur.rowcount or 0) > 0
 
@@ -5019,6 +5050,7 @@ class Storage:
 
         db = self._conn()
         await db.execute("DELETE FROM maneuvers WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM maneuver_cache WHERE session_id = ?", (session_id,))
         for m in maneuvers:
             await db.execute(
                 "INSERT INTO maneuvers"
@@ -5050,6 +5082,51 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def get_cached_enriched_maneuvers(
+        self, session_id: int, code_version: int
+    ) -> dict[str, Any] | None:
+        """Return the cached enriched maneuver payload for ``session_id``.
+
+        Returns ``None`` if there is no cache row or the stored
+        ``code_version`` doesn't match — in both cases the caller should
+        recompute and write through :meth:`put_cached_enriched_maneuvers`.
+        """
+        import json
+
+        cur = await self._read_conn().execute(
+            "SELECT payload, code_version FROM maneuver_cache WHERE session_id = ?",
+            (session_id,),
+        )
+        row = await cur.fetchone()
+        if row is None or int(row["code_version"]) != code_version:
+            return None
+        try:
+            return json.loads(row["payload"])  # type: ignore[no-any-return]
+        except (TypeError, ValueError):
+            return None
+
+    async def put_cached_enriched_maneuvers(
+        self, session_id: int, code_version: int, payload: dict[str, Any]
+    ) -> None:
+        """Persist the enriched maneuver payload for ``session_id``."""
+        import json
+        from datetime import UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute(
+            "INSERT OR REPLACE INTO maneuver_cache"
+            " (session_id, payload, code_version, computed_at) VALUES (?, ?, ?, ?)",
+            (session_id, json.dumps(payload), code_version, _datetime.now(UTC).isoformat()),
+        )
+        await db.commit()
+
+    async def invalidate_session_maneuver_cache(self, session_id: int) -> None:
+        """Drop any cached enriched payload for ``session_id``."""
+        db = self._conn()
+        await db.execute("DELETE FROM maneuver_cache WHERE session_id = ?", (session_id,))
+        await db.commit()
 
     # ------------------------------------------------------------------
     # Synthesized wind field params and course marks

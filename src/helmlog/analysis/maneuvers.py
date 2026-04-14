@@ -321,6 +321,47 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session window
+
+# Bump this when the shape of the enriched maneuver payload changes (new
+# fields, recomputed ranks, changed ghost/track math). All cached payloads
+# with a different code_version are treated as a cache miss and rebuilt.
+ENRICH_CACHE_VERSION = 2
+
+
+def _bucket_positions_per_second(
+    positions: list[tuple[datetime, float, float]],
+) -> list[tuple[datetime, float, float]]:
+    """Collapse a list of (ts, lat, lon) fixes to one averaged fix per second.
+
+    Signal K multiplexes two physical GPS antennas into the same stream, so
+    raw position rows zig-zag between antennas ~3m apart. Bucketing to whole
+    seconds and averaging lat/lon within each bucket collapses the zig-zag
+    into a smooth mid-line — the same fix applied to ``/api/sessions/{id}/
+    track`` in #516. Vakaros positions are already 1Hz from a single GPS,
+    but running them through the same pipeline is idempotent and keeps the
+    downstream shape uniform.
+    """
+    if not positions:
+        return []
+    buckets: dict[datetime, list[tuple[float, float]]] = {}
+    order: list[datetime] = []
+    for ts, lat, lon in positions:
+        key = ts.replace(microsecond=0)
+        bucket = buckets.get(key)
+        if bucket is None:
+            buckets[key] = [(lat, lon)]
+            order.append(key)
+        else:
+            bucket.append((lat, lon))
+    out: list[tuple[datetime, float, float]] = []
+    for key in order:
+        rows = buckets[key]
+        avg_lat = sum(p[0] for p in rows) / len(rows)
+        avg_lon = sum(p[1] for p in rows) / len(rows)
+        out.append((key, avg_lat, avg_lon))
+    return out
+
+
 _TRACK_PRE_S = 20  # seconds of track before maneuver_ts
 _TRACK_POST_S = 30  # seconds of track after exit_ts (or maneuver_ts if exit unknown)
 # Normal tacks rotate the bow ~80–100°, gybes ~50–70°. Anything well above
@@ -411,13 +452,25 @@ async def enrich_session_maneuvers(
     ``None`` if no video is linked. Maneuvers are returned as JSON-ready
     dicts with all metric fields rounded, plus ``lat``/``lon`` and — when
     a video is available — ``youtube_url``.
+
+    The enriched payload is cached in ``maneuver_cache`` keyed on
+    ``session_id``; the cache is invalidated when maneuvers are re-detected
+    or the linked race video changes, and force-rebuilt whenever
+    :data:`ENRICH_CACHE_VERSION` is bumped.
     """
+    cached = await storage.get_cached_enriched_maneuvers(session_id, ENRICH_CACHE_VERSION)
+    if cached is not None:
+        return cached.get("maneuvers", []), cached.get("video_sync")
+
     rows = await storage.get_session_maneuvers(session_id)
     if not rows:
         return [], None
 
     db = storage._conn()
-    race_cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    race_cur = await db.execute(
+        "SELECT start_utc, end_utc, vakaros_session_id FROM races WHERE id = ?",
+        (session_id,),
+    )
     race_row = await race_cur.fetchone()
     if race_row is None:
         return [], None
@@ -517,16 +570,40 @@ async def enrich_session_maneuvers(
                 raw = (twd_val - hv_opt + 360.0) % 360.0
                 twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
 
-    positions: list[tuple[datetime, float, float]] = [
+    positions_unbucketed: list[tuple[datetime, float, float]] = [
         (_ts_of(r), float(r["latitude_deg"]), float(r["longitude_deg"])) for r in positions_raw
     ]
+    positions_unbucketed.sort(key=lambda p: p[0])
+    # Smooth the SK GPS zig-zag caused by multiplexed antennas (#516).
+    positions = _bucket_positions_per_second(positions_unbucketed)
+
+    # Load Vakaros positions if this race is matched to a Vakaros session.
+    # They're the same schema as SK positions once bucketed — used to render
+    # an optional second trace on the per-maneuver overlay.
+    vakaros_positions: list[tuple[datetime, float, float]] = []
+    if race_row["vakaros_session_id"] is not None:
+        vak_cur = await db.execute(
+            "SELECT ts, latitude_deg, longitude_deg FROM vakaros_positions"
+            " WHERE session_id = ? AND ts BETWEEN ? AND ? ORDER BY ts",
+            (
+                int(race_row["vakaros_session_id"]),
+                start_pad.isoformat(),
+                end_pad.isoformat(),
+            ),
+        )
+        vak_rows = await vak_cur.fetchall()
+        vakaros_positions = _bucket_positions_per_second(
+            [
+                (_parse_iso(str(r["ts"])), float(r["latitude_deg"]), float(r["longitude_deg"]))
+                for r in vak_rows
+            ]
+        )
 
     hdg.sort(key=lambda p: p[0])
     bsp.sort(key=lambda p: p[0])
     twa.sort(key=lambda p: p[0])
     tws.sort(key=lambda p: p[0])
     twd.sort(key=lambda p: p[0])
-    positions.sort(key=lambda p: p[0])
 
     # Video sync for deep-links. Pick the first race video.
     video_cur = await db.execute(
@@ -629,6 +706,19 @@ async def enrich_session_maneuvers(
             positions=positions,
             bsp=bsp,
         )
+        # Optional parallel track from the matched Vakaros session, rotated
+        # into the same wind-up frame so it can be overlaid on top of the
+        # SK-derived trace for comparison.
+        if vakaros_positions:
+            d["track_vakaros"] = extract_local_track(
+                maneuver_ts=m_ts,
+                exit_ts=exit_ts,
+                entry_bearing_deg=rot_bearing,
+                positions=vakaros_positions,
+                bsp=bsp,
+            )
+        else:
+            d["track_vakaros"] = None
 
         # "Climb the ladder" reference: distance the boat would have made
         # directly upwind if it had held VMG at entry SOG for the entire
@@ -666,4 +756,9 @@ async def enrich_session_maneuvers(
         enriched.append(d)
 
     rank_maneuvers(enriched)
+    await storage.put_cached_enriched_maneuvers(
+        session_id,
+        ENRICH_CACHE_VERSION,
+        {"maneuvers": enriched, "video_sync": video_sync},
+    )
     return enriched, video_sync

@@ -3146,9 +3146,17 @@ function renderPolarHeatmap() {
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
 const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
-let _maneuverFilter = 'all';  // all | tack | gybe | rounding | good | bad
+// Active filter pills. Multi-select: combined with AND across dimensions
+// (type, rank, time) and OR within a dimension. Empty set == "all".
+let _maneuverFilter = new Set();
+const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const _MANEUVER_RANK_PILLS = ['good', 'bad'];
+const _MANEUVER_TIME_PILLS = ['post-start'];
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
+let _maneuverShowSK = true; // toggle SK-derived tracks in the overlay
+let _maneuverShowVakaros = false; // toggle Vakaros tracks in the overlay
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
+let _maneuverTickInterval = 0; // seconds between track tick marks; 0 = off
 
 function _parseUtc(iso) {
   if (!iso) return null;
@@ -3207,11 +3215,7 @@ function setManeuverSelectAll(mode) {
 }
 
 function _maneuverRows() {
-  const items = _maneuvers.filter(m => {
-    if (_maneuverFilter === 'all') return true;
-    if (_maneuverFilter === 'good' || _maneuverFilter === 'bad') return m.rank === _maneuverFilter;
-    return m.type === _maneuverFilter;
-  });
+  const items = _maneuvers.filter(_matchesManeuverFilter);
   const key = _maneuverSort.key, dir = _maneuverSort.dir;
   items.sort((a, b) => {
     let av = a[key], bv = b[key];
@@ -3232,12 +3236,35 @@ function setManeuverSort(key) {
 }
 
 function setManeuverFilter(f) {
-  _maneuverFilter = f;
+  if (f === 'all') {
+    _maneuverFilter.clear();
+  } else if (_maneuverFilter.has(f)) {
+    _maneuverFilter.delete(f);
+  } else {
+    _maneuverFilter.add(f);
+  }
   renderManeuverCard();
 }
 
 function toggleManeuverOverlay() {
   _maneuverOverlay = !_maneuverOverlay;
+  renderManeuverCard();
+}
+
+function toggleManeuverShowVakaros() {
+  _maneuverShowVakaros = !_maneuverShowVakaros;
+  if (!_maneuverShowSK && !_maneuverShowVakaros) _maneuverShowSK = true;
+  renderManeuverCard();
+}
+
+function toggleManeuverShowSK() {
+  _maneuverShowSK = !_maneuverShowSK;
+  if (!_maneuverShowSK && !_maneuverShowVakaros) _maneuverShowVakaros = true;
+  renderManeuverCard();
+}
+
+function setManeuverTickInterval(sec) {
+  _maneuverTickInterval = Number(sec) || 0;
   renderManeuverCard();
 }
 
@@ -3357,12 +3384,78 @@ function _renderTrackSvg(tracks, opts) {
     return out;
   }).join('');
 
+  // Time ticks + speed-recovery markers. Both ride on top of the path so
+  // they're always visible regardless of track ordering.
+  const tickInterval = _maneuverTickInterval;
+  const decorations = tracks.map(t => {
+    if (!t.points || !t.points.length) return '';
+    let out = '';
+    if (tickInterval > 0) {
+      const ts = t.points.map(p => p.t).filter(v => v != null);
+      if (ts.length) {
+        const tMin = Math.min(...ts), tMax = Math.max(...ts);
+        const kStart = Math.ceil(tMin / tickInterval);
+        const kEnd = Math.floor(tMax / tickInterval);
+        for (let k = kStart; k <= kEnd; k++) {
+          const target = k * tickInterval;
+          let best = null, bestDt = Infinity;
+          for (const p of t.points) {
+            const dt = Math.abs(p.t - target);
+            if (dt < bestDt) { bestDt = dt; best = p; }
+          }
+          if (!best || bestDt > tickInterval / 2) continue;
+          const cx = sx(best.x), cy = sy(best.y);
+          out += '<circle cx="' + cx + '" cy="' + cy + '" r="1.8" fill="' + t.color
+            + '" stroke="var(--bg-secondary)" stroke-width="0.5" opacity="0.9"/>';
+          if (k !== 0 && t.highlight) {
+            out += '<text x="' + (cx + 3) + '" y="' + (cy - 3) + '" font-size="8" fill="' + t.color
+              + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:2px;stroke-linejoin:round">'
+              + target + 's</text>';
+          }
+        }
+      }
+    }
+    if (t.entryBsp != null && t.durationSec != null) {
+      const targets = [
+        { frac: 0.8, shape: 'square', label: '80%' },
+        { frac: 1.0, shape: 'diamond', label: '100%' },
+      ];
+      for (const tgt of targets) {
+        const threshold = t.entryBsp * tgt.frac;
+        let hit = null;
+        for (const p of t.points) {
+          if (p.t < t.durationSec) continue;
+          if (p.bsp != null && p.bsp >= threshold) { hit = p; break; }
+        }
+        if (!hit) continue;
+        const cx = sx(hit.x), cy = sy(hit.y);
+        const r = 4;
+        if (tgt.shape === 'square') {
+          out += '<rect x="' + (cx - r) + '" y="' + (cy - r) + '" width="' + (2 * r)
+            + '" height="' + (2 * r) + '" fill="none" stroke="' + t.color
+            + '" stroke-width="1.4"/>';
+        } else {
+          out += '<polygon points="' + cx + ',' + (cy - r) + ' ' + (cx + r) + ',' + cy
+            + ' ' + cx + ',' + (cy + r) + ' ' + (cx - r) + ',' + cy
+            + '" fill="none" stroke="' + t.color + '" stroke-width="1.4"/>';
+        }
+        if (t.highlight) {
+          out += '<text x="' + (cx + r + 2) + '" y="' + (cy + 3) + '" font-size="8" fill="' + t.color
+            + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:2px;stroke-linejoin:round">'
+            + tgt.label + '</text>';
+        }
+      }
+    }
+    return out;
+  }).join('');
+
   const paths = tracks.map(t => {
     if (!t.points || !t.points.length) return '';
     const d = t.points.map((p, i) => (i === 0 ? 'M' : 'L') + sx(p.x).toFixed(1) + ' ' + sy(p.y).toFixed(1)).join(' ');
     const width = t.highlight ? 2.5 : 1.4;
     const opacity = t.highlight ? 1 : 0.7;
     let attrs = 'fill="none" stroke="' + t.color + '" stroke-width="' + width + '" opacity="' + opacity + '" stroke-linecap="round"';
+    if (t.dashArray) attrs += ' stroke-dasharray="' + t.dashArray + '"';
     if (interactive && t.maneuverIdx != null) {
       attrs += ' data-man-idx="' + t.maneuverIdx + '"'
         + ' style="pointer-events:stroke;cursor:pointer"'
@@ -3387,7 +3480,7 @@ function _renderTrackSvg(tracks, opts) {
   const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
 
   return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
-    + gridLines.join('') + ghostLines + hoverUnderlay + paths + crosshair + windLabels + scaleLabel + '</svg>';
+    + gridLines.join('') + ghostLines + hoverUnderlay + paths + decorations + crosshair + windLabels + scaleLabel + '</svg>';
 }
 
 // Overlay tooltip — anchored on mouseenter, stays reachable by the mouse.
@@ -3421,6 +3514,25 @@ function _highlightManeuverRow(idx, on) {
       row.scrollIntoView({block: 'nearest'});
     }
   }
+}
+
+function _highlightOverlayTrack(idx, on) {
+  // Bump the matching overlay paths when a table row is hovered, so the
+  // link from row → track is as obvious as track → row. Uses inline
+  // styles so the override wins over the attribute-level stroke-width.
+  const paths = document.querySelectorAll(
+    '#maneuvers-body svg path[data-man-idx="' + idx + '"]'
+  );
+  paths.forEach(p => {
+    if (p.getAttribute('stroke') === 'rgba(0,0,0,0)') return;  // skip hover underlay
+    if (on) {
+      p.style.strokeWidth = '3.5';
+      p.style.opacity = '1';
+    } else {
+      p.style.strokeWidth = '';
+      p.style.opacity = '';
+    }
+  });
 }
 
 function showOverlayTip(ev, idx) {
@@ -3513,25 +3625,78 @@ function hideOverlayTip() {
   _overlayTipIdx = null;
 }
 
+function _raceStartMs() {
+  if (_vakarosSyntheticStart && _vakarosSyntheticStart.ts) {
+    const d = _parseUtc(_vakarosSyntheticStart.ts);
+    if (d) return d.getTime();
+  }
+  return null;
+}
+
+function _matchesManeuverFilter(m) {
+  if (!_maneuverFilter.size) return true;
+  const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
+  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+  const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
+  if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+  if (_maneuverFilter.has('post-start')) {
+    const startMs = _raceStartMs();
+    if (startMs != null) {
+      const t = _parseUtc(m.ts);
+      if (t == null || t.getTime() < startMs) return false;
+    }
+  }
+  return true;
+}
+
 function _renderOverlaySvg() {
   const items = _maneuvers
     .filter((m, i) => _maneuverSelected.has(_manKey(m, i)))
+    .filter(_matchesManeuverFilter)
     .filter(m => m.track && m.track.length);
   if (!items.length) {
-    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers selected for overlay. Tick rows below to include them.</div>';
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No maneuvers match the current filter. Clear the filter or tick more rows below.</div>';
   }
-  const tracks = items.map(m => ({
-    points: m.track,
-    color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)',
-    label: m.type,
-    highlight: false,
-    maneuverIdx: _maneuvers.indexOf(m),
-    ghost: m.ghost_m,
-    durationSec: m.duration_sec,
-  }));
+  const tracks = [];
+  items.forEach(m => {
+    const idx = _maneuvers.indexOf(m);
+    const baseColor = _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+    if (_maneuverShowSK && m.track && m.track.length) {
+      tracks.push({
+        points: m.track,
+        color: baseColor,
+        label: m.type,
+        highlight: false,
+        maneuverIdx: idx,
+        ghost: m.ghost_m,
+        durationSec: m.duration_sec,
+        entryBsp: m.entry_bsp,
+      });
+    }
+    if (_maneuverShowVakaros && m.track_vakaros && m.track_vakaros.length) {
+      tracks.push({
+        points: m.track_vakaros,
+        color: '#8b5cf6',
+        label: m.type + ' (vakaros)',
+        highlight: false,
+        maneuverIdx: idx,
+        ghost: _maneuverShowSK ? null : m.ghost_m,
+        durationSec: _maneuverShowSK ? null : m.duration_sec,
+        entryBsp: _maneuverShowSK ? null : m.entry_bsp,
+        dashArray: '2,3',
+      });
+    }
+  });
+  if (!tracks.length) {
+    return '<div style="color:var(--text-secondary);font-size:.75rem">No tracks to show — enable SK or Vakaros.</div>';
+  }
   const svg = _renderTrackSvg(tracks, { width: 420, height: 340, interactive: true });
+  const totalLabel = _maneuverFilter.size === 0
+    ? _maneuvers.length + ''
+    : _maneuvers.filter(_matchesManeuverFilter).length + ' '
+        + Array.from(_maneuverFilter).join('+');
   const legend = '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">'
-    + items.length + ' of ' + _maneuvers.length + ' overlaid. Colours = rank '
+    + items.length + ' of ' + totalLabel + ' overlaid. Colours = rank '
     + '<span style="color:' + _RANK_COLORS.good + '">●good</span> '
     + '<span style="color:' + _RANK_COLORS.avg + '">●avg</span> '
     + '<span style="color:' + _RANK_COLORS.bad + '">●bad</span>. '
@@ -3564,19 +3729,38 @@ function renderManeuverCard() {
   const overlayBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
     + (_maneuverOverlay ? 'var(--accent)' : 'transparent') + ';color:'
     + (_maneuverOverlay ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const hasVakarosTracks = _maneuvers.some(m => m.track_vakaros && m.track_vakaros.length);
+  const skBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverShowSK ? 'var(--accent)' : 'transparent') + ';color:'
+    + (_maneuverShowSK ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const vakarosBtnStyle = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+    + (_maneuverShowVakaros ? '#8b5cf6' : 'transparent') + ';color:'
+    + (_maneuverShowVakaros ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+  const sourceBtns = hasVakarosTracks
+    ? '<button style="' + skBtnStyle + '" onclick="toggleManeuverShowSK()" title="Show SK-derived tracks">sk</button>'
+      + '<button style="' + vakarosBtnStyle + '" onclick="toggleManeuverShowVakaros()" title="Show Vakaros GPS tracks">vakaros</button>'
+    : '';
   const summary = '<div style="color:var(--text-secondary);font-size:.75rem;margin-bottom:6px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
     + '<span>' + tacks + 'T · ' + gybes + 'G · ' + roundings + 'R</span>'
     + '<span style="color:' + _RANK_COLORS.good + '">' + good + ' good</span>'
     + '<span style="color:' + _RANK_COLORS.bad + '">' + bad + ' bad</span>'
     + '<span style="flex:1"></span>'
+    + sourceBtns
+    + '<label style="font-size:.7rem;color:var(--text-secondary)">ticks '
+    + '<select onchange="setManeuverTickInterval(this.value)" style="font-size:.7rem;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:3px;padding:1px 3px">'
+    + ['0', '2', '5', '10'].map(s =>
+        '<option value="' + s + '"' + (String(_maneuverTickInterval) === s ? ' selected' : '') + '>'
+        + (s === '0' ? 'off' : s + 's') + '</option>').join('')
+    + '</select></label>'
     + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
   const filters = ['all', 'tack', 'gybe', 'rounding', 'good', 'bad'];
+  if (_raceStartMs() != null) filters.push('post-start');
   const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
     + filters.map(f => {
-        const active = _maneuverFilter === f;
+        const active = f === 'all' ? _maneuverFilter.size === 0 : _maneuverFilter.has(f);
         const style = 'font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
           + (active ? 'var(--accent)' : 'transparent') + ';color:'
           + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
@@ -3593,7 +3777,15 @@ function renderManeuverCard() {
     const rankDot = m.rank
       ? '<span title="' + m.rank + '" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + rankColor + ';margin-right:4px"></span>'
       : '';
-    const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>';
+    // Direction hint from the signed turn angle.
+    let dirHint = '';
+    if ((m.type === 'tack' || m.type === 'gybe') && m.turn_angle_deg != null) {
+      dirHint = m.turn_angle_deg > 0
+        ? '<span title="Starboard → Port" style="color:var(--text-secondary);margin-left:3px">S→P</span>'
+        : '<span title="Port → Starboard" style="color:var(--text-secondary);margin-left:3px">P→S</span>';
+    }
+    const typeBadge = rankDot + '<span style="color:' + color + ';font-weight:600">'
+      + esc(m.type) + '</span>' + dirHint;
     const selected = _maneuverSelected.has(key);
     const cbox = '<input type="checkbox" ' + (selected ? 'checked ' : '') + 'onclick="event.stopPropagation();toggleManeuverSelected(\'' + key + '\')" title="Include in overlay">';
     const elapsed = _fmtElapsed(m.ts);
@@ -3610,7 +3802,10 @@ function renderManeuverCard() {
     const yt = m.youtube_url
       ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
       : '';
-    return '<tr id="mrow-' + idx + '" style="cursor:pointer" onclick="highlightManeuver(' + idx + ')">'
+    return '<tr id="mrow-' + idx + '" style="cursor:pointer"'
+      + ' onclick="highlightManeuver(' + idx + ')"'
+      + ' onmouseenter="_highlightOverlayTrack(' + idx + ',true)"'
+      + ' onmouseleave="_highlightOverlayTrack(' + idx + ',false)">'
       + '<td>' + cbox + '</td>'
       + '<td>' + typeBadge + '</td>'
       + '<td style="font-variant-numeric:tabular-nums">' + elapsed + '</td>'
@@ -3712,15 +3907,32 @@ function _renderManeuverDetail(m) {
   const metricsGrid = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
     + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
     + '</div>';
-  const diagram = (m.track && m.track.length)
-    ? _renderTrackSvg([{
-        points: m.track,
-        color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
-        label: m.type,
-        highlight: true,
-        ghost: m.ghost_m,
-        durationSec: m.duration_sec,
-      }], { width: 300, height: 240 })
+  const detailTracks = [];
+  if (_maneuverShowSK && m.track && m.track.length) {
+    detailTracks.push({
+      points: m.track,
+      color: _RANK_COLORS[m.rank] || _MANEUVER_COLORS[m.type] || 'var(--accent)',
+      label: m.type,
+      highlight: true,
+      ghost: m.ghost_m,
+      durationSec: m.duration_sec,
+      entryBsp: m.entry_bsp,
+    });
+  }
+  if (_maneuverShowVakaros && m.track_vakaros && m.track_vakaros.length) {
+    detailTracks.push({
+      points: m.track_vakaros,
+      color: '#8b5cf6',
+      label: 'vakaros',
+      highlight: !_maneuverShowSK,
+      ghost: _maneuverShowSK ? null : m.ghost_m,
+      durationSec: _maneuverShowSK ? null : m.duration_sec,
+      entryBsp: _maneuverShowSK ? null : m.entry_bsp,
+      dashArray: '2,3',
+    });
+  }
+  const diagram = detailTracks.length
+    ? _renderTrackSvg(detailTracks, { width: 300, height: 240 })
     : '';
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
