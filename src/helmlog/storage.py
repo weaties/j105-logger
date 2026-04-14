@@ -165,7 +165,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 68
+_CURRENT_VERSION: int = 69
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1572,7 +1572,7 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_polar_segment_grades_session
             ON polar_segment_grades(session_id, polar_source);
     """,
-    67: """
+    68: """
         -- #532: Backfill imported-results races whose start_utc was written
         -- as a bare date by the Clubspot/STYC importer. Rewrite them to a
         -- real ISO-8601 UTC timestamp at midnight so _parse_utc returns a
@@ -1583,13 +1583,12 @@ _MIGRATIONS: dict[int, str] = {
          WHERE length(start_utc) = 10;
         UPDATE races SET end_utc = NULL WHERE end_utc = '';
     """,
-    68: """
-        -- #532: Belt-and-suspenders re-run of the v67 backfill. On corvopi-live
-        -- the schema_version was observed to advance to 67 while the UPDATE
-        -- payload never touched any rows (likely a partial apply of the first
-        -- buggy v67 text that sqlite rejected mid-migration). Re-running the
-        -- same UPDATEs here guarantees any Pi in the same state gets cleaned
-        -- automatically on next deploy.
+    69: """
+        -- #532: Belt-and-suspenders re-run of the v68 backfill. On corvopi-live
+        -- the schema_version was observed to advance while the UPDATE payload
+        -- never touched any rows (a partial apply of an earlier buggy text
+        -- that sqlite rejected mid-migration). Re-running the same UPDATEs
+        -- here guarantees any Pi in the same state self-heals on next deploy.
         UPDATE races
            SET start_utc = start_utc || 'T00:00:00+00:00'
          WHERE length(start_utc) = 10;

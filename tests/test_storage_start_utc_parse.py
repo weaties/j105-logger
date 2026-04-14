@@ -99,15 +99,15 @@ class TestRowToRaceHydration:
 
 
 class TestMigrationV67Backfill:
-    """v67 must rewrite date-only start_utc values to full ISO timestamps."""
+    """v68 must rewrite date-only start_utc values to full ISO timestamps."""
 
     @pytest.mark.asyncio
-    async def test_v67_rewrites_date_only_start_utc(self, storage: Storage) -> None:
+    async def test_v68_rewrites_date_only_start_utc(self, storage: Storage) -> None:
         """Simulate a pre-fix dirty row (date-only start_utc, empty end_utc)
-        and re-run the v67 UPDATEs to confirm they clean it up."""
+        and re-run the v68 UPDATEs to confirm they clean it up."""
         db = storage._conn()
         # Migrations already ran against the fresh schema. Insert a dirty row
-        # as if the pre-fix importer had written it, then re-run the v67 SQL.
+        # as if the pre-fix importer had written it, then re-run the v68 SQL.
         await db.execute(
             "INSERT INTO races"
             " (name, event, race_num, date, start_utc, end_utc, session_type)"
