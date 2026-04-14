@@ -958,15 +958,13 @@ async def test_vakaros_overlay_race_start_context_includes_polar_pct_and_line_bi
     assert ctx["polar_pct"] == pytest.approx(90.0, abs=0.5)
 
     # Wind-relative line bias.
-    # Line bearing pin → boat = 90° T (due east).
-    # Wind FROM 45° T means wind blows toward 225°.
-    # The "square" line is perpendicular to the wind direction. A line
-    # perpendicular to wind-from-45° has bearings 135° / 315°.
-    # Our line is 90°, which is 45° clockwise of the square (135°)... so
-    # the pin (west end) is favored relative to the boat end.
+    # Line bearing pin → boat = 90° T (pin at west end, boat at east end).
+    # Wind FROM 45° T (NE), so the upwind direction is to the NE. The boat
+    # end (east) projects further along the NE upwind vector than the pin
+    # end (west), so the boat end is more upwind → boat favoured.
     assert ctx["line_bias_deg"] is not None
     assert ctx["favored_end"] in ("pin", "boat", "square")
-    assert ctx["favored_end"] == "pin"  # for this geometry
+    assert ctx["favored_end"] == "boat"  # for this geometry
 
 
 @pytest.mark.asyncio
