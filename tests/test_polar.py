@@ -187,6 +187,87 @@ async def test_mean_bsp_correct(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_baseline_excludes_prestart_via_vakaros_gun(storage: Storage) -> None:
+    """When a race has a Vakaros race_start event, pre-start samples should
+    not contribute to the baseline (#536). Pre-start BSP=1.0, racing BSP=6.0 —
+    the baseline mean must reflect only the racing samples.
+    """
+    db = storage._conn()
+
+    # Three races with identical structure: 10s pre-start (BSP=1.0) then
+    # 10s "racing" (BSP=6.0). race_start event is at +10s.
+    for race_num in range(1, 4):
+        prestart_start = _BASE_TS + timedelta(hours=race_num)
+        gun = prestart_start + timedelta(seconds=10)
+        end = gun + timedelta(seconds=10)
+
+        # vakaros_sessions row
+        await db.execute(
+            "INSERT INTO vakaros_sessions (source_hash, source_file, start_utc,"
+            " end_utc, ingested_at) VALUES (?, ?, ?, ?, ?)",
+            (
+                f"hash-{race_num}",
+                f"vak-{race_num}.csv",
+                prestart_start.isoformat(),
+                end.isoformat(),
+                prestart_start.isoformat(),
+            ),
+        )
+        vcur = await db.execute("SELECT id FROM vakaros_sessions ORDER BY id DESC LIMIT 1")
+        vrow = await vcur.fetchone()
+        vid = int(vrow["id"])
+
+        await db.execute(
+            "INSERT INTO races (name, event, race_num, date, start_utc,"
+            " end_utc, vakaros_session_id) VALUES (?, 'E', ?, ?, ?, ?, ?)",
+            (
+                f"R{race_num}",
+                race_num,
+                prestart_start.date().isoformat(),
+                prestart_start.isoformat(),
+                end.isoformat(),
+                vid,
+            ),
+        )
+        await db.execute(
+            "INSERT INTO vakaros_race_events (session_id, ts, event_type,"
+            " timer_value_s) VALUES (?, ?, 'race_start', 0)",
+            (vid, gun.isoformat()),
+        )
+        await db.commit()
+
+        # Pre-start samples — low BSP, should be excluded.
+        for i in range(10):
+            ts = prestart_start + timedelta(seconds=i)
+            await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 1.0))
+            await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+        # Race samples — higher BSP, should form the baseline.
+        for i in range(10):
+            ts = gun + timedelta(seconds=i)
+            await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 6.0))
+            await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+
+    await build_polar_baseline(storage)
+    row = await storage.get_polar_point(_tws_bin(10.0), _twa_bin(45.0))
+    assert row is not None
+    assert row["mean_bsp"] == pytest.approx(6.0, rel=1e-3)
+
+
+@pytest.mark.asyncio
+async def test_baseline_falls_back_to_start_utc_without_vakaros(
+    storage: Storage,
+) -> None:
+    """Races without a Vakaros session should still contribute the full
+    [start_utc, end_utc] window to the baseline."""
+    for i in range(1, 4):
+        await _make_session(storage, i, bsp=5.5, tws=10.0, twa=45.0)
+    await build_polar_baseline(storage)
+    row = await storage.get_polar_point(_tws_bin(10.0), _twa_bin(45.0))
+    assert row is not None
+    assert row["mean_bsp"] == pytest.approx(5.5, rel=1e-3)
+
+
+@pytest.mark.asyncio
 async def test_port_starboard_fold(storage: Storage) -> None:
     """TWA=+45 and TWA=-45 should land in the same bin."""
     for i, twa in enumerate([45.0, -45.0, 45.0], start=1):

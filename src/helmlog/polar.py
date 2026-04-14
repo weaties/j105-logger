@@ -7,6 +7,7 @@ this baseline to show whether the boat is over or under-performing.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 from collections import defaultdict
@@ -99,8 +100,12 @@ async def build_polar_baseline(storage: Storage, min_sessions: int = 3) -> int:
     """
     db = storage._conn()
 
-    # 1. Fetch all completed races
-    cur = await db.execute("SELECT id, start_utc, end_utc FROM races WHERE end_utc IS NOT NULL")
+    # 1. Fetch all completed races. vakaros_session_id is pulled so we can
+    #    narrow the window to [race_gun, end] for Vakaros-matched races and
+    #    exclude pre-start maneuvering from the baseline (#536).
+    cur = await db.execute(
+        "SELECT id, start_utc, end_utc, vakaros_session_id FROM races WHERE end_utc IS NOT NULL"
+    )
     races = list(await cur.fetchall())
     if not races:
         logger.info("Polar: no completed races found; baseline not built")
@@ -121,6 +126,23 @@ async def build_polar_baseline(storage: Storage, min_sessions: int = 3) -> int:
         except ValueError:
             logger.warning("Polar: skipping race {} — bad timestamps", race_id)
             continue
+
+        # Prefer the Vakaros race_start event as the effective gun for this
+        # race; fall back to start_utc when no Vakaros match is available.
+        # Skips pre-start maneuvering from the baseline (#536).
+        vakaros_sid = race_row["vakaros_session_id"]
+        if vakaros_sid is not None:
+            gun_cur = await db.execute(
+                "SELECT vre.ts FROM vakaros_race_events vre"
+                " WHERE vre.session_id = ? AND vre.event_type = 'race_start'"
+                "   AND vre.ts BETWEEN ? AND ?"
+                " ORDER BY vre.ts DESC LIMIT 1",
+                (vakaros_sid, race_row["start_utc"], race_row["end_utc"]),
+            )
+            gun_row = await gun_cur.fetchone()
+            if gun_row is not None:
+                with contextlib.suppress(ValueError):
+                    start = datetime.fromisoformat(str(gun_row["ts"])).replace(tzinfo=UTC)
 
         speeds = await storage.query_range("speeds", start, end)
         winds = await storage.query_range("winds", start, end)
