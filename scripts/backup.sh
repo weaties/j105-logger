@@ -48,6 +48,7 @@ MAIL_HELPER="$SCRIPT_DIR/backup_report_mail.py"
 
 STATUS="ok"
 STATUS_REASON=""
+WARNINGS=()
 SECONDS=0
 
 # Capture everything this script writes to stderr so the failure report can
@@ -66,6 +67,12 @@ mark_failed() {
   if [ -z "$STATUS_REASON" ]; then
     STATUS_REASON="$*"
   fi
+}
+
+# Record a warning without flipping STATUS. Used for rsync partial-transfer
+# exit codes (23, 24) — the snapshot is usable but some files were skipped.
+mark_warning() {
+  WARNINGS+=("$*")
 }
 
 # Human-readable size for a path (falls back to "—" if the path is missing).
@@ -161,9 +168,23 @@ on_exit() {
     report_line "- **Previous snapshot**: \`$PREV\` ($prev_size)"
   fi
   report_line "- **Exit code**: $rc"
-  report_line "- **Status**: $([ "$STATUS" = "ok" ] && echo SUCCESS || echo FAILURE)"
+  if [ "$STATUS" = "ok" ] && [ "${#WARNINGS[@]}" -gt 0 ]; then
+    report_line "- **Status**: SUCCESS (with warnings)"
+  else
+    report_line "- **Status**: $([ "$STATUS" = "ok" ] && echo SUCCESS || echo FAILURE)"
+  fi
   if [ -n "$STATUS_REASON" ]; then
     report_line "- **Reason**: $STATUS_REASON"
+  fi
+
+  if [ "${#WARNINGS[@]}" -gt 0 ]; then
+    report_line ""
+    report_line "## Warnings"
+    report_line ""
+    local w
+    for w in "${WARNINGS[@]}"; do
+      report_line "- $w"
+    done
   fi
 
   report_line ""
@@ -287,12 +308,61 @@ run_step() {
   fi
 }
 
+# run_rsync_step NAME LOCAL_DIR <rsync...>
+# Like run_step, but distinguishes rsync's partial-transfer exit codes from
+# hard failures:
+#
+#   rc  0        → OK
+#   rc  23       → WARN (some files could not be transferred, e.g. permission
+#                  denied or the user can't traverse a directory). The
+#                  snapshot of every readable file is still valid.
+#   rc  24       → WARN (some files vanished between the file-list build and
+#                  the transfer — benign on a live system).
+#   any other rc → FAILED, mark_failed is called.
+#
+# This keeps the overall STATUS="ok" when rsync only complained about a few
+# unreadable files. The safety gate still has the final say on whether the
+# snapshot is usable. See #544.
+run_rsync_step() {
+  local name="$1"; shift
+  local local_dir="$1"; shift
+  local start
+  start=$(date +%s)
+  log "Step: $name"
+  "$@"
+  local rc=$?
+  local dur
+  dur=$(elapsed_since "$start")
+  local size count
+  size=$(human_size "$local_dir")
+  count=$(file_count "$local_dir")
+  case "$rc" in
+    0)
+      log "  OK ($size, $count files, $(fmt_duration "$dur"))"
+      report_line "- **$name**: OK — $size, $count files, $(fmt_duration "$dur")"
+      return 0
+      ;;
+    23|24)
+      log "  WARN (rc=$rc partial transfer, $size, $count files, $(fmt_duration "$dur"))"
+      report_line "- **$name**: WARN — partial transfer (rc=$rc), $size, $count files, $(fmt_duration "$dur")"
+      mark_warning "$name: rsync rc=$rc (partial transfer — see stderr for skipped files)"
+      return 0
+      ;;
+    *)
+      log "  FAILED (rc=$rc, $(fmt_duration "$dur"))"
+      report_line "- **$name**: FAILED (rc=$rc, $(fmt_duration "$dur"))"
+      mark_failed "$name failed (rc=$rc)"
+      return "$rc"
+      ;;
+  esac
+}
+
 # ── 1. SQLite — WAL checkpoint then rsync ────────────────────────────────────
 ssh "$PI" "sqlite3 ~/helmlog/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE);'" 2>/dev/null || \
   log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
 
 # shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
-run_step "SQLite + file data" "$SNAP/data" \
+run_rsync_step "SQLite + file data" "$SNAP/data" \
   rsync -az $RSYNC_PROGRESS $LINK_DATA \
     "$PI:~/helmlog/data/" \
     "$SNAP/data/" || true
@@ -347,7 +417,7 @@ fi
 LINK_SK=""
 [ -n "$PREV" ] && [ -d "$PREV/signalk" ] && LINK_SK="--link-dest=$PREV/signalk"
 # shellcheck disable=SC2086
-run_step "Signal K config + data" "$SNAP/signalk" \
+run_rsync_step "Signal K config + data" "$SNAP/signalk" \
   rsync -az $RSYNC_PROGRESS $LINK_SK \
     --exclude='node_modules/' \
     --exclude='package-lock.json' \
@@ -356,7 +426,7 @@ run_step "Signal K config + data" "$SNAP/signalk" \
 
 # ── 4. Grafana — data dir + provisioning config ──────────────────────────────
 # shellcheck disable=SC2086
-run_step "Grafana data dir" "$SNAP/grafana" \
+run_rsync_step "Grafana data dir" "$SNAP/grafana" \
   rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GRAFANA \
@@ -367,7 +437,7 @@ LINK_GP=""
 [ -n "$PREV" ] && [ -d "$PREV/grafana-provisioning" ] && \
   LINK_GP="--link-dest=$PREV/grafana-provisioning"
 # shellcheck disable=SC2086
-run_step "Grafana provisioning" "$SNAP/grafana-provisioning" \
+run_rsync_step "Grafana provisioning" "$SNAP/grafana-provisioning" \
   rsync -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GP \
