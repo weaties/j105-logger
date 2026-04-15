@@ -127,11 +127,19 @@
       </div>
       <div class="replay-gauge" data-gauge="wind" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
         <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:2px">Wind</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;font-family:monospace">
-          <span><span style="color:var(--text-secondary);font-size:.7rem">TWS</span> <span id="hud-tws" style="font-size:1.05rem;color:var(--text-primary)">—</span></span>
-          <span><span style="color:var(--text-secondary);font-size:.7rem">TWA</span> <span id="hud-twa" style="font-size:1.05rem;color:var(--text-primary)">—</span></span>
-          <span><span style="color:var(--text-secondary);font-size:.7rem">AWS</span> <span id="hud-aws" style="font-size:1.05rem;color:var(--text-primary)">—</span></span>
-          <span><span style="color:var(--text-secondary);font-size:.7rem">AWA</span> <span id="hud-awa" style="font-size:1.05rem;color:var(--text-primary)">—</span></span>
+        <div style="display:grid;grid-template-columns:auto 1fr 1fr;gap:1px 10px;font-family:monospace;align-items:baseline">
+          <span></span>
+          <span style="color:var(--text-secondary);font-size:.65rem;text-transform:uppercase">True</span>
+          <span style="color:var(--text-secondary);font-size:.65rem;text-transform:uppercase">Apparent</span>
+          <span style="color:var(--text-secondary);font-size:.7rem">SPD</span>
+          <span id="hud-tws" style="font-size:1.05rem;color:var(--text-primary)">—</span>
+          <span id="hud-aws" style="font-size:1.05rem;color:var(--text-primary)">—</span>
+          <span style="color:var(--text-secondary);font-size:.7rem">DIR</span>
+          <span id="hud-twd" style="font-size:1.05rem;color:var(--text-primary)">—</span>
+          <span style="font-size:1.05rem;color:var(--text-secondary)">—</span>
+          <span style="color:var(--text-secondary);font-size:.7rem">ANG</span>
+          <span id="hud-twa" style="font-size:1.05rem;color:var(--text-primary)">—</span>
+          <span id="hud-awa" style="font-size:1.05rem;color:var(--text-primary)">—</span>
         </div>
         <canvas id="spark-tws" width="300" height="22" style="width:100%;height:18px;display:block;margin-top:2px"></canvas>
         <canvas id="spark-twa" width="300" height="22" style="width:100%;height:18px;display:block"></canvas>

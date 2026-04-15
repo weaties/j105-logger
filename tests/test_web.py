@@ -4015,6 +4015,9 @@ async def test_replay_endpoint_returns_samples_and_grades(storage: Storage) -> N
     assert sample["stw"] == pytest.approx(6.0)
     assert sample["tws"] == pytest.approx(10.0)
     assert sample["twa"] == pytest.approx(45.0)
+    # ref=0 is boat-referenced true wind and we seeded no heading, so TWD
+    # cannot be derived and must surface as None (not NaN or 0).
+    assert sample["twd"] is None
     # 30s / 10s per segment → 3 graded segments (grade is "unknown" because
     # no baseline has been built — we only check shape here).
     assert len(data["grades"]) == 3
@@ -4022,6 +4025,47 @@ async def test_replay_endpoint_returns_samples_and_grades(storage: Storage) -> N
         assert "grade" in g
         assert "t_start" in g
         assert "t_end" in g
+
+
+@pytest.mark.asyncio
+async def test_replay_endpoint_returns_twd_when_heading_present(storage: Storage) -> None:
+    """Boat-referenced true wind + heading → TWD = (heading + wind_angle) mod 360."""
+    from datetime import timedelta
+
+    from helmlog.nmea2000 import (
+        PGN_VESSEL_HEADING,
+        PGN_WIND_DATA,
+        HeadingRecord,
+        WindRecord,
+    )
+
+    start = datetime(2024, 8, 2, 12, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=5)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('TWD', 'E', 1, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    race_id = int((await cur.fetchone())["id"])
+    for i in range(5):
+        ts = start + timedelta(seconds=i)
+        await storage.write(HeadingRecord(PGN_VESSEL_HEADING, 5, ts, 180.0, None, None))
+        # ref=0 (boat-referenced), wind_angle=45 (TWA). Heading 180 → TWD 225.
+        await storage.write(WindRecord(PGN_WIND_DATA, 5, ts, 10.0, 45.0, 0))
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/replay")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    sample = data["samples"][0]
+    assert sample["twd"] == pytest.approx(225.0)
 
 
 @pytest.mark.asyncio
