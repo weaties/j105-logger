@@ -1938,8 +1938,9 @@ async function deleteNote(noteId) {
 // ---------------------------------------------------------------------------
 
 async function loadTranscript() {
-  const card = document.getElementById('transcript-card');
-  card.style.display = '';
+  // Transcript now lives inside #audio-card (consolidated with the race
+  // player for parity with the debrief card layout), so visibility is
+  // driven by loadAudio() showing the audio card — no separate toggle here.
   const body = document.getElementById('transcript-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
 
@@ -2175,6 +2176,147 @@ async function retranscribe() {
 // Audio
 // ---------------------------------------------------------------------------
 
+// Debrief audio card (#546): when the race has an attached debrief recording,
+// render a second native <audio controls> below the primary player. Debriefs
+// are sequential recordings, not capture-group siblings, so they're surfaced
+// as their own row rather than going through the Web Audio mix path.
+function _renderDebriefPlayer() {
+  const deb = _session && _session.debrief_audio;
+  if (!deb) return;
+  // Anchor to #audio-card (not #audio-body) so the debrief subsection lands
+  // after the race transcript that now lives inside the same card. Otherwise
+  // the debrief gets sandwiched between the race player and its transcript.
+  const card = document.getElementById('audio-card');
+  if (!card) return;
+  const existing = document.getElementById('debrief-player');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'debrief-player';
+  wrap.style.marginTop = '10px';
+  wrap.innerHTML =
+    '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
+    + 'Debrief</div>'
+    + '<div style="display:flex;align-items:center;gap:8px">'
+    + '<audio id="debrief-audio" controls preload="metadata" style="flex:1;min-width:0">'
+    + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
+    + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
+    + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
+    + '</div>'
+    + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
+    + 'onclick="toggleSection(\'debrief-transcript\')">'
+    + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
+    + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
+    + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
+    + '</div>';
+  card.appendChild(wrap);
+  _loadDebriefTranscript(deb.audio_session_id);
+}
+
+// Seek the debrief <audio> element to `t` seconds and start playback.
+// Used as the onclick target for transcript segments in the debrief panel.
+function seekDebriefAudio(t) {
+  const el = document.getElementById('debrief-audio');
+  if (!el) return;
+  try {
+    el.currentTime = Math.max(0, Number(t) || 0);
+    const p = el.play();
+    if (p && typeof p.catch === 'function') p.catch(() => { /* swallow autoplay */ });
+  } catch (e) { /* swallow */ }
+}
+
+// Debrief transcript (#546): self-contained fetch + render for the debrief
+// audio row. Intentionally does not touch the race-transcript globals
+// (_transcriptBlocks, _transcriptId, _speakerMap) or wire audio-sync — the
+// debrief is off the race timeline and doesn't feed tuning extraction.
+async function _loadDebriefTranscript(audioSessionId) {
+  const body = document.getElementById('debrief-transcript-body');
+  if (!body) return;
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcript');
+  if (r.status === 404) {
+    body.innerHTML =
+      '<span style="color:var(--text-secondary)">No transcript yet. </span>'
+      + '<button class="btn-export" style="font-size:.72rem" '
+      + 'onclick="startDebriefTranscript(' + audioSessionId + ')">'
+      + '&#9654; Transcribe</button>';
+    return;
+  }
+  const t = await r.json();
+  if (t.status === 'pending' || t.status === 'running') {
+    body.innerHTML = '<span style="color:var(--warning)">Transcription in progress\u2026</span>';
+    setTimeout(() => _loadDebriefTranscript(audioSessionId), 3000);
+    return;
+  }
+  if (t.status === 'error') {
+    body.innerHTML =
+      '<span style="color:var(--danger)">Error: ' + esc(t.error_msg || 'unknown') + '</span>';
+    return;
+  }
+  const segs = Array.isArray(t.segments) ? t.segments : [];
+  const fmt = s => {
+    const m = Math.floor(s / 60);
+    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  };
+  const speakerMap = t.speaker_map || {};
+  const displayName = raw => {
+    const entry = speakerMap[raw];
+    if (entry && entry.name) return entry.name;
+    return raw || '';
+  };
+  // Segments are clickable — clicking seeks the debrief <audio> element to
+  // the segment start and starts playback. Use inline onclick with the raw
+  // start seconds so the handler stays self-contained.
+  const segStyle =
+    'margin-bottom:3px;cursor:pointer;padding:2px 4px;border-radius:3px';
+  let html = '';
+  if (segs.length && segs.some(s => s.speaker)) {
+    html = segs.map(s => {
+      const start = Number(s.start) || 0;
+      const who = s.speaker
+        ? '<span style="color:var(--accent)">' + esc(displayName(s.speaker)) + ':</span> '
+        : '';
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+        + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
+        + 'onmouseout="this.style.background=\'transparent\'" '
+        + 'title="Click to play from here">'
+        + '<span style="color:var(--text-secondary);font-family:monospace">['
+        + fmt(start) + ']</span> '
+        + who + esc(s.text || '') + '</div>';
+    }).join('');
+  } else if (segs.length) {
+    html = segs.map(s => {
+      const start = Number(s.start) || 0;
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+        + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
+        + 'onmouseout="this.style.background=\'transparent\'" '
+        + 'title="Click to play from here">'
+        + '<span style="color:var(--text-secondary);font-family:monospace">['
+        + fmt(start) + ']</span> ' + esc(s.text || '') + '</div>';
+    }).join('');
+  } else if (t.text) {
+    html = '<div style="white-space:pre-wrap">' + esc(t.text) + '</div>';
+  } else {
+    html = '<span style="color:var(--text-secondary)">(empty)</span>';
+  }
+  body.innerHTML =
+    '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
+    + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
+}
+
+async function startDebriefTranscript(audioSessionId) {
+  const body = document.getElementById('debrief-transcript-body');
+  if (body) {
+    body.innerHTML = '<span style="color:var(--warning)">Starting transcription\u2026</span>';
+  }
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcribe', { method: 'POST' });
+  if (!r.ok) {
+    if (body) {
+      body.innerHTML = '<span style="color:var(--danger)">Failed to start transcription</span>';
+    }
+    return;
+  }
+  _loadDebriefTranscript(audioSessionId);
+}
+
 function loadAudio() {
   const card = document.getElementById('audio-card');
   card.style.display = '';
@@ -2188,6 +2330,7 @@ function loadAudio() {
     '<audio id="session-audio" controls style="width:100%">'
     + '<source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav">'
     + '</audio>';
+  _renderDebriefPlayer();
   const el = document.getElementById('session-audio');
   if (!el) return;
   // Always wire audio→transcript highlighting (works even if audio_start_utc
@@ -2519,6 +2662,7 @@ async function loadMultiChannelAudio() {
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
+      _renderDebriefPlayer();
       return;
     }
 
@@ -2544,6 +2688,7 @@ async function loadMultiChannelAudio() {
     document.getElementById('mc-status').textContent =
       `${channels}-channel session — click a transcript segment to isolate that channel.`;
     _mcUpdateProgress();
+    _renderDebriefPlayer();
   } catch (e) {
     console.error('multi-channel audio load failed', e);
     document.getElementById('mc-status').textContent = 'Error: ' + e.message;
