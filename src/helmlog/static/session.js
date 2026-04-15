@@ -1667,6 +1667,36 @@ function toggleSection(name) {
   }
 }
 
+const _LAYER_TOGGLE_KEY = 'helmlog.session.layer.';
+const _PERSISTED_LAYER_TOGGLES = [];
+
+function _persistLayerToggle(id, apply) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  _PERSISTED_LAYER_TOGGLES.push({id, apply});
+  let saved = null;
+  try { saved = localStorage.getItem(_LAYER_TOGGLE_KEY + id); } catch (e) {}
+  if (saved === '1' || saved === '0') {
+    el.checked = saved === '1';
+  }
+  el.addEventListener('change', (e) => {
+    const checked = !!e.target.checked;
+    try { localStorage.setItem(_LAYER_TOGGLE_KEY + id, checked ? '1' : '0'); } catch (err) {}
+    apply(checked);
+  });
+}
+
+// After replay data is loaded, apply the saved state of every persisted layer
+// toggle so overlays like Boat wind / Boat current render on session load
+// instead of waiting for the user to toggle them on.
+function _applyPersistedLayerToggles() {
+  for (const {id, apply} of _PERSISTED_LAYER_TOGGLES) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    try { apply(!!el.checked); } catch (e) {}
+  }
+}
+
 function _restorePersistedSections() {
   for (const name of _PERSISTED_SECTIONS) {
     let saved = null;
@@ -6811,6 +6841,10 @@ async function _loadReplayData() {
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     _renderHud(_playClock.positionUtc);
     _updateReplayControls();
+    // Now that samples and the map are in place, re-apply any persisted
+    // layer toggles (boat wind/current, overlays, polar colors, etc.) so
+    // user preferences carry across sessions.
+    _applyPersistedLayerToggles();
     // Samples + replay window are now loaded — redraw the rounding
     // laylines so they respect the race-start filter.
     if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
@@ -6835,43 +6869,22 @@ function _wireReplayControls() {
       _seekTo(new Date(t), 'replay');
     });
   }
-  const toggle = document.getElementById('toggle-polar-grades');
-  if (toggle) toggle.addEventListener('change', (e) => _setGradeViewActive(e.target.checked));
-  const followToggle = document.getElementById('toggle-follow-boat');
-  if (followToggle) followToggle.addEventListener('change', (e) => {
-    _followBoat = !!e.target.checked;
-    // Snap to the current position immediately when enabled so the user
-    // doesn't have to wait for the next tick.
+  const _followBoatApply = (checked) => {
+    _followBoat = !!checked;
     if (_followBoat && _trackData && _playClock.positionUtc) {
       const idx = _indexForUtc(_playClock.positionUtc);
       const latLng = _trackData.latLngs[idx];
       if (latLng && _map) _map.panTo(latLng, {animate: true});
     }
-  });
-  const maneuverToggle = document.getElementById('toggle-maneuver-markers');
-  if (maneuverToggle) maneuverToggle.addEventListener('change', (e) => {
-    _setManeuverMarkersVisible(e.target.checked);
-  });
-  const courseToggle = document.getElementById('toggle-course-overlay');
-  if (courseToggle) courseToggle.addEventListener('change', (e) => {
-    _setCourseOverlayVisible(e.target.checked);
-  });
-  const currentToggle = document.getElementById('toggle-current-overlay');
-  if (currentToggle) currentToggle.addEventListener('change', (e) => {
-    _setCurrentOverlayEnabled(e.target.checked);
-  });
-  const windToggle = document.getElementById('toggle-wind-overlay');
-  if (windToggle) windToggle.addEventListener('change', (e) => {
-    _setWindOverlayEnabled(e.target.checked);
-  });
-  const boatCurrentToggle = document.getElementById('toggle-boat-current');
-  if (boatCurrentToggle) boatCurrentToggle.addEventListener('change', (e) => {
-    _setBoatInstrument('current', e.target.checked);
-  });
-  const boatWindToggle = document.getElementById('toggle-boat-wind');
-  if (boatWindToggle) boatWindToggle.addEventListener('change', (e) => {
-    _setBoatInstrument('wind', e.target.checked);
-  });
+  };
+  _persistLayerToggle('toggle-polar-grades', _setGradeViewActive);
+  _persistLayerToggle('toggle-follow-boat', _followBoatApply);
+  _persistLayerToggle('toggle-maneuver-markers', _setManeuverMarkersVisible);
+  _persistLayerToggle('toggle-course-overlay', _setCourseOverlayVisible);
+  _persistLayerToggle('toggle-current-overlay', _setCurrentOverlayEnabled);
+  _persistLayerToggle('toggle-wind-overlay', _setWindOverlayEnabled);
+  _persistLayerToggle('toggle-boat-current', (checked) => _setBoatInstrument('current', checked));
+  _persistLayerToggle('toggle-boat-wind', (checked) => _setBoatInstrument('wind', checked));
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
   if (prevBtn) prevBtn.addEventListener('click', () => _stepEvent(-1));
