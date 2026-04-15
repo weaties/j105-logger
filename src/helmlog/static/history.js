@@ -178,6 +178,16 @@ function renderWind(wind) {
     + '</div>';
 }
 
+(function init() {
+  const now = new Date();
+  const past = new Date(now - 365 * 86400000);
+  const toEl = document.getElementById('to-date');
+  const fromEl = document.getElementById('from-date');
+  if (toEl) toEl.value = now.toISOString().substring(0, 10);
+  if (fromEl) fromEl.value = past.toISOString().substring(0, 10);
+  (typeof initTimezone === 'function' ? initTimezone() : Promise.resolve()).then(() => load());
+})();
+
 function renderResults(results) {
   if (!results.length) return '';
   const medals = ['🥇', '🥈', '🥉'];
