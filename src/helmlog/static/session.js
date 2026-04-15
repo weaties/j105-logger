@@ -2197,8 +2197,92 @@ function _renderDebriefPlayer() {
     + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
     + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
     + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
+    + '</div>'
+    + '<div id="debrief-transcript-body" style="margin-top:6px;font-size:.78rem">'
+    + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
     + '</div>';
   body.appendChild(wrap);
+  _loadDebriefTranscript(deb.audio_session_id);
+}
+
+// Debrief transcript (#546): self-contained fetch + render for the debrief
+// audio row. Intentionally does not touch the race-transcript globals
+// (_transcriptBlocks, _transcriptId, _speakerMap) or wire audio-sync — the
+// debrief is off the race timeline and doesn't feed tuning extraction.
+async function _loadDebriefTranscript(audioSessionId) {
+  const body = document.getElementById('debrief-transcript-body');
+  if (!body) return;
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcript');
+  if (r.status === 404) {
+    body.innerHTML =
+      '<span style="color:var(--text-secondary)">No transcript yet. </span>'
+      + '<button class="btn-export" style="font-size:.72rem" '
+      + 'onclick="startDebriefTranscript(' + audioSessionId + ')">'
+      + '&#9654; Transcribe</button>';
+    return;
+  }
+  const t = await r.json();
+  if (t.status === 'pending' || t.status === 'running') {
+    body.innerHTML = '<span style="color:var(--warning)">Transcription in progress\u2026</span>';
+    setTimeout(() => _loadDebriefTranscript(audioSessionId), 3000);
+    return;
+  }
+  if (t.status === 'error') {
+    body.innerHTML =
+      '<span style="color:var(--danger)">Error: ' + esc(t.error_msg || 'unknown') + '</span>';
+    return;
+  }
+  const segs = Array.isArray(t.segments) ? t.segments : [];
+  const fmt = s => {
+    const m = Math.floor(s / 60);
+    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+  };
+  const speakerMap = t.speaker_map || {};
+  const displayName = raw => {
+    const entry = speakerMap[raw];
+    if (entry && entry.name) return entry.name;
+    return raw || '';
+  };
+  let html = '';
+  if (segs.length && segs.some(s => s.speaker)) {
+    html = segs.map(s => {
+      const who = s.speaker
+        ? '<span style="color:var(--accent)">' + esc(displayName(s.speaker)) + ':</span> '
+        : '';
+      return '<div style="margin-bottom:3px">'
+        + '<span style="color:var(--text-secondary);font-family:monospace">['
+        + fmt(s.start || 0) + ']</span> '
+        + who + esc(s.text || '') + '</div>';
+    }).join('');
+  } else if (segs.length) {
+    html = segs.map(s =>
+      '<div style="margin-bottom:3px">'
+      + '<span style="color:var(--text-secondary);font-family:monospace">['
+      + fmt(s.start || 0) + ']</span> ' + esc(s.text || '') + '</div>'
+    ).join('');
+  } else if (t.text) {
+    html = '<div style="white-space:pre-wrap">' + esc(t.text) + '</div>';
+  } else {
+    html = '<span style="color:var(--text-secondary)">(empty)</span>';
+  }
+  body.innerHTML =
+    '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
+    + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
+}
+
+async function startDebriefTranscript(audioSessionId) {
+  const body = document.getElementById('debrief-transcript-body');
+  if (body) {
+    body.innerHTML = '<span style="color:var(--warning)">Starting transcription\u2026</span>';
+  }
+  const r = await fetch('/api/audio/' + audioSessionId + '/transcribe', { method: 'POST' });
+  if (!r.ok) {
+    if (body) {
+      body.innerHTML = '<span style="color:var(--danger)">Failed to start transcription</span>';
+    }
+    return;
+  }
+  _loadDebriefTranscript(audioSessionId);
 }
 
 function loadAudio() {
