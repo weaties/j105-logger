@@ -980,6 +980,169 @@ function _setCurrentOverlayEnabled(on) {
   }
 }
 
+// -----------------------------------------------------------------------
+// Wind overlay (#554). Toggleable layer showing the TWD/TWS the boat
+// actually experienced, sampled along the track as meteorological wind
+// barbs. The shaft points in the direction the wind is coming *from*
+// (standard convention), with flags encoding TWS: pennant = 50 kt,
+// full barb = 10 kt, half barb = 5 kt. Sample cadence scales with map
+// zoom so zooming out doesn't swamp the map. Samples with twd == null
+// (e.g. ref=BOAT without heading) are skipped.
+// -----------------------------------------------------------------------
+
+let _windLayer = null;
+let _windEnabled = false;
+let _windZoomHandler = null;
+
+// Render a meteorological wind barb rotated so the shaft points *from*
+// the wind source (twd). Flags accumulate from the outer end of the
+// shaft inward in 50/10/5 kt increments.
+function _renderWindBarbSvg(twdDeg, tws, color) {
+  const c = color || '#1f2937';
+  const shaftLen = 32;
+  // Round to nearest 5 kt for barb counts (standard met convention).
+  let knots = Math.round(tws / 5) * 5;
+  const pennants = Math.floor(knots / 50); knots -= pennants * 50;
+  const fulls = Math.floor(knots / 10); knots -= fulls * 10;
+  const halves = Math.floor(knots / 5);
+  // Compass rotation: shaft points *toward* the direction the wind is
+  // coming from. SVG y-axis points down and 0° rotation leaves -y as
+  // "up" (north), which is exactly what we want for TWD=0.
+  const rot = twdDeg;
+  let parts = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="overflow:visible;pointer-events:auto">';
+  // Hit-target halo so hover/touch is easy even on a thin shaft.
+  parts += '<circle cx="0" cy="0" r="6" fill="#fff" fill-opacity="0.001"/>';
+  parts += '<g transform="rotate(' + rot + ')">';
+  // Station dot
+  parts += '<circle cx="0" cy="0" r="2" fill="' + c + '"/>';
+  // Calm (<3 kt): open circle, no shaft.
+  if (tws < 3) {
+    parts += '<circle cx="0" cy="0" r="4" fill="none" stroke="' + c + '" stroke-width="1.2"/>';
+    parts += '</g></svg>';
+    return parts;
+  }
+  // Shaft (halo + stroke for contrast against map tiles)
+  parts += '<line x1="0" y1="0" x2="0" y2="-' + shaftLen + '" stroke="#fff" stroke-opacity="0.85" stroke-width="3.2" stroke-linecap="round"/>';
+  parts += '<line x1="0" y1="0" x2="0" y2="-' + shaftLen + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+  // Barbs hang to the right of the shaft (NH convention). Start at the
+  // tip and walk inward. Spacing: 5 px per feature.
+  let y = -shaftLen;
+  const step = 5;
+  const fullW = 10;
+  const halfW = 5;
+  for (let i = 0; i < pennants; i++) {
+    const y2 = y + step;
+    parts += '<polygon points="0,' + y + ' ' + fullW + ',' + y + ' 0,' + y2 + '" fill="' + c + '" stroke="' + c + '" stroke-width="0.8" stroke-linejoin="round"/>';
+    y = y2;
+  }
+  if (pennants > 0) y += 1;
+  for (let i = 0; i < fulls; i++) {
+    parts += '<line x1="0" y1="' + y + '" x2="' + fullW + '" y2="' + (y - 4) + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+    y += step;
+  }
+  // A lone half-barb sits one step in from the tip so it's not flush
+  // with the end of the shaft.
+  if (halves > 0 && fulls === 0 && pennants === 0) y += step;
+  for (let i = 0; i < halves; i++) {
+    parts += '<line x1="0" y1="' + y + '" x2="' + halfW + '" y2="' + (y - 2) + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+    y += step;
+  }
+  parts += '</g></svg>';
+  return parts;
+}
+
+function _windBarbDivIcon(twdDeg, tws, color) {
+  return L.divIcon({
+    className: 'wind-barb',
+    html: _renderWindBarbSvg(twdDeg, tws, color),
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
+  });
+}
+
+// Sample cadence for the barb overlay as a function of map zoom. Higher
+// zoom → more detail; zooming out thins out to keep barbs from colliding.
+function _windStepMsForZoom(zoom) {
+  if (zoom == null) zoom = 14;
+  // At zoom 15 → 20s, 14 → 40s, 13 → 80s, 12 → 160s, ... Clamped so a
+  // very long session at low zoom still shows some barbs.
+  const step = 20000 * Math.pow(2, Math.max(0, 15 - zoom));
+  return Math.min(600000, Math.max(15000, step));
+}
+
+// Circular mean of twd and scalar mean of tws across a ±halfMs window.
+// Returns null if no valid samples (all twd null or out of range).
+function _windowedTwdTws(tMs, halfMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  const lo = tMs - halfMs;
+  const hi = tMs + halfMs;
+  let x = 0, y = 0, twsSum = 0, n = 0;
+  const startIdx = _sampleLowerBound(lo);
+  for (let i = startIdx; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t > hi) break;
+    if (s.twd == null || s.tws == null) continue;
+    if (isNaN(s.twd) || isNaN(s.tws)) continue;
+    const r = (s.twd * Math.PI) / 180;
+    x += Math.cos(r);
+    y += Math.sin(r);
+    twsSum += s.tws;
+    n++;
+  }
+  if (!n) return null;
+  const twd = ((Math.atan2(y / n, x / n) * 180) / Math.PI + 360) % 360;
+  return {twd: twd, tws: twsSum / n};
+}
+
+function _rebuildWindOverlay() {
+  if (!_map || !_trackData || !_replaySamples || !_replaySamples.length) return;
+  if (_windLayer) { _map.removeLayer(_windLayer); _windLayer = null; }
+  _windLayer = L.layerGroup();
+
+  const stepMs = _windStepMsForZoom(_map.getZoom());
+  // Half-window scales with step so averaging matches the displayed cadence,
+  // but is clamped so we still damp 1 Hz noise at the densest zoom.
+  const halfMs = Math.max(10000, stepMs / 2);
+  const t0 = _trackData.timestamps[0].getTime();
+  const tEnd = _trackData.timestamps[_trackData.timestamps.length - 1].getTime();
+  for (let t = t0; t <= tEnd; t += stepMs) {
+    const w = _windowedTwdTws(t, halfMs);
+    if (!w) continue;
+    const pos = _trackLatLngAtUtc(t);
+    if (!pos) continue;
+    const marker = L.marker(pos, {
+      icon: _windBarbDivIcon(w.twd, w.tws, _twsColor(w.tws)),
+      interactive: true,
+      keyboard: false,
+      riseOnHover: true,
+    });
+    const tip = 'TWD ' + Math.round(w.twd) + '\u00b0 \u00b7 TWS ' + w.tws.toFixed(1) + ' kt';
+    marker.bindTooltip(tip, {direction: 'top', offset: [0, -6], sticky: true});
+    _windLayer.addLayer(marker);
+  }
+
+  if (_windEnabled) _windLayer.addTo(_map);
+}
+
+function _setWindOverlayEnabled(on) {
+  _windEnabled = !!on;
+  if (_windEnabled) {
+    _rebuildWindOverlay();
+    if (_windLayer && _map) _windLayer.addTo(_map);
+    if (_map && !_windZoomHandler) {
+      _windZoomHandler = () => { if (_windEnabled) _rebuildWindOverlay(); };
+      _map.on('zoomend', _windZoomHandler);
+    }
+  } else {
+    if (_windLayer && _map) _map.removeLayer(_windLayer);
+    if (_map && _windZoomHandler) {
+      _map.off('zoomend', _windZoomHandler);
+      _windZoomHandler = null;
+    }
+  }
+}
+
 // Render the boat cursor SVG. The hull is a simplified triangle that
 // rotates with heading so the bow points the way the boat is pointing.
 // A second line extending from the center shows COG, so the offset
@@ -6418,6 +6581,7 @@ async function _loadReplayData() {
       drift: s.drift,
     }));
     if (typeof _rebuildCurrentOverlay === 'function') _rebuildCurrentOverlay();
+    if (_windEnabled && typeof _rebuildWindOverlay === 'function') _rebuildWindOverlay();
     _replayGrades = (data.grades || []).map(g => ({
       i: g.i,
       t_start: new Date(g.t_start),
@@ -6494,6 +6658,10 @@ function _wireReplayControls() {
     if (e.target.checked && _playClock && _playClock.positionUtc) {
       _updateBoatCurrentMarker(_playClock.positionUtc);
     }
+  });
+  const windToggle = document.getElementById('toggle-wind-overlay');
+  if (windToggle) windToggle.addEventListener('change', (e) => {
+    _setWindOverlayEnabled(e.target.checked);
   });
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
