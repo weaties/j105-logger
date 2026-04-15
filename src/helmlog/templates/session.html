@@ -5,7 +5,13 @@
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <style>
 .field{background:var(--bg-input);border:1px solid var(--accent-strong);border-radius:6px;color:var(--text-primary)}
-.track-map{height:350px;border-radius:8px}
+.track-map{height:350px;border-radius:8px;transition:height .15s ease}
+.track-map.size-s{height:280px}
+.track-map.size-m{height:450px}
+.track-map.size-l{height:650px}
+.track-map.size-xl{height:calc(100vh - 160px);min-height:500px}
+.track-size-btn{background:var(--bg-input);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.72rem;cursor:pointer;min-height:26px}
+.track-size-btn.active{background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)}
 .section{margin-top:16px}
 .section-title{font-size:.82rem;text-transform:uppercase;letter-spacing:.07em;color:var(--text-secondary);margin-bottom:6px;cursor:pointer;user-select:none}
 .section-title:hover{color:var(--accent)}
@@ -115,6 +121,13 @@
       <span style="display:inline-block;width:10px;height:10px;background:#a855f7;vertical-align:middle;margin:0 2px 0 8px"></span>&ge;120% (suspect)
       <span style="display:inline-block;width:10px;height:10px;background:#888;vertical-align:middle;margin:0 2px 0 8px"></span>unknown
     </span>
+  </div>
+  <div id="track-size-row" style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">
+    <span style="margin-right:4px">Map size:</span>
+    <button type="button" class="track-size-btn" data-size="s">S</button>
+    <button type="button" class="track-size-btn" data-size="">M</button>
+    <button type="button" class="track-size-btn" data-size="l">L</button>
+    <button type="button" class="track-size-btn" data-size="xl" title="Full height">XL</button>
   </div>
   <div id="track-map" class="track-map"></div>
   <div id="replay-controls" style="display:none;margin-top:10px">
