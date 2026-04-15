@@ -848,14 +848,13 @@ let _currentEnabled = false;
 let _currentOverlayBuilt = false;
 let _currentZoomHandler = null;
 
-// Sample cadence for the current overlay as a function of map zoom. Mirrors
-// _windStepMsForZoom but with a longer base step — current is slower-changing
-// than wind, so 40s at zoom 15 reads as a subtle background field rather than
-// competing with the wind barbs.
+// Sample cadence for the current overlay as a function of map zoom. Matches
+// _windStepMsForZoom so current arrows render at the same density as the
+// wind barbs.
 function _currentStepMsForZoom(zoom) {
   if (zoom == null) zoom = 14;
-  const step = 40000 * Math.pow(2, Math.max(0, 15 - zoom));
-  return Math.min(900000, Math.max(30000, step));
+  const step = 20000 * Math.pow(2, Math.max(0, 15 - zoom));
+  return Math.min(600000, Math.max(15000, step));
 }
 
 function _renderCurrentArrowSvg(setDeg, driftKts, color) {
