@@ -980,6 +980,108 @@ function _setCurrentOverlayEnabled(on) {
   }
 }
 
+// -----------------------------------------------------------------------
+// Wind overlay (#554). Toggleable layer showing the TWD/TWS the boat
+// actually experienced, sampled along the track. Arrows point downwind
+// (the direction the wind is going toward); length and color encode TWS.
+// Samples with twd == null (e.g. ref=BOAT without heading) are skipped.
+// -----------------------------------------------------------------------
+
+let _windLayer = null;
+let _windEnabled = false;
+let _windOverlayBuilt = false;
+
+function _renderWindArrowSvg(twdDeg, tws, color) {
+  // Arrow length scales with TWS: 4kt ≈ 18px, 20kt ≈ 44px.
+  const len = Math.min(44, Math.max(14, 10 + tws * 1.7));
+  const tail = Math.max(0, len - 6);
+  const c = color || '#22c55e';
+  // Point downwind: wind *from* twd flows *toward* (twd+180). SVG x-axis
+  // points east, so rotate by ((twd+180) - 90) = twd + 90.
+  const rot = twdDeg + 90;
+  const w = len + 4;
+  return (
+    '<svg width="' + w + '" height="12" viewBox="-2 -6 ' + w + ' 12" ' +
+    'style="overflow:visible;pointer-events:none;transform:rotate(' + rot + 'deg);transform-origin:0 0">' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.5" stroke-width="4" stroke-linecap="round"/>' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>' +
+    '<polygon points="' + len + ',0 ' + tail + ',-4 ' + tail + ',4" fill="' + c + '" stroke="#000" stroke-opacity="0.5" stroke-width="0.5"/>' +
+    '</svg>'
+  );
+}
+
+function _windArrowDivIcon(twdDeg, tws, color) {
+  return L.divIcon({
+    className: 'wind-arrow',
+    html: _renderWindArrowSvg(twdDeg, tws, color),
+    iconSize: [0, 0],
+    iconAnchor: [0, 0],
+  });
+}
+
+// Circular mean of twd and scalar mean of tws across a ±halfMs window.
+// Returns null if no valid samples (all twd null or out of range).
+function _windowedTwdTws(tMs, halfMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  const lo = tMs - halfMs;
+  const hi = tMs + halfMs;
+  let x = 0, y = 0, twsSum = 0, n = 0;
+  const startIdx = _sampleLowerBound(lo);
+  for (let i = startIdx; i < _replaySamples.length; i++) {
+    const s = _replaySamples[i];
+    const t = s.ts.getTime();
+    if (t > hi) break;
+    if (s.twd == null || s.tws == null) continue;
+    if (isNaN(s.twd) || isNaN(s.tws)) continue;
+    const r = (s.twd * Math.PI) / 180;
+    x += Math.cos(r);
+    y += Math.sin(r);
+    twsSum += s.tws;
+    n++;
+  }
+  if (!n) return null;
+  const twd = ((Math.atan2(y / n, x / n) * 180) / Math.PI + 360) % 360;
+  return {twd: twd, tws: twsSum / n};
+}
+
+function _rebuildWindOverlay() {
+  if (!_map || !_trackData || !_replaySamples || !_replaySamples.length) return;
+  if (_windLayer) { _map.removeLayer(_windLayer); _windLayer = null; }
+  _windLayer = L.layerGroup();
+
+  // Sample every ~30 seconds along the track with a ±15s window to damp
+  // sample-to-sample TWD noise.
+  const stepMs = 30000;
+  const halfMs = 15000;
+  const t0 = _trackData.timestamps[0].getTime();
+  const tEnd = _trackData.timestamps[_trackData.timestamps.length - 1].getTime();
+  for (let t = t0; t <= tEnd; t += stepMs) {
+    const w = _windowedTwdTws(t, halfMs);
+    if (!w) continue;
+    const pos = _trackLatLngAtUtc(t);
+    if (!pos) continue;
+    const marker = L.marker(pos, {
+      icon: _windArrowDivIcon(w.twd, w.tws, _twsColor(w.tws)),
+      interactive: false,
+      keyboard: false,
+    });
+    _windLayer.addLayer(marker);
+  }
+
+  if (_windEnabled) _windLayer.addTo(_map);
+  _windOverlayBuilt = true;
+}
+
+function _setWindOverlayEnabled(on) {
+  _windEnabled = !!on;
+  if (_windEnabled) {
+    if (!_windOverlayBuilt) _rebuildWindOverlay();
+    if (_windLayer && _map) _windLayer.addTo(_map);
+  } else {
+    if (_windLayer && _map) _map.removeLayer(_windLayer);
+  }
+}
+
 // Render the boat cursor SVG. The hull is a simplified triangle that
 // rotates with heading so the bow points the way the boat is pointing.
 // A second line extending from the center shows COG, so the offset
@@ -6418,6 +6520,7 @@ async function _loadReplayData() {
       drift: s.drift,
     }));
     if (typeof _rebuildCurrentOverlay === 'function') _rebuildCurrentOverlay();
+    if (typeof _rebuildWindOverlay === 'function') _rebuildWindOverlay();
     _replayGrades = (data.grades || []).map(g => ({
       i: g.i,
       t_start: new Date(g.t_start),
@@ -6494,6 +6597,10 @@ function _wireReplayControls() {
     if (e.target.checked && _playClock && _playClock.positionUtc) {
       _updateBoatCurrentMarker(_playClock.positionUtc);
     }
+  });
+  const windToggle = document.getElementById('toggle-wind-overlay');
+  if (windToggle) windToggle.addEventListener('change', (e) => {
+    _setWindOverlayEnabled(e.target.checked);
   });
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
