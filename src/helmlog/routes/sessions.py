@@ -510,6 +510,25 @@ async def api_session_detail(
                 }
             )
 
+    # Debrief audio (#546): debriefs are stored as separate audio_sessions rows
+    # with session_type='debrief' and the same race_id. They're sequential
+    # recordings, not capture-group siblings, so surface them as their own
+    # block the session page can render alongside the main audio card.
+    debrief_audio: dict[str, Any] | None = None
+    dcur = await db.execute(
+        "SELECT id, start_utc FROM audio_sessions"
+        " WHERE race_id = ? AND session_type = 'debrief'"
+        " ORDER BY id ASC LIMIT 1",
+        (session_id,),
+    )
+    drow = await dcur.fetchone()
+    if drow is not None:
+        debrief_audio = {
+            "audio_session_id": int(drow["id"]),
+            "start_utc": datetime.fromisoformat(drow["start_utc"]).isoformat(),
+            "stream_url": f"/api/audio/{int(drow['id'])}/stream",
+        }
+
     # Check for wind field params (synthesized sessions)
     wf_cur = await db.execute(
         "SELECT 1 FROM synth_wind_params WHERE session_id = ?",
@@ -539,6 +558,7 @@ async def api_session_detail(
                 len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
             ),
             "audio_siblings": audio_siblings,
+            "debrief_audio": debrief_audio,
             "peer_fingerprint": row["peer_fingerprint"],
             "has_wind_field": has_wind_field,
             "shared_name": row["shared_name"],

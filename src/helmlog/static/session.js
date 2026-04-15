@@ -2175,6 +2175,32 @@ async function retranscribe() {
 // Audio
 // ---------------------------------------------------------------------------
 
+// Debrief audio card (#546): when the race has an attached debrief recording,
+// render a second native <audio controls> below the primary player. Debriefs
+// are sequential recordings, not capture-group siblings, so they're surfaced
+// as their own row rather than going through the Web Audio mix path.
+function _renderDebriefPlayer() {
+  const deb = _session && _session.debrief_audio;
+  if (!deb) return;
+  const body = document.getElementById('audio-body');
+  if (!body) return;
+  const existing = document.getElementById('debrief-player');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'debrief-player';
+  wrap.style.marginTop = '10px';
+  wrap.innerHTML =
+    '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
+    + 'Debrief</div>'
+    + '<div style="display:flex;align-items:center;gap:8px">'
+    + '<audio controls preload="metadata" style="flex:1;min-width:0">'
+    + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
+    + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
+    + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
+    + '</div>';
+  body.appendChild(wrap);
+}
+
 function loadAudio() {
   const card = document.getElementById('audio-card');
   card.style.display = '';
@@ -2188,6 +2214,7 @@ function loadAudio() {
     '<audio id="session-audio" controls style="width:100%">'
     + '<source src="/api/audio/' + _session.audio_session_id + '/stream" type="audio/wav">'
     + '</audio>';
+  _renderDebriefPlayer();
   const el = document.getElementById('session-audio');
   if (!el) return;
   // Always wire audio→transcript highlighting (works even if audio_start_utc
@@ -2519,6 +2546,7 @@ async function loadMultiChannelAudio() {
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
+      _renderDebriefPlayer();
       return;
     }
 
@@ -2544,6 +2572,7 @@ async function loadMultiChannelAudio() {
     document.getElementById('mc-status').textContent =
       `${channels}-channel session — click a transcript segment to isolate that channel.`;
     _mcUpdateProgress();
+    _renderDebriefPlayer();
   } catch (e) {
     console.error('multi-channel audio load failed', e);
     document.getElementById('mc-status').textContent = 'Error: ' + e.message;

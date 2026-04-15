@@ -786,6 +786,66 @@ async def test_api_session_detail_includes_audio_start_utc(
 
 
 @pytest.mark.asyncio
+async def test_api_session_detail_includes_debrief_audio(storage: Storage, tmp_path: Path) -> None:
+    """Session detail exposes a separate debrief_audio block when a race has an
+    attached debrief recording, so the session page can surface both WAVs (#546)."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+        await client.post(f"/api/races/{r['id']}/debrief/start")
+        await client.post("/api/debrief/stop")
+
+        resp = await client.get(f"/api/sessions/{r['id']}/detail")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["has_audio"] is True
+    assert data["audio_session_id"] is not None
+    debrief = data.get("debrief_audio")
+    assert debrief is not None, "debrief_audio should be populated when a debrief exists"
+    assert debrief["audio_session_id"] != data["audio_session_id"]
+    assert debrief["stream_url"] == f"/api/audio/{debrief['audio_session_id']}/stream"
+    assert debrief["start_utc"] is not None
+
+
+@pytest.mark.asyncio
+async def test_api_session_detail_debrief_audio_absent_without_debrief(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """Session detail returns debrief_audio=None when no debrief exists (#546)."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+
+        resp = await client.get(f"/api/sessions/{r['id']}/detail")
+
+    assert resp.status_code == 200
+    assert resp.json().get("debrief_audio") is None
+
+
+@pytest.mark.asyncio
 async def _get_pos_ids(client: httpx.AsyncClient) -> dict[str, int]:
     """Helper: return position name → id mapping."""
     resp = await client.get("/api/crew/positions")
