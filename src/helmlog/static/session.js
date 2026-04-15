@@ -992,54 +992,6 @@ function _setCurrentOverlayEnabled(on) {
 let _boatInstrumentMarker = null;
 const _boatInstrument = {wind: false, current: false};
 
-// Look up the upwind close-hauled target TWA for the current TWS by snapping
-// to the nearest polar TWS bin and picking the upwind cell with peak VMG
-// (bsp * cos(twa)). Returns null if no polar data has loaded yet.
-function _polarUpwindTargetTwa(tws) {
-  if (!_polarData || !_polarData.cells || tws == null) return null;
-  // session_mean is the boat's actual sailed speed in this session; fall back
-  // to the baseline mean when the cell hasn't been visited yet so the wedges
-  // still appear early in a session before the polar fills in.
-  const cellSpeed = (c) => (c.session_mean != null ? c.session_mean : c.baseline_mean);
-  const upwind = _polarData.cells.filter(
-    c => c.point_of_sail === 'upwind' && cellSpeed(c) != null && cellSpeed(c) > 0,
-  );
-  if (!upwind.length) return null;
-  let bestBin = null, bestDist = Infinity;
-  for (const c of upwind) {
-    const d = Math.abs(c.tws - tws);
-    if (d < bestDist) { bestDist = d; bestBin = c.tws; }
-  }
-  if (bestBin == null) return null;
-  let bestTwa = null, bestVmg = -Infinity;
-  for (const c of upwind) {
-    if (c.tws !== bestBin) continue;
-    const twa = Math.abs(c.twa);
-    const vmg = cellSpeed(c) * Math.cos(twa * Math.PI / 180);
-    if (vmg > bestVmg) { bestVmg = vmg; bestTwa = twa; }
-  }
-  return bestTwa;
-}
-
-// SVG path for an annular sector centered on a compass bearing (0=N, CW).
-// Used for the layline wedges on the boat instrument dial.
-function _annularSectorPath(centerDeg, halfDeg, rOut, rIn) {
-  const a1 = (centerDeg - halfDeg - 90) * Math.PI / 180;
-  const a2 = (centerDeg + halfDeg - 90) * Math.PI / 180;
-  const x1o = (rOut * Math.cos(a1)).toFixed(1);
-  const y1o = (rOut * Math.sin(a1)).toFixed(1);
-  const x2o = (rOut * Math.cos(a2)).toFixed(1);
-  const y2o = (rOut * Math.sin(a2)).toFixed(1);
-  const x1i = (rIn * Math.cos(a1)).toFixed(1);
-  const y1i = (rIn * Math.sin(a1)).toFixed(1);
-  const x2i = (rIn * Math.cos(a2)).toFixed(1);
-  const y2i = (rIn * Math.sin(a2)).toFixed(1);
-  return 'M' + x1o + ',' + y1o
-    + ' A' + rOut + ',' + rOut + ' 0 0 1 ' + x2o + ',' + y2o
-    + ' L' + x2i + ',' + y2i
-    + ' A' + rIn + ',' + rIn + ' 0 0 0 ' + x1i + ',' + y1i
-    + ' Z';
-}
 
 function _renderBoatInstrumentSvg(opts) {
   const hdg = opts.hdg, twd = opts.twd, tws = opts.tws;
@@ -1052,21 +1004,6 @@ function _renderBoatInstrumentSvg(opts) {
   // Compass ring background
   s += '<circle cx="0" cy="0" r="' + R + '" fill="rgba(15,23,42,0.55)" stroke="#0f172a" stroke-width="2"/>';
   s += '<circle cx="0" cy="0" r="' + (R - RING_W) + '" fill="rgba(255,255,255,0.05)" stroke="#1f2937" stroke-width="1"/>';
-  // Layline wedges. Drawn just inside the tick band so the boat hull and
-  // wind/current arrows still read clearly through the center. Only shown
-  // when Boat wind is on and the polar gives us a target close-hauled TWA.
-  if (showWind && twd != null && opts.targetTwa != null) {
-    const wedgeOut = R - RING_W - 1;
-    const wedgeIn = R - RING_W - 18;
-    const half = 6;
-    // Starboard tack close-hauled: wind on the starboard side, so the boat
-    // heads to the right of the wind source → HDG = TWD + targetTWA.
-    // Port tack is the mirror.
-    const stbdBearing = (twd + opts.targetTwa + 360) % 360;
-    const portBearing = (twd - opts.targetTwa + 360) % 360;
-    s += '<path d="' + _annularSectorPath(stbdBearing, half, wedgeOut, wedgeIn) + '" fill="#16a34a" fill-opacity="0.75" stroke="#052e16" stroke-width="0.6"/>';
-    s += '<path d="' + _annularSectorPath(portBearing, half, wedgeOut, wedgeIn) + '" fill="#dc2626" fill-opacity="0.75" stroke="#450a0a" stroke-width="0.6"/>';
-  }
   // Tick marks every 10°, labels every 30°
   for (let deg = 0; deg < 360; deg += 10) {
     const major = (deg % 30) === 0;
@@ -1118,11 +1055,12 @@ function _renderBoatInstrumentSvg(opts) {
     s += '<line x1="0" y1="-2" x2="0" y2="' + (-tail) + '" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round"/>';
     s += '<polygon points="0,' + (-len) + ' -7,' + (-tail) + ' 7,' + (-tail) + '" fill="#2563eb" stroke="#000" stroke-opacity="0.55" stroke-width="0.6"/>';
     s += '</g>';
-    // Drift callout sits at the midpoint of the current shaft, upright.
+    // Drift callout sits just past the arrowhead so it never overlaps the
+    // boat hull (which extends ~15 px from center in any direction).
     const setRad = set * Math.PI / 180;
-    const midR = tail / 2;
-    const driftX = Math.sin(setRad) * midR;
-    const driftY = -Math.cos(setRad) * midR;
+    const labelR = len + 10;
+    const driftX = Math.sin(setRad) * labelR;
+    const driftY = -Math.cos(setRad) * labelR;
     s += '<text x="' + driftX.toFixed(1) + '" y="' + (driftY + 4).toFixed(1) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" stroke="#0f172a" stroke-width="3" paint-order="stroke" font-family="sans-serif">' + drift.toFixed(1) + '</text>';
   }
   // HDG readout sits past the arrow tips in front of the bow, drawn last so
@@ -1168,7 +1106,6 @@ function _updateBoatInstrument(utc) {
   const sd = _boatInstrument.current ? _windowedSetDrift(tMs, 15000) : null;
   const w = _boatInstrument.wind ? _windowedTwdTws(tMs, 10000) : null;
   const hc = _windowedHeadingCog(tMs, 5000);
-  const targetTwa = w ? _polarUpwindTargetTwa(w.tws) : null;
   const el = _boatInstrumentMarker.getElement();
   if (el) {
     el.innerHTML = _renderBoatInstrumentSvg({
@@ -1177,7 +1114,6 @@ function _updateBoatInstrument(utc) {
       tws: w ? w.tws : null,
       set: sd ? sd.set : null,
       drift: sd ? sd.drift : null,
-      targetTwa: targetTwa,
       showWind: _boatInstrument.wind,
       showCurrent: _boatInstrument.current,
     });
