@@ -131,19 +131,20 @@ class TestMigrationV67Backfill:
 
 
 class TestGetCurrentRace:
-    """get_current_race must not return a race with a date-only start_utc."""
+    """get_current_race must only return genuinely open recording sessions."""
 
     @pytest.mark.asyncio
-    async def test_skips_date_only_start_utc(self, storage: Storage) -> None:
-        """Imported results rows (date-only start_utc, no end_utc) should not
-        be reported as the 'current' race — they are not actually running."""
+    async def test_skips_imported_race_with_end_utc(self, storage: Storage) -> None:
+        """Imported results rows carry end_utc at insert time so they are
+        never returned by get_current_race. Without this guarantee every
+        imported row would show up as an open session on the home page."""
         db = storage._conn()
         await db.execute(
             "INSERT INTO races"
             " (name, event, race_num, date, start_utc, end_utc, session_type)"
             " VALUES"
             " ('Imported Race', 'Flying Sails', 1, '2026-04-13',"
-            "  '2026-04-13', NULL, 'race')"
+            "  '2026-04-13T00:00:00+00:00', '2026-04-13T00:00:00+00:00', 'race')"
         )
         await db.commit()
 
