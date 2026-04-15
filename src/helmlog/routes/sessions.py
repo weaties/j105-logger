@@ -491,27 +491,46 @@ async def api_session_summary(
         avg_dir = math.degrees(math.atan2(sin_sum, cos_sum)) % 360.0
         wind = {"avg_tws_kts": round(avg_speed, 1), "avg_twd_deg": round(avg_dir, 0)}
 
-    res_cur = await db.execute(
-        "SELECT rr.place, b.sail_number, b.name AS boat_name"
-        " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
-        " WHERE rr.race_id = ("
-        "   SELECT id FROM races"
-        "   WHERE local_session_id = ? AND source IS NOT NULL AND source != 'live'"
-        "   ORDER BY COALESCE(start_utc, date) LIMIT 1"
-        " ) AND rr.dnf = 0 AND rr.dns = 0"
-        " ORDER BY rr.place LIMIT 3",
+    results_race_cur = await db.execute(
+        "SELECT id FROM races"
+        " WHERE local_session_id = ? AND source IS NOT NULL AND source != 'live'"
+        " ORDER BY COALESCE(start_utc, date) LIMIT 1",
         (session_id,),
     )
-    results = [dict(r) for r in await res_cur.fetchall()]
-    if not results:
-        res_cur = await db.execute(
-            "SELECT rr.place, b.sail_number, b.name AS boat_name"
-            " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
-            " WHERE rr.race_id = ? AND rr.dnf = 0 AND rr.dns = 0"
-            " ORDER BY rr.place LIMIT 3",
-            (session_id,),
-        )
-        results = [dict(r) for r in await res_cur.fetchall()]
+    results_race_row = await results_race_cur.fetchone()
+    results_race_id = results_race_row["id"] if results_race_row else session_id
+
+    res_cur = await db.execute(
+        "SELECT rr.place, rr.dnf, rr.dns, rr.status_code,"
+        " b.sail_number, b.name AS boat_name"
+        " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
+        " WHERE rr.race_id = ?"
+        " ORDER BY CASE WHEN rr.dnf = 0 AND rr.dns = 0 THEN 0 ELSE 1 END, rr.place",
+        (results_race_id,),
+    )
+    all_results: list[dict[str, Any]] = [dict(r) for r in await res_cur.fetchall()]
+    finishers: list[dict[str, Any]] = [r for r in all_results if not r["dnf"] and not r["dns"]]
+    top3: list[dict[str, Any]] = finishers[:3]
+
+    own_sail: str | None = None
+    try:
+        from helmlog.federation import load_identity
+
+        _, own_card = load_identity()
+        own_sail = own_card.sail_number
+    except Exception:
+        own_sail = None
+
+    own_result: dict[str, Any] | None = None
+    if own_sail:
+        for row in all_results:
+            if str(row.get("sail_number") or "") == str(own_sail):
+                own_result = row
+                break
+
+    results: list[dict[str, Any]] = list(top3)
+    if own_result and not any(str(row.get("sail_number") or "") == str(own_sail) for row in top3):
+        results.append(own_result)
 
     return JSONResponse(
         {

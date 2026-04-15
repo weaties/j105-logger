@@ -182,8 +182,19 @@ function renderResults(results) {
   if (!results.length) return '';
   const medals = ['🥇', '🥈', '🥉'];
   const lines = results.map((r, i) => {
-    const label = r.sail_number || r.boat_name || '—';
-    return '<div class="summary-result">' + (medals[i] || (r.place + '.')) + ' ' + label + '</div>';
+    const isOwnRow = i >= 3;
+    const parts = [];
+    if (r.sail_number) parts.push(String(r.sail_number));
+    if (r.boat_name) parts.push(r.boat_name);
+    const label = parts.join(' — ') || '—';
+    let prefix;
+    if (isOwnRow) {
+      prefix = r.dnf ? 'DNF' : r.dns ? 'DNS' : (r.place + '.');
+    } else {
+      prefix = medals[i] || (r.place + '.');
+    }
+    const cls = 'summary-result' + (isOwnRow ? ' summary-result-own' : '');
+    return '<div class="' + cls + '">' + prefix + ' ' + label + '</div>';
   }).join('');
   return '<div class="summary-results">' + lines + '</div>';
 }

@@ -1175,6 +1175,13 @@ nav.site-nav {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.summary-result-own {
+  font-weight: 600;
+  color: var(--accent-strong);
+  border-top: 1px solid var(--bg-input);
+  padding-top: 1px;
+  margin-top: 1px;
+}
 
 .session-exports {
   display: flex;
