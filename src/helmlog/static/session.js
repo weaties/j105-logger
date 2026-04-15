@@ -2193,7 +2193,7 @@ function _renderDebriefPlayer() {
     '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
     + 'Debrief</div>'
     + '<div style="display:flex;align-items:center;gap:8px">'
-    + '<audio controls preload="metadata" style="flex:1;min-width:0">'
+    + '<audio id="debrief-audio" controls preload="metadata" style="flex:1;min-width:0">'
     + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
     + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
     + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
@@ -2203,6 +2203,18 @@ function _renderDebriefPlayer() {
     + '</div>';
   body.appendChild(wrap);
   _loadDebriefTranscript(deb.audio_session_id);
+}
+
+// Seek the debrief <audio> element to `t` seconds and start playback.
+// Used as the onclick target for transcript segments in the debrief panel.
+function seekDebriefAudio(t) {
+  const el = document.getElementById('debrief-audio');
+  if (!el) return;
+  try {
+    el.currentTime = Math.max(0, Number(t) || 0);
+    const p = el.play();
+    if (p && typeof p.catch === 'function') p.catch(() => { /* swallow autoplay */ });
+  } catch (e) { /* swallow */ }
 }
 
 // Debrief transcript (#546): self-contained fetch + render for the debrief
@@ -2243,23 +2255,36 @@ async function _loadDebriefTranscript(audioSessionId) {
     if (entry && entry.name) return entry.name;
     return raw || '';
   };
+  // Segments are clickable — clicking seeks the debrief <audio> element to
+  // the segment start and starts playback. Use inline onclick with the raw
+  // start seconds so the handler stays self-contained.
+  const segStyle =
+    'margin-bottom:3px;cursor:pointer;padding:2px 4px;border-radius:3px';
   let html = '';
   if (segs.length && segs.some(s => s.speaker)) {
     html = segs.map(s => {
+      const start = Number(s.start) || 0;
       const who = s.speaker
         ? '<span style="color:var(--accent)">' + esc(displayName(s.speaker)) + ':</span> '
         : '';
-      return '<div style="margin-bottom:3px">'
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+        + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
+        + 'onmouseout="this.style.background=\'transparent\'" '
+        + 'title="Click to play from here">'
         + '<span style="color:var(--text-secondary);font-family:monospace">['
-        + fmt(s.start || 0) + ']</span> '
+        + fmt(start) + ']</span> '
         + who + esc(s.text || '') + '</div>';
     }).join('');
   } else if (segs.length) {
-    html = segs.map(s =>
-      '<div style="margin-bottom:3px">'
-      + '<span style="color:var(--text-secondary);font-family:monospace">['
-      + fmt(s.start || 0) + ']</span> ' + esc(s.text || '') + '</div>'
-    ).join('');
+    html = segs.map(s => {
+      const start = Number(s.start) || 0;
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+        + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
+        + 'onmouseout="this.style.background=\'transparent\'" '
+        + 'title="Click to play from here">'
+        + '<span style="color:var(--text-secondary);font-family:monospace">['
+        + fmt(start) + ']</span> ' + esc(s.text || '') + '</div>';
+    }).join('');
   } else if (t.text) {
     html = '<div style="white-space:pre-wrap">' + esc(t.text) + '</div>';
   } else {
