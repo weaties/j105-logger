@@ -403,6 +403,66 @@ async def test_import_preserves_manual_local_session_link(
 
 
 @pytest.mark.asyncio
+async def test_force_relinks_existing_wrong_links(storage: Storage) -> None:
+    """force=True rewrites auto-links that were set before zip-in-order
+    matching existed — the backfill path for regattas imported on a
+    server running the pre-#550 linker."""
+    from datetime import datetime
+
+    from helmlog.results.importer import _link_regatta_races_to_local_sessions
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    a = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    b = datetime.fromisoformat(race_date + "T19:10:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Race 1", "Local", 1, race_date, a.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (a_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Race 2", "Local", 2, race_date, b.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (b_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.commit()
+
+    await import_results(storage, results)
+
+    # Simulate the pre-#550 state: both imported races pinned to the
+    # earliest local session.
+    await db.execute(
+        "UPDATE races SET local_session_id = ? WHERE source = 'clubspot' AND date = ?",
+        (a_id, race_date),
+    )
+    await db.commit()
+
+    cur = await db.execute(
+        "SELECT regatta_id FROM races WHERE source = 'clubspot' LIMIT 1",
+    )
+    (regatta_id,) = await cur.fetchone()  # type: ignore[misc]
+
+    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
+    await db.commit()
+    # Race 1 was already pointing at a_id, so only race 2 needs rewriting.
+    assert linked == 1, "race 2 should be moved off the earliest session"
+
+    cur = await db.execute(
+        "SELECT race_num, local_session_id FROM races"
+        " WHERE source = 'clubspot' AND date = ? ORDER BY race_num",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert rows[0]["local_session_id"] == a_id
+    assert rows[1]["local_session_id"] == b_id
+
+
+@pytest.mark.asyncio
 async def test_reimport_backfills_null_local_session(storage: Storage) -> None:
     """A re-import populates local_session_id when the prior import left it NULL."""
     from datetime import datetime

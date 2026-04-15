@@ -150,6 +150,8 @@ def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
 async def _link_regatta_races_to_local_sessions(
     db: aiosqlite.Connection,
     regatta_id: int,
+    *,
+    force: bool = False,
 ) -> int:
     """Link imported races to local race sessions on the same date.
 
@@ -165,7 +167,10 @@ async def _link_regatta_races_to_local_sessions(
     single-session behavior for short-handed days.
 
     Only rows with ``local_session_id IS NULL`` are updated, so manual
-    links and prior matches are preserved.
+    links and prior matches are preserved. Pass ``force=True`` to
+    re-link rows that already have a value — used by the admin rematch
+    endpoint to fix up data that was linked before zip-in-order was
+    implemented.
 
     Returns the number of links written.
     """
@@ -201,9 +206,9 @@ async def _link_regatta_races_to_local_sessions(
         zip_in_order = len(local_sessions) >= len(imported_sorted)
 
         for idx, (imp_id, _race_num, existing_link) in enumerate(imported_sorted):
-            if existing_link is not None:
-                continue
             local_id = local_sessions[idx] if zip_in_order else local_sessions[0]
+            if existing_link is not None and (not force or existing_link == local_id):
+                continue
             await db.execute(
                 "UPDATE races SET local_session_id = ? WHERE id = ?",
                 (local_id, imp_id),
