@@ -846,6 +846,17 @@ let _currentLayer = null;         // L.LayerGroup for along-track arrows
 let _currentBoatMarker = null;    // L.marker for boat-adjacent indicator
 let _currentEnabled = false;
 let _currentOverlayBuilt = false;
+let _currentZoomHandler = null;
+
+// Sample cadence for the current overlay as a function of map zoom. Mirrors
+// _windStepMsForZoom but with a longer base step — current is slower-changing
+// than wind, so 40s at zoom 15 reads as a subtle background field rather than
+// competing with the wind barbs.
+function _currentStepMsForZoom(zoom) {
+  if (zoom == null) zoom = 14;
+  const step = 40000 * Math.pow(2, Math.max(0, 15 - zoom));
+  return Math.min(900000, Math.max(30000, step));
+}
 
 function _renderCurrentArrowSvg(setDeg, driftKts, color) {
   // Length in px scales with drift, clamped for readability. 1 kt -> 18 px,
@@ -860,9 +871,9 @@ function _renderCurrentArrowSvg(setDeg, driftKts, color) {
   return (
     '<svg width="' + w + '" height="12" viewBox="-2 -6 ' + w + ' 12" ' +
     'style="overflow:visible;pointer-events:none;transform:rotate(' + rot + 'deg);transform-origin:0 0">' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.5" stroke-width="4" stroke-linecap="round"/>' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>' +
-    '<polygon points="' + len + ',0 ' + tail + ',-4 ' + tail + ',4" fill="' + c + '" stroke="#000" stroke-opacity="0.5" stroke-width="0.5"/>' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.4" stroke-width="2.5" stroke-linecap="round"/>' +
+    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="1.4" stroke-linecap="round"/>' +
+    '<polygon points="' + len + ',0 ' + tail + ',-2.5 ' + tail + ',2.5" fill="' + c + '" stroke="#000" stroke-opacity="0.4" stroke-width="0.4"/>' +
     '</svg>'
   );
 }
@@ -928,10 +939,11 @@ function _rebuildCurrentOverlay() {
   if (_currentLayer) { _map.removeLayer(_currentLayer); _currentLayer = null; }
   _currentLayer = L.layerGroup();
 
-  // Sample every ~20 seconds along the track and use a ±10s window mean
-  // to damp sample-to-sample noise (STW + HDG are both noisy at 1 Hz).
-  const stepMs = 20000;
-  const halfMs = 10000;
+  // Cadence scales with zoom (mirrors the wind overlay) so zooming out thins
+  // arrows instead of cluttering the map. Half-window scales with step so
+  // averaging matches the displayed cadence, clamped to keep 1 Hz noise damped.
+  const stepMs = _currentStepMsForZoom(_map.getZoom());
+  const halfMs = Math.max(10000, stepMs / 2);
   const t0 = _trackData.timestamps[0].getTime();
   const tEnd = _trackData.timestamps[_trackData.timestamps.length - 1].getTime();
   for (let t = t0; t <= tEnd; t += stepMs) {
@@ -974,9 +986,17 @@ function _setCurrentOverlayEnabled(on) {
   if (_currentEnabled) {
     if (!_currentOverlayBuilt) _rebuildCurrentOverlay();
     if (_currentLayer && _map) _currentLayer.addTo(_map);
+    if (_map && !_currentZoomHandler) {
+      _currentZoomHandler = () => { if (_currentEnabled) _rebuildCurrentOverlay(); };
+      _map.on('zoomend', _currentZoomHandler);
+    }
   } else {
     if (_currentLayer && _map) _map.removeLayer(_currentLayer);
     if (_currentBoatMarker && _map) { _map.removeLayer(_currentBoatMarker); _currentBoatMarker = null; }
+    if (_map && _currentZoomHandler) {
+      _map.off('zoomend', _currentZoomHandler);
+      _currentZoomHandler = null;
+    }
   }
 }
 
