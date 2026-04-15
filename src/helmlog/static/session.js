@@ -440,7 +440,7 @@ async function loadTrack() {
     if (!_trackData) return;
     _moveCursorToUtc(utc);
     _updateBoatSettingsForUtc(utc);
-    _updateBoatCurrentMarker(utc);
+    _updateBoatInstrument(utc);
   });
 
   // Click track → seek the playback clock (which then seeks video, audio, etc.)
@@ -843,7 +843,6 @@ function _maybeFollowPan(latLng) {
 // -----------------------------------------------------------------------
 
 let _currentLayer = null;         // L.LayerGroup for along-track arrows
-let _currentBoatMarker = null;    // L.marker for boat-adjacent indicator
 let _currentEnabled = false;
 let _currentOverlayBuilt = false;
 let _currentZoomHandler = null;
@@ -965,24 +964,6 @@ function _rebuildCurrentOverlay() {
   _currentOverlayBuilt = true;
 }
 
-function _updateBoatCurrentMarker(utc) {
-  if (!_currentEnabled || !_map || !_trackData) return;
-  const tMs = utc.getTime();
-  const sd = _windowedSetDrift(tMs, 15000);
-  const pos = _trackLatLngAtUtc(tMs);
-  if (!pos || !sd || sd.drift < 0.05) {
-    if (_currentBoatMarker) { _map.removeLayer(_currentBoatMarker); _currentBoatMarker = null; }
-    return;
-  }
-  const icon = _currentArrowDivIcon(sd.set, sd.drift, '#f59e0b');
-  if (!_currentBoatMarker) {
-    _currentBoatMarker = L.marker(pos, {icon: icon, interactive: false, keyboard: false}).addTo(_map);
-  } else {
-    _currentBoatMarker.setLatLng(pos);
-    _currentBoatMarker.setIcon(icon);
-  }
-}
-
 function _setCurrentOverlayEnabled(on) {
   _currentEnabled = !!on;
   if (_currentEnabled) {
@@ -994,12 +975,142 @@ function _setCurrentOverlayEnabled(on) {
     }
   } else {
     if (_currentLayer && _map) _map.removeLayer(_currentLayer);
-    if (_currentBoatMarker && _map) { _map.removeLayer(_currentBoatMarker); _currentBoatMarker = null; }
     if (_map && _currentZoomHandler) {
       _map.off('zoomend', _currentZoomHandler);
       _currentZoomHandler = null;
     }
   }
+}
+
+// -----------------------------------------------------------------------
+// Boat-centered instrument cluster. A compass-rose dial drawn around the
+// boat cursor showing live wind (TWD/TWS) and/or current (set/drift). The
+// wind and current displays are toggled independently; if either is on the
+// dial frame is rendered, otherwise the marker is removed entirely.
+// -----------------------------------------------------------------------
+
+let _boatInstrumentMarker = null;
+const _boatInstrument = {wind: false, current: false};
+
+function _renderBoatInstrumentSvg(opts) {
+  const hdg = opts.hdg, twd = opts.twd, tws = opts.tws;
+  const set = opts.set, drift = opts.drift;
+  const showWind = opts.showWind, showCurrent = opts.showCurrent;
+  const R = 84;          // outer ring radius
+  const RING_W = 14;     // tick band width
+  const inner = R - RING_W - 6;
+  let s = '<svg width="220" height="220" viewBox="-110 -110 220 220" style="overflow:visible;pointer-events:none">';
+  // Compass ring background
+  s += '<circle cx="0" cy="0" r="' + R + '" fill="rgba(15,23,42,0.55)" stroke="#0f172a" stroke-width="2"/>';
+  s += '<circle cx="0" cy="0" r="' + (R - RING_W) + '" fill="rgba(255,255,255,0.05)" stroke="#1f2937" stroke-width="1"/>';
+  // Tick marks every 10°, labels every 30°
+  for (let deg = 0; deg < 360; deg += 10) {
+    const major = (deg % 30) === 0;
+    const len = major ? 8 : 4;
+    const r1 = R - 2;
+    const r2 = R - 2 - len;
+    const a = (deg - 90) * Math.PI / 180;
+    const x1 = r1 * Math.cos(a), y1 = r1 * Math.sin(a);
+    const x2 = r2 * Math.cos(a), y2 = r2 * Math.sin(a);
+    s += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1) + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1) + '" stroke="#e5e7eb" stroke-width="' + (major ? 1.5 : 0.8) + '"/>';
+    if (major) {
+      const lr = R - 2 - len - 6;
+      const lx = lr * Math.cos(a), ly = lr * Math.sin(a);
+      const lbl = deg === 0 ? 'N' : deg === 90 ? 'E' : deg === 180 ? 'S' : deg === 270 ? 'W' : String(deg).padStart(3, '0');
+      s += '<text x="' + lx.toFixed(1) + '" y="' + (ly + 3).toFixed(1) + '" text-anchor="middle" font-size="9" fill="#e5e7eb" font-family="sans-serif">' + lbl + '</text>';
+    }
+  }
+  // HDG label box at top of ring
+  if (hdg != null) {
+    const hdgStr = String(Math.round(hdg) % 360).padStart(3, '0');
+    s += '<g transform="translate(0,' + (-R - 4) + ')">';
+    s += '<rect x="-17" y="-11" width="34" height="14" rx="2" fill="#0f172a" stroke="#e5e7eb" stroke-width="1"/>';
+    s += '<text x="0" y="0" text-anchor="middle" font-size="11" fill="#e5e7eb" font-family="sans-serif">' + hdgStr + '</text>';
+    s += '</g>';
+  }
+  // Wind arrow (orange). TWD points the direction the wind is *coming from*,
+  // so the shaft sits on the upwind side of the dial pointing inward.
+  if (showWind && twd != null && tws != null) {
+    s += '<g transform="rotate(' + twd + ')">';
+    s += '<line x1="0" y1="-8" x2="0" y2="' + (-inner) + '" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    s += '<line x1="0" y1="-8" x2="0" y2="' + (-inner) + '" stroke="#f59e0b" stroke-width="3.5" stroke-linecap="round"/>';
+    s += '<polygon points="0,-' + (inner + 6) + ' -6,' + (-inner + 4) + ' 6,' + (-inner + 4) + '" fill="#f59e0b" stroke="#000" stroke-opacity="0.55" stroke-width="0.6"/>';
+    s += '</g>';
+    s += '<text x="' + (R + 6) + '" y="' + (-R + 2) + '" text-anchor="start" font-size="12" font-weight="700" fill="#f59e0b" stroke="#0f172a" stroke-width="2.5" paint-order="stroke" font-family="sans-serif">' + tws.toFixed(1) + '</text>';
+  }
+  // Boat hull at center, oriented to HDG.
+  if (hdg != null) {
+    s += '<g transform="rotate(' + hdg + ')">';
+    s += '<polygon points="0,-15 9,13 -9,13" fill="#facc15" stroke="#1f2937" stroke-width="1.4" stroke-linejoin="round"/>';
+    s += '</g>';
+  } else {
+    s += '<circle cx="0" cy="0" r="3" fill="#facc15" stroke="#1f2937" stroke-width="1"/>';
+  }
+  // Current arrow (blue). Set is the direction current flows *toward*, so the
+  // arrow points outward from the boat in that direction. Length scales with
+  // drift, capped to fit inside the ring.
+  if (showCurrent && set != null && drift != null && drift >= 0.05) {
+    const len = Math.min(inner - 4, Math.max(18, 18 + drift * 22));
+    const tail = Math.max(0, len - 8);
+    s += '<g transform="rotate(' + set + ')">';
+    s += '<line x1="0" y1="-2" x2="0" y2="' + (-tail) + '" stroke="#000" stroke-opacity="0.55" stroke-width="6" stroke-linecap="round"/>';
+    s += '<line x1="0" y1="-2" x2="0" y2="' + (-tail) + '" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round"/>';
+    s += '<polygon points="0,' + (-len) + ' -7,' + (-tail) + ' 7,' + (-tail) + '" fill="#2563eb" stroke="#000" stroke-opacity="0.55" stroke-width="0.6"/>';
+    s += '</g>';
+    s += '<text x="0" y="' + (R - 16) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" stroke="#0f172a" stroke-width="3" paint-order="stroke" font-family="sans-serif">' + drift.toFixed(1) + '</text>';
+  }
+  s += '</svg>';
+  return s;
+}
+
+function _ensureBoatInstrumentMarker() {
+  if (_boatInstrumentMarker || !_map) return;
+  const icon = L.divIcon({
+    className: 'boat-instrument',
+    html: '',
+    iconSize: [220, 220],
+    iconAnchor: [110, 110],
+  });
+  _boatInstrumentMarker = L.marker([0, 0], {icon: icon, interactive: false, keyboard: false});
+  // Keep the dial below the boat cursor and other interactive markers.
+  _boatInstrumentMarker.setZIndexOffset(-500);
+}
+
+function _updateBoatInstrument(utc) {
+  if (!_boatInstrument.wind && !_boatInstrument.current) return;
+  if (!_map || !_trackData || !_replaySamples || !_replaySamples.length) return;
+  const tMs = utc.getTime();
+  const pos = _trackLatLngAtUtc(tMs);
+  if (!pos) return;
+  _ensureBoatInstrumentMarker();
+  _boatInstrumentMarker.setLatLng(pos);
+  if (!_map.hasLayer(_boatInstrumentMarker)) _boatInstrumentMarker.addTo(_map);
+  const sd = _boatInstrument.current ? _windowedSetDrift(tMs, 15000) : null;
+  const w = _boatInstrument.wind ? _windowedTwdTws(tMs, 10000) : null;
+  const hc = _windowedHeadingCog(tMs, 5000);
+  const el = _boatInstrumentMarker.getElement();
+  if (el) {
+    el.innerHTML = _renderBoatInstrumentSvg({
+      hdg: hc ? hc.hdg : null,
+      twd: w ? w.twd : null,
+      tws: w ? w.tws : null,
+      set: sd ? sd.set : null,
+      drift: sd ? sd.drift : null,
+      showWind: _boatInstrument.wind,
+      showCurrent: _boatInstrument.current,
+    });
+  }
+}
+
+function _setBoatInstrument(kind, on) {
+  _boatInstrument[kind] = !!on;
+  if (!_boatInstrument.wind && !_boatInstrument.current) {
+    if (_boatInstrumentMarker && _map && _map.hasLayer(_boatInstrumentMarker)) {
+      _map.removeLayer(_boatInstrumentMarker);
+    }
+    return;
+  }
+  if (_playClock && _playClock.positionUtc) _updateBoatInstrument(_playClock.positionUtc);
 }
 
 // -----------------------------------------------------------------------
@@ -6677,13 +6788,18 @@ function _wireReplayControls() {
   const currentToggle = document.getElementById('toggle-current-overlay');
   if (currentToggle) currentToggle.addEventListener('change', (e) => {
     _setCurrentOverlayEnabled(e.target.checked);
-    if (e.target.checked && _playClock && _playClock.positionUtc) {
-      _updateBoatCurrentMarker(_playClock.positionUtc);
-    }
   });
   const windToggle = document.getElementById('toggle-wind-overlay');
   if (windToggle) windToggle.addEventListener('change', (e) => {
     _setWindOverlayEnabled(e.target.checked);
+  });
+  const boatCurrentToggle = document.getElementById('toggle-boat-current');
+  if (boatCurrentToggle) boatCurrentToggle.addEventListener('change', (e) => {
+    _setBoatInstrument('current', e.target.checked);
+  });
+  const boatWindToggle = document.getElementById('toggle-boat-wind');
+  if (boatWindToggle) boatWindToggle.addEventListener('change', (e) => {
+    _setBoatInstrument('wind', e.target.checked);
   });
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
