@@ -405,6 +405,7 @@ async function loadTrack() {
     attribution: '&copy; OpenStreetMap', maxZoom: 18,
   }).addTo(_map);
   initTrackSizeControls(_map);
+  _restorePersistedSections();
 
   const feature = geojson.features[0];
   const coords = feature.geometry.coordinates;
@@ -1645,14 +1646,33 @@ function _seekVideoToIndex(idx) {
 // ---------------------------------------------------------------------------
 
 const _collapsed = {'boat-settings': true};
+const _PERSISTED_SECTIONS = ['track-layers', 'replay-gauges'];
+const _SECTION_KEY = 'helmlog.session.collapsed.';
 
-function toggleSection(name) {
+function _applySectionState(name, collapsed) {
   const body = document.getElementById(name + '-body');
   const toggle = document.getElementById(name + '-toggle');
   if (!body) return;
-  _collapsed[name] = !_collapsed[name];
-  body.style.display = _collapsed[name] ? 'none' : '';
-  if (toggle) toggle.innerHTML = _collapsed[name] ? '&#9654;' : '&#9660;';
+  _collapsed[name] = collapsed;
+  body.style.display = collapsed ? 'none' : '';
+  if (toggle) toggle.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+}
+
+function toggleSection(name) {
+  const body = document.getElementById(name + '-body');
+  if (!body) return;
+  _applySectionState(name, !_collapsed[name]);
+  if (_PERSISTED_SECTIONS.includes(name)) {
+    try { localStorage.setItem(_SECTION_KEY + name, _collapsed[name] ? '1' : '0'); } catch (e) {}
+  }
+}
+
+function _restorePersistedSections() {
+  for (const name of _PERSISTED_SECTIONS) {
+    let saved = null;
+    try { saved = localStorage.getItem(_SECTION_KEY + name); } catch (e) {}
+    if (saved === '1') _applySectionState(name, true);
+  }
 }
 
 // ---------------------------------------------------------------------------
