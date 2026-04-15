@@ -97,6 +97,23 @@ async def test_import_races_have_full_iso_start_utc(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_imported_races_are_closed_and_not_current(storage: Storage) -> None:
+    """Imported race rows must have end_utc set at insert time so they are
+    never returned by ``get_current_race``. Otherwise every imported row
+    shows up as an open session on the home page with a runaway timer."""
+    results = await _fetch_results()
+    await import_results(storage, results)
+    db = storage._conn()
+    async with db.execute("SELECT start_utc, end_utc FROM races WHERE source = 'clubspot'") as cur:
+        rows = await cur.fetchall()
+    assert rows, "expected imported races"
+    for row in rows:
+        assert row["end_utc"] is not None, "imported race missing end_utc"
+        assert row["end_utc"] == row["start_utc"]
+    assert await storage.get_current_race() is None
+
+
+@pytest.mark.asyncio
 async def test_import_creates_boats(storage: Storage) -> None:
     results = await _fetch_results()
     await import_results(storage, results)

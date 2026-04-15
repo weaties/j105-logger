@@ -280,22 +280,26 @@ async def _upsert_race(
     if row:
         return row[0]  # type: ignore[no-any-return]
 
-    # #532: Write a real ISO-8601 UTC timestamp into start_utc rather than the
-    # bare race date. The column is NOT NULL so we can't write NULL; midnight
-    # UTC of the race date is a harmless placeholder that parses cleanly via
-    # _parse_utc and is filtered out of get_current_race(). If the source
-    # payload ever carries a real scheduled start, substitute it here.
-    start_utc_iso = f"{race.date}T00:00:00+00:00"
+    # Imported races have no real start/stop timestamps — they're just
+    # result rows pinned to a date. Write midnight UTC of race.date for both
+    # start_utc and end_utc so (a) the NOT NULL start_utc column is
+    # satisfied and (b) get_current_race() never picks them up as open
+    # sessions. The previous attempt (#532) left end_utc NULL and relied on
+    # a `start_utc LIKE '%T%'` filter, which matched the placeholder and
+    # promoted imported rows to "current", producing ghost sessions on the
+    # home page.
+    placeholder_iso = f"{race.date}T00:00:00+00:00"
     cur = await db.execute(
-        "INSERT INTO races (name, event, race_num, date, start_utc, "
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc, "
         "session_type, regatta_id, source, source_id) "
-        "VALUES (?, ?, ?, ?, ?, 'race', ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, 'race', ?, ?, ?)",
         (
             f"{race.name} - {race.class_name}" if race.class_name else race.name,
             race.class_name,
             race.race_number,
             race.date,
-            start_utc_iso,
+            placeholder_iso,
+            placeholder_iso,
             regatta_id,
             source,
             race.source_id,

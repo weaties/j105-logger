@@ -3311,15 +3311,16 @@ class Storage:
     async def get_current_race(self) -> Race | None:
         """Return the most recent race with no end_utc, or None.
 
-        Excludes rows whose ``start_utc`` is empty or date-only — those are
-        imported results placeholders (#532), not genuinely open sessions,
-        and reporting one as "current" would surface a stale race on the UI.
+        Imported race-result rows set ``end_utc`` at insert time so they
+        never appear here — see ``results/importer.py``. Earlier code
+        (#532) tried to filter them via ``start_utc LIKE '%T%'``, but the
+        placeholder ISO string matched that pattern, producing ghost "open"
+        races on the home page for every imported row.
         """
         db = self._read_conn()
         cur = await db.execute(
             f"SELECT {self._RACE_COLS}"
             " FROM races WHERE end_utc IS NULL"
-            "   AND start_utc IS NOT NULL AND start_utc LIKE '%T%'"
             " ORDER BY start_utc DESC LIMIT 1"
         )
         row = await cur.fetchone()
