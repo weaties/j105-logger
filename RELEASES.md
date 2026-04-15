@@ -1,5 +1,131 @@
 # Release Notes
 
+## Sprint 8 — Race Replay, Multi-Channel Audio & Results Import (2026-04-14)
+
+Full race-replay UI with polar-graded track and event stepping, multi-channel
+audio recording with per-position mic isolation and parallel sibling-card
+capture, Clubspot/STYC race-results import with session linking, and polar
+analysis overhauls.
+
+### Race replay ([#464](https://github.com/weaties/helmlog/issues/464), [#516](https://github.com/weaties/helmlog/pull/516), [#521](https://github.com/weaties/helmlog/pull/521))
+- **Playback core** ([#465](https://github.com/weaties/helmlog/issues/465),
+  [#468](https://github.com/weaties/helmlog/issues/468)) — play/pause/speed
+  scrubber with pause-on-seek, gauge cards with sparklines, and a unified
+  clock that fans seeks out from YouTube and multi-channel audio scrubbers
+  back to the map cursor and replay controls
+- **Polar-graded track** ([#469](https://github.com/weaties/helmlog/issues/469),
+  [#470](https://github.com/weaties/helmlog/issues/470)) — per-segment grading
+  pipeline drives the polyline color by polar %; SK track averaged per second
+  with source address captured per fix, decimated to match Vakaros vertex
+  density, and smoothed for display
+- **Boat cursor** — rotating boat icon interpolated between GPS fixes with
+  smoothed rotation, a follow-boat toggle, and crisper HDG/COG indicators
+- **Maneuver markers & event stepping** ([#475](https://github.com/weaties/helmlog/issues/475),
+  [#466](https://github.com/weaties/helmlog/issues/466)) — clickable markers
+  on track, keyboard-driven event navigation, and reclassification of
+  large-turn tacks/gybes as roundings
+- **Laylines & course overlay** ([#473](https://github.com/weaties/helmlog/issues/473))
+  — layline kind split by mark, anchored to roundings, wind-frame math fixed,
+  type-aware scaling with leeward cap, start-line laylines with 120s grace
+  window, and Vakaros race-gun honored as effective start
+- **Derived current overlay** ([#523](https://github.com/weaties/helmlog/issues/523),
+  [#538](https://github.com/weaties/helmlog/pull/538)) — phase 1: derive and
+  render current vectors on the replay map
+- **Cross-surface playback** — media players made independent, audio target
+  re-applied on play/loadedmetadata, YouTube clamped to clock state so
+  pause-on-seek sticks, throttled YT seekTo
+
+### Multi-channel audio & sibling capture ([#462](https://github.com/weaties/helmlog/issues/462), [#509](https://github.com/weaties/helmlog/issues/509))
+- **Schema & consent** ([#493](https://github.com/weaties/helmlog/issues/493))
+  — v63 channel_map + transcript_segments + voice biometric consent audit
+- **Hardware discovery & capture** ([#494](https://github.com/weaties/helmlog/issues/494))
+  — pyudev USB device detection and multi-channel recording in `audio.py`
+- **Per-channel transcription** ([#495](https://github.com/weaties/helmlog/issues/495))
+  — per-channel ASR with unified time-sorted segment merge
+- **Channel mapping UI** ([#496](https://github.com/weaties/helmlog/issues/496),
+  [#497](https://github.com/weaties/helmlog/issues/497)) — admin channel-map
+  page, voice consent acknowledgement flow, and per-session overrides from
+  the home page
+- **Mixed playback + isolation** ([#498](https://github.com/weaties/helmlog/issues/498))
+  — Web Audio mixed playback with segment-click channel isolation
+- **Export & deletion** ([#499](https://github.com/weaties/helmlog/issues/499))
+  — multi-channel WAV export preserves all channels; atomic per-channel
+  deletion satisfies data-licensing right-to-erasure
+- **Sibling-card parallel capture** ([#509](https://github.com/weaties/helmlog/issues/509))
+  — `AudioRecorderGroup` opens one mono USB receiver per sibling with a
+  shared `capture_group_id`; transcription fans out across siblings and
+  merges into one time-sorted transcript; session page plays every sibling
+  via multi-source Web Audio
+- **Per-receiver native players** ([#525](https://github.com/weaties/helmlog/issues/525),
+  [#540](https://github.com/weaties/helmlog/pull/540)) — stacked native
+  `<audio controls>` below the mixed player, one per receiver, with per-row
+  download; starting one pauses the mix and any other playing sibling
+- **Capture hotfixes** — PortAudio re-init on Linux detection, pyudev sound
+  subsystem filtered to `card*`, `AudioRecorderGroup` accepted alongside
+  `AudioRecorder` on the web layer, and graceful race-start audio failure
+
+### Race results import ([#459](https://github.com/weaties/helmlog/issues/459), [#460](https://github.com/weaties/helmlog/pull/460))
+- **Clubspot provider & importer** — schema v59 with provider protocol, idempotent Clubspot importer, and bundled test fixtures
+- **STYC HTML provider** — STYC results import with place dedup and a `series.htm` fallback ([#526](https://github.com/weaties/helmlog/issues/526))
+- **Admin Race Results page** — browse imported regattas, trigger imports, link imported races to local sessions
+- **Auto-discover** ([#524](https://github.com/weaties/helmlog/pull/524),
+  [#526](https://github.com/weaties/helmlog/issues/526)) — Clubspot regatta
+  name + classes and STYC series/races discovered from a single URL
+- **Session linking** ([#520](https://github.com/weaties/helmlog/issues/520))
+  — auto-link imported races to local sessions on import, pair by order,
+  match by stored date column, `/rematch` endpoint + admin button, session
+  page picker to link results manually
+- **History & session page polish** — imported races hidden from session
+  history listing, session page shows linked fleet results, source links on
+  the results page, class ID validation
+
+### Polar analysis ([#534](https://github.com/weaties/helmlog/issues/534), [#536](https://github.com/weaties/helmlog/issues/536))
+- **Full-circle polar diagram** — port/stbd split with panel split by
+  point-of-sail and tack; upwind and downwind curves stay disconnected
+- **Panel filters** — position, tack, TWS range, delta, and race phase
+- **Click-to-highlight** — polar diagram dot click highlights matching replay
+  segments via enriched grade mapping carrying bsp + target
+- **Baseline race window** ([#536](https://github.com/weaties/helmlog/issues/536),
+  [#537](https://github.com/weaties/helmlog/pull/537)) — exclude pre-start
+  from polar baseline
+
+### Maneuvers UI ([#531](https://github.com/weaties/helmlog/pull/531))
+- **Filter pills** — stackable type/tack/rank/post-start filters on the
+  maneuvers card, overlay respects them, and the enriched payload is cached
+  per session
+- **Tracks & markers** — smoother maneuver tracks with speed-recovery
+  markers, tack direction labels corrected, track ticks, and optional
+  Vakaros overlay with SK/Vakaros source toggles and row→overlay highlight
+
+### Backup & reporting ([#518](https://github.com/weaties/helmlog/issues/518), [#519](https://github.com/weaties/helmlog/pull/519))
+- **SSH preflight, safety gate, and email reports** — backup script now
+  pre-checks the SSH target, refuses to clobber, and mails a summary on
+  completion
+
+### CI & test hygiene
+- **Nightly review + bisect** ([#514](https://github.com/weaties/helmlog/pull/514),
+  [#515](https://github.com/weaties/helmlog/pull/515)) — replace per-PR
+  Claude review with a nightly-on-main job that bisects regressions, plus
+  follow-up storage/CI fixes
+- **write_audio_session identity regression guard** ([#517](https://github.com/weaties/helmlog/pull/517))
+
+### Bug fixes
+- **Start-line bias sign** ([#529](https://github.com/weaties/helmlog/pull/529))
+  — pin→boat bias sign inversion fixed
+- **Imported races break /api/state** ([#532](https://github.com/weaties/helmlog/issues/532),
+  [#533](https://github.com/weaties/helmlog/pull/533)) — naive/missing
+  start_utc on imported rows no longer 500s the home endpoint; v68/v69
+  migrations backfill existing rows
+- **Ghost "open" imported races** ([#541](https://github.com/weaties/helmlog/issues/541),
+  [#542](https://github.com/weaties/helmlog/pull/542)) — importer now writes
+  `end_utc = start_utc` at insert time so imported rows never get picked up
+  by `get_current_race`; the dead `start_utc LIKE '%T%'` filter removed
+
+### Dependencies
+- **ruff** → `>=0.15.10`, **python-dotenv** → `>=1.2.2`,
+  **pytest-cov** → `>=7.1.0`, **influxdb-client** → `>=1.50.0`,
+  **pyannote-audio** → `>=4.0.4`, **actions/github-script** → v9
+
 ## Sprint 7 — Vakaros Ingest, Maneuver Analysis & Diarized Playback (2026-04-11)
 
 Vakaros VKX watched-folder ingest with rich start-line overlays, a new
