@@ -6388,6 +6388,8 @@ function _renderHud(utc) {
   setEl('hud-cog', _fmtNum(s && s.cog, 0));
   setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
   setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
+  setEl('hud-set', s && s.set != null && !Number.isNaN(s.set) ? _fmtDeg(s.set) : '—');
+  setEl('hud-drift', s && s.drift != null && !Number.isNaN(s.drift) ? _fmtNum(s.drift, 2) : '—');
 
   const cursorMs = utc.getTime();
   _drawSparkline('spark-stw', 'stw', cursorMs, 'rgba(120,180,255,0.9)');
@@ -6781,6 +6783,8 @@ async function _loadReplayData() {
     // Show replay UI
     const controls = document.getElementById('replay-controls');
     if (controls) controls.style.display = '';
+    const gaugesWrap = document.getElementById('replay-gauges-wrap');
+    if (gaugesWrap) gaugesWrap.style.display = '';
     const toggleRow = document.getElementById('replay-toggle-row');
     if (toggleRow) toggleRow.style.display = '';
     // Initial HUD render at session start

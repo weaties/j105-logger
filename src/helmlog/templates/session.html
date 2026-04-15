@@ -101,6 +101,9 @@
 
 <div id="track-container" class="card" style="display:none">
   <div class="section-title">Track</div>
+  <div id="track-layers-wrap" style="margin-bottom:8px">
+    <div class="section-title" style="margin-top:0;font-size:.72rem;cursor:pointer" onclick="toggleSection('track-layers')">Layers <span id="track-layers-toggle">&#9660;</span></div>
+    <div class="section-body" id="track-layers-body">
   <div id="vakaros-track-toggle" style="display:none;margin-bottom:8px;font-size:.78rem;color:var(--text-secondary)">
     <label style="margin-right:12px"><input type="checkbox" id="toggle-sk-track" checked> SK track</label>
     <label><input type="checkbox" id="toggle-vakaros-track"> Vakaros track</label>
@@ -122,16 +125,12 @@
       <span style="display:inline-block;width:10px;height:10px;background:#888;vertical-align:middle;margin:0 2px 0 8px"></span>unknown
     </span>
   </div>
-  <div id="track-size-row" style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">
-    <span style="margin-right:4px">Map size:</span>
-    <button type="button" class="track-size-btn" data-size="s">S</button>
-    <button type="button" class="track-size-btn" data-size="">M</button>
-    <button type="button" class="track-size-btn" data-size="l">L</button>
-    <button type="button" class="track-size-btn" data-size="xl" title="Full height">XL</button>
+    </div>
   </div>
-  <div id="track-map" class="track-map"></div>
-  <div id="replay-controls" style="display:none;margin-top:10px">
-    <div id="replay-gauges" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin-bottom:8px">
+  <div id="replay-gauges-wrap" style="display:none;margin-bottom:8px">
+    <div class="section-title" style="margin-top:0;font-size:.72rem;cursor:pointer" onclick="toggleSection('replay-gauges')">Gauges <span id="replay-gauges-toggle">&#9660;</span></div>
+    <div class="section-body" id="replay-gauges-body">
+    <div id="replay-gauges" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px">
       <div class="replay-gauge" data-gauge="speed" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
         <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:2px">Speed</div>
         <div style="display:flex;gap:10px;align-items:baseline;font-family:monospace">
@@ -178,7 +177,25 @@
           <span><span style="color:var(--text-secondary);font-size:.7rem">Δ</span> <span id="hud-delta" style="font-size:1.1rem;color:var(--text-primary)">—</span></span>
         </div>
       </div>
+      <div class="replay-gauge" data-gauge="current" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+        <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:2px">Current</div>
+        <div style="display:flex;gap:10px;align-items:baseline;font-family:monospace">
+          <span><span style="color:var(--text-secondary);font-size:.7rem">SET</span> <span id="hud-set" style="font-size:1.1rem;color:var(--text-primary)">—</span></span>
+          <span><span style="color:var(--text-secondary);font-size:.7rem">DRIFT</span> <span id="hud-drift" style="font-size:1.1rem;color:var(--text-primary)">—</span></span>
+        </div>
+      </div>
     </div>
+    </div>
+  </div>
+  <div id="track-size-row" style="display:flex;gap:4px;align-items:center;margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">
+    <span style="margin-right:4px">Map size:</span>
+    <button type="button" class="track-size-btn" data-size="s">S</button>
+    <button type="button" class="track-size-btn" data-size="">M</button>
+    <button type="button" class="track-size-btn" data-size="l">L</button>
+    <button type="button" class="track-size-btn" data-size="xl" title="Full height">XL</button>
+  </div>
+  <div id="track-map" class="track-map"></div>
+  <div id="replay-controls" style="display:none;margin-top:10px">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <button id="replay-prev-event-btn" type="button" title="Previous event ([)" aria-label="Previous event" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;width:30px;height:30px;font-size:.85rem;cursor:pointer">&#9198;</button>
       <button id="replay-play-btn" type="button" aria-label="Play/pause" style="background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;width:34px;height:30px;font-size:1rem;cursor:pointer">&#9654;</button>
