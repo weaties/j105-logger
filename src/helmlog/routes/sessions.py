@@ -494,11 +494,24 @@ async def api_session_summary(
     res_cur = await db.execute(
         "SELECT rr.place, b.sail_number, b.name AS boat_name"
         " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
-        " WHERE rr.race_id = ? AND rr.dnf = 0 AND rr.dns = 0"
+        " WHERE rr.race_id = ("
+        "   SELECT id FROM races"
+        "   WHERE local_session_id = ? AND source IS NOT NULL AND source != 'live'"
+        "   ORDER BY COALESCE(start_utc, date) LIMIT 1"
+        " ) AND rr.dnf = 0 AND rr.dns = 0"
         " ORDER BY rr.place LIMIT 3",
         (session_id,),
     )
     results = [dict(r) for r in await res_cur.fetchall()]
+    if not results:
+        res_cur = await db.execute(
+            "SELECT rr.place, b.sail_number, b.name AS boat_name"
+            " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
+            " WHERE rr.race_id = ? AND rr.dnf = 0 AND rr.dns = 0"
+            " ORDER BY rr.place LIMIT 3",
+            (session_id,),
+        )
+        results = [dict(r) for r in await res_cur.fetchall()]
 
     return JSONResponse(
         {
