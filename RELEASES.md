@@ -161,6 +161,15 @@ collapsible gauge layers.
   — layer and gauge rows collapse, a current gauge was added, and gauges
   moved above the map
 
+### Discussion threads
+- **Shareable deep links** ([#561](https://github.com/weaties/helmlog/issues/561))
+  — query-param anchors (`?thread=<id>&comment=<id>`) that survive Slack and
+  other unfurls, copy-link buttons on threads and comments, flash-highlight on
+  arrival, and auth redirects that preserve the query string so a signed-out
+  recipient lands on the login wall and returns to the exact thread after
+  signing in; scroll pins the thread header to the top unless a linked reply
+  would fall below the fold, in which case the reply is centered
+
 ### Dependencies
 - **ruff** → `>=0.15.10`, **python-dotenv** → `>=1.2.2`,
   **pytest-cov** → `>=7.1.0`, **influxdb-client** → `>=1.50.0`,
