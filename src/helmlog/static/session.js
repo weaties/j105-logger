@@ -867,23 +867,23 @@ function _renderCurrentArrowSvg(setDeg, driftKts, color) {
   // Compass rotation: set_deg is the direction the current flows *toward*
   // (0=N, 90=E). SVG x-axis points east so rotate by (setDeg - 90).
   const rot = setDeg - 90;
-  const w = len + 4;
-  return (
-    '<svg width="' + w + '" height="12" viewBox="-2 -6 ' + w + ' 12" ' +
-    'style="overflow:visible;pointer-events:none;transform:rotate(' + rot + 'deg);transform-origin:0 0">' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.4" stroke-width="2.5" stroke-linecap="round"/>' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="1.4" stroke-linecap="round"/>' +
-    '<polygon points="' + len + ',0 ' + tail + ',-2.5 ' + tail + ',2.5" fill="' + c + '" stroke="#000" stroke-opacity="0.4" stroke-width="0.4"/>' +
-    '</svg>'
-  );
+  let parts = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="overflow:visible;pointer-events:auto">';
+  // Invisible hit-target halo so hover/touch is easy along the shaft length.
+  parts += '<circle cx="0" cy="0" r="' + (len / 2 + 6) + '" fill="#fff" fill-opacity="0.001"/>';
+  parts += '<g transform="rotate(' + rot + ')">';
+  parts += '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.4" stroke-width="2.5" stroke-linecap="round"/>';
+  parts += '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="1.4" stroke-linecap="round"/>';
+  parts += '<polygon points="' + len + ',0 ' + tail + ',-2.5 ' + tail + ',2.5" fill="' + c + '" stroke="#000" stroke-opacity="0.4" stroke-width="0.4"/>';
+  parts += '</g></svg>';
+  return parts;
 }
 
 function _currentArrowDivIcon(setDeg, driftKts, color) {
   return L.divIcon({
     className: 'current-arrow',
     html: _renderCurrentArrowSvg(setDeg, driftKts, color),
-    iconSize: [0, 0],
-    iconAnchor: [0, 0],
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
   });
 }
 
@@ -953,9 +953,12 @@ function _rebuildCurrentOverlay() {
     if (!pos) continue;
     const marker = L.marker(pos, {
       icon: _currentArrowDivIcon(sd.set, sd.drift, '#2563eb'),
-      interactive: false,
+      interactive: true,
       keyboard: false,
+      riseOnHover: true,
     });
+    const tip = 'Set ' + Math.round(sd.set) + '\u00b0 \u00b7 Drift ' + sd.drift.toFixed(2) + ' kt';
+    marker.bindTooltip(tip, {direction: 'top', offset: [0, -6], sticky: true});
     _currentLayer.addLayer(marker);
   }
 
