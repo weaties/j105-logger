@@ -2183,8 +2183,11 @@ async function retranscribe() {
 function _renderDebriefPlayer() {
   const deb = _session && _session.debrief_audio;
   if (!deb) return;
-  const body = document.getElementById('audio-body');
-  if (!body) return;
+  // Anchor to #audio-card (not #audio-body) so the debrief subsection lands
+  // after the race transcript that now lives inside the same card. Otherwise
+  // the debrief gets sandwiched between the race player and its transcript.
+  const card = document.getElementById('audio-card');
+  if (!card) return;
   const existing = document.getElementById('debrief-player');
   if (existing) existing.remove();
   const wrap = document.createElement('div');
@@ -2202,7 +2205,7 @@ function _renderDebriefPlayer() {
     + '<div id="debrief-transcript-body" style="margin-top:6px;font-size:.78rem">'
     + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
     + '</div>';
-  body.appendChild(wrap);
+  card.appendChild(wrap);
   _loadDebriefTranscript(deb.audio_session_id);
 }
 
