@@ -1,6 +1,6 @@
 /* history.js — Session History page logic */
 
-let currentType = '';
+let currentType = 'race';
 let currentOffset = 0;
 const LIMIT = 25;
 let loadTimer = null;
