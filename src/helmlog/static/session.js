@@ -2202,7 +2202,10 @@ function _renderDebriefPlayer() {
     + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
     + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
     + '</div>'
-    + '<div id="debrief-transcript-body" style="margin-top:6px;font-size:.78rem">'
+    + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
+    + 'onclick="toggleSection(\'debrief-transcript\')">'
+    + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
+    + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
     + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
     + '</div>';
   card.appendChild(wrap);
