@@ -48,11 +48,6 @@ function render(data) {
     const start = fmtTimeShort(s.start_utc);
     const end = s.end_utc ? fmtTimeShort(s.end_utc) : 'in progress';
     const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDuration(Math.round(s.duration_s)) + ')' : '';
-    const typeClass = s.type === 'race' ? 'badge-race'
-      : s.type === 'practice' ? 'badge-practice'
-      : s.type === 'synthesized' ? 'badge-synthesized'
-      : 'badge-debrief';
-    const badge = '<span class="badge ' + typeClass + '">' + s.type.toUpperCase() + '</span>';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
 
     // --- Toggle buttons: Track, Video, Results, Crew, Sails, Notes, Transcript ---
@@ -122,11 +117,8 @@ function render(data) {
 
     const displayName = s.shared_name || s.name;
     const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + displayName + '</a>';
-    const matchBadge = s.match_confirmed ? '<span class="badge badge-practice" title="Co-op matched">MATCHED</span>'
-      : s.match_group_id ? '<span class="badge badge-debrief" title="Pending match">PENDING</span>'
-      : '';
     const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:1px">Local: ' + s.name + '</div>' : '';
-    return '<div class="card"><div class="session-name">' + nameLink + badge + matchBadge + videoLink + '</div>'
+    return '<div class="card"><div class="session-name">' + nameLink + videoLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + localNameHint
       + parent
