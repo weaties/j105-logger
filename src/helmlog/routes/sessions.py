@@ -1140,13 +1140,21 @@ async def api_session_replay(
         tw = true_winds_by_s.get(k)
         tws: float | None = None
         twa: float | None = None
+        twd: float | None = None
         if tw is not None:
             raw_ref = tw.get("reference")
             ref = int(raw_ref) if raw_ref is not None else -1
             tws = float(tw["wind_speed_kts"]) if tw["wind_speed_kts"] is not None else None
             h = hdgs_by_s.get(k)
             heading = float(h["heading_deg"]) if h and h["heading_deg"] is not None else None
-            twa = _polar._compute_twa(float(tw["wind_angle_deg"]), ref, heading)
+            wind_angle = float(tw["wind_angle_deg"])
+            twa = _polar._compute_twa(wind_angle, ref, heading)
+            # TWD is the compass direction the true wind is coming FROM.
+            # ref NORTH: wind_angle is already TWD. ref BOAT: add heading.
+            if ref == _polar._WIND_REF_NORTH:
+                twd = wind_angle % 360
+            elif ref == _polar._WIND_REF_BOAT and heading is not None:
+                twd = (heading + wind_angle) % 360
 
         aw = app_winds_by_s.get(k)
         aws: float | None = None
@@ -1174,6 +1182,7 @@ async def api_session_replay(
                 "hdg": hdg_v,
                 "tws": tws,
                 "twa": twa,
+                "twd": twd,
                 "aws": aws,
                 "awa": awa,
                 "set": set_v,

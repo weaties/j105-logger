@@ -6031,10 +6031,16 @@ function _renderHud(utc) {
   };
   setEl('hud-sog', _fmtNum(s && s.sog, 2));
   setEl('hud-stw', _fmtNum(s && s.stw, 2));
+  const _fmtDeg = (v) => {
+    if (v == null || Number.isNaN(v)) return '—';
+    const wrapped = ((Math.round(v) % 360) + 360) % 360;
+    return wrapped + '\u00b0';
+  };
   setEl('hud-tws', _fmtNum(s && s.tws, 1));
-  setEl('hud-twa', _fmtNum(s && s.twa, 0));
+  setEl('hud-twd', _fmtDeg(s && s.twd));
+  setEl('hud-twa', _fmtDeg(s && s.twa));
   setEl('hud-aws', _fmtNum(s && s.aws, 1));
-  setEl('hud-awa', _fmtNum(s && s.awa, 0));
+  setEl('hud-awa', _fmtDeg(s && s.awa));
   setEl('hud-hdg', _fmtNum(s && s.hdg, 0));
   setEl('hud-cog', _fmtNum(s && s.cog, 0));
   setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
@@ -6403,6 +6409,7 @@ async function _loadReplayData() {
       sog: s.sog,
       tws: s.tws,
       twa: s.twa,
+      twd: s.twd,
       aws: s.aws,
       awa: s.awa,
       hdg: s.hdg,
