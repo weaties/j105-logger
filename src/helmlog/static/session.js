@@ -1938,8 +1938,9 @@ async function deleteNote(noteId) {
 // ---------------------------------------------------------------------------
 
 async function loadTranscript() {
-  const card = document.getElementById('transcript-card');
-  card.style.display = '';
+  // Transcript now lives inside #audio-card (consolidated with the race
+  // player for parity with the debrief card layout), so visibility is
+  // driven by loadAudio() showing the audio card — no separate toggle here.
   const body = document.getElementById('transcript-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
 
