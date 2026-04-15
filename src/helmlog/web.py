@@ -180,9 +180,13 @@ def create_app(
         if user is None:
             accept = request.headers.get("accept", "")
             if "text/html" in accept:
+                from urllib.parse import quote
+
                 from starlette.responses import RedirectResponse as _RR
 
-                return _RR(url=f"/login?next={path}", status_code=307)
+                query = request.url.query
+                next_target = f"{path}?{query}" if query else path
+                return _RR(url=f"/login?next={quote(next_target, safe='')}", status_code=307)
             from starlette.responses import JSONResponse as _JR
 
             return _JR({"detail": "Not authenticated"}, status_code=401)

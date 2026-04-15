@@ -5643,12 +5643,56 @@ function seekToThreadAnchor(ts) {
 }
 
 function _checkThreadHash() {
-  const hash = window.location.hash;
-  const m = hash.match(/^#thread-(\d+)$/);
+  // Prefer query params (?thread=<id>&comment=<id>) — survive Slack unfurls.
+  // Fallback to #thread-<id> fragment for backwards compat.
+  const params = new URLSearchParams(window.location.search);
+  const threadParam = params.get('thread');
+  const commentParam = params.get('comment');
+  if (threadParam) {
+    const threadId = parseInt(threadParam, 10);
+    if (!isNaN(threadId)) {
+      const commentId = commentParam ? parseInt(commentParam, 10) : null;
+      openThread(threadId, commentId && !isNaN(commentId) ? commentId : null);
+      return;
+    }
+  }
+  const m = window.location.hash.match(/^#thread-(\d+)(?:-comment-(\d+))?$/);
   if (m) {
     const threadId = parseInt(m[1], 10);
-    openThread(threadId);
+    const commentId = m[2] ? parseInt(m[2], 10) : null;
+    openThread(threadId, commentId);
   }
+}
+
+function _threadShareUrl(threadId, commentId) {
+  const url = new URL(window.location.href);
+  url.hash = '';
+  url.searchParams.delete('thread');
+  url.searchParams.delete('comment');
+  url.searchParams.set('thread', String(threadId));
+  if (commentId) url.searchParams.set('comment', String(commentId));
+  return url.toString();
+}
+
+async function copyThreadLink(threadId, commentId, btn) {
+  const link = _threadShareUrl(threadId, commentId);
+  try {
+    await navigator.clipboard.writeText(link);
+    if (btn) {
+      const orig = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = orig; }, 1500);
+    }
+  } catch (e) {
+    prompt('Copy this link:', link);
+  }
+}
+
+function _flashHighlight(el) {
+  if (!el) return;
+  el.classList.add('flash-highlight');
+  el.scrollIntoView({behavior: 'smooth', block: 'center'});
+  setTimeout(() => el.classList.remove('flash-highlight'), 2200);
 }
 
 function _addDiscussionMarkers() {
@@ -5832,7 +5876,7 @@ async function submitNewThread() {
   openThread(id);
 }
 
-async function openThread(threadId) {
+async function openThread(threadId, scrollToCommentId) {
   const body = document.getElementById('discussion-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
   // Mark as read
@@ -5861,18 +5905,22 @@ async function openThread(threadId) {
   const commentsHtml = (t.comments || []).map(c => {
     const author = c.author_name || c.author_email || 'Crew Member';
     const edited = c.edited_at ? ' <span class="comment-edited">(edited)</span>' : '';
-    return '<div class="comment-item">'
+    return '<div class="comment-item" id="comment-' + c.id + '">'
       + '<span class="comment-author">' + esc(author) + '</span>'
       + '<span class="comment-time">' + fmtTime(c.created_at) + '</span>' + edited
+      + ' <button class="btn-copy-link" title="Copy link to this comment" '
+      + 'onclick="copyThreadLink(' + t.id + ',' + c.id + ',this)">\ud83d\udd17</button>'
       + '<div class="comment-body">' + _renderMentions(esc(c.body)) + '</div>'
       + '</div>';
   }).join('');
+  const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this thread" '
+    + 'onclick="copyThreadLink(' + t.id + ',null,this)">\ud83d\udd17 Copy link</button>';
   body.innerHTML = '<div style="margin-bottom:8px">'
     + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadDiscussion()">&larr; All threads</button>'
     + '</div>'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
     + '<div style="flex:1;min-width:0"><strong style="color:var(--text-primary);font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
-    + '<div style="flex-shrink:0">' + resolveBtn + '</div>'
+    + '<div style="flex-shrink:0;display:flex;gap:6px">' + copyThreadBtn + resolveBtn + '</div>'
     + '</div>'
     + resolutionHtml
     + '<div id="thread-comments">' + (commentsHtml || '<span style="color:var(--text-secondary)">No comments yet</span>') + '</div>'
@@ -5880,7 +5928,16 @@ async function openThread(threadId) {
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
     + '</div>';
-  document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+  if (scrollToCommentId) {
+    const target = document.getElementById('comment-' + scrollToCommentId);
+    if (target) {
+      _flashHighlight(target);
+    } else {
+      _flashHighlight(document.getElementById('discussion-card'));
+    }
+  } else {
+    _flashHighlight(document.getElementById('discussion-card'));
+  }
 }
 
 async function submitReply(threadId) {

@@ -50,6 +50,10 @@
 .btn-resolve{background:none;border:1px solid var(--success);color:var(--success);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
 .btn-resolve:hover{background:var(--success);color:var(--bg-primary)}
 .btn-unresolve{background:none;border:1px solid var(--text-secondary);color:var(--text-secondary);border-radius:4px;padding:6px 12px;font-size:.78rem;cursor:pointer;white-space:nowrap;min-height:32px}
+.btn-copy-link{background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:4px;padding:4px 10px;font-size:.72rem;cursor:pointer;white-space:nowrap}
+.btn-copy-link:hover{border-color:var(--accent);color:var(--accent)}
+@keyframes flash-highlight-kf{0%{box-shadow:0 0 0 2px var(--accent-strong);background:rgba(126,184,247,.2)}100%{box-shadow:0 0 0 0 transparent;background:transparent}}
+.flash-highlight{animation:flash-highlight-kf 2.2s ease-out;border-radius:6px}
 .discussion-marker{background:none!important;border:none!important}
 .mention{color:var(--accent);font-weight:600;text-decoration:none}
 .stale-banner{background:var(--warning);color:var(--bg-primary);padding:6px 10px;border-radius:6px;font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px}

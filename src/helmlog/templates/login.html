@@ -38,7 +38,7 @@ a{color:var(--accent, #7eb8f7)}
 <div class="card">
 <div class="divider">or sign in with</div>
 {% for provider in oauth_providers %}
-<a href="/auth/oauth/{{ provider }}?next={{ next_url }}" class="btn btn-oauth" style="text-align:center;text-decoration:none;display:block">Sign in with {{ provider|capitalize }}</a>
+<a href="/auth/oauth/{{ provider }}?next={{ next_url|urlencode }}" class="btn btn-oauth" style="text-align:center;text-decoration:none;display:block">Sign in with {{ provider|capitalize }}</a>
 {% endfor %}
 </div>
 {% endif %}
