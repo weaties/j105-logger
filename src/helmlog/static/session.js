@@ -405,6 +405,7 @@ async function loadTrack() {
     attribution: '&copy; OpenStreetMap', maxZoom: 18,
   }).addTo(_map);
   initTrackSizeControls(_map);
+  _restorePersistedSections();
 
   const feature = geojson.features[0];
   const coords = feature.geometry.coordinates;
@@ -1645,14 +1646,63 @@ function _seekVideoToIndex(idx) {
 // ---------------------------------------------------------------------------
 
 const _collapsed = {'boat-settings': true};
+const _PERSISTED_SECTIONS = ['track-layers', 'replay-gauges'];
+const _SECTION_KEY = 'helmlog.session.collapsed.';
 
-function toggleSection(name) {
+function _applySectionState(name, collapsed) {
   const body = document.getElementById(name + '-body');
   const toggle = document.getElementById(name + '-toggle');
   if (!body) return;
-  _collapsed[name] = !_collapsed[name];
-  body.style.display = _collapsed[name] ? 'none' : '';
-  if (toggle) toggle.innerHTML = _collapsed[name] ? '&#9654;' : '&#9660;';
+  _collapsed[name] = collapsed;
+  body.style.display = collapsed ? 'none' : '';
+  if (toggle) toggle.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+}
+
+function toggleSection(name) {
+  const body = document.getElementById(name + '-body');
+  if (!body) return;
+  _applySectionState(name, !_collapsed[name]);
+  if (_PERSISTED_SECTIONS.includes(name)) {
+    try { localStorage.setItem(_SECTION_KEY + name, _collapsed[name] ? '1' : '0'); } catch (e) {}
+  }
+}
+
+const _LAYER_TOGGLE_KEY = 'helmlog.session.layer.';
+const _PERSISTED_LAYER_TOGGLES = [];
+
+function _persistLayerToggle(id, apply) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  _PERSISTED_LAYER_TOGGLES.push({id, apply});
+  let saved = null;
+  try { saved = localStorage.getItem(_LAYER_TOGGLE_KEY + id); } catch (e) {}
+  if (saved === '1' || saved === '0') {
+    el.checked = saved === '1';
+  }
+  el.addEventListener('change', (e) => {
+    const checked = !!e.target.checked;
+    try { localStorage.setItem(_LAYER_TOGGLE_KEY + id, checked ? '1' : '0'); } catch (err) {}
+    apply(checked);
+  });
+}
+
+// After replay data is loaded, apply the saved state of every persisted layer
+// toggle so overlays like Boat wind / Boat current render on session load
+// instead of waiting for the user to toggle them on.
+function _applyPersistedLayerToggles() {
+  for (const {id, apply} of _PERSISTED_LAYER_TOGGLES) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    try { apply(!!el.checked); } catch (e) {}
+  }
+}
+
+function _restorePersistedSections() {
+  for (const name of _PERSISTED_SECTIONS) {
+    let saved = null;
+    try { saved = localStorage.getItem(_SECTION_KEY + name); } catch (e) {}
+    if (saved === '1') _applySectionState(name, true);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -6388,6 +6438,8 @@ function _renderHud(utc) {
   setEl('hud-cog', _fmtNum(s && s.cog, 0));
   setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
   setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
+  setEl('hud-set', s && s.set != null && !Number.isNaN(s.set) ? _fmtDeg(s.set) : '—');
+  setEl('hud-drift', s && s.drift != null && !Number.isNaN(s.drift) ? _fmtNum(s.drift, 2) : '—');
 
   const cursorMs = utc.getTime();
   _drawSparkline('spark-stw', 'stw', cursorMs, 'rgba(120,180,255,0.9)');
@@ -6781,12 +6833,18 @@ async function _loadReplayData() {
     // Show replay UI
     const controls = document.getElementById('replay-controls');
     if (controls) controls.style.display = '';
+    const gaugesWrap = document.getElementById('replay-gauges-wrap');
+    if (gaugesWrap) gaugesWrap.style.display = '';
     const toggleRow = document.getElementById('replay-toggle-row');
     if (toggleRow) toggleRow.style.display = '';
     // Initial HUD render at session start
     if (!_playClock.positionUtc) _playClock.positionUtc = _replayStart;
     _renderHud(_playClock.positionUtc);
     _updateReplayControls();
+    // Now that samples and the map are in place, re-apply any persisted
+    // layer toggles (boat wind/current, overlays, polar colors, etc.) so
+    // user preferences carry across sessions.
+    _applyPersistedLayerToggles();
     // Samples + replay window are now loaded — redraw the rounding
     // laylines so they respect the race-start filter.
     if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
@@ -6811,43 +6869,22 @@ function _wireReplayControls() {
       _seekTo(new Date(t), 'replay');
     });
   }
-  const toggle = document.getElementById('toggle-polar-grades');
-  if (toggle) toggle.addEventListener('change', (e) => _setGradeViewActive(e.target.checked));
-  const followToggle = document.getElementById('toggle-follow-boat');
-  if (followToggle) followToggle.addEventListener('change', (e) => {
-    _followBoat = !!e.target.checked;
-    // Snap to the current position immediately when enabled so the user
-    // doesn't have to wait for the next tick.
+  const _followBoatApply = (checked) => {
+    _followBoat = !!checked;
     if (_followBoat && _trackData && _playClock.positionUtc) {
       const idx = _indexForUtc(_playClock.positionUtc);
       const latLng = _trackData.latLngs[idx];
       if (latLng && _map) _map.panTo(latLng, {animate: true});
     }
-  });
-  const maneuverToggle = document.getElementById('toggle-maneuver-markers');
-  if (maneuverToggle) maneuverToggle.addEventListener('change', (e) => {
-    _setManeuverMarkersVisible(e.target.checked);
-  });
-  const courseToggle = document.getElementById('toggle-course-overlay');
-  if (courseToggle) courseToggle.addEventListener('change', (e) => {
-    _setCourseOverlayVisible(e.target.checked);
-  });
-  const currentToggle = document.getElementById('toggle-current-overlay');
-  if (currentToggle) currentToggle.addEventListener('change', (e) => {
-    _setCurrentOverlayEnabled(e.target.checked);
-  });
-  const windToggle = document.getElementById('toggle-wind-overlay');
-  if (windToggle) windToggle.addEventListener('change', (e) => {
-    _setWindOverlayEnabled(e.target.checked);
-  });
-  const boatCurrentToggle = document.getElementById('toggle-boat-current');
-  if (boatCurrentToggle) boatCurrentToggle.addEventListener('change', (e) => {
-    _setBoatInstrument('current', e.target.checked);
-  });
-  const boatWindToggle = document.getElementById('toggle-boat-wind');
-  if (boatWindToggle) boatWindToggle.addEventListener('change', (e) => {
-    _setBoatInstrument('wind', e.target.checked);
-  });
+  };
+  _persistLayerToggle('toggle-polar-grades', _setGradeViewActive);
+  _persistLayerToggle('toggle-follow-boat', _followBoatApply);
+  _persistLayerToggle('toggle-maneuver-markers', _setManeuverMarkersVisible);
+  _persistLayerToggle('toggle-course-overlay', _setCourseOverlayVisible);
+  _persistLayerToggle('toggle-current-overlay', _setCurrentOverlayEnabled);
+  _persistLayerToggle('toggle-wind-overlay', _setWindOverlayEnabled);
+  _persistLayerToggle('toggle-boat-current', (checked) => _setBoatInstrument('current', checked));
+  _persistLayerToggle('toggle-boat-wind', (checked) => _setBoatInstrument('wind', checked));
 
   const prevBtn = document.getElementById('replay-prev-event-btn');
   if (prevBtn) prevBtn.addEventListener('click', () => _stepEvent(-1));
