@@ -982,41 +982,92 @@ function _setCurrentOverlayEnabled(on) {
 
 // -----------------------------------------------------------------------
 // Wind overlay (#554). Toggleable layer showing the TWD/TWS the boat
-// actually experienced, sampled along the track. Arrows point downwind
-// (the direction the wind is going toward); length and color encode TWS.
-// Samples with twd == null (e.g. ref=BOAT without heading) are skipped.
+// actually experienced, sampled along the track as meteorological wind
+// barbs. The shaft points in the direction the wind is coming *from*
+// (standard convention), with flags encoding TWS: pennant = 50 kt,
+// full barb = 10 kt, half barb = 5 kt. Sample cadence scales with map
+// zoom so zooming out doesn't swamp the map. Samples with twd == null
+// (e.g. ref=BOAT without heading) are skipped.
 // -----------------------------------------------------------------------
 
 let _windLayer = null;
 let _windEnabled = false;
-let _windOverlayBuilt = false;
+let _windZoomHandler = null;
 
-function _renderWindArrowSvg(twdDeg, tws, color) {
-  // Arrow length scales with TWS: 4kt ≈ 18px, 20kt ≈ 44px.
-  const len = Math.min(44, Math.max(14, 10 + tws * 1.7));
-  const tail = Math.max(0, len - 6);
-  const c = color || '#22c55e';
-  // Point downwind: wind *from* twd flows *toward* (twd+180). SVG x-axis
-  // points east, so rotate by ((twd+180) - 90) = twd + 90.
-  const rot = twdDeg + 90;
-  const w = len + 4;
-  return (
-    '<svg width="' + w + '" height="12" viewBox="-2 -6 ' + w + ' 12" ' +
-    'style="overflow:visible;pointer-events:none;transform:rotate(' + rot + 'deg);transform-origin:0 0">' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="#000" stroke-opacity="0.5" stroke-width="4" stroke-linecap="round"/>' +
-    '<line x1="0" y1="0" x2="' + tail + '" y2="0" stroke="' + c + '" stroke-width="2.2" stroke-linecap="round"/>' +
-    '<polygon points="' + len + ',0 ' + tail + ',-4 ' + tail + ',4" fill="' + c + '" stroke="#000" stroke-opacity="0.5" stroke-width="0.5"/>' +
-    '</svg>'
-  );
+// Render a meteorological wind barb rotated so the shaft points *from*
+// the wind source (twd). Flags accumulate from the outer end of the
+// shaft inward in 50/10/5 kt increments.
+function _renderWindBarbSvg(twdDeg, tws, color) {
+  const c = color || '#1f2937';
+  const shaftLen = 32;
+  // Round to nearest 5 kt for barb counts (standard met convention).
+  let knots = Math.round(tws / 5) * 5;
+  const pennants = Math.floor(knots / 50); knots -= pennants * 50;
+  const fulls = Math.floor(knots / 10); knots -= fulls * 10;
+  const halves = Math.floor(knots / 5);
+  // Compass rotation: shaft points *toward* the direction the wind is
+  // coming from. SVG y-axis points down and 0° rotation leaves -y as
+  // "up" (north), which is exactly what we want for TWD=0.
+  const rot = twdDeg;
+  let parts = '<svg width="64" height="64" viewBox="-32 -32 64 64" style="overflow:visible;pointer-events:auto">';
+  // Hit-target halo so hover/touch is easy even on a thin shaft.
+  parts += '<circle cx="0" cy="0" r="6" fill="#fff" fill-opacity="0.001"/>';
+  parts += '<g transform="rotate(' + rot + ')">';
+  // Station dot
+  parts += '<circle cx="0" cy="0" r="2" fill="' + c + '"/>';
+  // Calm (<3 kt): open circle, no shaft.
+  if (tws < 3) {
+    parts += '<circle cx="0" cy="0" r="4" fill="none" stroke="' + c + '" stroke-width="1.2"/>';
+    parts += '</g></svg>';
+    return parts;
+  }
+  // Shaft (halo + stroke for contrast against map tiles)
+  parts += '<line x1="0" y1="0" x2="0" y2="-' + shaftLen + '" stroke="#fff" stroke-opacity="0.85" stroke-width="3.2" stroke-linecap="round"/>';
+  parts += '<line x1="0" y1="0" x2="0" y2="-' + shaftLen + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+  // Barbs hang to the right of the shaft (NH convention). Start at the
+  // tip and walk inward. Spacing: 5 px per feature.
+  let y = -shaftLen;
+  const step = 5;
+  const fullW = 10;
+  const halfW = 5;
+  for (let i = 0; i < pennants; i++) {
+    const y2 = y + step;
+    parts += '<polygon points="0,' + y + ' ' + fullW + ',' + y + ' 0,' + y2 + '" fill="' + c + '" stroke="' + c + '" stroke-width="0.8" stroke-linejoin="round"/>';
+    y = y2;
+  }
+  if (pennants > 0) y += 1;
+  for (let i = 0; i < fulls; i++) {
+    parts += '<line x1="0" y1="' + y + '" x2="' + fullW + '" y2="' + (y - 4) + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+    y += step;
+  }
+  // A lone half-barb sits one step in from the tip so it's not flush
+  // with the end of the shaft.
+  if (halves > 0 && fulls === 0 && pennants === 0) y += step;
+  for (let i = 0; i < halves; i++) {
+    parts += '<line x1="0" y1="' + y + '" x2="' + halfW + '" y2="' + (y - 2) + '" stroke="' + c + '" stroke-width="1.6" stroke-linecap="round"/>';
+    y += step;
+  }
+  parts += '</g></svg>';
+  return parts;
 }
 
-function _windArrowDivIcon(twdDeg, tws, color) {
+function _windBarbDivIcon(twdDeg, tws, color) {
   return L.divIcon({
-    className: 'wind-arrow',
-    html: _renderWindArrowSvg(twdDeg, tws, color),
-    iconSize: [0, 0],
-    iconAnchor: [0, 0],
+    className: 'wind-barb',
+    html: _renderWindBarbSvg(twdDeg, tws, color),
+    iconSize: [64, 64],
+    iconAnchor: [32, 32],
   });
+}
+
+// Sample cadence for the barb overlay as a function of map zoom. Higher
+// zoom → more detail; zooming out thins out to keep barbs from colliding.
+function _windStepMsForZoom(zoom) {
+  if (zoom == null) zoom = 14;
+  // At zoom 15 → 20s, 14 → 40s, 13 → 80s, 12 → 160s, ... Clamped so a
+  // very long session at low zoom still shows some barbs.
+  const step = 20000 * Math.pow(2, Math.max(0, 15 - zoom));
+  return Math.min(600000, Math.max(15000, step));
 }
 
 // Circular mean of twd and scalar mean of tws across a ±halfMs window.
@@ -1049,10 +1100,10 @@ function _rebuildWindOverlay() {
   if (_windLayer) { _map.removeLayer(_windLayer); _windLayer = null; }
   _windLayer = L.layerGroup();
 
-  // Sample every ~30 seconds along the track with a ±15s window to damp
-  // sample-to-sample TWD noise.
-  const stepMs = 30000;
-  const halfMs = 15000;
+  const stepMs = _windStepMsForZoom(_map.getZoom());
+  // Half-window scales with step so averaging matches the displayed cadence,
+  // but is clamped so we still damp 1 Hz noise at the densest zoom.
+  const halfMs = Math.max(10000, stepMs / 2);
   const t0 = _trackData.timestamps[0].getTime();
   const tEnd = _trackData.timestamps[_trackData.timestamps.length - 1].getTime();
   for (let t = t0; t <= tEnd; t += stepMs) {
@@ -1061,24 +1112,34 @@ function _rebuildWindOverlay() {
     const pos = _trackLatLngAtUtc(t);
     if (!pos) continue;
     const marker = L.marker(pos, {
-      icon: _windArrowDivIcon(w.twd, w.tws, _twsColor(w.tws)),
-      interactive: false,
+      icon: _windBarbDivIcon(w.twd, w.tws, _twsColor(w.tws)),
+      interactive: true,
       keyboard: false,
+      riseOnHover: true,
     });
+    const tip = 'TWD ' + Math.round(w.twd) + '\u00b0 \u00b7 TWS ' + w.tws.toFixed(1) + ' kt';
+    marker.bindTooltip(tip, {direction: 'top', offset: [0, -6], sticky: true});
     _windLayer.addLayer(marker);
   }
 
   if (_windEnabled) _windLayer.addTo(_map);
-  _windOverlayBuilt = true;
 }
 
 function _setWindOverlayEnabled(on) {
   _windEnabled = !!on;
   if (_windEnabled) {
-    if (!_windOverlayBuilt) _rebuildWindOverlay();
+    _rebuildWindOverlay();
     if (_windLayer && _map) _windLayer.addTo(_map);
+    if (_map && !_windZoomHandler) {
+      _windZoomHandler = () => { if (_windEnabled) _rebuildWindOverlay(); };
+      _map.on('zoomend', _windZoomHandler);
+    }
   } else {
     if (_windLayer && _map) _map.removeLayer(_windLayer);
+    if (_map && _windZoomHandler) {
+      _map.off('zoomend', _windZoomHandler);
+      _windZoomHandler = null;
+    }
   }
 }
 
@@ -6520,7 +6581,7 @@ async function _loadReplayData() {
       drift: s.drift,
     }));
     if (typeof _rebuildCurrentOverlay === 'function') _rebuildCurrentOverlay();
-    if (typeof _rebuildWindOverlay === 'function') _rebuildWindOverlay();
+    if (_windEnabled && typeof _rebuildWindOverlay === 'function') _rebuildWindOverlay();
     _replayGrades = (data.grades || []).map(g => ({
       i: g.i,
       t_start: new Date(g.t_start),
