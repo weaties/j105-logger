@@ -1,11 +1,13 @@
 # Release Notes
 
-## Sprint 8 — Race Replay, Multi-Channel Audio & Results Import (2026-04-14)
+## Sprint 8 — Race Replay, Multi-Channel Audio, Results Import & Session Page Overhaul (2026-04-15)
 
 Full race-replay UI with polar-graded track and event stepping, multi-channel
 audio recording with per-position mic isolation and parallel sibling-card
-capture, Clubspot/STYC race-results import with session linking, and polar
-analysis overhauls.
+capture, Clubspot/STYC race-results import with session linking, polar
+analysis overhauls, debrief audio on the session page, a rebuilt history row
+summary, and a session page with wind overlay, resizable track map, and
+collapsible gauge layers.
 
 ### Race replay ([#464](https://github.com/weaties/helmlog/issues/464), [#516](https://github.com/weaties/helmlog/pull/516), [#521](https://github.com/weaties/helmlog/pull/521))
 - **Playback core** ([#465](https://github.com/weaties/helmlog/issues/465),
@@ -120,6 +122,44 @@ analysis overhauls.
   [#542](https://github.com/weaties/helmlog/pull/542)) — importer now writes
   `end_utc = start_utc` at insert time so imported rows never get picked up
   by `get_current_race`; the dead `start_utc LIKE '%T%'` filter removed
+- **Backup rsync partial-transfer** ([#544](https://github.com/weaties/helmlog/issues/544),
+  [#545](https://github.com/weaties/helmlog/pull/545)) — treat rsync rc=23/24
+  as warning instead of failure in backup reporting
+- **Clubspot multi-race linking** ([#551](https://github.com/weaties/helmlog/pull/551))
+  — fix session linking for multi-race days; admin rematch can force-relink
+  existing rows
+
+### Debrief audio on session page ([#546](https://github.com/weaties/helmlog/issues/546), [#547](https://github.com/weaties/helmlog/pull/547))
+- **Surface debrief audio + transcript** — attached debrief audio and its
+  transcript now render on the session page alongside the race audio
+- **Click-to-seek** — clicking a debrief transcript segment seeks the debrief
+  audio player
+- **Consolidated layout** — race transcript lives under the race audio player,
+  debrief renders as a collapsible subsection below it
+- **History cleanup** — attached debriefs hidden from the default history
+  list so they don't double-count as sessions
+
+### History row overhaul ([#549](https://github.com/weaties/helmlog/pull/549))
+- **Race-first filter** — default history filter is Race; debrief filter
+  removed (debriefs now live attached to their race)
+- **Per-row race summary** — each row shows thumbnail, wind, and top-3 fleet
+  result (preferring imported `race_results`, always surfacing the own boat)
+- **Simpler rows** — inline actions, exports, audio player, and pills
+  stripped from list rows; initial load triggers on page render
+
+### Session page: wind overlay, resizable map, collapsible gauges
+- **Wind card with TWD** ([#553](https://github.com/weaties/helmlog/pull/553))
+  — TWD added to wind card with true/apparent stacked by column
+- **Wind overlay on track** ([#555](https://github.com/weaties/helmlog/pull/555))
+  — TWD/TWS met wind barbs drawn along the track with zoom-adaptive cadence
+  and hover tooltips
+- **Current overlay polish** ([#557](https://github.com/weaties/helmlog/pull/557))
+  — zoom-adaptive cadence and lighter strokes for the derived current overlay
+- **Resizable track map** ([#559](https://github.com/weaties/helmlog/pull/559))
+  — S/M/L/XL size presets for the session track map
+- **Collapsible layer/gauge rows** ([#560](https://github.com/weaties/helmlog/pull/560))
+  — layer and gauge rows collapse, a current gauge was added, and gauges
+  moved above the map
 
 ### Dependencies
 - **ruff** → `>=0.15.10`, **python-dotenv** → `>=1.2.2`,
