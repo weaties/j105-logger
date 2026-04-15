@@ -5691,7 +5691,6 @@ async function copyThreadLink(threadId, commentId, btn) {
 function _flashHighlight(el) {
   if (!el) return;
   el.classList.add('flash-highlight');
-  el.scrollIntoView({behavior: 'smooth', block: 'center'});
   setTimeout(() => el.classList.remove('flash-highlight'), 2200);
 }
 
@@ -5928,16 +5927,40 @@ async function openThread(threadId, scrollToCommentId) {
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
     + '</div>';
-  if (scrollToCommentId) {
-    const target = document.getElementById('comment-' + scrollToCommentId);
-    if (target) {
-      _flashHighlight(target);
-    } else {
-      _flashHighlight(document.getElementById('discussion-card'));
+  const card = document.getElementById('discussion-card');
+  _scrollDeepLinkTarget(card, scrollToCommentId);
+}
+
+// Scroll behavior for deep-linked threads:
+// - Default: pin the thread header (first message) to the top of the viewport.
+// - If a specific comment was requested, still prefer top-of-thread — but only
+//   if the target comment would actually be visible in the viewport at that
+//   scroll position. Otherwise scroll the comment fully into view.
+function _scrollDeepLinkTarget(card, scrollToCommentId) {
+  if (!card) return;
+  // Wait a frame so the just-rendered DOM has its final layout.
+  requestAnimationFrame(() => {
+    const cardTop = card.getBoundingClientRect().top + window.scrollY;
+    const viewportH = window.innerHeight;
+    let highlight = card;
+    let scrollY = cardTop;
+    if (scrollToCommentId) {
+      const target = document.getElementById('comment-' + scrollToCommentId);
+      if (target) {
+        highlight = target;
+        const tRect = target.getBoundingClientRect();
+        const tTop = tRect.top + window.scrollY;
+        const tBottom = tTop + tRect.height;
+        const wouldFitAtCardTop = tBottom <= cardTop + viewportH;
+        if (!wouldFitAtCardTop) {
+          // Center the comment in the viewport
+          scrollY = tTop - Math.max(0, (viewportH - tRect.height) / 2);
+        }
+      }
     }
-  } else {
-    _flashHighlight(document.getElementById('discussion-card'));
-  }
+    window.scrollTo({top: Math.max(0, scrollY), behavior: 'smooth'});
+    _flashHighlight(highlight);
+  });
 }
 
 async function submitReply(threadId) {
