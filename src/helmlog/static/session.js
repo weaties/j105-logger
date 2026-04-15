@@ -1059,8 +1059,11 @@ function _renderBoatInstrumentSvg(opts) {
     const wedgeOut = R - RING_W - 1;
     const wedgeIn = R - RING_W - 18;
     const half = 6;
-    const stbdBearing = (twd - opts.targetTwa + 360) % 360;
-    const portBearing = (twd + opts.targetTwa + 360) % 360;
+    // Starboard tack close-hauled: wind on the starboard side, so the boat
+    // heads to the right of the wind source → HDG = TWD + targetTWA.
+    // Port tack is the mirror.
+    const stbdBearing = (twd + opts.targetTwa + 360) % 360;
+    const portBearing = (twd - opts.targetTwa + 360) % 360;
     s += '<path d="' + _annularSectorPath(stbdBearing, half, wedgeOut, wedgeIn) + '" fill="#16a34a" fill-opacity="0.75" stroke="#052e16" stroke-width="0.6"/>';
     s += '<path d="' + _annularSectorPath(portBearing, half, wedgeOut, wedgeIn) + '" fill="#dc2626" fill-opacity="0.75" stroke="#450a0a" stroke-width="0.6"/>';
   }
@@ -1104,17 +1107,6 @@ function _renderBoatInstrumentSvg(opts) {
   } else {
     s += '<circle cx="0" cy="0" r="3" fill="#facc15" stroke="#1f2937" stroke-width="1"/>';
   }
-  // HDG readout in front of the bow, upright, following the heading.
-  if (hdg != null) {
-    const hdgStr = String(Math.round(hdg) % 360).padStart(3, '0');
-    const hdgRad = hdg * Math.PI / 180;
-    const bowX = Math.sin(hdgRad) * 30;
-    const bowY = -Math.cos(hdgRad) * 30;
-    s += '<g transform="translate(' + bowX.toFixed(1) + ',' + bowY.toFixed(1) + ')">';
-    s += '<rect x="-17" y="-9" width="34" height="14" rx="2" fill="#0f172a" stroke="#e5e7eb" stroke-width="1"/>';
-    s += '<text x="0" y="2" text-anchor="middle" font-size="11" fill="#e5e7eb" font-family="sans-serif">' + hdgStr + '</text>';
-    s += '</g>';
-  }
   // Current arrow (blue). Set is the direction current flows *toward*, so the
   // arrow points outward from the boat in that direction. Length scales with
   // drift, capped to fit inside the ring.
@@ -1132,6 +1124,20 @@ function _renderBoatInstrumentSvg(opts) {
     const driftX = Math.sin(setRad) * midR;
     const driftY = -Math.cos(setRad) * midR;
     s += '<text x="' + driftX.toFixed(1) + '" y="' + (driftY + 4).toFixed(1) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" stroke="#0f172a" stroke-width="3" paint-order="stroke" font-family="sans-serif">' + drift.toFixed(1) + '</text>';
+  }
+  // HDG readout sits past the arrow tips in front of the bow, drawn last so
+  // it stays on top of the wind/current arrows when they happen to point the
+  // same way the boat is heading.
+  if (hdg != null) {
+    const hdgStr = String(Math.round(hdg) % 360).padStart(3, '0');
+    const hdgRad = hdg * Math.PI / 180;
+    const labelR = inner + 8;
+    const bowX = Math.sin(hdgRad) * labelR;
+    const bowY = -Math.cos(hdgRad) * labelR;
+    s += '<g transform="translate(' + bowX.toFixed(1) + ',' + bowY.toFixed(1) + ')">';
+    s += '<rect x="-17" y="-9" width="34" height="14" rx="2" fill="#0f172a" stroke="#e5e7eb" stroke-width="1"/>';
+    s += '<text x="0" y="2" text-anchor="middle" font-size="11" fill="#e5e7eb" font-family="sans-serif">' + hdgStr + '</text>';
+    s += '</g>';
   }
   s += '</svg>';
   return s;
