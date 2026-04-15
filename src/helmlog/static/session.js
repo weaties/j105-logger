@@ -997,7 +997,13 @@ const _boatInstrument = {wind: false, current: false};
 // (bsp * cos(twa)). Returns null if no polar data has loaded yet.
 function _polarUpwindTargetTwa(tws) {
   if (!_polarData || !_polarData.cells || tws == null) return null;
-  const upwind = _polarData.cells.filter(c => c.point_of_sail === 'upwind' && c.bsp > 0);
+  // session_mean is the boat's actual sailed speed in this session; fall back
+  // to the baseline mean when the cell hasn't been visited yet so the wedges
+  // still appear early in a session before the polar fills in.
+  const cellSpeed = (c) => (c.session_mean != null ? c.session_mean : c.baseline_mean);
+  const upwind = _polarData.cells.filter(
+    c => c.point_of_sail === 'upwind' && cellSpeed(c) != null && cellSpeed(c) > 0,
+  );
   if (!upwind.length) return null;
   let bestBin = null, bestDist = Infinity;
   for (const c of upwind) {
@@ -1009,7 +1015,7 @@ function _polarUpwindTargetTwa(tws) {
   for (const c of upwind) {
     if (c.tws !== bestBin) continue;
     const twa = Math.abs(c.twa);
-    const vmg = c.bsp * Math.cos(twa * Math.PI / 180);
+    const vmg = cellSpeed(c) * Math.cos(twa * Math.PI / 180);
     if (vmg > bestVmg) { bestVmg = vmg; bestTwa = twa; }
   }
   return bestTwa;
@@ -1075,14 +1081,6 @@ function _renderBoatInstrumentSvg(opts) {
       s += '<text x="' + lx.toFixed(1) + '" y="' + (ly + 3).toFixed(1) + '" text-anchor="middle" font-size="9" fill="#e5e7eb" font-family="sans-serif">' + lbl + '</text>';
     }
   }
-  // HDG label box at top of ring
-  if (hdg != null) {
-    const hdgStr = String(Math.round(hdg) % 360).padStart(3, '0');
-    s += '<g transform="translate(0,' + (-R - 4) + ')">';
-    s += '<rect x="-17" y="-11" width="34" height="14" rx="2" fill="#0f172a" stroke="#e5e7eb" stroke-width="1"/>';
-    s += '<text x="0" y="0" text-anchor="middle" font-size="11" fill="#e5e7eb" font-family="sans-serif">' + hdgStr + '</text>';
-    s += '</g>';
-  }
   // Wind arrow (orange). TWD points the direction the wind is *coming from*,
   // so the shaft sits on the upwind side of the dial pointing inward.
   if (showWind && twd != null && tws != null) {
@@ -1091,7 +1089,12 @@ function _renderBoatInstrumentSvg(opts) {
     s += '<line x1="0" y1="-8" x2="0" y2="' + (-inner) + '" stroke="#f59e0b" stroke-width="3.5" stroke-linecap="round"/>';
     s += '<polygon points="0,-' + (inner + 6) + ' -6,' + (-inner + 4) + ' 6,' + (-inner + 4) + '" fill="#f59e0b" stroke="#000" stroke-opacity="0.55" stroke-width="0.6"/>';
     s += '</g>';
-    s += '<text x="' + (R + 6) + '" y="' + (-R + 2) + '" text-anchor="start" font-size="12" font-weight="700" fill="#f59e0b" stroke="#0f172a" stroke-width="2.5" paint-order="stroke" font-family="sans-serif">' + tws.toFixed(1) + '</text>';
+    // TWS callout sits just past the arrow tip (along TWD), upright in the
+    // un-rotated frame. Place via bearing-to-XY so it follows the wind.
+    const twdRad = twd * Math.PI / 180;
+    const twsX = Math.sin(twdRad) * (inner + 16);
+    const twsY = -Math.cos(twdRad) * (inner + 16);
+    s += '<text x="' + twsX.toFixed(1) + '" y="' + (twsY + 4).toFixed(1) + '" text-anchor="middle" font-size="12" font-weight="700" fill="#f59e0b" stroke="#0f172a" stroke-width="2.5" paint-order="stroke" font-family="sans-serif">' + tws.toFixed(1) + '</text>';
   }
   // Boat hull at center, oriented to HDG.
   if (hdg != null) {
@@ -1100,6 +1103,17 @@ function _renderBoatInstrumentSvg(opts) {
     s += '</g>';
   } else {
     s += '<circle cx="0" cy="0" r="3" fill="#facc15" stroke="#1f2937" stroke-width="1"/>';
+  }
+  // HDG readout in front of the bow, upright, following the heading.
+  if (hdg != null) {
+    const hdgStr = String(Math.round(hdg) % 360).padStart(3, '0');
+    const hdgRad = hdg * Math.PI / 180;
+    const bowX = Math.sin(hdgRad) * 30;
+    const bowY = -Math.cos(hdgRad) * 30;
+    s += '<g transform="translate(' + bowX.toFixed(1) + ',' + bowY.toFixed(1) + ')">';
+    s += '<rect x="-17" y="-9" width="34" height="14" rx="2" fill="#0f172a" stroke="#e5e7eb" stroke-width="1"/>';
+    s += '<text x="0" y="2" text-anchor="middle" font-size="11" fill="#e5e7eb" font-family="sans-serif">' + hdgStr + '</text>';
+    s += '</g>';
   }
   // Current arrow (blue). Set is the direction current flows *toward*, so the
   // arrow points outward from the boat in that direction. Length scales with
@@ -1112,7 +1126,12 @@ function _renderBoatInstrumentSvg(opts) {
     s += '<line x1="0" y1="-2" x2="0" y2="' + (-tail) + '" stroke="#2563eb" stroke-width="3.5" stroke-linecap="round"/>';
     s += '<polygon points="0,' + (-len) + ' -7,' + (-tail) + ' 7,' + (-tail) + '" fill="#2563eb" stroke="#000" stroke-opacity="0.55" stroke-width="0.6"/>';
     s += '</g>';
-    s += '<text x="0" y="' + (R - 16) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" stroke="#0f172a" stroke-width="3" paint-order="stroke" font-family="sans-serif">' + drift.toFixed(1) + '</text>';
+    // Drift callout sits at the midpoint of the current shaft, upright.
+    const setRad = set * Math.PI / 180;
+    const midR = tail / 2;
+    const driftX = Math.sin(setRad) * midR;
+    const driftY = -Math.cos(setRad) * midR;
+    s += '<text x="' + driftX.toFixed(1) + '" y="' + (driftY + 4).toFixed(1) + '" text-anchor="middle" font-size="13" font-weight="700" fill="#fff" stroke="#0f172a" stroke-width="3" paint-order="stroke" font-family="sans-serif">' + drift.toFixed(1) + '</text>';
   }
   s += '</svg>';
   return s;
