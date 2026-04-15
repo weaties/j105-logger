@@ -3443,6 +3443,12 @@ class Storage:
         if include_debriefs:
             deb_where: list[str] = ["a.session_type = 'debrief'"]
             deb_params: list[Any] = []
+            # #546: debriefs attached to a race are reachable from the race's
+            # session page (audio + transcript surfaced there), so hide them
+            # from the default history view. Explicit type='debrief' filter
+            # still returns them along with any orphan debriefs.
+            if session_type is None:
+                deb_where.append("a.race_id IS NULL")
             if q:
                 deb_where.append("(a.name LIKE ? OR r.event LIKE ?)")
                 like = f"%{q}%"

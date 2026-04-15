@@ -846,6 +846,41 @@ async def test_api_session_detail_debrief_audio_absent_without_debrief(
 
 
 @pytest.mark.asyncio
+async def test_api_sessions_hides_attached_debriefs_by_default(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """Debriefs attached to a race should not appear in the default history
+    list — they're now reachable from the race session page (#546). Explicit
+    type=debrief filter should still return them."""
+    recorder = _make_recorder()
+    app = create_app(
+        storage,
+        recorder=recorder,
+        audio_config=AudioConfig(
+            device=None, sample_rate=48000, channels=1, output_dir=str(tmp_path)
+        ),
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        r = (await client.post("/api/races/start")).json()
+        await client.post(f"/api/races/{r['id']}/end")
+        await client.post(f"/api/races/{r['id']}/debrief/start")
+        await client.post("/api/debrief/stop")
+
+        default_resp = await client.get("/api/sessions")
+        filtered_resp = await client.get("/api/sessions?type=debrief")
+
+    default_rows = default_resp.json()["sessions"]
+    assert len(default_rows) == 1
+    assert default_rows[0]["type"] == "race"
+
+    filtered_rows = filtered_resp.json()["sessions"]
+    assert any(s["type"] == "debrief" for s in filtered_rows)
+
+
+@pytest.mark.asyncio
 async def _get_pos_ids(client: httpx.AsyncClient) -> dict[str, int]:
     """Helper: return position name → id mapping."""
     resp = await client.get("/api/crew/positions")
@@ -889,7 +924,12 @@ async def test_api_sessions_includes_crew(storage: Storage) -> None:
 
 @pytest.mark.asyncio
 async def test_api_sessions_includes_debriefs(storage: Storage, tmp_path: Path) -> None:
-    """Completed debriefs appear as separate 'debrief' rows in /api/sessions."""
+    """Completed debriefs are reachable via the explicit type=debrief filter.
+
+    As of #546 they're hidden from the default history list when attached to
+    a race (reachable from the race session page instead), but the explicit
+    filter still surfaces them with their parent race metadata.
+    """
     recorder = _make_recorder()
     app = create_app(
         storage,
@@ -907,12 +947,7 @@ async def test_api_sessions_includes_debriefs(storage: Storage, tmp_path: Path) 
         await client.post(f"/api/races/{r['id']}/debrief/start")
         await client.post("/api/debrief/stop")
 
-        resp_all = await client.get("/api/sessions")
         resp_debrief = await client.get("/api/sessions?type=debrief")
-
-    all_data = resp_all.json()
-    types = [s["type"] for s in all_data["sessions"]]
-    assert "debrief" in types
 
     deb_data = resp_debrief.json()
     assert deb_data["total"] == 1
@@ -1990,7 +2025,9 @@ async def test_debrief_session_includes_parent_race_crew(storage: Storage, tmp_p
         await client.post(f"/api/races/{race_id}/debrief/start")
         await client.post("/api/debrief/stop")
 
-        resp = await client.get("/api/sessions")
+        # Attached debriefs are hidden from the default history view as of
+        # #546; fetch them via the explicit type filter.
+        resp = await client.get("/api/sessions?type=debrief")
 
     assert resp.status_code == 200
     data = resp.json()
