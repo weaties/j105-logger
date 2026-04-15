@@ -360,6 +360,156 @@ async def api_session_track(
     return JSONResponse({"type": "FeatureCollection", "features": [feature]})
 
 
+@router.get("/api/sessions/{session_id}/summary")
+@limiter.limit("60/minute")
+async def api_session_summary(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Compact per-race summary for the history page thumbnails.
+
+    Returns a downsampled track, event markers (tacks, gybes, roundings,
+    start, finish) indexed into that track, average wind, and top-3
+    finishers. Designed to be cheap enough for per-row lazy fetch.
+    """
+    import math
+    from bisect import bisect_left
+
+    storage = get_storage(request)
+    db = storage._conn()
+
+    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    race = await cur.fetchone()
+    if race is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+    start_utc = race["start_utc"]
+    end_utc = race["end_utc"] or start_utc
+
+    rid_cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
+    )
+    rid_row = await rid_cur.fetchone()
+    has_race_id = bool(rid_row and rid_row["cnt"] > 0)
+
+    if has_race_id:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions WHERE race_id = ? ORDER BY ts",
+            (session_id,),
+        )
+    else:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions"
+            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (start_utc, end_utc),
+        )
+    positions = await pos_cur.fetchall()
+
+    track: list[list[float]] = []
+    track_epochs: list[float] = []
+    if positions:
+        buckets: dict[str, list[tuple[float, float]]] = {}
+        order: list[str] = []
+        for r in positions:
+            ts_raw = r["ts"]
+            if not ts_raw:
+                continue
+            key = str(ts_raw)[:19]
+            if key not in buckets:
+                buckets[key] = []
+                order.append(key)
+            buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+        full_track: list[tuple[float, float, float]] = []
+        for key in order:
+            pts = buckets[key]
+            lat = sum(p[0] for p in pts) / len(pts)
+            lon = sum(p[1] for p in pts) / len(pts)
+            iso = key + ("Z" if not (key.endswith("Z") or "+" in key) else "")
+            try:
+                epoch = datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            full_track.append((lat, lon, epoch))
+
+        max_points = 80
+        n = len(full_track)
+        if n <= max_points:
+            sampled = full_track
+        else:
+            step = n / max_points
+            sampled = [full_track[min(int(i * step), n - 1)] for i in range(max_points)]
+            if sampled[-1] != full_track[-1]:
+                sampled.append(full_track[-1])
+
+        for lat, lon, epoch in sampled:
+            track.append([lon, lat])
+            track_epochs.append(epoch)
+
+    events: list[dict[str, Any]] = []
+    if track_epochs:
+        events.append({"type": "start", "idx": 0})
+        events.append({"type": "finish", "idx": len(track_epochs) - 1})
+
+        man_cur = await db.execute(
+            "SELECT type, ts FROM maneuvers WHERE session_id = ?"
+            " AND type IN ('tack', 'gybe', 'rounding') ORDER BY ts",
+            (session_id,),
+        )
+        for m in await man_cur.fetchall():
+            try:
+                ep = datetime.fromisoformat(str(m["ts"]).replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                continue
+            idx = bisect_left(track_epochs, ep)
+            if idx >= len(track_epochs):
+                idx = len(track_epochs) - 1
+            elif idx > 0 and (ep - track_epochs[idx - 1]) < (track_epochs[idx] - ep):
+                idx -= 1
+            events.append({"type": str(m["type"]), "idx": idx})
+
+    if has_race_id:
+        wind_cur = await db.execute(
+            "SELECT wind_speed_kts, wind_angle_deg FROM winds"
+            " WHERE race_id = ? AND reference IN (0, 4)",
+            (session_id,),
+        )
+    else:
+        wind_cur = await db.execute(
+            "SELECT wind_speed_kts, wind_angle_deg FROM winds"
+            " WHERE ts >= ? AND ts <= ? AND reference IN (0, 4)",
+            (start_utc, end_utc),
+        )
+    wind_rows = await wind_cur.fetchall()
+    wind: dict[str, float] | None = None
+    if wind_rows:
+        speeds = [float(w["wind_speed_kts"]) for w in wind_rows]
+        angles = [math.radians(float(w["wind_angle_deg"])) for w in wind_rows]
+        avg_speed = sum(speeds) / len(speeds)
+        sin_sum = sum(math.sin(a) for a in angles)
+        cos_sum = sum(math.cos(a) for a in angles)
+        avg_dir = math.degrees(math.atan2(sin_sum, cos_sum)) % 360.0
+        wind = {"avg_tws_kts": round(avg_speed, 1), "avg_twd_deg": round(avg_dir, 0)}
+
+    res_cur = await db.execute(
+        "SELECT rr.place, b.sail_number, b.name AS boat_name"
+        " FROM race_results rr JOIN boats b ON rr.boat_id = b.id"
+        " WHERE rr.race_id = ? AND rr.dnf = 0 AND rr.dns = 0"
+        " ORDER BY rr.place LIMIT 3",
+        (session_id,),
+    )
+    results = [dict(r) for r in await res_cur.fetchall()]
+
+    return JSONResponse(
+        {
+            "track": track,
+            "events": events,
+            "wind": wind,
+            "results": results,
+        }
+    )
+
+
 @router.get("/api/sessions/{session_id}/vakaros-overlay")
 @limiter.limit("30/minute")
 async def api_session_vakaros_overlay(

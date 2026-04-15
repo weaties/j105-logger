@@ -1127,6 +1127,55 @@ nav.site-nav {
   margin-top: 2px;
 }
 
+.session-summary {
+  margin-top: 8px;
+}
+.summary-skeleton {
+  height: 90px;
+  border-radius: 6px;
+  background: var(--bg-input);
+  opacity: 0.4;
+}
+.summary-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.summary-thumb {
+  flex: none;
+  background: var(--bg-input);
+  border-radius: 6px;
+}
+.summary-wind {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.summary-wind-text {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.1;
+}
+.summary-wind-text span {
+  font-size: 0.68rem;
+  opacity: 0.8;
+}
+.summary-results {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  min-width: 0;
+  overflow: hidden;
+}
+.summary-result {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .session-exports {
   display: flex;
   flex-wrap: wrap;

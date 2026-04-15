@@ -4,6 +4,7 @@ let currentType = '';
 let currentOffset = 0;
 const LIMIT = 25;
 let loadTimer = null;
+const summaryCache = new Map();
 
 function setType(btn, t) {
   currentType = t;
@@ -49,12 +50,21 @@ function render(data) {
     const displayName = s.shared_name || s.name;
     const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + displayName + '</a>';
     const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:1px">Local: ' + s.name + '</div>' : '';
+    const showSummary = s.type !== 'debrief' && s.end_utc;
+    const summaryHtml = showSummary
+      ? '<div class="session-summary" id="hist-summary-' + s.id + '"><div class="summary-skeleton"></div></div>'
+      : '';
     return '<div class="card"><div class="session-name">' + nameLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + localNameHint
       + parent
+      + summaryHtml
       + '</div>';
   }).join('');
+
+  data.sessions.forEach(s => {
+    if (s.type !== 'debrief' && s.end_utc) loadSummary(s.id);
+  });
 
   const total = data.total;
   const page = Math.floor(currentOffset / LIMIT);
@@ -74,4 +84,106 @@ function go(page) {
   currentOffset = page * LIMIT;
   load();
   window.scrollTo(0, 0);
+}
+
+async function loadSummary(sessionId) {
+  const host = document.getElementById('hist-summary-' + sessionId);
+  if (!host) return;
+  let data = summaryCache.get(sessionId);
+  if (!data) {
+    try {
+      const r = await fetch('/api/sessions/' + sessionId + '/summary');
+      if (!r.ok) { host.innerHTML = ''; return; }
+      data = await r.json();
+      summaryCache.set(sessionId, data);
+    } catch {
+      host.innerHTML = '';
+      return;
+    }
+  }
+  host.innerHTML = renderSummary(data);
+}
+
+function renderSummary(data) {
+  const thumb = renderThumbnail(data.track || [], data.events || []);
+  const wind = renderWind(data.wind);
+  const results = renderResults(data.results || []);
+  const parts = [thumb, wind, results].filter(Boolean);
+  if (!parts.length) return '';
+  return '<div class="summary-row">' + parts.join('') + '</div>';
+}
+
+function renderThumbnail(track, events) {
+  if (!track.length) return '';
+  const W = 140, H = 90, PAD = 6;
+  let minLon = Infinity, maxLon = -Infinity, minLat = Infinity, maxLat = -Infinity;
+  for (const [lon, lat] of track) {
+    if (lon < minLon) minLon = lon;
+    if (lon > maxLon) maxLon = lon;
+    if (lat < minLat) minLat = lat;
+    if (lat > maxLat) maxLat = lat;
+  }
+  const rangeLon = Math.max(maxLon - minLon, 1e-9);
+  const rangeLat = Math.max(maxLat - minLat, 1e-9);
+  const latCorr = Math.cos(((minLat + maxLat) / 2) * Math.PI / 180);
+  const rangeLonCorr = rangeLon * latCorr;
+  const scale = Math.min((W - 2 * PAD) / rangeLonCorr, (H - 2 * PAD) / rangeLat);
+  const drawnW = rangeLonCorr * scale;
+  const drawnH = rangeLat * scale;
+  const offX = (W - drawnW) / 2;
+  const offY = (H - drawnH) / 2;
+  const project = ([lon, lat]) => {
+    const x = offX + (lon - minLon) * latCorr * scale;
+    const y = H - (offY + (lat - minLat) * scale);
+    return [x, y];
+  };
+  const pts = track.map(project);
+  const path = pts.map(([x, y], i) => (i === 0 ? 'M' : 'L') + x.toFixed(1) + ' ' + y.toFixed(1)).join(' ');
+
+  const markerFor = {
+    start: { r: 3, fill: '#2aa14f', stroke: '#fff' },
+    finish: { r: 3, fill: '#c23030', stroke: '#fff' },
+    tack: { r: 1.8, fill: '#1e88e5', stroke: null },
+    gybe: { r: 1.8, fill: '#ff9800', stroke: null },
+    rounding: { r: 2.4, fill: '#8e44ad', stroke: '#fff' },
+  };
+  const order = ['tack', 'gybe', 'rounding', 'start', 'finish'];
+  const evBy = { tack: [], gybe: [], rounding: [], start: [], finish: [] };
+  for (const e of events) {
+    if (evBy[e.type] && e.idx >= 0 && e.idx < pts.length) evBy[e.type].push(pts[e.idx]);
+  }
+  let markers = '';
+  for (const type of order) {
+    const m = markerFor[type];
+    for (const [x, y] of evBy[type]) {
+      markers += '<circle cx="' + x.toFixed(1) + '" cy="' + y.toFixed(1) + '" r="' + m.r + '" fill="' + m.fill + '"'
+        + (m.stroke ? ' stroke="' + m.stroke + '" stroke-width="0.8"' : '') + '/>';
+    }
+  }
+  return '<svg class="summary-thumb" viewBox="0 0 ' + W + ' ' + H + '" width="' + W + '" height="' + H + '">'
+    + '<path d="' + path + '" fill="none" stroke="var(--text-primary)" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + markers
+    + '</svg>';
+}
+
+function renderWind(wind) {
+  if (!wind || wind.avg_tws_kts == null) return '';
+  const dir = wind.avg_twd_deg;
+  const arrow = '<svg width="22" height="22" viewBox="0 0 22 22" style="flex:none">'
+    + '<g transform="rotate(' + (dir + 180) + ' 11 11)">'
+    + '<path d="M11 3 L11 17 M11 3 L8 7 M11 3 L14 7" stroke="var(--text-primary)" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'
+    + '</g></svg>';
+  return '<div class="summary-wind">' + arrow
+    + '<div class="summary-wind-text">' + wind.avg_tws_kts.toFixed(1) + ' kt<br><span>' + Math.round(dir) + '°</span></div>'
+    + '</div>';
+}
+
+function renderResults(results) {
+  if (!results.length) return '';
+  const medals = ['🥇', '🥈', '🥉'];
+  const lines = results.map((r, i) => {
+    const label = r.sail_number || r.boat_name || '—';
+    return '<div class="summary-result">' + (medals[i] || (r.place + '.')) + ' ' + label + '</div>';
+  }).join('');
+  return '<div class="summary-results">' + lines + '</div>';
 }
