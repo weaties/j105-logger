@@ -26,8 +26,18 @@ import secrets
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Annotated, Any
+from urllib.parse import quote
 
 from fastapi import Cookie, HTTPException, Request, status
+
+
+def _next_target(request: Request) -> str:
+    """Build a URL-encoded ``next`` target preserving query string."""
+    path = request.url.path
+    query = request.url.query
+    target = f"{path}?{query}" if query else path
+    return quote(target, safe="")
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -136,7 +146,7 @@ def require_auth(min_role: str = "viewer") -> Callable[..., Any]:
             if "text/html" in accept:
                 raise HTTPException(
                     status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-                    headers={"Location": f"/login?next={request.url.path}"},
+                    headers={"Location": f"/login?next={_next_target(request)}"},
                 )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -170,7 +180,7 @@ async def require_developer(
         if "text/html" in accept:
             raise HTTPException(
                 status_code=status.HTTP_307_TEMPORARY_REDIRECT,
-                headers={"Location": f"/login?next={request.url.path}"},
+                headers={"Location": f"/login?next={_next_target(request)}"},
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
