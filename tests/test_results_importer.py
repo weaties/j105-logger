@@ -267,29 +267,75 @@ async def test_import_links_local_session_when_one_match(storage: Storage) -> No
 
 
 @pytest.mark.asyncio
-async def test_import_picks_earliest_when_multiple_local_sessions(
+async def test_import_zips_multiple_local_sessions_in_order(
     storage: Storage,
 ) -> None:
-    """Multi-session days link to the earliest local session."""
+    """Two local sessions + two imported races → each imported race links
+    to its own local session in race-number order (#550).
+
+    Beer-can nights log each on-the-water race as its own local session,
+    so race 1 should attach to the earlier local session and race 2 to
+    the later one.
+    """
     from datetime import datetime
 
     db = storage._conn()
     results = await _fetch_results()
     race_date = results.races[0].date
-    early = datetime.fromisoformat(race_date + "T15:00:00+00:00")
-    late = datetime.fromisoformat(race_date + "T22:00:00+00:00")
+    early = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    late = datetime.fromisoformat(race_date + "T19:10:00+00:00")
     await db.execute(
         "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
         " VALUES (?, ?, ?, ?, ?, 'race')",
-        ("Morning practice", "Local", 1, race_date, early.isoformat()),
+        ("Wednesday race 1", "Local", 1, race_date, early.isoformat()),
     )
     cur = await db.execute("SELECT last_insert_rowid()")
     (early_id,) = await cur.fetchone()  # type: ignore[misc]
     await db.execute(
         "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
         " VALUES (?, ?, ?, ?, ?, 'race')",
-        ("Afternoon races", "Local", 2, race_date, late.isoformat()),
+        ("Wednesday race 2", "Local", 2, race_date, late.isoformat()),
     )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (late_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.commit()
+
+    await import_results(storage, results)
+
+    cur = await db.execute(
+        "SELECT race_num, local_session_id FROM races"
+        " WHERE source = 'clubspot' AND date = ? ORDER BY race_num",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert len(rows) == 2
+    assert rows[0]["local_session_id"] == early_id, (
+        "imported race 1 should link to the earlier local session"
+    )
+    assert rows[1]["local_session_id"] == late_id, (
+        "imported race 2 should link to the later local session"
+    )
+
+
+@pytest.mark.asyncio
+async def test_import_shares_single_local_session_when_fewer_locals(
+    storage: Storage,
+) -> None:
+    """One local session + multiple imported races → all imported races
+    share that single local session (short-handed day, unchanged)."""
+    from datetime import datetime
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    start = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Wednesday night", "Local", 1, race_date, start.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (local_id,) = await cur.fetchone()  # type: ignore[misc]
     await db.commit()
 
     await import_results(storage, results)
@@ -299,9 +345,61 @@ async def test_import_picks_earliest_when_multiple_local_sessions(
         (race_date,),
     )
     rows = await cur.fetchall()
-    assert rows
+    assert len(rows) == 2
     for row in rows:
-        assert row["local_session_id"] == early_id
+        assert row["local_session_id"] == local_id
+
+
+@pytest.mark.asyncio
+async def test_import_preserves_manual_local_session_link(
+    storage: Storage,
+) -> None:
+    """A manually-set local_session_id on an imported race must survive re-import."""
+    from datetime import datetime
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    a = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    b = datetime.fromisoformat(race_date + "T19:10:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Session A", "Local", 1, race_date, a.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (a_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Session B", "Local", 2, race_date, b.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (b_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.commit()
+
+    await import_results(storage, results)
+
+    # Manually override: pin race 1 to session B (swap from the auto link).
+    await db.execute(
+        "UPDATE races SET local_session_id = ? WHERE source = 'clubspot' AND race_num = 1",
+        (b_id,),
+    )
+    await db.commit()
+
+    # Re-import must not clobber the manual link.
+    await import_results(storage, results)
+
+    cur = await db.execute(
+        "SELECT race_num, local_session_id FROM races"
+        " WHERE source = 'clubspot' AND date = ? ORDER BY race_num",
+        (race_date,),
+    )
+    rows = await cur.fetchall()
+    assert rows[0]["local_session_id"] == b_id, "manual link must be preserved"
+    # Race 2 keeps whatever was written on first import (session B by order).
+    assert rows[1]["local_session_id"] == b_id
+    _ = a_id  # a_id unused once manual override runs
 
 
 @pytest.mark.asyncio
