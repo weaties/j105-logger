@@ -150,21 +150,32 @@ def _resolve_venue_tz(venue_tz: str | None) -> tzinfo:
 async def _link_regatta_races_to_local_sessions(
     db: aiosqlite.Connection,
     regatta_id: int,
+    *,
+    force: bool = False,
 ) -> int:
-    """Link imported races to the earliest local race session on the same date.
+    """Link imported races to local race sessions on the same date.
 
-    For each date that the regatta has imported races on, every imported
-    race is linked to the earliest local race-type session recorded on
-    that date. A regatta date maps to one sailing day, so multiple
-    imported races (race 1, race 2, ...) share a single local session.
+    When the number of local race-type sessions on a date is greater
+    than or equal to the number of imported races on that date, imported
+    races are zipped 1:1 with local sessions in order (imported by
+    ``race_num``, local by ``start_utc``). This handles beer-can nights
+    where race 1 and race 2 are each their own logged session.
+
+    Otherwise (fewer local sessions than imported races, i.e. a single
+    local session covered the whole sailing day), every imported race is
+    linked to the earliest local session on that date — preserving the
+    single-session behavior for short-handed days.
 
     Only rows with ``local_session_id IS NULL`` are updated, so manual
-    links and prior matches are preserved.
+    links and prior matches are preserved. Pass ``force=True`` to
+    re-link rows that already have a value — used by the admin rematch
+    endpoint to fix up data that was linked before zip-in-order was
+    implemented.
 
     Returns the number of links written.
     """
     cur = await db.execute(
-        "SELECT id, date, local_session_id FROM races"
+        "SELECT id, date, race_num, local_session_id FROM races"
         " WHERE regatta_id = ? AND source IS NOT NULL AND source != 'live'"
         " AND date IS NOT NULL",
         (regatta_id,),
@@ -173,23 +184,30 @@ async def _link_regatta_races_to_local_sessions(
     if not imported_rows:
         return 0
 
-    by_date: dict[date, list[tuple[int, int | None]]] = {}
+    by_date: dict[date, list[tuple[int, int | None, int | None]]] = {}
     for r in imported_rows:
         try:
             d = date.fromisoformat(r[1])
         except (ValueError, TypeError):
             continue
-        by_date.setdefault(d, []).append((r[0], r[2]))
+        by_date.setdefault(d, []).append((r[0], r[2], r[3]))
 
     linked_count = 0
     for d, imported in by_date.items():
         local_sessions = await _list_local_race_sessions_on_date(db, d)
         if not local_sessions:
             continue
-        local_id = local_sessions[0]
 
-        for imp_id, existing_link in imported:
-            if existing_link is not None:
+        imported_sorted = sorted(
+            imported,
+            key=lambda row: (row[1] is None, row[1] if row[1] is not None else 0, row[0]),
+        )
+
+        zip_in_order = len(local_sessions) >= len(imported_sorted)
+
+        for idx, (imp_id, _race_num, existing_link) in enumerate(imported_sorted):
+            local_id = local_sessions[idx] if zip_in_order else local_sessions[0]
+            if existing_link is not None and (not force or existing_link == local_id):
                 continue
             await db.execute(
                 "UPDATE races SET local_session_id = ? WHERE id = ?",

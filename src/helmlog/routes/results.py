@@ -344,10 +344,10 @@ async def api_rematch_regatta(
 ) -> JSONResponse:
     """Re-run local-session matching over an already-imported regatta's races.
 
-    Pairs imported races to local race-type sessions by order within each
-    venue-local date.  Only updates rows with ``local_session_id IS NULL``;
-    manual links and prior matches are preserved.  Useful when local
-    sessions were created after the import.
+    Pairs imported races to local race-type sessions by order within
+    each venue-local date.  Re-links existing rows so an admin can fix
+    up a regatta that was imported before zip-in-order matching was
+    introduced (see #550).
     """
     from helmlog.results.importer import _link_regatta_races_to_local_sessions
 
@@ -365,7 +365,7 @@ async def api_rematch_regatta(
     row = await cur.fetchone()
     races_checked = int(row[0]) if row else 0
 
-    linked = await _link_regatta_races_to_local_sessions(db, regatta_id)
+    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
     await db.commit()
 
     await audit(
