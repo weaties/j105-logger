@@ -45,12 +45,7 @@ async def history_page(request: Request) -> Response:
     return templates.TemplateResponse(
         request,
         "history.html",
-        tpl_ctx(
-            request,
-            "/history",
-            grafana_port=request.app.state.race_config.grafana_port,
-            grafana_uid=request.app.state.race_config.grafana_uid,
-        ),
+        tpl_ctx(request, "/history"),
     )
 
 
