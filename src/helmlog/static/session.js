@@ -364,6 +364,34 @@ function renderHeader() {
 // Track map
 // ---------------------------------------------------------------------------
 
+const TRACK_SIZE_KEY = 'helmlog.session.trackMapSize';
+const TRACK_SIZES = ['s', '', 'l', 'xl'];
+
+function applyTrackSize(size, map) {
+  const el = document.getElementById('track-map');
+  if (!el) return;
+  TRACK_SIZES.forEach(s => { if (s) el.classList.remove('size-' + s); });
+  if (size) el.classList.add('size-' + size);
+  document.querySelectorAll('.track-size-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.size === size);
+  });
+  if (map) setTimeout(() => map.invalidateSize(), 160);
+}
+
+function initTrackSizeControls(map) {
+  let saved = '';
+  try { saved = localStorage.getItem(TRACK_SIZE_KEY) || ''; } catch (e) {}
+  if (!TRACK_SIZES.includes(saved)) saved = '';
+  applyTrackSize(saved, null);
+  document.querySelectorAll('.track-size-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const size = btn.dataset.size;
+      applyTrackSize(size, map);
+      try { localStorage.setItem(TRACK_SIZE_KEY, size); } catch (e) {}
+    });
+  });
+}
+
 async function loadTrack() {
   const r = await fetch('/api/sessions/' + SESSION_ID + '/track');
   const geojson = await r.json();
@@ -376,6 +404,7 @@ async function loadTrack() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap', maxZoom: 18,
   }).addTo(_map);
+  initTrackSizeControls(_map);
 
   const feature = geojson.features[0];
   const coords = feature.geometry.coordinates;
