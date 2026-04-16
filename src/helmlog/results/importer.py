@@ -296,6 +296,9 @@ async def _upsert_race(
     )
     row = await cur.fetchone()
     if row:
+        # Clear old results so the fresh set from the provider can be
+        # re-inserted without UNIQUE constraint violations on (race_id, place).
+        await db.execute("DELETE FROM race_results WHERE race_id = ?", (row[0],))
         return row[0]  # type: ignore[no-any-return]
 
     # Imported races have no real start/stop timestamps — they're just
