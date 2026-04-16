@@ -23,6 +23,8 @@ let _ytReady = false;
 let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
 let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
+let _replaySamples = null; // [{ts:Date, hdg, cog, stw, sog, tws, twa, twd, aws, awa}]
+let _gaugeVisible = true;
 
 // ---------------------------------------------------------------------------
 // Init
@@ -42,11 +44,14 @@ let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
   _allManeuvers = maneuvers.filter(m => m.youtube_url);
   if (!_allManeuvers.length) { _showEmpty(); return; }
 
-  // Fetch session track for the full-course overlay
+  // Fetch session track and replay data in parallel
+  const [trackResult, replayResult] = await Promise.allSettled([
+    fetch(`/api/sessions/${SESSION_ID}/track`),
+    fetch(`/api/sessions/${SESSION_ID}/replay`),
+  ]);
   try {
-    const trackResp = await fetch(`/api/sessions/${SESSION_ID}/track`);
-    if (trackResp.ok) {
-      const geo = await trackResp.json();
+    if (trackResult.status === 'fulfilled' && trackResult.value.ok) {
+      const geo = await trackResult.value.json();
       const feat = (geo.features || [])[0];
       if (feat && feat.geometry && feat.geometry.coordinates) {
         _sessionTrack = {
@@ -56,6 +61,16 @@ let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
       }
     }
   } catch (_e) { /* track overlay is optional */ }
+  try {
+    if (replayResult.status === 'fulfilled' && replayResult.value.ok) {
+      const rData = await replayResult.value.json();
+      _replaySamples = (rData.samples || []).map(s => ({
+        ts: new Date(s.ts),
+        hdg: s.hdg, cog: s.cog, stw: s.stw, sog: s.sog,
+        tws: s.tws, twa: s.twa, twd: s.twd, aws: s.aws, awa: s.awa,
+      }));
+    }
+  } catch (_e) { /* gauge overlay is optional */ }
 
   _buildGrid();
   document.getElementById('compare-controls').style.display = '';
@@ -165,6 +180,7 @@ function _buildGrid() {
 
     const trackSvg = _renderTrackOverlay(m, i);
     const courseSvg = _renderCourseOverlay(m, i);
+    const gaugeSvg = _renderGaugePlaceholder(i);
     const wrapId = 'yt-wrap-' + i;
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
@@ -172,6 +188,7 @@ function _buildGrid() {
       + '<div id="' + divId + '" style="width:100%;height:100%"></div>'
       + trackSvg
       + courseSvg
+      + gaugeSvg
       + '</div>'
       + '<div class="cell-label">'
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
@@ -230,6 +247,8 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver, idx, nudge) {
         ev.target.pauseVideo();
         const speed = parseFloat(document.getElementById('speed-select').value) || 1;
         ev.target.setPlaybackRate(speed);
+        // Initial gauge + track dot update for the paused state
+        setTimeout(_tickUpdate, 500);
       },
     },
   });
@@ -253,6 +272,7 @@ function nudgeVideo(idx, delta, reset) {
     p.player.seekTo(p.cueSeconds, true);
     if (!_playing) p.player.pauseVideo();
   } catch (_e) { /* not ready */ }
+  setTimeout(_tickUpdate, 300);
   // Update the display
   const el = document.getElementById('nudge-val-' + idx);
   if (el) {
@@ -309,6 +329,7 @@ function seekAllToStart() {
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
+  setTimeout(_tickUpdate, 300);
 }
 
 function setAllSpeed(val) {
@@ -346,6 +367,7 @@ function _seekAllToCue() {
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
+  setTimeout(_tickUpdate, 300);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,56 +495,217 @@ function toggleTrackOverlay() {
   }
 }
 
-// Update track dot positions based on current playback time
+// Update overlays based on current playback time
 function _startTrackTick() {
   if (_tickInterval) return;
-  _tickInterval = setInterval(_updateTrackDots, 200);
+  _tickInterval = setInterval(_tickUpdate, 200);
 }
 
 function _stopTrackTick() {
   if (_tickInterval) { clearInterval(_tickInterval); _tickInterval = 0; }
 }
 
-function _updateTrackDots() {
-  if (!_trackOverlayVisible) return;
+function _tickUpdate() {
   for (const p of _players) {
-    const track = p.maneuver.track;
-    if (!track || track.length < 2) continue;
-    const dot = document.getElementById('track-dot-' + p.idx);
-    if (!dot) continue;
+    let videoTime;
+    try { videoTime = p.player.getCurrentTime(); } catch (_e) { continue; }
 
-    let currentT;
-    try {
-      const videoTime = p.player.getCurrentTime();
-      // Convert video time to maneuver-relative time
-      // videoTime is absolute video seconds; maneuver video_offset_s is when maneuver starts in the video
-      currentT = videoTime - (p.maneuver.video_offset_s || 0);
-    } catch (_e) { continue; }
-
-    // Find the closest track point by t
-    let best = track[0], bestDt = Math.abs(track[0].t - currentT);
-    for (let i = 1; i < track.length; i++) {
-      const dt = Math.abs(track[i].t - currentT);
-      if (dt < bestDt) { bestDt = dt; best = track[i]; }
+    // --- Track dot update ---
+    if (_trackOverlayVisible) {
+      const track = p.maneuver.track;
+      if (track && track.length >= 2) {
+        const dot = document.getElementById('track-dot-' + p.idx);
+        if (dot) {
+          const currentT = videoTime - (p.maneuver.video_offset_s || 0);
+          let best = track[0], bestDt = Math.abs(track[0].t - currentT);
+          for (let i = 1; i < track.length; i++) {
+            const dt = Math.abs(track[i].t - currentT);
+            if (dt < bestDt) { bestDt = dt; best = track[i]; }
+          }
+          const size = 120, pad = 8;
+          let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+          for (const pt of track) {
+            if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+            if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+          }
+          const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+          const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+          const svgX = pad + (best.x - (cx - half)) / (2 * half) * (size - 2 * pad);
+          const svgY = (size - pad) - (best.y - (cy - half)) / (2 * half) * (size - 2 * pad);
+          dot.setAttribute('cx', svgX.toFixed(1));
+          dot.setAttribute('cy', svgY.toFixed(1));
+        }
+      }
     }
 
-    // Recompute SVG coords (same logic as _renderTrackOverlay)
-    const size = 120, pad = 8;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (const pt of track) {
-      if (pt.x < minX) minX = pt.x;
-      if (pt.x > maxX) maxX = pt.x;
-      if (pt.y < minY) minY = pt.y;
-      if (pt.y > maxY) maxY = pt.y;
+    // --- Gauge update ---
+    if (_gaugeVisible && _replaySamples && _replaySamples.length) {
+      _updateGauge(p, videoTime);
     }
-    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-    const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
-    const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
+  }
+}
 
-    const svgX = pad + (best.x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
-    const svgY = (size - pad) - (best.y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
-    dot.setAttribute('cx', svgX.toFixed(1));
-    dot.setAttribute('cy', svgY.toFixed(1));
+// ---------------------------------------------------------------------------
+// Instrument gauge overlay (#572)
+// ---------------------------------------------------------------------------
+
+function _renderGaugePlaceholder(idx) {
+  if (!_replaySamples || !_replaySamples.length) return '';
+  const s = 150; // gauge size
+  const r = 62;  // compass radius
+  const cx = s / 2, cy = s / 2;
+  const display = _gaugeVisible ? '' : 'display:none;';
+
+  // Compass ticks
+  let ticks = '';
+  for (let d = 0; d < 360; d += 10) {
+    const rad = (d - 90) * Math.PI / 180;
+    const inner = d % 30 === 0 ? r - 10 : r - 5;
+    const x1 = cx + inner * Math.cos(rad), y1 = cy + inner * Math.sin(rad);
+    const x2 = cx + r * Math.cos(rad), y2 = cy + r * Math.sin(rad);
+    ticks += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1)
+      + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1)
+      + '" stroke="rgba(255,255,255,.35)" stroke-width="' + (d % 30 === 0 ? '1.2' : '0.6') + '"/>';
+  }
+  // Cardinal labels
+  const cardinals = [{l:'N',d:0},{l:'E',d:90},{l:'S',d:180},{l:'W',d:270}];
+  let labels = '';
+  for (const c of cardinals) {
+    const rad = (c.d - 90) * Math.PI / 180;
+    const lx = cx + (r + 9) * Math.cos(rad), ly = cy + (r + 9) * Math.sin(rad);
+    labels += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1)
+      + '" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="600" fill="rgba(255,255,255,.55)">' + c.l + '</text>';
+  }
+
+  return '<svg class="gauge-overlay" id="gauge-svg-' + idx + '" width="' + s + '" height="' + s + '" style="' + display + '">'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 10) + '" fill="rgba(0,0,0,.5)"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="1"/>'
+    + ticks + labels
+    // TWD arrow (orange) — rotated by JS
+    + '<g id="gauge-twd-' + idx + '" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + (cy + r - 10) + '" x2="' + cx + '" y2="' + (cy - r + 12) + '" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 8) + ' ' + (cx - 4) + ',' + (cy - r + 16) + ' ' + (cx + 4) + ',' + (cy - r + 16) + '" fill="#f59e0b"/>'
+    + '</g>'
+    // AWA arrow (blue) — rotated by JS
+    + '<g id="gauge-awa-' + idx + '" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 18) + '" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 14) + ' ' + (cx - 3) + ',' + (cy - r + 21) + ' ' + (cx + 3) + ',' + (cy - r + 21) + '" fill="#60a5fa"/>'
+    + '</g>'
+    // COG line (white dashed)
+    + '<g id="gauge-cog-' + idx + '" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 6) + '" stroke="rgba(255,255,255,.6)" stroke-width="1" stroke-dasharray="3,2"/>'
+    + '</g>'
+    // Boat icon (center)
+    + '<polygon points="' + cx + ',' + (cy - 6) + ' ' + (cx - 4) + ',' + (cy + 5) + ' ' + (cx + 4) + ',' + (cy + 5) + '" fill="#fff" stroke="rgba(0,0,0,.4)" stroke-width="0.5"/>'
+    // HDG readout (top)
+    + '<rect x="' + (cx - 18) + '" y="1" width="36" height="15" rx="3" fill="rgba(0,0,0,.8)"/>'
+    + '<text id="gauge-hdg-' + idx + '" x="' + cx + '" y="12" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">---</text>'
+    // BSP readout (left)
+    + '<rect x="2" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="20" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">BSP</text>'
+    + '<text id="gauge-bsp-' + idx + '" x="20" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#3db86e">-.-</text>'
+    // SOG readout (right)
+    + '<rect x="' + (s - 38) + '" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="' + (s - 20) + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">SOG</text>'
+    + '<text id="gauge-sog-' + idx + '" x="' + (s - 20) + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#fff">-.-</text>'
+    // TWS readout (bottom-left, orange)
+    + '<rect x="6" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="26" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">TWS</text>'
+    + '<text id="gauge-tws-' + idx + '" x="26" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#f59e0b">--</text>'
+    // AWS readout (bottom-right, blue)
+    + '<rect x="' + (s - 46) + '" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="' + (s - 26) + '" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">AWS</text>'
+    + '<text id="gauge-aws-' + idx + '" x="' + (s - 26) + '" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#60a5fa">--</text>'
+    + '</svg>';
+}
+
+function _updateGauge(p, videoTime) {
+  // Convert video time to UTC
+  const mTs = _parseUtcMs(p.maneuver.ts);
+  if (!mTs) return;
+  const offsetS = p.maneuver.video_offset_s || 0;
+  const utcMs = mTs + (videoTime - offsetS) * 1000;
+
+  // Binary search for nearest sample
+  const sample = _sampleAtTime(utcMs);
+  if (!sample) return;
+
+  const idx = p.idx;
+  const cx = 75, cy = 75; // gauge center (s/2 where s=150)
+
+  // Update HDG
+  const hdgEl = document.getElementById('gauge-hdg-' + idx);
+  if (hdgEl) hdgEl.textContent = sample.hdg != null ? Math.round(sample.hdg) : '---';
+
+  // Update BSP
+  const bspEl = document.getElementById('gauge-bsp-' + idx);
+  if (bspEl) bspEl.textContent = sample.stw != null ? sample.stw.toFixed(1) : '-.-';
+
+  // Update SOG
+  const sogEl = document.getElementById('gauge-sog-' + idx);
+  if (sogEl) sogEl.textContent = sample.sog != null ? sample.sog.toFixed(1) : '-.-';
+
+  // Update TWS
+  const twsEl = document.getElementById('gauge-tws-' + idx);
+  if (twsEl) twsEl.textContent = sample.tws != null ? sample.tws.toFixed(0) : '--';
+
+  // Update AWS
+  const awsEl = document.getElementById('gauge-aws-' + idx);
+  if (awsEl) awsEl.textContent = sample.aws != null ? sample.aws.toFixed(0) : '--';
+
+  // Rotate TWD arrow: show wind direction relative to heading
+  // TWD is compass direction wind comes FROM; on the gauge, HDG is up (north=up, rotated)
+  // We want the arrow to point in the direction wind blows FROM, relative to the boat heading
+  const twdG = document.getElementById('gauge-twd-' + idx);
+  if (twdG && sample.twd != null && sample.hdg != null) {
+    const relTwd = ((sample.twd - sample.hdg) + 360) % 360;
+    twdG.setAttribute('transform', 'rotate(' + relTwd.toFixed(1) + ',' + cx + ',' + cy + ')');
+  }
+
+  // Rotate AWA arrow: boat-relative, so direct rotation from top
+  const awaG = document.getElementById('gauge-awa-' + idx);
+  if (awaG && sample.awa != null) {
+    awaG.setAttribute('transform', 'rotate(' + sample.awa.toFixed(1) + ',' + cx + ',' + cy + ')');
+  }
+
+  // Rotate COG line relative to heading
+  const cogG = document.getElementById('gauge-cog-' + idx);
+  if (cogG && sample.cog != null && sample.hdg != null) {
+    const relCog = ((sample.cog - sample.hdg) + 360) % 360;
+    cogG.setAttribute('transform', 'rotate(' + relCog.toFixed(1) + ',' + cx + ',' + cy + ')');
+  }
+}
+
+function _parseUtcMs(iso) {
+  if (!iso) return null;
+  let s = iso.replace(' ', 'T');
+  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
+function _sampleAtTime(utcMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+function toggleGaugeOverlay() {
+  _gaugeVisible = !_gaugeVisible;
+  const btn = document.getElementById('gauge-toggle-btn');
+  if (btn) {
+    btn.style.background = _gaugeVisible ? 'var(--accent-strong)' : 'var(--bg-input)';
+    btn.style.color = _gaugeVisible ? 'var(--bg-primary)' : 'var(--text-secondary)';
+    btn.style.border = _gaugeVisible ? 'none' : '1px solid var(--border)';
+  }
+  for (let i = 0; i < _allManeuvers.length; i++) {
+    const svg = document.getElementById('gauge-svg-' + i);
+    if (svg) svg.style.display = _gaugeVisible ? '' : 'none';
   }
 }
 
@@ -552,7 +735,10 @@ function _rankColor(rank) {
 function _fmtElapsed(iso) {
   if (!iso) return '';
   try {
-    const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+    let s = iso.replace(' ', 'T');
+    if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return '';
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch (_e) { return ''; }
 }
