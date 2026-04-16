@@ -4144,3 +4144,110 @@ async def test_api_state_tolerates_date_only_start_utc(storage: Storage) -> None
     # But it should still appear in today_races with a valid ISO timestamp.
     assert len(data["today_races"]) == 1
     assert "T" in data["today_races"][0]["start_utc"]
+
+
+# ---------------------------------------------------------------------------
+# Maneuver compare
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compare_page_returns_200(storage: Storage) -> None:
+    """GET /session/{id}/compare returns 200 for a valid session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/session/{race_id}/compare")
+    assert resp.status_code == 200
+    assert "Compare Maneuvers" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_compare_page_returns_404_unknown(storage: Storage) -> None:
+    """GET /session/{id}/compare returns 404 for an unknown session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/session/99999/compare")
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_compare_api_returns_maneuvers(storage: Storage) -> None:
+    """GET /api/sessions/{id}/maneuvers/compare returns filtered maneuvers."""
+    from helmlog.maneuver_detector import Maneuver
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+
+    # Seed maneuvers directly via storage
+    m1 = Maneuver(
+        type="tack",
+        ts=datetime(2026, 2, 26, 14, 10, 0, tzinfo=UTC),
+        end_ts=datetime(2026, 2, 26, 14, 10, 8, tzinfo=UTC),
+        duration_sec=8.0,
+        loss_kts=0.5,
+        vmg_loss_kts=None,
+        tws_bin=12,
+        twa_bin=40,
+    )
+    m2 = Maneuver(
+        type="tack",
+        ts=datetime(2026, 2, 26, 14, 15, 0, tzinfo=UTC),
+        end_ts=datetime(2026, 2, 26, 14, 15, 10, tzinfo=UTC),
+        duration_sec=10.0,
+        loss_kts=0.8,
+        vmg_loss_kts=None,
+        tws_bin=12,
+        twa_bin=42,
+    )
+    await storage.write_maneuvers(race_id, [m1, m2])
+
+    # Look up actual IDs
+    maneuvers = await storage.get_session_maneuvers(race_id)
+    id1, id2 = maneuvers[0]["id"], maneuvers[1]["id"]
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/maneuvers/compare?ids={id1},{id2}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "maneuvers" in data
+    assert "video_sync" in data
+    assert len(data["maneuvers"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_compare_api_invalid_ids(storage: Storage) -> None:
+    """GET /api/sessions/{id}/maneuvers/compare returns 422 for invalid ids."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/api/sessions/{race_id}/maneuvers/compare?ids=abc")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_compare_api_empty_ids(storage: Storage) -> None:
+    """GET /api/sessions/{id}/maneuvers/compare returns 422 for empty ids."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/api/sessions/{race_id}/maneuvers/compare?ids=")
+    assert resp.status_code == 422

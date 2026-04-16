@@ -1291,6 +1291,35 @@ async def api_session_maneuvers_csv(
     )
 
 
+@router.get("/api/sessions/{session_id}/maneuvers/compare")
+async def api_session_maneuvers_compare(
+    request: Request,
+    session_id: int,
+    ids: str = Query(..., description="Comma-separated maneuver IDs"),
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return enriched maneuver data and video sync info for a set of maneuver IDs.
+
+    Used by the maneuver comparison page to render multiple synced YouTube
+    embeds side-by-side.
+    """
+    storage = get_storage(request)
+    from helmlog.analysis.maneuvers import enrich_session_maneuvers
+
+    try:
+        requested_ids = {int(x.strip()) for x in ids.split(",") if x.strip()}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="ids must be comma-separated integers") from exc
+
+    if not requested_ids:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    enriched, video_sync = await enrich_session_maneuvers(storage, session_id)
+    selected = [m for m in enriched if m.get("id") in requested_ids]
+
+    return JSONResponse({"maneuvers": selected, "video_sync": video_sync})
+
+
 @router.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)
 async def api_detect_maneuvers(
     request: Request,
