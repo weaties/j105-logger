@@ -278,13 +278,27 @@ def _parse_class_payload(
             race_finishes.setdefault(race_num, []).append(finish)
 
             if race_num not in race_meta:
-                race_date = _extract_date(start_time_str or finish_time_str)
+                # Prefer finish_time for the race date: Clubspot series
+                # reuse a stale start_data.start_time across all races in
+                # the series, so start_time often carries the *first*
+                # race's date.  finish_time is per-boat and reflects the
+                # actual race day.
+                finish_date = _extract_date(finish_time_str)
+                race_date = finish_date or _extract_date(start_time_str)
                 race_meta[race_num] = {
                     "start_time": start_time_str,
                     "date": race_date,
                     "scores_in_start": score.get("scores"),
                     "start_id": start_data.get("start_id", ""),
+                    "_has_finish_date": bool(finish_date),
                 }
+            elif finish_time_str and not race_meta[race_num].get("_has_finish_date"):
+                # First boat was DNC (no finish_time) — upgrade the date
+                # now that we have a boat with a real finish.
+                better = _extract_date(finish_time_str)
+                if better:
+                    race_meta[race_num]["date"] = better
+                    race_meta[race_num]["_has_finish_date"] = True
 
     races: list[RaceData] = []
     for race_num in sorted(race_finishes):

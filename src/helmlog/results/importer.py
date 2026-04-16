@@ -299,6 +299,36 @@ async def _upsert_race(
         # Clear old results so the fresh set from the provider can be
         # re-inserted without UNIQUE constraint violations on (race_id, place).
         await db.execute("DELETE FROM race_results WHERE race_id = ?", (row[0],))
+        # Update race metadata (date may have been corrected by the provider).
+        # If the date changed, also clear the local_session_id so the linker
+        # can re-match to the correct session on the new date.
+        old_date_cur = await db.execute("SELECT date FROM races WHERE id = ?", (row[0],))
+        old_date_row = await old_date_cur.fetchone()
+        old_date = old_date_row[0] if old_date_row else None
+        date_changed = race.date and old_date != race.date
+
+        placeholder_iso = f"{race.date}T00:00:00+00:00" if race.date else None
+        await db.execute(
+            "UPDATE races SET name = ?, race_num = ?, date = ?, "
+            "start_utc = COALESCE(?, start_utc), end_utc = COALESCE(?, end_utc)"
+            + (", local_session_id = NULL" if date_changed else "")
+            + " WHERE id = ?",
+            (
+                f"{race.name} - {race.class_name}" if race.class_name else race.name,
+                race.race_number,
+                race.date,
+                placeholder_iso,
+                placeholder_iso,
+                row[0],
+            ),
+        )
+        if date_changed:
+            logger.info(
+                "Race {} date changed {} → {} — cleared local_session_id for re-linking",
+                row[0],
+                old_date,
+                race.date,
+            )
         return row[0]  # type: ignore[no-any-return]
 
     # Imported races have no real start/stop timestamps — they're just
