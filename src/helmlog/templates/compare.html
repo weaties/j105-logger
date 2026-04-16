@@ -53,6 +53,7 @@ footer,.site-nav{display:none}
   <div class="compare-controls" id="compare-controls" style="display:none">
     <button id="play-all-btn" type="button" onclick="togglePlayAll()">&#9654; Play All</button>
     <button type="button" onclick="seekAllToStart()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border)">&#9198; Reset</button>
+    <button id="mute-btn" type="button" onclick="toggleMuteAll()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border)">&#128263; Unmute</button>
     <label style="font-size:.75rem;color:var(--text-secondary)">Speed
       <select id="speed-select" onchange="setAllSpeed(this.value)">
         <option value="0.25">0.25x</option>
