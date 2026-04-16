@@ -1,5 +1,70 @@
 # Release Notes
 
+## Maneuver Video Compare + Cross-Session Browser (2026-04-16)
+
+Side-by-side synced video comparison for detected maneuvers, followed by a
+full cross-session browser that lets you pool tacks, gybes, roundings, and
+synthesized starts across many sessions and filter by regatta, session type,
+wind range, and mark side — then compare the selected clips together.
+
+### Maneuver video compare page
+- **Synced multi-video playback** ([#566](https://github.com/weaties/helmlog/pull/566))
+  — open a compare grid from the session page, pick maneuvers, and play their
+  YouTube clips side-by-side with a shared play/pause, speed, and pre-roll
+- **Per-video and global offset controls** ([#569](https://github.com/weaties/helmlog/pull/569))
+  — nudge any cell ±0.5s to align, plus a global offset that shifts all cells
+  together; restyled Compare button on the session page
+- **Per-video SVG track overlay** ([#571](https://github.com/weaties/helmlog/pull/571))
+  — each cell shows the maneuver's local track rotated into a wind-up frame
+  with a ladder reference line, colored by rank
+- **Compass-rose instrument gauge overlay** ([#573](https://github.com/weaties/helmlog/pull/573))
+  — top-left overlay with HDG, BSP, SOG, TWS/AWS readouts and TWD/AWA/COG
+  arrows that update in sync with the video
+- **BSP recovery bar gauge** ([#575](https://github.com/weaties/helmlog/pull/575))
+  — vertical bar showing live speed as a percentage of entry BSP, colored by
+  recovery state, with a dashed min-BSP marker
+- **P→S / S→P direction filter pills on maneuvers panel** ([#577](https://github.com/weaties/helmlog/pull/577))
+  — filter tacks and gybes by turn direction from the session-page maneuvers
+  card
+- **Mute-all button, muted by default** ([#579](https://github.com/weaties/helmlog/pull/579))
+  — multiple simultaneous audio tracks are never useful; cells start muted
+  with a single toggle
+- **Collapsible filter panel** ([#581](https://github.com/weaties/helmlog/pull/581))
+  — type / direction / rank / post-start pills hide behind a toggle so the
+  grid keeps maximum room for video
+- **Watch on YouTube link per cell** ([#583](https://github.com/weaties/helmlog/pull/583))
+  — deep-link each maneuver to its moment on the original full-race video
+
+### Cross-session maneuver browser ([#584](https://github.com/weaties/helmlog/issues/584), [#585](https://github.com/weaties/helmlog/pull/585))
+- **Top-level `/maneuvers` page** — pools tacks, gybes, roundings, and starts
+  across many sessions so a debrief can pull a statistically meaningful set
+  of samples at similar wind speeds from across a season, not just one race
+- **Generalized compare URL** — `/compare?ids=<session_id>:<maneuver_id>,...`
+  accepts pairs from different sessions; the legacy
+  `/session/{id}/compare?ids=1,2,3` URL keeps working for back-compat
+- **Filter pills** — session type (race / practice), type (tack, gybe,
+  rounding, weather, leeward, start), direction, race phase (post-start
+  only), and wind-range pills that multi-select to union non-adjacent bands
+  (e.g. 6–8 + 12–15)
+- **Weather vs. leeward roundings** — each rounding is classified by exit
+  TWA (downwind exit = weather mark, upwind exit = leeward) and displayed
+  inline as "rounding (W)" / "rounding (L)", with dedicated pill filters
+- **Synthesized start "maneuvers"** — each session with a recorded Vakaros
+  race_start event gets a synthetic start entry at the gun time, pickable
+  and comparable like any other maneuver
+- **Start-cell overlay** — compare cells of type `start` show a live
+  countdown (T-0:30 pre-gun → GUN at zero → T+0:15 post-gun) and a
+  perpendicular distance-to-line readout, computed per-tick from the
+  session's start line and track data
+- **Zero-maneuver and imported-results sessions hidden** — the picker only
+  shows live-sailed sessions that actually have maneuvers, skipping the
+  ghost races that multi-class result imports create
+
+### Fixes
+- **409 instead of 500 on duplicate regatta adds** ([#563](https://github.com/weaties/helmlog/pull/563))
+  — the admin Results page now surfaces a clean conflict rather than an
+  internal server error when re-adding a regatta
+
 ## Sprint 8 — Race Replay, Multi-Channel Audio, Results Import & Session Page Overhaul (2026-04-15)
 
 Full race-replay UI with polar-graded track and event stepping, multi-channel
