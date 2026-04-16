@@ -25,6 +25,7 @@ let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
 let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
 let _replaySamples = null; // [{ts:Date, hdg, cog, stw, sog, tws, twa, twd, aws, awa}]
+let _raceGunMs = null; // race start UTC in ms
 let _gaugeVisible = true;
 let _compareFilter = new Set(); // active filter pills on the compare page
 const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
@@ -75,6 +76,9 @@ let _filterPanelOpen = false;
         hdg: s.hdg, cog: s.cog, stw: s.stw, sog: s.sog,
         tws: s.tws, twa: s.twa, twd: s.twd, aws: s.aws, awa: s.awa,
       }));
+      if (rData.race_gun_utc) {
+        _raceGunMs = _parseUtcMs(rData.race_gun_utc);
+      }
     }
   } catch (_e) { /* gauge overlay is optional */ }
 
@@ -845,6 +849,10 @@ function _matchesCompareFilter(m) {
     if (activeDir.includes('P\u2192S') && !isPS) return false;
     if (activeDir.includes('S\u2192P') && isPS) return false;
   }
+  if (_compareFilter.has('post-start') && _raceGunMs) {
+    const mTs = _parseUtcMs(m.ts);
+    if (!mTs || mTs < _raceGunMs) return false;
+  }
   return true;
 }
 
@@ -932,6 +940,7 @@ function _renderFilterPills() {
   if (!container) return;
 
   const pills = ['all', 'tack', 'gybe', 'rounding', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
+  if (_raceGunMs) pills.push('post-start');
   container.innerHTML = pills.map(f => {
     const active = f === 'all' ? _compareFilter.size === 0 : _compareFilter.has(f);
     const style = 'font-size:.72rem;padding:2px 8px;border:1px solid var(--border);background:'
