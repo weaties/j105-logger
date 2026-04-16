@@ -8,7 +8,7 @@ footer,.site-nav{display:none}
 .compare-header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;min-height:32px}
 .compare-grid{display:grid;gap:4px;overflow:hidden}
 .compare-cell{position:relative;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:flex;flex-direction:column}
-.compare-cell .yt-wrap{flex:1;min-height:0;border-radius:3px;overflow:hidden;background:#000}
+.compare-cell .yt-wrap{flex:1;min-height:0;border-radius:3px;overflow:hidden;background:#000;position:relative}
 .compare-cell .yt-wrap iframe{width:100%;height:100%}
 .compare-cell .cell-label{font-size:.68rem;color:var(--text-secondary);padding:2px 4px;line-height:1.3;display:flex;align-items:center;gap:4px;overflow:hidden}
 .compare-cell .cell-label b{color:var(--text-primary)}
@@ -33,6 +33,7 @@ footer,.site-nav{display:none}
 .global-offset button{background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;padding:0 2px}
 .global-offset button:hover{color:var(--accent)}
 .global-offset .go-val{font-variant-numeric:tabular-nums;min-width:36px;text-align:center;color:var(--text-primary);font-family:monospace;font-size:.72rem}
+.track-overlay{position:absolute;bottom:6px;left:6px;z-index:5;pointer-events:none;opacity:.85;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
 </style>
 {% endblock %}
 
@@ -67,6 +68,7 @@ footer,.site-nav{display:none}
         <option value="30">30s</option>
       </select>
     </label>
+    <button id="track-toggle-btn" type="button" onclick="toggleTrackOverlay()" style="background:var(--accent-strong);color:var(--bg-primary)">Track</button>
     <span class="global-offset" title="Shift all videos together">
       <span style="color:var(--text-secondary)">Offset</span>
       <button onclick="adjustGlobalOffset(-0.5)">&#9664;</button>
