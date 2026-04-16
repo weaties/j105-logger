@@ -25,7 +25,13 @@ let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
 let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
 let _replaySamples = null; // [{ts:Date, hdg, cog, stw, sog, tws, twa, twd, aws, awa}]
+let _raceGunMs = null; // race start UTC in ms
 let _gaugeVisible = true;
+let _compareFilter = new Set(); // active filter pills on the compare page
+const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const _CMP_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
+const _CMP_RANK_PILLS = ['good', 'bad'];
+let _filterPanelOpen = false;
 
 // ---------------------------------------------------------------------------
 // Init
@@ -70,6 +76,9 @@ let _gaugeVisible = true;
         hdg: s.hdg, cog: s.cog, stw: s.stw, sog: s.sog,
         tws: s.tws, twa: s.twa, twd: s.twd, aws: s.aws, awa: s.awa,
       }));
+      if (rData.race_gun_utc) {
+        _raceGunMs = _parseUtcMs(rData.race_gun_utc);
+      }
     }
   } catch (_e) { /* gauge overlay is optional */ }
 
@@ -140,10 +149,14 @@ function _buildGrid() {
   const n = _allManeuvers.length;
   if (!n) { _showEmpty(); return; }
 
-  const layout = _gridLayout(n);
+  const visibleManeuvers = _allManeuvers.filter(_matchesCompareFilter);
+  const visibleCount = visibleManeuvers.length || n;
+  const layout = _gridLayout(visibleCount);
   const headerEl = document.getElementById('compare-header');
   const headerH = headerEl ? headerEl.offsetHeight + 4 : 40;
-  const availH = window.innerHeight - headerH - 12;
+  const filterEl = document.getElementById('compare-filter-panel');
+  const filterH = (filterEl && filterEl.style.display !== 'none') ? filterEl.offsetHeight + 4 : 0;
+  const availH = window.innerHeight - headerH - filterH - 12;
   const availW = window.innerWidth - 12;
   const gap = 4;
   const labelH = 20;
@@ -308,15 +321,20 @@ function dismissCell(idx) {
 // Shared controls
 // ---------------------------------------------------------------------------
 
+function _visiblePlayers() {
+  return _players.filter(p => _matchesCompareFilter(p.maneuver));
+}
+
 function togglePlayAll() {
+  const vp = _visiblePlayers();
   if (_playing) {
     _playing = false;
-    _players.forEach(p => { try { p.player.pauseVideo(); } catch (_e) { /* not ready */ } });
+    vp.forEach(p => { try { p.player.pauseVideo(); } catch (_e) { /* not ready */ } });
     document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
     _stopTrackTick();
   } else {
     _playing = true;
-    _players.forEach(p => { try { p.player.playVideo(); } catch (_e) { /* not ready */ } });
+    vp.forEach(p => { try { p.player.playVideo(); } catch (_e) { /* not ready */ } });
     document.getElementById('play-all-btn').innerHTML = '&#9646;&#9646; Pause All';
     _startTrackTick();
   }
@@ -326,7 +344,7 @@ function seekAllToStart() {
   _playing = false;
   _stopTrackTick();
   document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
-  _players.forEach(p => {
+  _visiblePlayers().forEach(p => {
     p.cueSeconds = _calcCue(p.maneuver, p.nudge);
     try {
       p.player.seekTo(p.cueSeconds, true);
@@ -811,6 +829,137 @@ function _updateRecoveryBar(p, sample) {
   if (pctEl) {
     pctEl.textContent = Math.round(pct) + '%';
     pctEl.setAttribute('fill', color);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Filter panel (#580)
+// ---------------------------------------------------------------------------
+
+function _matchesCompareFilter(m) {
+  if (!_compareFilter.size) return true;
+  const activeTypes = _CMP_TYPE_PILLS.filter(p => _compareFilter.has(p));
+  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+  const activeRanks = _CMP_RANK_PILLS.filter(p => _compareFilter.has(p));
+  if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+  const activeDir = _CMP_DIR_PILLS.filter(p => _compareFilter.has(p));
+  if (activeDir.length) {
+    if (m.turn_angle_deg == null) return false;
+    const isPS = m.turn_angle_deg < 0;
+    if (activeDir.includes('P\u2192S') && !isPS) return false;
+    if (activeDir.includes('S\u2192P') && isPS) return false;
+  }
+  if (_compareFilter.has('post-start') && _raceGunMs) {
+    const mTs = _parseUtcMs(m.ts);
+    if (!mTs || mTs < _raceGunMs) return false;
+  }
+  return true;
+}
+
+function setCompareFilter(f) {
+  if (f === 'all') {
+    _compareFilter.clear();
+  } else if (_compareFilter.has(f)) {
+    _compareFilter.delete(f);
+  } else {
+    if (_CMP_DIR_PILLS.includes(f)) {
+      _CMP_DIR_PILLS.forEach(d => _compareFilter.delete(d));
+    }
+    _compareFilter.add(f);
+  }
+  _applyFilter();
+}
+
+function toggleFilterPanel() {
+  _filterPanelOpen = !_filterPanelOpen;
+  const panel = document.getElementById('compare-filter-panel');
+  if (panel) panel.style.display = _filterPanelOpen ? 'flex' : 'none';
+  if (_filterPanelOpen) _renderFilterPills();
+  const btn = document.getElementById('filter-toggle-btn');
+  if (btn) {
+    btn.style.background = _filterPanelOpen ? 'var(--accent-strong)' : 'var(--bg-input)';
+    btn.style.color = _filterPanelOpen ? 'var(--bg-primary)' : 'var(--text-secondary)';
+    btn.style.border = _filterPanelOpen ? 'none' : '1px solid var(--border)';
+  }
+  // Re-layout grid height without destroying cells
+  _applyFilter();
+}
+
+function _applyFilter() {
+  const grid = document.getElementById('compare-grid');
+  let visibleCount = 0;
+
+  for (let i = 0; i < _allManeuvers.length; i++) {
+    const m = _allManeuvers[i];
+    const cell = document.getElementById('compare-cell-' + i);
+    if (!cell) continue;
+    const visible = _matchesCompareFilter(m);
+    cell.style.display = visible ? '' : 'none';
+    if (visible) visibleCount++;
+
+    // Pause hidden players
+    if (!visible) {
+      const p = _players.find(p => p.idx === i);
+      if (p) { try { p.player.pauseVideo(); } catch (_e) { /* ok */ } }
+    }
+  }
+
+  // Re-layout grid for visible count
+  if (visibleCount > 0) {
+    const layout = _gridLayout(visibleCount);
+    grid.style.gridTemplateColumns = 'repeat(' + layout.cols + ', 1fr)';
+    const headerEl = document.getElementById('compare-header');
+    const headerH = headerEl ? headerEl.offsetHeight + 4 : 40;
+    const filterEl = document.getElementById('compare-filter-panel');
+    const filterH = (filterEl && filterEl.style.display !== 'none') ? filterEl.offsetHeight + 4 : 0;
+    const availH = window.innerHeight - headerH - filterH - 12;
+    grid.style.height = availH + 'px';
+
+    const gap = 4;
+    const cellH = (availH - gap * (layout.rows - 1)) / layout.rows;
+    // Update visible cell max-heights
+    for (let i = 0; i < _allManeuvers.length; i++) {
+      const cell = document.getElementById('compare-cell-' + i);
+      if (cell && cell.style.display !== 'none') {
+        cell.style.maxHeight = cellH + 'px';
+      }
+    }
+    grid.style.display = '';
+    document.getElementById('compare-empty').style.display = 'none';
+  } else {
+    grid.style.display = 'none';
+    document.getElementById('compare-empty').style.display = '';
+  }
+
+  _renderFilterPills();
+  _updateSubtitle();
+}
+
+function _renderFilterPills() {
+  const container = document.getElementById('filter-pills');
+  if (!container) return;
+
+  const pills = ['all', 'tack', 'gybe', 'rounding', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
+  if (_raceGunMs) pills.push('post-start');
+  container.innerHTML = pills.map(f => {
+    const active = f === 'all' ? _compareFilter.size === 0 : _compareFilter.has(f);
+    const style = 'font-size:.72rem;padding:2px 8px;border:1px solid var(--border);background:'
+      + (active ? 'var(--accent)' : 'transparent') + ';color:'
+      + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
+    return '<button style="' + style + '" onclick="setCompareFilter(\'' + f + '\')">' + f + '</button>';
+  }).join('');
+}
+
+// Override _updateSubtitle to show filtered count
+function _updateSubtitle() {
+  const total = _allManeuvers.length;
+  const visible = _allManeuvers.filter(_matchesCompareFilter).length;
+  const el = document.getElementById('compare-subtitle');
+  if (!el) return;
+  if (visible === total) {
+    el.textContent = total + ' maneuver' + (total !== 1 ? 's' : '');
+  } else {
+    el.textContent = visible + ' of ' + total + ' maneuvers';
   }
 }
 
