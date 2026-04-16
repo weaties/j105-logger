@@ -4406,6 +4406,48 @@ async def test_maneuver_browse_sessions_excludes_empty(storage: Storage) -> None
 
 
 @pytest.mark.asyncio
+async def test_maneuver_browse_sessions_excludes_imported(storage: Storage) -> None:
+    """Races imported from external results (source != 'live') are hidden even
+    if they have maneuver rows (duplicated across classes in the same window)."""
+    from helmlog.maneuver_detector import Maneuver
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        live_race, _ = await _seed_maneuvers(storage, client, event="Live", count=1)
+        # Create a second race, tag it as imported (source != 'live'), and
+        # attach a maneuver so only the source filter can exclude it.
+        await client.post("/api/races/stop")
+        await _set_event(client, "Imported")
+        imported_race = (await client.post("/api/races/start")).json()["id"]
+        await storage.write_maneuvers(
+            imported_race,
+            [
+                Maneuver(
+                    type="tack",
+                    ts=datetime(2026, 2, 26, 15, 0, 0, tzinfo=UTC),
+                    end_ts=datetime(2026, 2, 26, 15, 0, 8, tzinfo=UTC),
+                    duration_sec=8.0,
+                    loss_kts=0.5,
+                    vmg_loss_kts=None,
+                    tws_bin=12,
+                    twa_bin=40,
+                )
+            ],
+        )
+        await storage._conn().execute(
+            "UPDATE races SET source = 'clubspot' WHERE id = ?", (imported_race,)
+        )
+        await storage._conn().commit()
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    ids = {s["id"] for s in resp.json()["sessions"]}
+    assert live_race in ids
+    assert imported_race not in ids
+
+
+@pytest.mark.asyncio
 async def test_maneuver_browse_regattas_endpoint(storage: Storage) -> None:
     """GET /api/maneuvers/regattas returns only regattas with linked sessions."""
     app = create_app(storage)

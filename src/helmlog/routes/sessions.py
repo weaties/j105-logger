@@ -1393,9 +1393,11 @@ async def api_maneuver_browse_sessions(
     storage = get_storage(request)
     limit = max(1, min(limit, 200))
     db = storage._conn()
-    # Imported-results rows (from Clubspot etc.) appear as races but have no
-    # instrument data — filter them out so the picker only shows sessions
-    # the boat actually sailed.
+    # Imported-results rows (source='clubspot' etc.) appear as races but were
+    # never sailed by this boat — filter them out so the picker only shows
+    # live-sailed sessions, and require maneuvers to also be present so
+    # ghost races (duplicated across classes in the same regatta window)
+    # don't clutter the list.
     sql = (
         "SELECT r.id, r.name, r.slug, r.start_utc, r.regatta_id, "
         "       reg.name AS regatta_name, "
@@ -1403,7 +1405,10 @@ async def api_maneuver_browse_sessions(
         "  FROM races r "
         "  LEFT JOIN regattas reg ON reg.id = r.regatta_id "
     )
-    conds: list[str] = ["EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)"]
+    conds: list[str] = [
+        "(r.source IS NULL OR r.source = 'live')",
+        "EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)",
+    ]
     params: list[Any] = []
     if regatta_id is not None:
         conds.append("r.regatta_id = ?")
@@ -1441,6 +1446,7 @@ async def api_maneuver_browse_regattas(
         "       COUNT(r.id) AS session_count "
         "  FROM regattas reg "
         "  JOIN races r ON r.regatta_id = reg.id "
+        " WHERE (r.source IS NULL OR r.source = 'live') "
         " GROUP BY reg.id "
         " ORDER BY reg.start_date DESC NULLS LAST, reg.id DESC"
     )
@@ -1497,7 +1503,10 @@ async def api_maneuver_browse(
     elif regatta_id is not None:
         db = storage._conn()
         cur = await db.execute(
-            "SELECT id FROM races WHERE regatta_id = ? ORDER BY start_utc DESC",
+            "SELECT id FROM races "
+            " WHERE regatta_id = ? "
+            "   AND (source IS NULL OR source = 'live') "
+            " ORDER BY start_utc DESC",
             (regatta_id,),
         )
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
@@ -1505,7 +1514,9 @@ async def api_maneuver_browse(
         session_limit = max(1, min(session_limit, 100))
         db = storage._conn()
         cur = await db.execute(
-            "SELECT id FROM races ORDER BY start_utc DESC LIMIT ?",
+            "SELECT id FROM races "
+            " WHERE (source IS NULL OR source = 'live') "
+            " ORDER BY start_utc DESC LIMIT ?",
             (session_limit,),
         )
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
