@@ -10,7 +10,7 @@ footer,.site-nav{display:none}
 .compare-cell{position:relative;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;overflow:hidden;display:flex;flex-direction:column}
 .compare-cell .yt-wrap{flex:1;min-height:0;border-radius:3px;overflow:hidden;background:#000}
 .compare-cell .yt-wrap iframe{width:100%;height:100%}
-.compare-cell .cell-label{font-size:.68rem;color:var(--text-secondary);padding:2px 4px;line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.compare-cell .cell-label{font-size:.68rem;color:var(--text-secondary);padding:2px 4px;line-height:1.3;display:flex;align-items:center;gap:4px;overflow:hidden}
 .compare-cell .cell-label b{color:var(--text-primary)}
 .cell-dismiss{position:absolute;top:4px;right:4px;z-index:10;background:rgba(0,0,0,.6);color:#fff;border:none;border-radius:50%;width:22px;height:22px;font-size:.75rem;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s}
 .compare-cell:hover .cell-dismiss{opacity:1}
@@ -24,6 +24,15 @@ footer,.site-nav{display:none}
 .badge-tack{color:var(--accent)}
 .badge-gybe{color:var(--warning)}
 .badge-rounding{color:var(--success)}
+.nudge-controls{margin-left:auto;display:inline-flex;align-items:center;gap:1px;flex-shrink:0}
+.nudge-controls button{background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:3px;width:18px;height:16px;font-size:.55rem;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;padding:0}
+.nudge-controls button:hover{border-color:var(--accent);color:var(--accent)}
+.nudge-controls .nudge-reset{font-size:.6rem;width:16px}
+.nudge-value{font-size:.62rem;font-variant-numeric:tabular-nums;min-width:32px;text-align:center;color:var(--text-primary);font-family:monospace}
+.global-offset{display:inline-flex;align-items:center;gap:3px;font-size:.75rem;color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:2px 6px}
+.global-offset button{background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;padding:0 2px}
+.global-offset button:hover{color:var(--accent)}
+.global-offset .go-val{font-variant-numeric:tabular-nums;min-width:36px;text-align:center;color:var(--text-primary);font-family:monospace;font-size:.72rem}
 </style>
 {% endblock %}
 
@@ -58,6 +67,13 @@ footer,.site-nav{display:none}
         <option value="30">30s</option>
       </select>
     </label>
+    <span class="global-offset" title="Shift all videos together">
+      <span style="color:var(--text-secondary)">Offset</span>
+      <button onclick="adjustGlobalOffset(-0.5)">&#9664;</button>
+      <span class="go-val" id="global-offset-val">0.0s</span>
+      <button onclick="adjustGlobalOffset(+0.5)">&#9654;</button>
+      <button onclick="resetGlobalOffset()" style="font-size:.65rem" title="Reset global offset">0</button>
+    </span>
   </div>
 </div>
 
