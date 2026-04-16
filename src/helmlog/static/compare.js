@@ -20,6 +20,8 @@ let _playing = false;
 let _prerollS = 10;
 let _globalNudge = 0;  // seconds, applied to all videos (#568)
 let _ytReady = false;
+let _trackOverlayVisible = true;
+let _tickInterval = 0; // playback position poll timer
 
 // ---------------------------------------------------------------------------
 // Init
@@ -145,9 +147,12 @@ function _buildGrid() {
 
     const nudgeDisplay = nudge !== 0 ? (nudge > 0 ? '+' : '') + nudge.toFixed(1) + 's' : '0.0s';
 
+    const trackSvg = _renderTrackOverlay(m, i);
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
-      + '<div class="yt-wrap" id="' + divId + '" style="height:' + Math.max(60, videoH) + 'px"></div>'
+      + '<div class="yt-wrap" id="' + divId + '" style="height:' + Math.max(60, videoH) + 'px">'
+      + trackSvg
+      + '</div>'
       + '<div class="cell-label">'
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
       + dirHint + rank + ' ' + elapsed
@@ -264,15 +269,18 @@ function togglePlayAll() {
     _playing = false;
     _players.forEach(p => { try { p.player.pauseVideo(); } catch (_e) { /* not ready */ } });
     document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
+    _stopTrackTick();
   } else {
     _playing = true;
     _players.forEach(p => { try { p.player.playVideo(); } catch (_e) { /* not ready */ } });
     document.getElementById('play-all-btn').innerHTML = '&#9646;&#9646; Pause All';
+    _startTrackTick();
   }
 }
 
 function seekAllToStart() {
   _playing = false;
+  _stopTrackTick();
   document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
   _players.forEach(p => {
     p.cueSeconds = _calcCue(p.maneuver, p.nudge);
@@ -309,6 +317,7 @@ function resetGlobalOffset() {
 
 function _seekAllToCue() {
   _playing = false;
+  _stopTrackTick();
   document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
   _players.forEach(p => {
     p.cueSeconds = _calcCue(p.maneuver, p.nudge);
@@ -317,6 +326,123 @@ function _seekAllToCue() {
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
+}
+
+// ---------------------------------------------------------------------------
+// Track overlay (#570)
+// ---------------------------------------------------------------------------
+
+function _renderTrackOverlay(m, idx) {
+  const track = m.track;
+  if (!track || track.length < 2) return '';
+
+  const size = 120;
+  const pad = 8;
+
+  // Compute bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of track) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!isFinite(minX)) return '';
+
+  // Square bounds with padding
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+  const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
+
+  const sx = x => pad + (x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
+
+  // Build polyline
+  const pts = track.map(p => sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
+
+  // Origin crosshair (maneuver start point)
+  const ox = sx(0), oy = sy(0);
+
+  // Color by rank
+  const rankColors = { good: '#3db86e', bad: '#d64545', avg: '#888' };
+  const color = rankColors[m.rank] || '#7eb8f7';
+
+  const display = _trackOverlayVisible ? '' : 'display:none;';
+
+  return '<svg class="track-overlay" id="track-svg-' + idx + '" width="' + size + '" height="' + size + '" style="' + display + '">'
+    + '<rect width="' + size + '" height="' + size + '" rx="6" fill="rgba(0,0,0,.45)"/>'
+    + '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle cx="' + ox + '" cy="' + oy + '" r="2.5" fill="#fff" stroke="' + color + '" stroke-width="1"/>'
+    + '<text x="' + (size - pad) + '" y="' + (pad + 6) + '" text-anchor="end" font-size="7" fill="rgba(255,255,255,.5)">&#8593; wind</text>'
+    + '<circle id="track-dot-' + idx + '" cx="' + ox + '" cy="' + oy + '" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
+    + '</svg>';
+}
+
+function toggleTrackOverlay() {
+  _trackOverlayVisible = !_trackOverlayVisible;
+  const btn = document.getElementById('track-toggle-btn');
+  if (btn) {
+    btn.style.background = _trackOverlayVisible ? 'var(--accent-strong)' : 'var(--bg-input)';
+    btn.style.color = _trackOverlayVisible ? 'var(--bg-primary)' : 'var(--text-secondary)';
+    btn.style.border = _trackOverlayVisible ? 'none' : '1px solid var(--border)';
+  }
+  for (let i = 0; i < _allManeuvers.length; i++) {
+    const svg = document.getElementById('track-svg-' + i);
+    if (svg) svg.style.display = _trackOverlayVisible ? '' : 'none';
+  }
+}
+
+// Update track dot positions based on current playback time
+function _startTrackTick() {
+  if (_tickInterval) return;
+  _tickInterval = setInterval(_updateTrackDots, 200);
+}
+
+function _stopTrackTick() {
+  if (_tickInterval) { clearInterval(_tickInterval); _tickInterval = 0; }
+}
+
+function _updateTrackDots() {
+  if (!_trackOverlayVisible) return;
+  for (const p of _players) {
+    const track = p.maneuver.track;
+    if (!track || track.length < 2) continue;
+    const dot = document.getElementById('track-dot-' + p.idx);
+    if (!dot) continue;
+
+    let currentT;
+    try {
+      const videoTime = p.player.getCurrentTime();
+      // Convert video time to maneuver-relative time
+      // videoTime is absolute video seconds; maneuver video_offset_s is when maneuver starts in the video
+      currentT = videoTime - (p.maneuver.video_offset_s || 0);
+    } catch (_e) { continue; }
+
+    // Find the closest track point by t
+    let best = track[0], bestDt = Math.abs(track[0].t - currentT);
+    for (let i = 1; i < track.length; i++) {
+      const dt = Math.abs(track[i].t - currentT);
+      if (dt < bestDt) { bestDt = dt; best = track[i]; }
+    }
+
+    // Recompute SVG coords (same logic as _renderTrackOverlay)
+    const size = 120, pad = 8;
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const pt of track) {
+      if (pt.x < minX) minX = pt.x;
+      if (pt.x > maxX) maxX = pt.x;
+      if (pt.y < minY) minY = pt.y;
+      if (pt.y > maxY) maxY = pt.y;
+    }
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+    const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
+
+    const svgX = pad + (best.x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
+    const svgY = (size - pad) - (best.y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
+    dot.setAttribute('cx', svgX.toFixed(1));
+    dot.setAttribute('cy', svgY.toFixed(1));
+  }
 }
 
 // ---------------------------------------------------------------------------
