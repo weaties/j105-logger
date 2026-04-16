@@ -29,6 +29,10 @@ const _videoSyncBySession = Object.create(null);
 const _trackBySession = Object.create(null);
 const _replayBySession = Object.create(null);
 const _raceGunMsBySession = Object.create(null);
+// Start-line geometry per session — {pin:[lat,lon], boat:[lat,lon]} or null.
+// Populated alongside track/replay when a cell is a "start" maneuver so the
+// start overlay can compute live distance-to-line during playback (#584).
+const _startLineBySession = Object.create(null);
 let _playing = false;
 let _prerollS = 10;
 let _globalNudge = 0;  // seconds, applied to all videos (#568)
@@ -105,10 +109,18 @@ let _filterPanelOpen = false;
 })();
 
 async function _loadSessionOverlays(sid) {
-  const [trackResult, replayResult] = await Promise.allSettled([
+  // Only fetch course-overlay (start line) when this session contributes a
+  // start maneuver — a large majority of compares will be tack/gybe/rounding
+  // and don't need it.
+  const needStartLine = _allManeuvers.some(
+    m => m.session_id === sid && m.type === 'start'
+  );
+  const tasks = [
     fetch(`/api/sessions/${sid}/track`),
     fetch(`/api/sessions/${sid}/replay`),
-  ]);
+  ];
+  if (needStartLine) tasks.push(fetch(`/api/sessions/${sid}/course-overlay`));
+  const [trackResult, replayResult, overlayResult] = await Promise.allSettled(tasks);
   try {
     if (trackResult.status === 'fulfilled' && trackResult.value.ok) {
       const geo = await trackResult.value.json();
@@ -134,6 +146,15 @@ async function _loadSessionOverlays(sid) {
       }
     }
   } catch (_e) { /* gauge overlay is optional */ }
+  try {
+    if (overlayResult && overlayResult.status === 'fulfilled' && overlayResult.value.ok) {
+      const od = await overlayResult.value.json();
+      const sl = od && od.start_line;
+      if (sl && sl.pin && sl.boat) {
+        _startLineBySession[sid] = { pin: sl.pin, boat: sl.boat };
+      }
+    }
+  } catch (_e) { /* start line is optional */ }
 }
 
 function _updateHeaderLink() {
@@ -258,6 +279,7 @@ function _buildGrid() {
     const courseSvg = _renderCourseOverlay(m, i);
     const gaugeSvg = _renderGaugePlaceholder(m, i);
     const recoveryBar = _renderRecoveryBar(m, i);
+    const startSvg = _renderStartOverlay(m, i);
     const wrapId = 'yt-wrap-' + i;
     // In cross-session mode prepend the session label so users can tell
     // which day/race a given cell came from.
@@ -276,6 +298,7 @@ function _buildGrid() {
       + courseSvg
       + gaugeSvg
       + recoveryBar
+      + startSvg
       + '</div>'
       + '<div class="cell-label">'
       + sessionTag
@@ -648,6 +671,9 @@ function _tickUpdate() {
       const samples = _replayBySession[p.maneuver.session_id];
       if (samples && samples.length) _updateGauge(p, videoTime, samples);
     }
+
+    // --- Start overlay update (countdown + DTL) ---
+    if (p.maneuver.type === 'start') _updateStartOverlay(p, videoTime);
   }
 }
 
@@ -907,6 +933,118 @@ function _updateRecoveryBar(p, sample) {
     pctEl.textContent = Math.round(pct) + '%';
     pctEl.setAttribute('fill', color);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Start overlay — countdown to gun + distance to line (#584 follow-up)
+// ---------------------------------------------------------------------------
+
+function _renderStartOverlay(m, idx) {
+  if (m.type !== 'start') return '';
+  const w = 150, h = 56;
+  return '<svg class="start-overlay" id="start-svg-' + idx + '" width="' + w + '" height="' + h + '">'
+    // Background pill
+    + '<rect x="0" y="0" width="' + w + '" height="' + h + '" rx="8" fill="rgba(0,0,0,.72)"/>'
+    // Countdown label (small, above)
+    + '<text x="' + (w / 2) + '" y="12" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.55)" letter-spacing="1">COUNTDOWN</text>'
+    // Countdown value (large, centered)
+    + '<text id="start-countdown-' + idx + '" x="' + (w / 2) + '" y="32" text-anchor="middle" font-size="20" font-weight="700" font-family="monospace" fill="#f59e0b">T-0:00</text>'
+    // DTL label + value (right-aligned on row below)
+    + '<text x="6" y="50" font-size="8" fill="rgba(255,255,255,.55)" letter-spacing="1">DTL</text>'
+    + '<text id="start-dtl-' + idx + '" x="' + (w - 6) + '" y="50" text-anchor="end" font-size="12" font-weight="700" font-family="monospace" fill="#60a5fa">\u2014</text>'
+    + '</svg>';
+}
+
+function _updateStartOverlay(p, videoTime) {
+  const m = p.maneuver;
+  if (m.type !== 'start') return;
+  const idx = p.idx;
+
+  // Countdown: delta relative to the gun in seconds.
+  const delta = videoTime - (m.video_offset_s || 0);
+  const countdownEl = document.getElementById('start-countdown-' + idx);
+  if (countdownEl) {
+    const absS = Math.abs(delta);
+    const mm = Math.floor(absS / 60);
+    const ss = Math.floor(absS % 60);
+    const mmss = String(mm).padStart(1, '0') + ':' + String(ss).padStart(2, '0');
+    let label;
+    let color;
+    if (Math.abs(delta) < 0.5) {
+      label = 'GUN';
+      color = '#3db86e';
+    } else if (delta < 0) {
+      label = 'T-' + mmss;
+      color = '#f59e0b'; // amber pre-gun
+    } else {
+      label = 'T+' + mmss;
+      color = '#60a5fa'; // blue post-gun
+    }
+    countdownEl.textContent = label;
+    countdownEl.setAttribute('fill', color);
+  }
+
+  // Distance to line: look up boat position at the current UTC time and
+  // drop a perpendicular onto the pin\u2194boat segment. Falls back to an em
+  // dash when any piece of data is unavailable.
+  const dtlEl = document.getElementById('start-dtl-' + idx);
+  if (!dtlEl) return;
+  const sid = m.session_id;
+  const line = _startLineBySession[sid];
+  const track = _trackBySession[sid];
+  if (!line || !track || !track.coords || !track.timestamps || !track.timestamps.length) {
+    dtlEl.textContent = '\u2014';
+    return;
+  }
+  const gunMs = _parseUtcMs(m.ts);
+  if (gunMs == null) { dtlEl.textContent = '\u2014'; return; }
+  const utcMs = gunMs + delta * 1000;
+  const pos = _positionAtTime(track, utcMs);
+  if (!pos) { dtlEl.textContent = '\u2014'; return; }
+  const dtl = _distanceToLine(line.pin, line.boat, pos);
+  if (dtl == null) { dtlEl.textContent = '\u2014'; return; }
+  dtlEl.textContent = Math.round(dtl) + 'm';
+  // Red when on/over the line after the gun, amber when close pre-gun.
+  if (delta >= 0 && dtl < 5) dtlEl.setAttribute('fill', '#3db86e');
+  else if (delta < 0 && dtl < 10) dtlEl.setAttribute('fill', '#f59e0b');
+  else dtlEl.setAttribute('fill', '#60a5fa');
+}
+
+function _positionAtTime(track, utcMs) {
+  const timestamps = track.timestamps;
+  const coords = track.coords;
+  if (!timestamps.length || timestamps.length !== coords.length) return null;
+  // Binary search for the largest timestamp <= utcMs.
+  let lo = 0, hi = timestamps.length - 1;
+  const tsMs = (i) => {
+    const iso = timestamps[i];
+    if (!iso) return NaN;
+    let s = iso.replace(' ', 'T');
+    if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+    return new Date(s).getTime();
+  };
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tsMs(mid) <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  const c = coords[lo];
+  if (!c || c.length < 2) return null;
+  return { lat: c[1], lon: c[0] };
+}
+
+function _distanceToLine(pin, boat, pos) {
+  const pinLat = pin[0], pinLon = pin[1];
+  const boatLat = boat[0], boatLon = boat[1];
+  const mPerDegLat = 111320;
+  const mPerDegLon = 111320 * Math.cos(pinLat * Math.PI / 180);
+  const vx = (boatLon - pinLon) * mPerDegLon;
+  const vy = (boatLat - pinLat) * mPerDegLat;
+  const px = (pos.lon - pinLon) * mPerDegLon;
+  const py = (pos.lat - pinLat) * mPerDegLat;
+  const segLen = Math.hypot(vx, vy);
+  if (segLen === 0) return null;
+  return Math.abs(vx * py - vy * px) / segLen;
 }
 
 // ---------------------------------------------------------------------------
