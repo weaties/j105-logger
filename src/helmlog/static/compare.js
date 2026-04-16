@@ -247,6 +247,8 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver, idx, nudge) {
         ev.target.pauseVideo();
         const speed = parseFloat(document.getElementById('speed-select').value) || 1;
         ev.target.setPlaybackRate(speed);
+        // Initial gauge + track dot update for the paused state
+        setTimeout(_tickUpdate, 500);
       },
     },
   });
@@ -270,6 +272,7 @@ function nudgeVideo(idx, delta, reset) {
     p.player.seekTo(p.cueSeconds, true);
     if (!_playing) p.player.pauseVideo();
   } catch (_e) { /* not ready */ }
+  setTimeout(_tickUpdate, 300);
   // Update the display
   const el = document.getElementById('nudge-val-' + idx);
   if (el) {
@@ -326,6 +329,7 @@ function seekAllToStart() {
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
+  setTimeout(_tickUpdate, 300);
 }
 
 function setAllSpeed(val) {
@@ -363,6 +367,7 @@ function _seekAllToCue() {
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
+  setTimeout(_tickUpdate, 300);
 }
 
 // ---------------------------------------------------------------------------
