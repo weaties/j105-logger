@@ -56,17 +56,22 @@ async def api_add_regatta(
     if not get_provider(source):
         raise HTTPException(400, f"Unknown source: {source!r}")
 
-    storage = get_storage(request)
-    db = storage._conn()
+    import sqlite3
     from datetime import UTC, datetime
 
+    storage = get_storage(request)
+    db = storage._conn()
+
     now = datetime.now(UTC).isoformat()
-    cur = await db.execute(
-        "INSERT INTO regattas (source, source_id, name, url, default_class, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (source, source_id, name, url or None, default_class or None, now),
-    )
-    await db.commit()
+    try:
+        cur = await db.execute(
+            "INSERT INTO regattas (source, source_id, name, url, default_class, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (source, source_id, name, url or None, default_class or None, now),
+        )
+        await db.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, "This regatta has already been added") from None
     await audit(
         request,
         "results_regatta_add",
