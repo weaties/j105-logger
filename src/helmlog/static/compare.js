@@ -674,7 +674,9 @@ function _updateGauge(p, videoTime) {
 
 function _parseUtcMs(iso) {
   if (!iso) return null;
-  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+  let s = iso.replace(' ', 'T');
+  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+  const d = new Date(s);
   return isNaN(d.getTime()) ? null : d.getTime();
 }
 
@@ -729,7 +731,10 @@ function _rankColor(rank) {
 function _fmtElapsed(iso) {
   if (!iso) return '';
   try {
-    const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z');
+    let s = iso.replace(' ', 'T');
+    if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return '';
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   } catch (_e) { return ''; }
 }
