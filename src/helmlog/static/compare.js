@@ -148,9 +148,11 @@ function _buildGrid() {
     const nudgeDisplay = nudge !== 0 ? (nudge > 0 ? '+' : '') + nudge.toFixed(1) + 's' : '0.0s';
 
     const trackSvg = _renderTrackOverlay(m, i);
+    const wrapId = 'yt-wrap-' + i;
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
-      + '<div class="yt-wrap" id="' + divId + '" style="height:' + Math.max(60, videoH) + 'px">'
+      + '<div class="yt-wrap" id="' + wrapId + '" style="height:' + Math.max(60, videoH) + 'px">'
+      + '<div id="' + divId + '" style="width:100%;height:100%"></div>'
       + trackSvg
       + '</div>'
       + '<div class="cell-label">'
