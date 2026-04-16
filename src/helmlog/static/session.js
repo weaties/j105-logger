@@ -4841,7 +4841,7 @@ function renderManeuverCard() {
 
   const selCount = _maneuverSelected.size;
   const hasVideoInSelected = _maneuvers.some(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && m.youtube_url);
-  const compareBtnStyle = 'font-size:.68rem;padding:1px 6px;border:1px solid ' + (hasVideoInSelected ? 'var(--accent)' : 'var(--border)') + ';background:' + (hasVideoInSelected ? 'var(--accent)' : 'transparent') + ';color:' + (hasVideoInSelected ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px;margin-left:auto';
+  const compareBtnStyle = 'font-size:.7rem;padding:3px 10px;border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer;border-radius:4px;margin-left:auto;font-weight:600' + (hasVideoInSelected ? '' : ';opacity:.4;pointer-events:none');
   const selectBar = '<div style="font-size:.7rem;color:var(--text-secondary);margin:4px 0;display:flex;gap:6px;align-items:center">'
     + '<span>Overlay: ' + selCount + ' selected</span>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'

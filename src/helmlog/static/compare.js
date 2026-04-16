@@ -2,7 +2,7 @@
  *
  * Loads maneuver data from the compare API, creates one YouTube IFrame
  * player per maneuver, and wires them to a common play/pause control.
- * Each player is cued to [maneuver_ts - preroll] in video time.
+ * Each player is cued to [maneuver_ts - preroll + globalNudge + perVideoNudge].
  * The grid auto-sizes so all videos fit in the viewport without scrolling.
  */
 
@@ -13,11 +13,12 @@
 // ---------------------------------------------------------------------------
 
 const SESSION_ID = document.getElementById('app-config').dataset.sessionId;
-let _players = [];   // { player: YT.Player, cueSeconds: number, maneuver: object, idx: number }
-let _allManeuvers = [];  // full set from API (for subtitle updates)
+let _players = [];   // { player, cueSeconds, maneuver, idx, nudge }
+let _allManeuvers = [];
 let _videoSync = null;
 let _playing = false;
 let _prerollS = 10;
+let _globalNudge = 0;  // seconds, applied to all videos (#568)
 let _ytReady = false;
 
 // ---------------------------------------------------------------------------
@@ -63,9 +64,17 @@ let _pendingPlayers = [];
 
 function _createPendingPlayers() {
   for (const p of _pendingPlayers) {
-    _createPlayer(p.divId, p.videoId, p.cueSeconds, p.maneuver, p.idx);
+    _createPlayer(p.divId, p.videoId, p.cueSeconds, p.maneuver, p.idx, p.nudge);
   }
   _pendingPlayers = [];
+}
+
+// ---------------------------------------------------------------------------
+// Cue point calculation
+// ---------------------------------------------------------------------------
+
+function _calcCue(maneuver, nudge) {
+  return Math.max(0, (maneuver.video_offset_s || 0) - _prerollS + _globalNudge + (nudge || 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -73,8 +82,6 @@ function _createPendingPlayers() {
 // ---------------------------------------------------------------------------
 
 function _gridLayout(n) {
-  // Choose cols x rows so all n items fit with maximum cell size.
-  // Prefer wider-than-tall cells (video is 16:9).
   if (n <= 1) return { cols: 1, rows: 1 };
   if (n <= 2) return { cols: 2, rows: 1 };
   if (n <= 4) return { cols: 2, rows: 2 };
@@ -88,6 +95,10 @@ function _gridLayout(n) {
 
 function _buildGrid() {
   const grid = document.getElementById('compare-grid');
+  // Preserve per-video nudges across rebuilds
+  const nudges = {};
+  _players.forEach(p => { nudges[p.maneuver.id] = p.nudge || 0; });
+
   grid.innerHTML = '';
   _players = [];
   _pendingPlayers = [];
@@ -98,14 +109,12 @@ function _buildGrid() {
   const layout = _gridLayout(n);
   const headerEl = document.getElementById('compare-header');
   const headerH = headerEl ? headerEl.offsetHeight + 4 : 40;
-  // Available height = viewport minus header and page padding
   const availH = window.innerHeight - headerH - 12;
   const availW = window.innerWidth - 12;
   const gap = 4;
-  const labelH = 18; // approximate label row height
-  const cellPad = 2; // top+bottom padding inside cell
+  const labelH = 20;
+  const cellPad = 2;
 
-  const cellW = (availW - gap * (layout.cols - 1)) / layout.cols;
   const cellH = (availH - gap * (layout.rows - 1)) / layout.rows;
   const videoH = cellH - labelH - cellPad;
 
@@ -116,7 +125,8 @@ function _buildGrid() {
 
   for (let i = 0; i < _allManeuvers.length; i++) {
     const m = _allManeuvers[i];
-    const cueSeconds = Math.max(0, (m.video_offset_s || 0) - _prerollS);
+    const nudge = nudges[m.id] || 0;
+    const cueSeconds = _calcCue(m, nudge);
     const divId = 'yt-compare-' + i;
 
     const cell = document.createElement('div');
@@ -133,6 +143,8 @@ function _buildGrid() {
     const bsp = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '?') + '&#8594;' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '?');
     const turn = m.turn_angle_deg != null ? Math.abs(Math.round(m.turn_angle_deg)) + '&deg;' : '';
 
+    const nudgeDisplay = nudge !== 0 ? (nudge > 0 ? '+' : '') + nudge.toFixed(1) + 's' : '0.0s';
+
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
       + '<div class="yt-wrap" id="' + divId + '" style="height:' + Math.max(60, videoH) + 'px"></div>'
@@ -143,12 +155,18 @@ function _buildGrid() {
       + ' &middot; ' + bsp + ' kt'
       + (dur ? ' &middot; ' + dur : '')
       + (loss ? ' &middot; ' + loss : '')
+      + '<span class="nudge-controls">'
+      + '<button onclick="event.stopPropagation();nudgeVideo(' + i + ',-0.5)" title="-0.5s">&#9664;</button>'
+      + '<span class="nudge-value" id="nudge-val-' + i + '">' + nudgeDisplay + '</span>'
+      + '<button onclick="event.stopPropagation();nudgeVideo(' + i + ',+0.5)" title="+0.5s">&#9654;</button>'
+      + '<button onclick="event.stopPropagation();nudgeVideo(' + i + ',0,true)" title="Reset offset" class="nudge-reset">0</button>'
+      + '</span>'
       + '</div>';
     grid.appendChild(cell);
 
-    const entry = { divId, videoId: _videoSync.video_id, cueSeconds, maneuver: m, idx: i };
+    const entry = { divId, videoId: _videoSync.video_id, cueSeconds, maneuver: m, idx: i, nudge };
     if (_ytReady) {
-      _createPlayer(divId, _videoSync.video_id, cueSeconds, m, i);
+      _createPlayer(divId, _videoSync.video_id, cueSeconds, m, i, nudge);
     } else {
       _pendingPlayers.push(entry);
     }
@@ -170,7 +188,7 @@ function _updateSubtitle() {
 // Player creation
 // ---------------------------------------------------------------------------
 
-function _createPlayer(divId, videoId, cueSeconds, maneuver, idx) {
+function _createPlayer(divId, videoId, cueSeconds, maneuver, idx, nudge) {
   const player = new YT.Player(divId, {
     width: '100%',
     height: '100%',
@@ -190,7 +208,32 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver, idx) {
       },
     },
   });
-  _players.push({ player, cueSeconds, maneuver, idx });
+  _players.push({ player, cueSeconds, maneuver, idx, nudge: nudge || 0 });
+}
+
+// ---------------------------------------------------------------------------
+// Per-video nudge (#567)
+// ---------------------------------------------------------------------------
+
+function nudgeVideo(idx, delta, reset) {
+  const p = _players.find(p => p.idx === idx);
+  if (!p) return;
+  if (reset) {
+    p.nudge = 0;
+  } else {
+    p.nudge = Math.round((p.nudge + delta) * 10) / 10;
+  }
+  p.cueSeconds = _calcCue(p.maneuver, p.nudge);
+  try {
+    p.player.seekTo(p.cueSeconds, true);
+    if (!_playing) p.player.pauseVideo();
+  } catch (_e) { /* not ready */ }
+  // Update the display
+  const el = document.getElementById('nudge-val-' + idx);
+  if (el) {
+    const v = p.nudge;
+    el.textContent = (v > 0 ? '+' : '') + v.toFixed(1) + 's';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -198,20 +241,17 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver, idx) {
 // ---------------------------------------------------------------------------
 
 function dismissCell(idx) {
-  // Destroy the YT player
   const pi = _players.findIndex(p => p.idx === idx);
   if (pi !== -1) {
     try { _players[pi].player.destroy(); } catch (_e) { /* ok */ }
     _players.splice(pi, 1);
   }
-  // Remove from data
   _allManeuvers.splice(idx, 1);
   if (!_allManeuvers.length) {
     _showEmpty();
     document.getElementById('compare-grid').style.display = 'none';
     return;
   }
-  // Rebuild the grid with the remaining maneuvers
   _buildGrid();
 }
 
@@ -235,6 +275,7 @@ function seekAllToStart() {
   _playing = false;
   document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
   _players.forEach(p => {
+    p.cueSeconds = _calcCue(p.maneuver, p.nudge);
     try {
       p.player.seekTo(p.cueSeconds, true);
       p.player.pauseVideo();
@@ -249,15 +290,33 @@ function setAllSpeed(val) {
 
 function setPreroll(val) {
   _prerollS = parseInt(val, 10) || 10;
+  _seekAllToCue();
+}
+
+// Global offset (#568)
+function adjustGlobalOffset(delta) {
+  _globalNudge = Math.round((_globalNudge + delta) * 10) / 10;
+  document.getElementById('global-offset-val').textContent =
+    (_globalNudge > 0 ? '+' : '') + _globalNudge.toFixed(1) + 's';
+  _seekAllToCue();
+}
+
+function resetGlobalOffset() {
+  _globalNudge = 0;
+  document.getElementById('global-offset-val').textContent = '0.0s';
+  _seekAllToCue();
+}
+
+function _seekAllToCue() {
+  _playing = false;
+  document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
   _players.forEach(p => {
-    p.cueSeconds = Math.max(0, (p.maneuver.video_offset_s || 0) - _prerollS);
+    p.cueSeconds = _calcCue(p.maneuver, p.nudge);
     try {
       p.player.seekTo(p.cueSeconds, true);
       p.player.pauseVideo();
     } catch (_e) { /* not ready */ }
   });
-  _playing = false;
-  document.getElementById('play-all-btn').innerHTML = '&#9654; Play All';
 }
 
 // ---------------------------------------------------------------------------
