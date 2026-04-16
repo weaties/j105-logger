@@ -30,16 +30,13 @@ let _ytReady = false;
   }
   const resp = await fetch(`/api/sessions/${SESSION_ID}/maneuvers/compare?ids=${ids}`);
   if (!resp.ok) {
-    console.error('Compare API error:', resp.status, await resp.text());
     _showEmpty();
     return;
   }
   const data = await resp.json();
-  console.log('Compare API response:', data);
   const maneuvers = data.maneuvers || [];
   const videoSync = data.video_sync;
   if (!maneuvers.length || !videoSync) {
-    console.warn('No maneuvers or no video_sync', {maneuvers: maneuvers.length, videoSync});
     _showEmpty();
     return;
   }
@@ -47,7 +44,6 @@ let _ytReady = false;
   // Filter to maneuvers that have video coverage
   const withVideo = maneuvers.filter(m => m.youtube_url);
   if (!withVideo.length) {
-    console.warn('No maneuvers have youtube_url');
     _showEmpty();
     return;
   }
