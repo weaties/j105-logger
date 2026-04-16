@@ -102,6 +102,33 @@ async def _render_session_page(
 
 
 @router.get(
+    "/session/{session_id:int}/compare",
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def maneuver_compare_page(request: Request, session_id: int) -> Response:
+    """Maneuver comparison page — synced multi-video playback (#565)."""
+    storage = get_storage(request)
+    race = await storage.get_race(session_id)
+    if race is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    user_role = user.get("role", "viewer") if user else "viewer"
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        tpl_ctx(
+            request,
+            "/history",
+            session_id=race.id,
+            session_name=race.name,
+            session_slug=race.slug,
+            user_role=user_role,
+        ),
+    )
+
+
+@router.get(
     "/session/{session_id:int}/{slug}",
     response_class=HTMLResponse,
     include_in_schema=False,

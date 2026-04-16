@@ -4218,6 +4218,17 @@ function setManeuverSelectAll(mode) {
   renderManeuverCard();
 }
 
+function openManeuverCompare() {
+  // Use the filtered+sorted rows (respects active filter pills) intersected
+  // with the overlay selection, so the user sees exactly the subset they
+  // expect from the current filter state.
+  const ids = _maneuverRows()
+    .filter(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && typeof m.id === 'number')
+    .map(m => m.id);
+  if (!ids.length) { alert('Select maneuvers to compare.'); return; }
+  window.open('/session/' + SESSION_ID + '/compare?ids=' + ids.join(','), '_blank');
+}
+
 function _maneuverRows() {
   const items = _maneuvers.filter(_matchesManeuverFilter);
   const key = _maneuverSort.key, dir = _maneuverSort.dir;
@@ -4829,11 +4840,14 @@ function renderManeuverCard() {
     : '';
 
   const selCount = _maneuverSelected.size;
+  const hasVideoInSelected = _maneuvers.some(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && m.youtube_url);
+  const compareBtnStyle = 'font-size:.68rem;padding:1px 6px;border:1px solid ' + (hasVideoInSelected ? 'var(--accent)' : 'var(--border)') + ';background:' + (hasVideoInSelected ? 'var(--accent)' : 'transparent') + ';color:' + (hasVideoInSelected ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px;margin-left:auto';
   const selectBar = '<div style="font-size:.7rem;color:var(--text-secondary);margin:4px 0;display:flex;gap:6px;align-items:center">'
     + '<span>Overlay: ' + selCount + ' selected</span>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'none\')">none</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'filtered\')">match filter</button>'
+    + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
   body.innerHTML = summary + filterBar + overlayBlock + selectBar
