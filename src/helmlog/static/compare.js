@@ -91,7 +91,7 @@ function _renderGrid(maneuvers, videoSync) {
 
   for (let i = 0; i < maneuvers.length; i++) {
     const m = maneuvers[i];
-    const cueSeconds = _maneuverVideoOffset(m, videoSync);
+    const cueSeconds = Math.max(0, (m.video_offset_s || 0) - _prerollS);
 
     const cell = document.createElement('div');
     cell.className = 'compare-cell';
@@ -152,19 +152,6 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver) {
 }
 
 // ---------------------------------------------------------------------------
-// Video sync math
-// ---------------------------------------------------------------------------
-
-function _maneuverVideoOffset(m, videoSync) {
-  // Convert maneuver UTC ts to a video offset in seconds
-  // video_offset = sync_offset_s + (maneuver_utc - sync_utc) in seconds
-  const syncUtc = new Date(videoSync.sync_utc.endsWith('Z') ? videoSync.sync_utc : videoSync.sync_utc + 'Z');
-  const mTs = new Date(m.ts.endsWith('Z') ? m.ts : m.ts + 'Z');
-  const delta = (mTs.getTime() - syncUtc.getTime()) / 1000;
-  return videoSync.sync_offset_s + delta - _prerollS;
-}
-
-// ---------------------------------------------------------------------------
 // Shared controls
 // ---------------------------------------------------------------------------
 
@@ -198,16 +185,8 @@ function setAllSpeed(val) {
 
 function setPreroll(val) {
   _prerollS = parseInt(val, 10) || 10;
-  // Recalculate cue points — need videoSync which is embedded in the offset calc
-  // For simplicity, just reset all players to the new cue points
-  // We stored the maneuver on each entry, but not videoSync — re-derive from first player's cueSeconds
-  // Actually, the cleanest approach: reload the page with updated preroll
-  // But since we have the maneuver ts and the original cue, just adjust by delta
-  const oldPreroll = _players.length ? (_players[0].maneuver._oldPreroll || 10) : 10;
-  const delta = oldPreroll - _prerollS;
   _players.forEach(p => {
-    p.cueSeconds += delta;
-    p.maneuver._oldPreroll = _prerollS;
+    p.cueSeconds = Math.max(0, (p.maneuver.video_offset_s || 0) - _prerollS);
     try {
       p.player.seekTo(p.cueSeconds, true);
       p.player.pauseVideo();
