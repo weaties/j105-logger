@@ -213,6 +213,7 @@ function _buildGrid() {
       + ' &middot; ' + bsp + ' kt'
       + (dur ? ' &middot; ' + dur : '')
       + (loss ? ' &middot; ' + loss : '')
+      + (m.youtube_url ? ' <a href="' + _esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--text-secondary);text-decoration:none;font-size:.72rem" onclick="event.stopPropagation()">&#9654;YT</a>' : '')
       + '<span class="nudge-controls">'
       + '<button onclick="event.stopPropagation();nudgeVideo(' + i + ',-0.5)" title="-0.5s">&#9664;</button>'
       + '<span class="nudge-value" id="nudge-val-' + i + '">' + nudgeDisplay + '</span>'
