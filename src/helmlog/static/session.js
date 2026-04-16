@@ -4219,8 +4219,11 @@ function setManeuverSelectAll(mode) {
 }
 
 function openManeuverCompare() {
-  const ids = _maneuvers
-    .filter((m, i) => _maneuverSelected.has(_manKey(m, i)) && typeof m.id === 'number')
+  // Use the filtered+sorted rows (respects active filter pills) intersected
+  // with the overlay selection, so the user sees exactly the subset they
+  // expect from the current filter state.
+  const ids = _maneuverRows()
+    .filter(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && typeof m.id === 'number')
     .map(m => m.id);
   if (!ids.length) { alert('Select maneuvers to compare.'); return; }
   window.open('/session/' + SESSION_ID + '/compare?ids=' + ids.join(','), '_blank');

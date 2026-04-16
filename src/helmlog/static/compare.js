@@ -88,8 +88,6 @@ function _createPendingPlayers() {
 
 function _renderGrid(maneuvers, videoSync) {
   const grid = document.getElementById('compare-grid');
-  const n = maneuvers.length;
-  grid.className = 'compare-grid cols-' + (n <= 1 ? '1' : n <= 2 ? '2' : n <= 4 ? '2' : '3');
 
   for (let i = 0; i < maneuvers.length; i++) {
     const m = maneuvers[i];
@@ -101,17 +99,23 @@ function _renderGrid(maneuvers, videoSync) {
     const typeClass = 'badge-' + (m.type || 'maneuver');
     const dirHint = _directionHint(m);
     const dur = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '';
-    const loss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt loss' : '';
-    const rank = m.rank ? (' <span style="color:' + _rankColor(m.rank) + '">' + m.rank + '</span>') : '';
+    const loss = m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt dip' : '';
+    const distLoss = m.distance_loss_m != null ? Math.round(m.distance_loss_m) + ' m' : '';
+    const rank = m.rank ? (' <span style="color:' + _rankColor(m.rank) + '">&#9679; ' + m.rank + '</span>') : '';
     const elapsed = _fmtElapsed(m.ts);
+    const bsp = (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '?') + '&#8594;' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '?');
+    const turn = m.turn_angle_deg != null ? Math.abs(Math.round(m.turn_angle_deg)) + '&deg;' : '';
     cell.innerHTML =
       '<div class="yt-wrap" id="' + divId + '"></div>'
       + '<div class="cell-label">'
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
       + dirHint + rank
       + ' <span style="font-variant-numeric:tabular-nums">' + elapsed + '</span>'
+      + (turn ? ' &middot; ' + turn : '')
+      + ' &middot; ' + bsp + ' kt'
       + (dur ? ' &middot; ' + dur : '')
       + (loss ? ' &middot; ' + loss : '')
+      + (distLoss ? ' &middot; ' + distLoss : '')
       + '</div>';
     grid.appendChild(cell);
 
