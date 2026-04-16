@@ -181,6 +181,7 @@ function _buildGrid() {
     const trackSvg = _renderTrackOverlay(m, i);
     const courseSvg = _renderCourseOverlay(m, i);
     const gaugeSvg = _renderGaugePlaceholder(i);
+    const recoveryBar = _renderRecoveryBar(m, i);
     const wrapId = 'yt-wrap-' + i;
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
@@ -189,6 +190,7 @@ function _buildGrid() {
       + trackSvg
       + courseSvg
       + gaugeSvg
+      + recoveryBar
       + '</div>'
       + '<div class="cell-label">'
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
@@ -674,6 +676,9 @@ function _updateGauge(p, videoTime) {
     const relCog = ((sample.cog - sample.hdg) + 360) % 360;
     cogG.setAttribute('transform', 'rotate(' + relCog.toFixed(1) + ',' + cx + ',' + cy + ')');
   }
+
+  // Update BSP recovery bar
+  _updateRecoveryBar(p, sample);
 }
 
 function _parseUtcMs(iso) {
@@ -706,6 +711,95 @@ function toggleGaugeOverlay() {
   for (let i = 0; i < _allManeuvers.length; i++) {
     const svg = document.getElementById('gauge-svg-' + i);
     if (svg) svg.style.display = _gaugeVisible ? '' : 'none';
+    const bar = document.getElementById('recovery-svg-' + i);
+    if (bar) bar.style.display = _gaugeVisible ? '' : 'none';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BSP recovery bar (#574)
+// ---------------------------------------------------------------------------
+
+function _renderRecoveryBar(m, idx) {
+  if (!_replaySamples || !_replaySamples.length) return '';
+  if (m.entry_bsp == null || m.entry_bsp <= 0) return '';
+
+  const w = 28, h = 150;
+  const pad = 20; // top/bottom padding for labels
+  const barX = 6, barW = 16;
+  const barTop = pad, barBot = h - pad;
+  const barH = barBot - barTop;
+  // 100% line position (entry speed reference)
+  const maxPct = 120;
+  const pct100Y = barBot - (100 / maxPct) * barH;
+  const display = _gaugeVisible ? '' : 'display:none;';
+
+  // Min BSP marker
+  let minMarker = '';
+  if (m.min_bsp != null) {
+    const minPct = Math.max(0, Math.min(maxPct, (m.min_bsp / m.entry_bsp) * 100));
+    const minY = barBot - (minPct / maxPct) * barH;
+    minMarker = '<line x1="' + barX + '" y1="' + minY.toFixed(1) + '" x2="' + (barX + barW) + '" y2="' + minY.toFixed(1)
+      + '" stroke="#d64545" stroke-width="1.5" stroke-dasharray="2,1"/>';
+  }
+
+  return '<svg class="recovery-overlay" id="recovery-svg-' + idx + '" width="' + w + '" height="' + h + '" style="' + display + '">'
+    // Background
+    + '<rect x="' + barX + '" y="' + barTop + '" width="' + barW + '" height="' + barH + '" rx="3" fill="rgba(0,0,0,.5)" stroke="rgba(255,255,255,.2)" stroke-width="0.5"/>'
+    // Fill bar (updated by JS)
+    + '<rect id="recovery-fill-' + idx + '" x="' + barX + '" y="' + barBot + '" width="' + barW + '" height="0" rx="3" fill="#3db86e"/>'
+    // Clip the fill to bar bounds
+    // 100% reference line
+    + '<line x1="' + (barX - 2) + '" y1="' + pct100Y.toFixed(1) + '" x2="' + (barX + barW + 2) + '" y2="' + pct100Y.toFixed(1)
+    + '" stroke="#fff" stroke-width="1.5"/>'
+    // Entry BSP label at 100% line
+    + '<text x="' + (barX + barW / 2) + '" y="' + (pct100Y - 3).toFixed(1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.7)">'
+    + m.entry_bsp.toFixed(1) + '</text>'
+    // Min BSP marker
+    + minMarker
+    // Percentage readout (top)
+    + '<text id="recovery-pct-' + idx + '" x="' + (barX + barW / 2) + '" y="' + (barTop - 5) + '" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">--%</text>'
+    // "%" label at bottom
+    + '<text x="' + (barX + barW / 2) + '" y="' + (barBot + 12) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.5)">BSP%</text>'
+    + '</svg>';
+}
+
+function _updateRecoveryBar(p, sample) {
+  const m = p.maneuver;
+  if (m.entry_bsp == null || m.entry_bsp <= 0) return;
+  if (sample.stw == null) return;
+
+  const idx = p.idx;
+  const pct = (sample.stw / m.entry_bsp) * 100;
+  const maxPct = 120;
+  const clampPct = Math.max(0, Math.min(maxPct, pct));
+
+  const pad = 20;
+  const barTop = pad, barBot = 150 - pad;
+  const barH = barBot - barTop;
+  const barX = 6;
+
+  const fillH = (clampPct / maxPct) * barH;
+  const fillY = barBot - fillH;
+
+  // Color by recovery %
+  let color;
+  if (pct >= 100) color = '#3db86e';       // green: fully recovered
+  else if (pct >= 80) color = '#f59e0b';   // amber: almost there
+  else if (pct >= 60) color = '#e87c1e';   // orange: mid-recovery
+  else color = '#d64545';                   // red: deep dip
+
+  const fill = document.getElementById('recovery-fill-' + idx);
+  if (fill) {
+    fill.setAttribute('y', fillY.toFixed(1));
+    fill.setAttribute('height', fillH.toFixed(1));
+    fill.setAttribute('fill', color);
+  }
+
+  const pctEl = document.getElementById('recovery-pct-' + idx);
+  if (pctEl) {
+    pctEl.textContent = Math.round(pct) + '%';
+    pctEl.setAttribute('fill', color);
   }
 }
 
