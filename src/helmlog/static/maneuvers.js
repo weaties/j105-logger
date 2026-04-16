@@ -7,7 +7,7 @@
 
 'use strict';
 
-const TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const TYPE_PILLS = ['tack', 'gybe', 'rounding', 'start'];
 const DIR_PILLS = [
   { label: 'P\u2192S', value: 'PS' },
   { label: 'S\u2192P', value: 'SP' },

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -1320,18 +1320,24 @@ async def api_session_maneuvers_compare(
     return JSONResponse({"maneuvers": selected, "video_sync": video_sync})
 
 
-def _parse_cross_session_ids(ids: str) -> list[tuple[int, int]]:
+# Sentinel for synthesized race-start pseudo-maneuvers in cross-session URLs
+# and browser payloads. Starts are not detected by maneuver_detector; they
+# are generated on demand from the session's Vakaros race_start event so
+# users can compare the gun moment across races.
+_START_TOKEN = "S"
+
+
+def _parse_cross_session_ids(ids: str) -> list[tuple[int, int | str]]:
     """Parse ``ids`` query param for cross-session compare (#584).
 
     Accepts two forms in the same list:
-      * ``<session_id>:<maneuver_id>`` — cross-session pair
-      * bare ``<maneuver_id>`` — only valid when a session_id can be
-        inferred by the caller; raises ValueError otherwise
+      * ``<session_id>:<maneuver_id>`` — real detected maneuver
+      * ``<session_id>:S`` — synthesized race start for that session
 
-    Returns a list of ``(session_id, maneuver_id)`` tuples. Raises
-    ``ValueError`` on malformed input.
+    Returns a list of ``(session_id, maneuver_id_or_token)`` tuples.
+    Raises ``ValueError`` on malformed input.
     """
-    pairs: list[tuple[int, int]] = []
+    pairs: list[tuple[int, int | str]] = []
     for raw in ids.split(","):
         token = raw.strip()
         if not token:
@@ -1341,8 +1347,131 @@ def _parse_cross_session_ids(ids: str) -> list[tuple[int, int]]:
         sid_str, _, mid_str = token.partition(":")
         if not sid_str or not mid_str:
             raise ValueError(f"malformed id {token!r}")
-        pairs.append((int(sid_str), int(mid_str)))
+        sid = int(sid_str)
+        if mid_str == _START_TOKEN:
+            pairs.append((sid, _START_TOKEN))
+        else:
+            pairs.append((sid, int(mid_str)))
     return pairs
+
+
+async def _vakaros_gun_times(
+    db: Any,  # noqa: ANN401 — aiosqlite.Connection, kept generic to avoid import
+    session_ids: list[int],
+) -> dict[int, str | None]:
+    """Return ``{session_id: gun_utc_or_None}`` for each requested session.
+
+    The gun is the latest Vakaros ``race_start`` event inside the race
+    window; ``None`` when no Vakaros event is matched (e.g. practice
+    sessions or races sailed without a Vakaros device). Callers that
+    need a best-effort fallback to ``start_utc`` should apply it on
+    their own.
+    """
+    if not session_ids:
+        return {}
+    placeholders = ",".join("?" * len(session_ids))
+    cur = await db.execute(
+        f"""
+        SELECT r.id AS session_id,
+               (SELECT MAX(vre.ts)
+                  FROM vakaros_race_events vre
+                 WHERE vre.session_id = r.vakaros_session_id
+                   AND vre.event_type = 'race_start'
+                   AND vre.ts BETWEEN r.start_utc
+                                  AND COALESCE(r.end_utc, r.start_utc)) AS gun_utc
+          FROM races r
+         WHERE r.id IN ({placeholders})
+        """,
+        session_ids,
+    )
+    return {r["session_id"]: r["gun_utc"] for r in await cur.fetchall()}
+
+
+def _synth_start_entry(
+    *,
+    session_id: int,
+    session_name: str,
+    session_slug: str,
+    session_start_utc: str | None,
+    gun_utc: str,
+    video_sync: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a synthetic ``type='start'`` maneuver payload for session gun.
+
+    The cell covers a 60-second window starting at the gun so the compare
+    page can render the crucial pre/post-gun moment. Video offset is
+    computed against the race video's ``sync_utc`` so the YouTube player
+    cues to the right point, matching how real maneuvers are deep-linked.
+    """
+    end_utc = None
+    try:
+        gun_dt = datetime.fromisoformat(gun_utc.replace(" ", "T").replace("Z", "+00:00"))
+        end_utc = (gun_dt + timedelta(seconds=60)).isoformat()
+    except ValueError:
+        pass
+
+    video_offset_s: float | None = None
+    youtube_url: str | None = None
+    if video_sync and video_sync.get("sync_utc"):
+        try:
+            sync_dt = datetime.fromisoformat(
+                str(video_sync["sync_utc"]).replace(" ", "T").replace("Z", "+00:00")
+            )
+            gun_dt2 = datetime.fromisoformat(gun_utc.replace(" ", "T").replace("Z", "+00:00"))
+            computed = (
+                float(video_sync.get("sync_offset_s") or 0.0) + (gun_dt2 - sync_dt).total_seconds()
+            )
+            # Only emit a YouTube link when the gun actually lies inside
+            # the video's recorded window.
+            duration = float(video_sync.get("duration_s") or 0.0)
+            if 0 <= computed <= (duration or computed + 1):
+                video_offset_s = round(computed, 1)
+                youtube_url = (
+                    f"https://www.youtube.com/watch?v={video_sync['video_id']}"
+                    f"&t={int(video_offset_s)}s"
+                )
+        except (ValueError, TypeError):
+            pass
+
+    return {
+        "id": _START_TOKEN,
+        "session_id": session_id,
+        "session_name": session_name,
+        "session_slug": session_slug,
+        "session_start_utc": session_start_utc,
+        "type": "start",
+        "ts": gun_utc,
+        "end_ts": end_utc,
+        "duration_sec": 60.0,
+        "loss_kts": None,
+        "vmg_loss_kts": None,
+        "tws_bin": None,
+        "twa_bin": None,
+        "details": {},
+        "entry_bsp": None,
+        "exit_bsp": None,
+        "entry_hdg": None,
+        "exit_hdg": None,
+        "entry_twa": None,
+        "exit_twa": None,
+        "entry_tws": None,
+        "exit_tws": None,
+        "entry_sog": None,
+        "min_bsp": None,
+        "turn_angle_deg": None,
+        "turn_rate_deg_s": None,
+        "distance_loss_m": None,
+        "time_to_recover_s": None,
+        "track": None,
+        "track_vakaros": None,
+        "twd_deg": None,
+        "ghost_m": None,
+        "lat": None,
+        "lon": None,
+        "rank": None,
+        "video_offset_s": video_offset_s,
+        "youtube_url": youtube_url,
+    }
 
 
 @router.get("/api/maneuvers/compare")
@@ -1371,9 +1500,60 @@ async def api_cross_session_maneuvers_compare(
     if not pairs:
         raise HTTPException(status_code=422, detail="ids must not be empty")
 
-    maneuvers, video_sync_by_session = await enrich_maneuvers_for_ids(storage, pairs)
-    # JSONResponse serializes dict keys as strings, so callers get
-    # {"42": {...}, "43": {...}} which is fine for JS lookup.
+    # Split real maneuver ids from start pseudo-ids so the enrichment
+    # helper only sees real rows.
+    real_pairs: list[tuple[int, int]] = [(sid, mid) for sid, mid in pairs if isinstance(mid, int)]
+    start_session_ids: list[int] = [sid for sid, mid in pairs if mid == _START_TOKEN]
+
+    maneuvers: list[dict[str, Any]] = []
+    video_sync_by_session: dict[int, dict[str, Any] | None] = {}
+    if real_pairs:
+        maneuvers, video_sync_by_session = await enrich_maneuvers_for_ids(storage, real_pairs)
+
+    if start_session_ids:
+        db = storage._conn()
+        # Sessions that didn't contribute real maneuvers aren't in the
+        # video_sync map yet — pull their race_video row directly.
+        missing = [sid for sid in set(start_session_ids) if sid not in video_sync_by_session]
+        for sid in missing:
+            video_cur = await db.execute(
+                "SELECT video_id, sync_utc, sync_offset_s, duration_s, youtube_url"
+                " FROM race_videos WHERE race_id = ? ORDER BY id LIMIT 1",
+                (sid,),
+            )
+            video_row = await video_cur.fetchone()
+            if video_row is not None:
+                video_sync_by_session[sid] = {
+                    "video_id": video_row["video_id"],
+                    "sync_utc": str(video_row["sync_utc"]),
+                    "sync_offset_s": float(video_row["sync_offset_s"] or 0.0),
+                    "duration_s": float(video_row["duration_s"] or 0.0),
+                    "youtube_url": video_row["youtube_url"],
+                }
+            else:
+                video_sync_by_session[sid] = None
+
+        guns = await _vakaros_gun_times(db, list(set(start_session_ids)))
+        for sid in start_session_ids:
+            gun = guns.get(sid)
+            if not gun:
+                # No Vakaros gun → no synthetic start (would be meaningless
+                # without a real race-start timestamp to anchor the clip).
+                continue
+            race = await storage.get_race(sid)
+            if race is None:
+                continue
+            maneuvers.append(
+                _synth_start_entry(
+                    session_id=sid,
+                    session_name=race.name,
+                    session_slug=race.slug or "",
+                    session_start_utc=race.start_utc.isoformat() if race.start_utc else None,
+                    gun_utc=gun,
+                    video_sync=video_sync_by_session.get(sid),
+                )
+            )
+
     return JSONResponse(
         {
             "maneuvers": maneuvers,
@@ -1497,8 +1677,8 @@ async def api_maneuver_browse(
     storage = get_storage(request)
     from helmlog.analysis.maneuvers import enrich_maneuvers_for_ids
 
-    if type is not None and type not in ("tack", "gybe", "rounding"):
-        raise HTTPException(status_code=422, detail="type must be tack|gybe|rounding")
+    if type is not None and type not in ("tack", "gybe", "rounding", "start"):
+        raise HTTPException(status_code=422, detail="type must be tack|gybe|rounding|start")
     if direction is not None and direction not in ("PS", "SP"):
         raise HTTPException(status_code=422, detail="direction must be PS|SP")
     if session_type is not None and session_type not in ("race", "practice"):
@@ -1569,15 +1749,58 @@ async def api_maneuver_browse(
 
     # Pull every maneuver_id from the resolved sessions and enrich via the
     # shared helper — that keeps one code path for enrichment and reuses
-    # the per-session cache.
-    placeholders = ",".join("?" * len(resolved_session_ids))
-    cur = await db.execute(
-        f"SELECT session_id, id FROM maneuvers WHERE session_id IN ({placeholders})",
-        resolved_session_ids,
-    )
-    pairs = [(r["session_id"], r["id"]) for r in await cur.fetchall()]
+    # the per-session cache. Skip this work when the user has narrowed
+    # the filter to starts only, since starts are synthesized below.
+    enriched: list[dict[str, Any]] = []
+    browse_video_sync: dict[int, dict[str, Any] | None] = {}
+    if type != "start":
+        placeholders = ",".join("?" * len(resolved_session_ids))
+        cur = await db.execute(
+            f"SELECT session_id, id FROM maneuvers WHERE session_id IN ({placeholders})",
+            resolved_session_ids,
+        )
+        pairs = [(r["session_id"], r["id"]) for r in await cur.fetchall()]
+        enriched, browse_video_sync = await enrich_maneuvers_for_ids(storage, pairs)
 
-    enriched, _ = await enrich_maneuvers_for_ids(storage, pairs)
+    # Synthesize one "start" entry per resolved session that has a Vakaros
+    # race_start event. Skip sessions where no gun was recorded — synthetic
+    # starts are only useful when anchored to a real gun time.
+    if type in (None, "start"):
+        start_guns = await _vakaros_gun_times(db, resolved_session_ids)
+        for sid, gun in start_guns.items():
+            if not gun:
+                continue
+            race = await storage.get_race(sid)
+            if race is None:
+                continue
+            vs = browse_video_sync.get(sid)
+            if vs is None:
+                # Sessions without real maneuvers aren't in the map; pull
+                # video_sync directly.
+                video_cur = await db.execute(
+                    "SELECT video_id, sync_utc, sync_offset_s, duration_s, youtube_url"
+                    " FROM race_videos WHERE race_id = ? ORDER BY id LIMIT 1",
+                    (sid,),
+                )
+                video_row = await video_cur.fetchone()
+                if video_row is not None:
+                    vs = {
+                        "video_id": video_row["video_id"],
+                        "sync_utc": str(video_row["sync_utc"]),
+                        "sync_offset_s": float(video_row["sync_offset_s"] or 0.0),
+                        "duration_s": float(video_row["duration_s"] or 0.0),
+                        "youtube_url": video_row["youtube_url"],
+                    }
+            enriched.append(
+                _synth_start_entry(
+                    session_id=sid,
+                    session_name=race.name,
+                    session_slug=race.slug or "",
+                    session_start_utc=race.start_utc.isoformat() if race.start_utc else None,
+                    gun_utc=gun,
+                    video_sync=vs,
+                )
+            )
 
     # Optional: compute each session's effective race gun (latest Vakaros
     # race_start event inside the race window, falling back to start_utc)

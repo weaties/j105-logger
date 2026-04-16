@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -4589,6 +4589,108 @@ async def test_maneuver_browse_tws_bands_rejects_non_numeric(storage: Storage) -
     ) as client:
         resp = await client.get("/api/maneuvers/browse?tws_bands=foo-bar")
     assert resp.status_code == 422
+
+
+async def _attach_vakaros_gun(storage: Storage, race_id: int, gun_ts: datetime) -> None:
+    """Give a race a matched Vakaros session + race_start event at ``gun_ts``."""
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO vakaros_sessions "
+        "(source_hash, source_file, start_utc, end_utc, ingested_at) "
+        "VALUES (?, 'test.csv', ?, ?, ?)",
+        (
+            f"hash-{race_id}",
+            gun_ts.isoformat(),
+            (gun_ts + timedelta(hours=1)).isoformat(),
+            gun_ts.isoformat(),
+        ),
+    )
+    vak_session_id = cur.lastrowid
+    await db.execute(
+        "INSERT INTO vakaros_race_events "
+        "(session_id, event_type, ts, timer_value_s) VALUES (?, 'race_start', ?, 0)",
+        (vak_session_id, gun_ts.isoformat()),
+    )
+    await db.execute(
+        "UPDATE races SET vakaros_session_id = ?, start_utc = ?, end_utc = ? WHERE id = ?",
+        (
+            vak_session_id,
+            (gun_ts - timedelta(minutes=10)).isoformat(),
+            (gun_ts + timedelta(hours=1)).isoformat(),
+            race_id,
+        ),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_synthesizes_start(storage: Storage) -> None:
+    """A session with a Vakaros race_start event gets a synthetic start entry."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="Start", count=1)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    starts = [m for m in data["maneuvers"] if m["type"] == "start"]
+    assert len(starts) == 1
+    assert starts[0]["session_id"] == race_id
+    assert starts[0]["id"] == "S"
+    assert starts[0]["ts"].startswith("2026-02-26T14:20:00")
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_start_filter_excludes_others(storage: Storage) -> None:
+    """type=start returns only synthesized starts; real maneuvers are dropped."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="StartOnly", count=2)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=start")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 1
+    assert data["maneuvers"][0]["type"] == "start"
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_no_start_without_vakaros_gun(storage: Storage) -> None:
+    """Sessions without a Vakaros race_start event get no synthesized start."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="NoGun", count=1)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    starts = [m for m in data["maneuvers"] if m["type"] == "start"]
+    assert starts == []
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_resolves_start_token(storage: Storage) -> None:
+    """ids=<sid>:S resolves to a synthesized start on the compare endpoint."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="CmpStart", count=1)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/compare?ids={race_id}:S")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 1
+    assert data["maneuvers"][0]["type"] == "start"
+    assert data["maneuvers"][0]["id"] == "S"
 
 
 @pytest.mark.asyncio

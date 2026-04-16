@@ -38,7 +38,7 @@ let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
 let _gaugeVisible = true;
 let _compareFilter = new Set(); // active filter pills on the compare page
-const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding', 'start'];
 const _CMP_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
 const _CMP_RANK_PILLS = ['good', 'bad'];
 // Wind-range pill values look like "tws:8-10" or "tws:15+" so they share
@@ -1028,7 +1028,7 @@ function _renderFilterPills() {
   const container = document.getElementById('filter-pills');
   if (!container) return;
 
-  const pills = ['all', 'tack', 'gybe', 'rounding', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
+  const pills = ['all', 'tack', 'gybe', 'rounding', 'start', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
   // Only show post-start when at least one session has a gun time recorded.
   const anyGun = Object.values(_raceGunMsBySession).some(Boolean);
   if (anyGun) pills.push('post-start');
