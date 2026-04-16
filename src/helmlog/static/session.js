@@ -4155,6 +4155,7 @@ let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distan
 let _maneuverFilter = new Set();
 const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
+const _MANEUVER_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
 const _MANEUVER_TIME_PILLS = ['post-start'];
 let _maneuverOverlay = false; // toggle for all-tacks-overlaid diagram
 let _maneuverShowSK = true; // toggle SK-derived tracks in the overlay
@@ -4256,6 +4257,10 @@ function setManeuverFilter(f) {
   } else if (_maneuverFilter.has(f)) {
     _maneuverFilter.delete(f);
   } else {
+    // Direction pills are mutually exclusive
+    if (_MANEUVER_DIR_PILLS.includes(f)) {
+      _MANEUVER_DIR_PILLS.forEach(d => _maneuverFilter.delete(d));
+    }
     _maneuverFilter.add(f);
   }
   renderManeuverCard();
@@ -4654,6 +4659,14 @@ function _matchesManeuverFilter(m) {
   if (activeTypes.length && !activeTypes.includes(m.type)) return false;
   const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
   if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+  // Direction filter: P→S = negative turn_angle_deg, S→P = positive
+  const activeDir = _MANEUVER_DIR_PILLS.filter(p => _maneuverFilter.has(p));
+  if (activeDir.length) {
+    if (m.turn_angle_deg == null) return false;
+    const isPS = m.turn_angle_deg < 0;  // P→S = negative
+    if (activeDir.includes('P\u2192S') && !isPS) return false;
+    if (activeDir.includes('S\u2192P') && isPS) return false;
+  }
   if (_maneuverFilter.has('post-start')) {
     const startMs = _raceStartMs();
     if (startMs != null) {
@@ -4771,7 +4784,7 @@ function renderManeuverCard() {
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
-  const filters = ['all', 'tack', 'gybe', 'rounding', 'good', 'bad'];
+  const filters = ['all', 'tack', 'gybe', 'rounding', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
   if (_raceStartMs() != null) filters.push('post-start');
   const filterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">'
     + filters.map(f => {
