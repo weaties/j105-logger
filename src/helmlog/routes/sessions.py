@@ -1386,6 +1386,7 @@ async def api_cross_session_maneuvers_compare(
 async def api_maneuver_browse_sessions(
     request: Request,
     regatta_id: int | None = None,
+    session_type: str | None = None,
     limit: int = 50,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
@@ -1405,6 +1406,8 @@ async def api_maneuver_browse_sessions(
         "  FROM races r "
         "  LEFT JOIN regattas reg ON reg.id = r.regatta_id "
     )
+    if session_type is not None and session_type not in ("race", "practice"):
+        raise HTTPException(status_code=422, detail="session_type must be race|practice")
     conds: list[str] = [
         "(r.source IS NULL OR r.source = 'live')",
         "EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)",
@@ -1413,6 +1416,9 @@ async def api_maneuver_browse_sessions(
     if regatta_id is not None:
         conds.append("r.regatta_id = ?")
         params.append(regatta_id)
+    if session_type is not None:
+        conds.append("r.session_type = ?")
+        params.append(session_type)
     sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY r.start_utc DESC LIMIT ? "
     params.append(limit)
@@ -1469,10 +1475,12 @@ async def api_maneuver_browse(
     request: Request,
     regatta_id: int | None = None,
     session_ids: str | None = None,
+    session_type: str | None = None,
     type: str | None = None,
     direction: str | None = None,
     tws_min: float | None = None,
     tws_max: float | None = None,
+    tws_bands: str | None = None,
     has_video: int = 0,
     post_start: int = 0,
     session_limit: int = 20,
@@ -1493,32 +1501,67 @@ async def api_maneuver_browse(
         raise HTTPException(status_code=422, detail="type must be tack|gybe|rounding")
     if direction is not None and direction not in ("PS", "SP"):
         raise HTTPException(status_code=422, detail="direction must be PS|SP")
+    if session_type is not None and session_type not in ("race", "practice"):
+        raise HTTPException(status_code=422, detail="session_type must be race|practice")
+
+    # Parse optional multi-band wind filter. Each band is "min-max" (e.g.
+    # "8-10") or "min-" for an open-ended upper bound (e.g. "15-" for 15+
+    # knots). Empty tokens are ignored.
+    bands: list[tuple[float, float | None]] = []
+    if tws_bands:
+        for raw in tws_bands.split(","):
+            token = raw.strip()
+            if not token or "-" not in token:
+                continue
+            lo_s, _, hi_s = token.partition("-")
+            try:
+                lo = float(lo_s)
+                hi: float | None = float(hi_s) if hi_s else None
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422, detail=f"tws_bands token {token!r} must be numeric"
+                ) from exc
+            bands.append((lo, hi))
 
     resolved_session_ids: list[int] = []
+    db = storage._conn()
     if session_ids:
         try:
-            resolved_session_ids = [int(x.strip()) for x in session_ids.split(",") if x.strip()]
+            ids_in = [int(x.strip()) for x in session_ids.split(",") if x.strip()]
         except ValueError as exc:
             raise HTTPException(status_code=422, detail="session_ids must be integers") from exc
+        # Apply session_type filter against the requested ids too so the
+        # pill narrows the result set even when specific sessions are picked.
+        if session_type is not None and ids_in:
+            placeholders = ",".join("?" * len(ids_in))
+            cur = await db.execute(
+                f"SELECT id FROM races WHERE id IN ({placeholders}) AND session_type = ?",
+                [*ids_in, session_type],
+            )
+            resolved_session_ids = [r["id"] for r in await cur.fetchall()]
+        else:
+            resolved_session_ids = ids_in
     elif regatta_id is not None:
-        db = storage._conn()
-        cur = await db.execute(
-            "SELECT id FROM races "
-            " WHERE regatta_id = ? "
-            "   AND (source IS NULL OR source = 'live') "
-            " ORDER BY start_utc DESC",
-            (regatta_id,),
+        sql = (
+            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source = 'live') "
         )
+        qparams: list[Any] = [regatta_id]
+        if session_type is not None:
+            sql += "   AND session_type = ? "
+            qparams.append(session_type)
+        sql += " ORDER BY start_utc DESC"
+        cur = await db.execute(sql, qparams)
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
     else:
         session_limit = max(1, min(session_limit, 100))
-        db = storage._conn()
-        cur = await db.execute(
-            "SELECT id FROM races "
-            " WHERE (source IS NULL OR source = 'live') "
-            " ORDER BY start_utc DESC LIMIT ?",
-            (session_limit,),
-        )
+        sql = "SELECT id FROM races WHERE (source IS NULL OR source = 'live') "
+        qparams = []
+        if session_type is not None:
+            sql += "  AND session_type = ? "
+            qparams.append(session_type)
+        sql += " ORDER BY start_utc DESC LIMIT ?"
+        qparams.append(session_limit)
+        cur = await db.execute(sql, qparams)
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
 
     if not resolved_session_ids:
@@ -1527,7 +1570,6 @@ async def api_maneuver_browse(
     # Pull every maneuver_id from the resolved sessions and enrich via the
     # shared helper — that keeps one code path for enrichment and reuses
     # the per-session cache.
-    db = storage._conn()
     placeholders = ",".join("?" * len(resolved_session_ids))
     cur = await db.execute(
         f"SELECT session_id, id FROM maneuvers WHERE session_id IN ({placeholders})",
@@ -1574,13 +1616,15 @@ async def api_maneuver_browse(
                 return False
             if direction == "SP" and is_ps:
                 return False
-        if tws_min is not None or tws_max is not None:
+        if tws_min is not None or tws_max is not None or bands:
             t = m.get("entry_tws")
             if t is None:
                 return False
             if tws_min is not None and t < tws_min:
                 return False
             if tws_max is not None and t > tws_max:
+                return False
+            if bands and not any(t >= lo and (hi is None or t <= hi) for lo, hi in bands):
                 return False
         if post_start:
             sid = m.get("session_id")

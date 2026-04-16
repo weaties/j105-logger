@@ -4527,6 +4527,71 @@ async def test_maneuver_browse_rejects_bad_direction(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_maneuver_browse_sessions_filters_by_session_type(storage: Storage) -> None:
+    """session_type=race hides practice sessions from the picker (and vice versa)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="RaceOnly", count=1)
+        # Tag a second seeded session as practice
+        await client.post("/api/races/stop")
+        practice_id, _ = await _seed_maneuvers(storage, client, event="PracOnly", count=1)
+        await storage._conn().execute(
+            "UPDATE races SET session_type = 'practice' WHERE id = ?", (practice_id,)
+        )
+        await storage._conn().commit()
+
+        race_resp = await client.get("/api/maneuvers/sessions?session_type=race")
+        prac_resp = await client.get("/api/maneuvers/sessions?session_type=practice")
+
+    race_ids = {s["id"] for s in race_resp.json()["sessions"]}
+    prac_ids = {s["id"] for s in prac_resp.json()["sessions"]}
+    assert race_id in race_ids and practice_id not in race_ids
+    assert practice_id in prac_ids and race_id not in prac_ids
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_rejects_bad_session_type(storage: Storage) -> None:
+    """Unknown session_type value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/sessions?session_type=dinghy")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_tws_bands_multi(storage: Storage) -> None:
+    """tws_bands accepts multiple non-contiguous bands as a logical OR."""
+    # No instrument data is seeded, so entry_tws is None and any wind
+    # filter excludes all maneuvers — exercising the code path is enough
+    # to catch parse/filter regressions.
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BandMulti", count=2)
+        ok = await client.get(
+            f"/api/maneuvers/browse?session_ids={race_id}&tws_bands=6-8,12-15,15-"
+        )
+    assert ok.status_code == 200
+    assert ok.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_tws_bands_rejects_non_numeric(storage: Storage) -> None:
+    """Non-numeric tws_bands token returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?tws_bands=foo-bar")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_maneuver_browse_post_start_filter(storage: Storage) -> None:
     """post_start=1 drops maneuvers whose ts is before the session's start_utc.
 

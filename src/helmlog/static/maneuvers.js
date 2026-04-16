@@ -24,12 +24,13 @@ const TWS_BANDS = [
 const state = {
   regattaId: '',
   sessionLimit: 20,
+  sessionType: null,       // 'race'|'practice'|null — scopes both picker and query
   sessions: [],            // [{id, name, slug, start_utc, maneuver_count, ...}]
   selectedSessionIds: new Set(),
   type: null,              // 'tack'|'gybe'|'rounding'|null
   direction: null,         // 'PS'|'SP'|null
   postStart: false,        // drop pre-gun maneuvers when true
-  twsBand: null,           // index into TWS_BANDS, or null
+  twsBands: new Set(),     // indices into TWS_BANDS — empty = any
   hasVideo: false,
   maneuvers: [],
   selected: new Set(),     // composite keys "sid:mid"
@@ -67,6 +68,7 @@ async function loadSessions() {
   container.textContent = 'Loading...';
   const params = new URLSearchParams();
   if (state.regattaId) params.set('regatta_id', state.regattaId);
+  if (state.sessionType) params.set('session_type', state.sessionType);
   params.set('limit', state.regattaId ? '200' : String(state.sessionLimit));
   try {
     const r = await fetch('/api/maneuvers/sessions?' + params.toString());
@@ -124,6 +126,19 @@ function mvReloadSessions() {
 // ---------------------------------------------------------------------------
 
 function renderPills() {
+  const stEl = document.getElementById('mv-sessiontype-pills');
+  if (stEl) {
+    const entries = [
+      { value: null, label: 'all' },
+      { value: 'race', label: 'race' },
+      { value: 'practice', label: 'practice' },
+    ];
+    stEl.innerHTML = entries.map(e => '<button class="mv-pill'
+      + (state.sessionType === e.value ? ' active' : '')
+      + '" onclick="mvSetSessionType(' + (e.value == null ? 'null' : '\'' + e.value + '\'') + ')">'
+      + e.label + '</button>').join('');
+  }
+
   const typeEl = document.getElementById('mv-type-pills');
   typeEl.innerHTML = '<button class="mv-pill' + (state.type == null ? ' active' : '')
     + '" onclick="mvSetType(null)">all</button>'
@@ -145,16 +160,29 @@ function renderPills() {
   }
 
   const twsEl = document.getElementById('mv-tws-pills');
-  twsEl.innerHTML = '<button class="mv-pill' + (state.twsBand == null ? ' active' : '')
-    + '" onclick="mvSetTws(null)">any</button>'
-    + TWS_BANDS.map((b, i) => '<button class="mv-pill' + (state.twsBand === i ? ' active' : '')
-      + '" onclick="mvSetTws(' + i + ')">' + b.label + '</button>').join('');
+  const anyActive = state.twsBands.size === 0;
+  twsEl.innerHTML = '<button class="mv-pill' + (anyActive ? ' active' : '')
+    + '" onclick="mvClearTws()">any</button>'
+    + TWS_BANDS.map((b, i) => '<button class="mv-pill'
+      + (state.twsBands.has(i) ? ' active' : '')
+      + '" onclick="mvToggleTws(' + i + ')">' + b.label + '</button>').join('');
 }
 
 function mvSetType(t) { state.type = t; renderPills(); reload(); }
 function mvSetDir(d) { state.direction = d; renderPills(); reload(); }
-function mvSetTws(i) { state.twsBand = i; renderPills(); reload(); }
+function mvToggleTws(i) {
+  if (state.twsBands.has(i)) state.twsBands.delete(i);
+  else state.twsBands.add(i);
+  renderPills();
+  reload();
+}
+function mvClearTws() { state.twsBands.clear(); renderPills(); reload(); }
 function mvSetPhase(on) { state.postStart = !!on; renderPills(); reload(); }
+function mvSetSessionType(t) {
+  state.sessionType = t;
+  renderPills();
+  loadSessions().then(reload);
+}
 
 // ---------------------------------------------------------------------------
 // Fetch + render results
@@ -177,10 +205,16 @@ async function reload() {
     }
     if (state.type) params.set('type', state.type);
     if (state.direction) params.set('direction', state.direction);
-    if (state.twsBand != null) {
-      const band = TWS_BANDS[state.twsBand];
-      params.set('tws_min', String(band.min));
-      if (band.max != null) params.set('tws_max', String(band.max));
+    if (state.sessionType) params.set('session_type', state.sessionType);
+    if (state.twsBands.size) {
+      // Send selected bands as a comma-separated "min-max" list; the server
+      // treats them as a logical OR so 8-10 + 10-12 captures the 8-12 range
+      // and non-adjacent bands like 6-8 + 12-15 union correctly too.
+      const bands = [...state.twsBands].sort((a, b) => a - b).map(i => {
+        const b = TWS_BANDS[i];
+        return b.max == null ? b.min + '-' : b.min + '-' + b.max;
+      });
+      params.set('tws_bands', bands.join(','));
     }
     if (state.hasVideo) params.set('has_video', '1');
     if (state.postStart) params.set('post_start', '1');
