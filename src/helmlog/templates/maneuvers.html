@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Maneuvers — HelmLog{% endblock %}
+
+{% block extra_css %}
+<style>
+.mv-filters{display:flex;flex-direction:column;gap:10px;margin-bottom:12px}
+.mv-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.mv-row label{font-size:.75rem;color:var(--text-secondary);display:flex;align-items:center;gap:6px}
+.mv-row select,.mv-row input[type=number]{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:3px 6px;font-size:.8rem}
+.mv-pill{font-size:.72rem;padding:3px 9px;border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--text-secondary);cursor:pointer}
+.mv-pill.active{background:var(--accent);color:var(--bg-primary);border-color:var(--accent)}
+.mv-session-picker{max-height:160px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px;background:var(--bg-secondary);font-size:.78rem}
+.mv-session-picker label{display:flex;align-items:center;gap:6px;padding:2px 0;cursor:pointer}
+.mv-session-picker label:hover{background:var(--bg-input)}
+.mv-session-picker .mv-session-count{color:var(--text-secondary);font-size:.7rem;margin-left:auto}
+.mv-results{border:1px solid var(--border);border-radius:4px;background:var(--bg-secondary);overflow:hidden}
+.mv-results-header{display:flex;align-items:center;gap:10px;padding:8px 10px;border-bottom:1px solid var(--border);background:var(--bg-input)}
+.mv-results-header strong{font-size:.85rem}
+.mv-results-header .spacer{flex:1}
+.mv-results-header button{background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;padding:5px 14px;font-size:.8rem;cursor:pointer;font-weight:600}
+.mv-results-header button:disabled{opacity:.4;cursor:not-allowed}
+.mv-table{width:100%;border-collapse:collapse;font-size:.78rem}
+.mv-table th,.mv-table td{padding:5px 8px;text-align:left;border-bottom:1px solid var(--border)}
+.mv-table th{font-size:.7rem;font-weight:600;color:var(--text-secondary);background:var(--bg-input);text-transform:uppercase;letter-spacing:.03em;position:sticky;top:0}
+.mv-table tbody tr{cursor:pointer}
+.mv-table tbody tr:hover{background:var(--bg-input)}
+.mv-table tbody tr.selected{background:rgba(var(--accent-rgb,100,140,200),.12)}
+.mv-table td.mv-num{text-align:right;font-variant-numeric:tabular-nums}
+.mv-table .mv-video{color:var(--success)}
+.mv-table .mv-no-video{color:var(--text-secondary);opacity:.4}
+.mv-empty{padding:20px;text-align:center;color:var(--text-secondary);font-size:.85rem}
+.mv-badge-tack{color:var(--accent)}
+.mv-badge-gybe{color:var(--warning)}
+.mv-badge-rounding{color:var(--success)}
+.mv-scroll{max-height:calc(100vh - 380px);overflow-y:auto}
+</style>
+{% endblock %}
+
+{% block content %}
+<h1 style="margin-bottom:8px">Maneuvers</h1>
+<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:12px">
+  Browse maneuvers across sessions, filter by wind, then compare videos side-by-side.
+</div>
+
+<div class="card">
+  <div class="mv-filters">
+    <div class="mv-row">
+      <label>Regatta / Series
+        <select id="mv-regatta" onchange="mvOnRegattaChange()">
+          <option value="">All recent sessions</option>
+        </select>
+      </label>
+      <label>Recent sessions limit
+        <input id="mv-session-limit" type="number" min="1" max="100" value="20" style="width:70px"
+          onchange="mvReloadSessions()"/>
+      </label>
+      <label style="margin-left:auto">
+        <input type="checkbox" id="mv-has-video" onchange="mvReload()"/>
+        Video available
+      </label>
+    </div>
+
+    <div class="mv-row" style="align-items:flex-start">
+      <div style="flex:1;min-width:260px">
+        <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:4px">Sessions
+          <button class="mv-pill" onclick="mvSelectAllSessions(true)" style="margin-left:6px">All</button>
+          <button class="mv-pill" onclick="mvSelectAllSessions(false)">None</button>
+        </div>
+        <div class="mv-session-picker" id="mv-sessions">Loading...</div>
+      </div>
+      <div style="flex:1;min-width:260px">
+        <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:4px">Type</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap" id="mv-type-pills"></div>
+        <div style="font-size:.72rem;color:var(--text-secondary);margin:10px 0 4px">Direction</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap" id="mv-dir-pills"></div>
+        <div style="font-size:.72rem;color:var(--text-secondary);margin:10px 0 4px">Wind (TWS kts)</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap" id="mv-tws-pills"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mv-results" style="margin-top:12px">
+  <div class="mv-results-header">
+    <strong id="mv-count">0 maneuvers</strong>
+    <span id="mv-selected-count" style="font-size:.75rem;color:var(--text-secondary)"></span>
+    <span class="spacer"></span>
+    <button id="mv-compare-btn" onclick="mvOpenCompare()" disabled>Compare Selected</button>
+  </div>
+  <div class="mv-scroll">
+    <table class="mv-table" id="mv-table">
+      <thead>
+        <tr>
+          <th style="width:28px"><input type="checkbox" id="mv-check-all" onchange="mvToggleAll(this.checked)"/></th>
+          <th>Session</th>
+          <th>Time</th>
+          <th>Type</th>
+          <th>Dir</th>
+          <th class="mv-num">TWS</th>
+          <th class="mv-num">Turn</th>
+          <th class="mv-num">Duration</th>
+          <th>Rank</th>
+          <th>Video</th>
+        </tr>
+      </thead>
+      <tbody id="mv-tbody"></tbody>
+    </table>
+    <div class="mv-empty" id="mv-empty" style="display:none">No maneuvers match the current filters.</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/maneuvers.js?v={{ git_sha }}"></script>
+{% endblock %}

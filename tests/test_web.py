@@ -4251,3 +4251,216 @@ async def test_compare_api_empty_ids(storage: Storage) -> None:
         race_id = (await client.post("/api/races/start")).json()["id"]
         resp = await client.get(f"/api/sessions/{race_id}/maneuvers/compare?ids=")
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Cross-session maneuver compare + browser (#584)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_maneuvers(
+    storage: Storage, client: httpx.AsyncClient, *, event: str, count: int = 2
+) -> tuple[int, list[int]]:
+    """Create a race and seed ``count`` tacks; return (race_id, [maneuver_ids])."""
+    from helmlog.maneuver_detector import Maneuver
+
+    await _set_event(client, event)
+    race_id = (await client.post("/api/races/start")).json()["id"]
+    maneuvers = [
+        Maneuver(
+            type="tack",
+            ts=datetime(2026, 2, 26, 14, 10 + i, 0, tzinfo=UTC),
+            end_ts=datetime(2026, 2, 26, 14, 10 + i, 8, tzinfo=UTC),
+            duration_sec=8.0,
+            loss_kts=0.5,
+            vmg_loss_kts=None,
+            tws_bin=12,
+            twa_bin=40,
+        )
+        for i in range(count)
+    ]
+    await storage.write_maneuvers(race_id, maneuvers)
+    rows = await storage.get_session_maneuvers(race_id)
+    return race_id, [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_parses_pairs(storage: Storage) -> None:
+    """GET /api/maneuvers/compare?ids=sid:mid returns maneuvers keyed by session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, mids = await _seed_maneuvers(storage, client, event="CrossA", count=2)
+        ids = f"{race_id}:{mids[0]},{race_id}:{mids[1]}"
+        resp = await client.get(f"/api/maneuvers/compare?ids={ids}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 2
+    assert str(race_id) in data["video_sync_by_session"]
+    # Each maneuver must carry its session context for cross-session rendering.
+    for m in data["maneuvers"]:
+        assert m["session_id"] == race_id
+        assert m.get("session_name")
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_mixes_sessions(storage: Storage) -> None:
+    """Pairs from two different sessions return a per-session video_sync map."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r1, m1_ids = await _seed_maneuvers(storage, client, event="MixA", count=1)
+        # End the first race before starting the second to avoid overlap.
+        await client.post("/api/races/stop")
+        r2, m2_ids = await _seed_maneuvers(storage, client, event="MixB", count=1)
+        ids = f"{r1}:{m1_ids[0]},{r2}:{m2_ids[0]}"
+        resp = await client.get(f"/api/maneuvers/compare?ids={ids}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 2
+    sessions = {m["session_id"] for m in data["maneuvers"]}
+    assert sessions == {r1, r2}
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_rejects_bare_ids(storage: Storage) -> None:
+    """Legacy comma-separated integer ids must fail on the cross-session endpoint."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/compare?ids=1,2,3")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_rejects_malformed(storage: Storage) -> None:
+    """Malformed id pairs (missing half, non-integer) return 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for bad in ("foo:bar", "1:", ":1", "abc"):
+            resp = await client.get(f"/api/maneuvers/compare?ids={bad}")
+            assert resp.status_code == 422, f"{bad} should be rejected"
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_page_renders(storage: Storage) -> None:
+    """GET /compare renders without a session path parameter."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/compare")
+    assert resp.status_code == 200
+    assert b"compare-grid" in resp.content
+
+
+@pytest.mark.asyncio
+async def test_maneuvers_browser_page_renders(storage: Storage) -> None:
+    """GET /maneuvers renders the browser page."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/maneuvers")
+    assert resp.status_code == 200
+    assert b"mv-sessions" in resp.content
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_endpoint(storage: Storage) -> None:
+    """GET /api/maneuvers/sessions lists sessions with maneuver counts."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseA", count=3)
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    match = [s for s in sessions if s["id"] == race_id]
+    assert match, "seeded race must appear in sessions list"
+    assert match[0]["maneuver_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_regattas_endpoint(storage: Storage) -> None:
+    """GET /api/maneuvers/regattas returns only regattas with linked sessions."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/regattas")
+    assert resp.status_code == 200
+    assert "regattas" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_by_session_ids(storage: Storage) -> None:
+    """GET /api/maneuvers/browse?session_ids= returns only those sessions' maneuvers."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseB", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_ids"] == [race_id]
+    # All returned maneuvers must belong to that session.
+    for m in data["maneuvers"]:
+        assert m["session_id"] == race_id
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filters_by_type(storage: Storage) -> None:
+    """Type filter excludes non-matching maneuvers."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseC", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=gybe")
+    assert resp.status_code == 200
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filters_by_wind(storage: Storage) -> None:
+    """Wind-range filter drops maneuvers whose entry_tws is None or out of band."""
+    # Seeded maneuvers have no instrument data, so entry_tws is None; any
+    # explicit wind filter must exclude them.
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseD", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&tws_min=8&tws_max=10")
+    assert resp.status_code == 200
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_type(storage: Storage) -> None:
+    """Invalid type value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?type=turtle")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_direction(storage: Storage) -> None:
+    """Invalid direction value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?direction=X")
+    assert resp.status_code == 422

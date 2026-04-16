@@ -1320,6 +1320,234 @@ async def api_session_maneuvers_compare(
     return JSONResponse({"maneuvers": selected, "video_sync": video_sync})
 
 
+def _parse_cross_session_ids(ids: str) -> list[tuple[int, int]]:
+    """Parse ``ids`` query param for cross-session compare (#584).
+
+    Accepts two forms in the same list:
+      * ``<session_id>:<maneuver_id>`` — cross-session pair
+      * bare ``<maneuver_id>`` — only valid when a session_id can be
+        inferred by the caller; raises ValueError otherwise
+
+    Returns a list of ``(session_id, maneuver_id)`` tuples. Raises
+    ``ValueError`` on malformed input.
+    """
+    pairs: list[tuple[int, int]] = []
+    for raw in ids.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        if ":" not in token:
+            raise ValueError(f"missing session_id in {token!r}")
+        sid_str, _, mid_str = token.partition(":")
+        if not sid_str or not mid_str:
+            raise ValueError(f"malformed id {token!r}")
+        pairs.append((int(sid_str), int(mid_str)))
+    return pairs
+
+
+@router.get("/api/maneuvers/compare")
+async def api_cross_session_maneuvers_compare(
+    request: Request,
+    ids: str = Query(..., description="Comma-separated <session_id>:<maneuver_id> pairs"),
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Cross-session version of the compare-page data feed (#584).
+
+    ``ids`` is a comma-separated list of ``<session_id>:<maneuver_id>``
+    pairs. Returns enriched maneuvers plus per-session ``video_sync`` so
+    the compare page can render cells drawn from different sessions.
+    """
+    storage = get_storage(request)
+    from helmlog.analysis.maneuvers import enrich_maneuvers_for_ids
+
+    try:
+        pairs = _parse_cross_session_ids(ids)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="ids must be comma-separated <session_id>:<maneuver_id> pairs",
+        ) from exc
+
+    if not pairs:
+        raise HTTPException(status_code=422, detail="ids must not be empty")
+
+    maneuvers, video_sync_by_session = await enrich_maneuvers_for_ids(storage, pairs)
+    # JSONResponse serializes dict keys as strings, so callers get
+    # {"42": {...}, "43": {...}} which is fine for JS lookup.
+    return JSONResponse(
+        {
+            "maneuvers": maneuvers,
+            "video_sync_by_session": {str(k): v for k, v in video_sync_by_session.items()},
+        }
+    )
+
+
+@router.get("/api/maneuvers/sessions")
+async def api_maneuver_browse_sessions(
+    request: Request,
+    regatta_id: int | None = None,
+    limit: int = 50,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Recent sessions with maneuver counts, for the browser picker (#584)."""
+    storage = get_storage(request)
+    limit = max(1, min(limit, 200))
+    db = storage._conn()
+    sql = (
+        "SELECT r.id, r.name, r.slug, r.start_utc, r.regatta_id, "
+        "       reg.name AS regatta_name, "
+        "       (SELECT COUNT(*) FROM maneuvers m WHERE m.session_id = r.id) AS maneuver_count "
+        "  FROM races r "
+        "  LEFT JOIN regattas reg ON reg.id = r.regatta_id "
+    )
+    params: list[Any] = []
+    if regatta_id is not None:
+        sql += " WHERE r.regatta_id = ? "
+        params.append(regatta_id)
+    sql += " ORDER BY r.start_utc DESC LIMIT ? "
+    params.append(limit)
+    cur = await db.execute(sql, params)
+    rows = await cur.fetchall()
+    sessions = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "slug": r["slug"] or "",
+            "start_utc": r["start_utc"],
+            "regatta_id": r["regatta_id"],
+            "regatta_name": r["regatta_name"],
+            "maneuver_count": r["maneuver_count"] or 0,
+        }
+        for r in rows
+    ]
+    return JSONResponse({"sessions": sessions})
+
+
+@router.get("/api/maneuvers/regattas")
+async def api_maneuver_browse_regattas(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Regattas that have at least one linked session, for the picker (#584)."""
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT reg.id, reg.name, reg.start_date, reg.end_date, "
+        "       COUNT(r.id) AS session_count "
+        "  FROM regattas reg "
+        "  JOIN races r ON r.regatta_id = reg.id "
+        " GROUP BY reg.id "
+        " ORDER BY reg.start_date DESC NULLS LAST, reg.id DESC"
+    )
+    rows = await cur.fetchall()
+    regattas = [
+        {
+            "id": r["id"],
+            "name": r["name"],
+            "start_date": r["start_date"],
+            "end_date": r["end_date"],
+            "session_count": r["session_count"],
+        }
+        for r in rows
+    ]
+    return JSONResponse({"regattas": regattas})
+
+
+@router.get("/api/maneuvers/browse")
+async def api_maneuver_browse(
+    request: Request,
+    regatta_id: int | None = None,
+    session_ids: str | None = None,
+    type: str | None = None,
+    direction: str | None = None,
+    tws_min: float | None = None,
+    tws_max: float | None = None,
+    has_video: int = 0,
+    session_limit: int = 20,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Cross-session maneuver browser feed (#584).
+
+    Resolves a set of sessions from either ``regatta_id`` or an explicit
+    comma-separated ``session_ids`` list. When neither is given, falls
+    back to the most recent ``session_limit`` sessions. Returns enriched
+    maneuvers filtered by type/direction/wind-range, with session context
+    attached for rendering.
+    """
+    storage = get_storage(request)
+    from helmlog.analysis.maneuvers import enrich_maneuvers_for_ids
+
+    if type is not None and type not in ("tack", "gybe", "rounding"):
+        raise HTTPException(status_code=422, detail="type must be tack|gybe|rounding")
+    if direction is not None and direction not in ("PS", "SP"):
+        raise HTTPException(status_code=422, detail="direction must be PS|SP")
+
+    resolved_session_ids: list[int] = []
+    if session_ids:
+        try:
+            resolved_session_ids = [int(x.strip()) for x in session_ids.split(",") if x.strip()]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="session_ids must be integers") from exc
+    elif regatta_id is not None:
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT id FROM races WHERE regatta_id = ? ORDER BY start_utc DESC",
+            (regatta_id,),
+        )
+        resolved_session_ids = [r["id"] for r in await cur.fetchall()]
+    else:
+        session_limit = max(1, min(session_limit, 100))
+        db = storage._conn()
+        cur = await db.execute(
+            "SELECT id FROM races ORDER BY start_utc DESC LIMIT ?",
+            (session_limit,),
+        )
+        resolved_session_ids = [r["id"] for r in await cur.fetchall()]
+
+    if not resolved_session_ids:
+        return JSONResponse({"maneuvers": [], "session_ids": []})
+
+    # Pull every maneuver_id from the resolved sessions and enrich via the
+    # shared helper — that keeps one code path for enrichment and reuses
+    # the per-session cache.
+    db = storage._conn()
+    placeholders = ",".join("?" * len(resolved_session_ids))
+    cur = await db.execute(
+        f"SELECT session_id, id FROM maneuvers WHERE session_id IN ({placeholders})",
+        resolved_session_ids,
+    )
+    pairs = [(r["session_id"], r["id"]) for r in await cur.fetchall()]
+
+    enriched, _ = await enrich_maneuvers_for_ids(storage, pairs)
+
+    def _keep(m: dict[str, Any]) -> bool:
+        if type is not None and m.get("type") != type:
+            return False
+        if direction is not None:
+            ang = m.get("turn_angle_deg")
+            if ang is None:
+                return False
+            is_ps = ang < 0
+            if direction == "PS" and not is_ps:
+                return False
+            if direction == "SP" and is_ps:
+                return False
+        if tws_min is not None or tws_max is not None:
+            t = m.get("entry_tws")
+            if t is None:
+                return False
+            if tws_min is not None and t < tws_min:
+                return False
+            if tws_max is not None and t > tws_max:
+                return False
+        return not (has_video and not m.get("youtube_url"))
+
+    filtered = [m for m in enriched if _keep(m)]
+    filtered.sort(key=lambda m: str(m.get("ts") or ""))
+
+    return JSONResponse({"maneuvers": filtered, "session_ids": resolved_session_ids})
+
+
 @router.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)
 async def api_detect_maneuvers(
     request: Request,

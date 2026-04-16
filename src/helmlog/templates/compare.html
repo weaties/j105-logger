@@ -41,12 +41,17 @@ footer,.site-nav{display:none}
 
 {% block content %}
 <div id="app-config"
-  data-session-id="{{ session_id }}"
+  data-session-id="{{ session_id or '' }}"
   data-session-slug="{{ session_slug or '' }}"
+  data-cross-session="{{ '1' if cross_session else '' }}"
   style="display:none"></div>
 
 <div class="compare-header" id="compare-header">
+  {% if cross_session %}
+  <a href="/maneuvers" class="back-link">&larr; Maneuvers</a>
+  {% else %}
   <a href="/session/{{ session_id }}/{{ session_slug or '' }}" class="back-link">&larr; {{ session_name }}</a>
+  {% endif %}
   <span style="font-size:.82rem;font-weight:600;color:var(--text-primary)">Compare</span>
   <span id="compare-subtitle" style="font-size:.72rem;color:var(--text-secondary)"></span>
   <span style="flex:1"></span>

@@ -128,6 +128,46 @@ async def maneuver_compare_page(request: Request, session_id: int) -> Response:
     )
 
 
+@router.get("/compare", response_class=HTMLResponse, include_in_schema=False)
+async def cross_session_compare_page(request: Request) -> Response:
+    """Cross-session maneuver compare page (#584).
+
+    Unlike ``/session/{id}/compare`` this has no session context in the URL
+    — the ``ids`` query param carries ``<session_id>:<maneuver_id>`` pairs
+    and the page fetches everything it needs from
+    ``/api/maneuvers/compare``.
+    """
+    get_storage(request)
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    user_role = user.get("role", "viewer") if user else "viewer"
+    return templates.TemplateResponse(
+        request,
+        "compare.html",
+        tpl_ctx(
+            request,
+            "/maneuvers",
+            session_id=None,
+            session_name="",
+            session_slug="",
+            user_role=user_role,
+            cross_session=True,
+        ),
+    )
+
+
+@router.get("/maneuvers", response_class=HTMLResponse, include_in_schema=False)
+async def maneuvers_browser_page(request: Request) -> Response:
+    """Cross-session maneuver browser (#584)."""
+    get_storage(request)
+    user: dict[str, Any] | None = getattr(request.state, "user", None)
+    user_role = user.get("role", "viewer") if user else "viewer"
+    return templates.TemplateResponse(
+        request,
+        "maneuvers.html",
+        tpl_ctx(request, "/maneuvers", user_role=user_role),
+    )
+
+
 @router.get(
     "/session/{session_id:int}/{slug}",
     response_class=HTMLResponse,
