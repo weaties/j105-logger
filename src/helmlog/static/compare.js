@@ -551,8 +551,8 @@ function _tickUpdate() {
 
 function _renderGaugePlaceholder(idx) {
   if (!_replaySamples || !_replaySamples.length) return '';
-  const s = 130; // gauge size
-  const r = 56;  // compass radius
+  const s = 150; // gauge size
+  const r = 62;  // compass radius
   const cx = s / 2, cy = s / 2;
   const display = _gaugeVisible ? '' : 'display:none;';
 
@@ -560,7 +560,7 @@ function _renderGaugePlaceholder(idx) {
   let ticks = '';
   for (let d = 0; d < 360; d += 10) {
     const rad = (d - 90) * Math.PI / 180;
-    const inner = d % 30 === 0 ? r - 8 : r - 4;
+    const inner = d % 30 === 0 ? r - 10 : r - 5;
     const x1 = cx + inner * Math.cos(rad), y1 = cy + inner * Math.sin(rad);
     const x2 = cx + r * Math.cos(rad), y2 = cy + r * Math.sin(rad);
     ticks += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1)
@@ -572,9 +572,9 @@ function _renderGaugePlaceholder(idx) {
   let labels = '';
   for (const c of cardinals) {
     const rad = (c.d - 90) * Math.PI / 180;
-    const lx = cx + (r + 7) * Math.cos(rad), ly = cy + (r + 7) * Math.sin(rad);
+    const lx = cx + (r + 9) * Math.cos(rad), ly = cy + (r + 9) * Math.sin(rad);
     labels += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1)
-      + '" text-anchor="middle" dominant-baseline="central" font-size="7" fill="rgba(255,255,255,.5)">' + c.l + '</text>';
+      + '" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="600" fill="rgba(255,255,255,.55)">' + c.l + '</text>';
   }
 
   return '<svg class="gauge-overlay" id="gauge-svg-' + idx + '" width="' + s + '" height="' + s + '" style="' + display + '">'
@@ -598,20 +598,24 @@ function _renderGaugePlaceholder(idx) {
     // Boat icon (center)
     + '<polygon points="' + cx + ',' + (cy - 6) + ' ' + (cx - 4) + ',' + (cy + 5) + ' ' + (cx + 4) + ',' + (cy + 5) + '" fill="#fff" stroke="rgba(0,0,0,.4)" stroke-width="0.5"/>'
     // HDG readout (top)
-    + '<rect x="' + (cx - 14) + '" y="2" width="28" height="12" rx="2" fill="rgba(0,0,0,.7)"/>'
-    + '<text id="gauge-hdg-' + idx + '" x="' + cx + '" y="11" text-anchor="middle" font-size="8" font-weight="600" font-family="monospace" fill="#fff">---</text>'
+    + '<rect x="' + (cx - 18) + '" y="1" width="36" height="15" rx="3" fill="rgba(0,0,0,.8)"/>'
+    + '<text id="gauge-hdg-' + idx + '" x="' + cx + '" y="12" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">---</text>'
     // BSP readout (left)
-    + '<text id="gauge-bsp-' + idx + '" x="8" y="' + (cy + 2) + '" text-anchor="start" font-size="9" font-weight="700" font-family="monospace" fill="#3db86e">-.-</text>'
-    + '<text x="8" y="' + (cy + 10) + '" text-anchor="start" font-size="5" fill="rgba(255,255,255,.5)">BSP</text>'
+    + '<rect x="2" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="20" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">BSP</text>'
+    + '<text id="gauge-bsp-' + idx + '" x="20" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#3db86e">-.-</text>'
     // SOG readout (right)
-    + '<text id="gauge-sog-' + idx + '" x="' + (s - 8) + '" y="' + (cy + 2) + '" text-anchor="end" font-size="9" font-weight="700" font-family="monospace" fill="#fff">-.-</text>'
-    + '<text x="' + (s - 8) + '" y="' + (cy + 10) + '" text-anchor="end" font-size="5" fill="rgba(255,255,255,.5)">SOG</text>'
+    + '<rect x="' + (s - 38) + '" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="' + (s - 20) + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">SOG</text>'
+    + '<text id="gauge-sog-' + idx + '" x="' + (s - 20) + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#fff">-.-</text>'
     // TWS readout (bottom-left, orange)
-    + '<text id="gauge-tws-' + idx + '" x="12" y="' + (s - 6) + '" text-anchor="start" font-size="8" font-weight="600" font-family="monospace" fill="#f59e0b">--</text>'
-    + '<text x="12" y="' + (s - 14) + '" text-anchor="start" font-size="5" fill="rgba(255,255,255,.5)">TWS</text>'
+    + '<rect x="6" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="26" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">TWS</text>'
+    + '<text id="gauge-tws-' + idx + '" x="26" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#f59e0b">--</text>'
     // AWS readout (bottom-right, blue)
-    + '<text id="gauge-aws-' + idx + '" x="' + (s - 12) + '" y="' + (s - 6) + '" text-anchor="end" font-size="8" font-weight="600" font-family="monospace" fill="#60a5fa">--</text>'
-    + '<text x="' + (s - 12) + '" y="' + (s - 14) + '" text-anchor="end" font-size="5" fill="rgba(255,255,255,.5)">AWS</text>'
+    + '<rect x="' + (s - 46) + '" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="' + (s - 26) + '" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">AWS</text>'
+    + '<text id="gauge-aws-' + idx + '" x="' + (s - 26) + '" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#60a5fa">--</text>'
     + '</svg>';
 }
 
@@ -627,7 +631,7 @@ function _updateGauge(p, videoTime) {
   if (!sample) return;
 
   const idx = p.idx;
-  const cx = 65, cy = 65; // gauge center
+  const cx = 75, cy = 75; // gauge center (s/2 where s=150)
 
   // Update HDG
   const hdgEl = document.getElementById('gauge-hdg-' + idx);
