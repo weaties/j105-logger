@@ -28,6 +28,7 @@ const state = {
   selectedSessionIds: new Set(),
   type: null,              // 'tack'|'gybe'|'rounding'|null
   direction: null,         // 'PS'|'SP'|null
+  postStart: false,        // drop pre-gun maneuvers when true
   twsBand: null,           // index into TWS_BANDS, or null
   hasVideo: false,
   maneuvers: [],
@@ -135,6 +136,14 @@ function renderPills() {
     + DIR_PILLS.map(d => '<button class="mv-pill' + (state.direction === d.value ? ' active' : '')
       + '" onclick="mvSetDir(\'' + d.value + '\')">' + d.label + '</button>').join('');
 
+  const phaseEl = document.getElementById('mv-phase-pills');
+  if (phaseEl) {
+    phaseEl.innerHTML = '<button class="mv-pill' + (!state.postStart ? ' active' : '')
+      + '" onclick="mvSetPhase(false)">all</button>'
+      + '<button class="mv-pill' + (state.postStart ? ' active' : '')
+      + '" onclick="mvSetPhase(true)" title="Hide pre-gun maneuvers">post-start</button>';
+  }
+
   const twsEl = document.getElementById('mv-tws-pills');
   twsEl.innerHTML = '<button class="mv-pill' + (state.twsBand == null ? ' active' : '')
     + '" onclick="mvSetTws(null)">any</button>'
@@ -145,6 +154,7 @@ function renderPills() {
 function mvSetType(t) { state.type = t; renderPills(); reload(); }
 function mvSetDir(d) { state.direction = d; renderPills(); reload(); }
 function mvSetTws(i) { state.twsBand = i; renderPills(); reload(); }
+function mvSetPhase(on) { state.postStart = !!on; renderPills(); reload(); }
 
 // ---------------------------------------------------------------------------
 // Fetch + render results
@@ -173,6 +183,7 @@ async function reload() {
       if (band.max != null) params.set('tws_max', String(band.max));
     }
     if (state.hasVideo) params.set('has_video', '1');
+    if (state.postStart) params.set('post_start', '1');
 
     const r = await fetch('/api/maneuvers/browse?' + params.toString());
     if (!r.ok) { state.maneuvers = []; renderResults(); return; }

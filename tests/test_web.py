@@ -4388,6 +4388,24 @@ async def test_maneuver_browse_sessions_endpoint(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_maneuver_browse_sessions_excludes_empty(storage: Storage) -> None:
+    """Sessions with zero maneuvers (imported-results rows) are filtered out."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        with_race, _ = await _seed_maneuvers(storage, client, event="HasMan", count=1)
+        await client.post("/api/races/stop")
+        await _set_event(client, "NoMan")
+        empty_race = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    ids = {s["id"] for s in resp.json()["sessions"]}
+    assert with_race in ids
+    assert empty_race not in ids
+
+
+@pytest.mark.asyncio
 async def test_maneuver_browse_regattas_endpoint(storage: Storage) -> None:
     """GET /api/maneuvers/regattas returns only regattas with linked sessions."""
     app = create_app(storage)
@@ -4464,3 +4482,33 @@ async def test_maneuver_browse_rejects_bad_direction(storage: Storage) -> None:
     ) as client:
         resp = await client.get("/api/maneuvers/browse?direction=X")
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_post_start_filter(storage: Storage) -> None:
+    """post_start=1 drops maneuvers whose ts is before the session's start_utc.
+
+    With no Vakaros race_start event, the server falls back to the race's
+    stored start_utc as the effective gun. The seeded tacks use
+    ts = 14:10, 14:11 UTC; start_utc is set to 14:30 via _END_UTC below
+    so both maneuvers land pre-start.
+    """
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="PostStart", count=2)
+        # Push the race start forward so the seeded maneuvers (ts 14:10,14:11)
+        # are firmly before the "gun" (14:30 Z).
+        await storage._conn().execute(
+            "UPDATE races SET start_utc = ? WHERE id = ?",
+            ("2026-02-26T14:30:00+00:00", race_id),
+        )
+        await storage._conn().commit()
+
+        without_filter = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+        with_filter = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&post_start=1")
+    assert without_filter.status_code == 200
+    assert with_filter.status_code == 200
+    assert len(without_filter.json()["maneuvers"]) == 2
+    assert with_filter.json()["maneuvers"] == []

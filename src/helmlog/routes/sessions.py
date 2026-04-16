@@ -1393,6 +1393,9 @@ async def api_maneuver_browse_sessions(
     storage = get_storage(request)
     limit = max(1, min(limit, 200))
     db = storage._conn()
+    # Imported-results rows (from Clubspot etc.) appear as races but have no
+    # instrument data — filter them out so the picker only shows sessions
+    # the boat actually sailed.
     sql = (
         "SELECT r.id, r.name, r.slug, r.start_utc, r.regatta_id, "
         "       reg.name AS regatta_name, "
@@ -1400,10 +1403,12 @@ async def api_maneuver_browse_sessions(
         "  FROM races r "
         "  LEFT JOIN regattas reg ON reg.id = r.regatta_id "
     )
+    conds: list[str] = ["EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)"]
     params: list[Any] = []
     if regatta_id is not None:
-        sql += " WHERE r.regatta_id = ? "
+        conds.append("r.regatta_id = ?")
         params.append(regatta_id)
+    sql += " WHERE " + " AND ".join(conds)
     sql += " ORDER BY r.start_utc DESC LIMIT ? "
     params.append(limit)
     cur = await db.execute(sql, params)
@@ -1463,6 +1468,7 @@ async def api_maneuver_browse(
     tws_min: float | None = None,
     tws_max: float | None = None,
     has_video: int = 0,
+    post_start: int = 0,
     session_limit: int = 20,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
@@ -1520,6 +1526,31 @@ async def api_maneuver_browse(
 
     enriched, _ = await enrich_maneuvers_for_ids(storage, pairs)
 
+    # Optional: compute each session's effective race gun (latest Vakaros
+    # race_start event inside the race window, falling back to start_utc)
+    # so we can drop pre-gun maneuvers when post_start=1.
+    gun_by_session: dict[int, str] = {}
+    if post_start and resolved_session_ids:
+        placeholders = ",".join("?" * len(resolved_session_ids))
+        gun_cur = await db.execute(
+            f"""
+            SELECT r.id AS session_id,
+                   COALESCE(
+                     (SELECT MAX(vre.ts)
+                        FROM vakaros_race_events vre
+                       WHERE vre.session_id = r.vakaros_session_id
+                         AND vre.event_type = 'race_start'
+                         AND vre.ts BETWEEN r.start_utc
+                                        AND COALESCE(r.end_utc, r.start_utc)),
+                     r.start_utc
+                   ) AS gun_utc
+              FROM races r
+             WHERE r.id IN ({placeholders})
+            """,
+            resolved_session_ids,
+        )
+        gun_by_session = {r["session_id"]: r["gun_utc"] for r in await gun_cur.fetchall()}
+
     def _keep(m: dict[str, Any]) -> bool:
         if type is not None and m.get("type") != type:
             return False
@@ -1539,6 +1570,11 @@ async def api_maneuver_browse(
             if tws_min is not None and t < tws_min:
                 return False
             if tws_max is not None and t > tws_max:
+                return False
+        if post_start:
+            sid = m.get("session_id")
+            gun = gun_by_session.get(sid) if isinstance(sid, int) else None
+            if gun and str(m.get("ts") or "") < gun:
                 return False
         return not (has_video and not m.get("youtube_url"))
 
