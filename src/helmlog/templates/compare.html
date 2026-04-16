@@ -36,17 +36,23 @@ footer,.site-nav{display:none}
 .track-overlay{position:absolute;bottom:6px;left:6px;z-index:5;pointer-events:none;opacity:.85;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
 .gauge-overlay{position:absolute;top:6px;left:6px;z-index:5;pointer-events:none;opacity:.9;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
 .recovery-overlay{position:absolute;top:6px;left:158px;z-index:5;pointer-events:none;opacity:.9;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
+.start-overlay{position:absolute;top:6px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;opacity:.95;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
 </style>
 {% endblock %}
 
 {% block content %}
 <div id="app-config"
-  data-session-id="{{ session_id }}"
+  data-session-id="{{ session_id or '' }}"
   data-session-slug="{{ session_slug or '' }}"
+  data-cross-session="{{ '1' if cross_session else '' }}"
   style="display:none"></div>
 
 <div class="compare-header" id="compare-header">
+  {% if cross_session %}
+  <a href="/maneuvers" class="back-link">&larr; Maneuvers</a>
+  {% else %}
   <a href="/session/{{ session_id }}/{{ session_slug or '' }}" class="back-link">&larr; {{ session_name }}</a>
+  {% endif %}
   <span style="font-size:.82rem;font-weight:600;color:var(--text-primary)">Compare</span>
   <span id="compare-subtitle" style="font-size:.72rem;color:var(--text-secondary)"></span>
   <span style="flex:1"></span>

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
@@ -4251,3 +4251,515 @@ async def test_compare_api_empty_ids(storage: Storage) -> None:
         race_id = (await client.post("/api/races/start")).json()["id"]
         resp = await client.get(f"/api/sessions/{race_id}/maneuvers/compare?ids=")
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Cross-session maneuver compare + browser (#584)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_maneuvers(
+    storage: Storage, client: httpx.AsyncClient, *, event: str, count: int = 2
+) -> tuple[int, list[int]]:
+    """Create a race and seed ``count`` tacks; return (race_id, [maneuver_ids])."""
+    from helmlog.maneuver_detector import Maneuver
+
+    await _set_event(client, event)
+    race_id = (await client.post("/api/races/start")).json()["id"]
+    maneuvers = [
+        Maneuver(
+            type="tack",
+            ts=datetime(2026, 2, 26, 14, 10 + i, 0, tzinfo=UTC),
+            end_ts=datetime(2026, 2, 26, 14, 10 + i, 8, tzinfo=UTC),
+            duration_sec=8.0,
+            loss_kts=0.5,
+            vmg_loss_kts=None,
+            tws_bin=12,
+            twa_bin=40,
+        )
+        for i in range(count)
+    ]
+    await storage.write_maneuvers(race_id, maneuvers)
+    rows = await storage.get_session_maneuvers(race_id)
+    return race_id, [r["id"] for r in rows]
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_parses_pairs(storage: Storage) -> None:
+    """GET /api/maneuvers/compare?ids=sid:mid returns maneuvers keyed by session."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, mids = await _seed_maneuvers(storage, client, event="CrossA", count=2)
+        ids = f"{race_id}:{mids[0]},{race_id}:{mids[1]}"
+        resp = await client.get(f"/api/maneuvers/compare?ids={ids}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 2
+    assert str(race_id) in data["video_sync_by_session"]
+    # Each maneuver must carry its session context for cross-session rendering.
+    for m in data["maneuvers"]:
+        assert m["session_id"] == race_id
+        assert m.get("session_name")
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_mixes_sessions(storage: Storage) -> None:
+    """Pairs from two different sessions return a per-session video_sync map."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r1, m1_ids = await _seed_maneuvers(storage, client, event="MixA", count=1)
+        # End the first race before starting the second to avoid overlap.
+        await client.post("/api/races/stop")
+        r2, m2_ids = await _seed_maneuvers(storage, client, event="MixB", count=1)
+        ids = f"{r1}:{m1_ids[0]},{r2}:{m2_ids[0]}"
+        resp = await client.get(f"/api/maneuvers/compare?ids={ids}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 2
+    sessions = {m["session_id"] for m in data["maneuvers"]}
+    assert sessions == {r1, r2}
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_rejects_bare_ids(storage: Storage) -> None:
+    """Legacy comma-separated integer ids must fail on the cross-session endpoint."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/compare?ids=1,2,3")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_api_rejects_malformed(storage: Storage) -> None:
+    """Malformed id pairs (missing half, non-integer) return 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        for bad in ("foo:bar", "1:", ":1", "abc"):
+            resp = await client.get(f"/api/maneuvers/compare?ids={bad}")
+            assert resp.status_code == 422, f"{bad} should be rejected"
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_page_renders(storage: Storage) -> None:
+    """GET /compare renders without a session path parameter."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/compare")
+    assert resp.status_code == 200
+    assert b"compare-grid" in resp.content
+
+
+@pytest.mark.asyncio
+async def test_maneuvers_browser_page_renders(storage: Storage) -> None:
+    """GET /maneuvers renders the browser page."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/maneuvers")
+    assert resp.status_code == 200
+    assert b"mv-sessions" in resp.content
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_endpoint(storage: Storage) -> None:
+    """GET /api/maneuvers/sessions lists sessions with maneuver counts."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseA", count=3)
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    sessions = resp.json()["sessions"]
+    match = [s for s in sessions if s["id"] == race_id]
+    assert match, "seeded race must appear in sessions list"
+    assert match[0]["maneuver_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_excludes_empty(storage: Storage) -> None:
+    """Sessions with zero maneuvers (imported-results rows) are filtered out."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        with_race, _ = await _seed_maneuvers(storage, client, event="HasMan", count=1)
+        await client.post("/api/races/stop")
+        await _set_event(client, "NoMan")
+        empty_race = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    ids = {s["id"] for s in resp.json()["sessions"]}
+    assert with_race in ids
+    assert empty_race not in ids
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_excludes_imported(storage: Storage) -> None:
+    """Races imported from external results (source != 'live') are hidden even
+    if they have maneuver rows (duplicated across classes in the same window)."""
+    from helmlog.maneuver_detector import Maneuver
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        live_race, _ = await _seed_maneuvers(storage, client, event="Live", count=1)
+        # Create a second race, tag it as imported (source != 'live'), and
+        # attach a maneuver so only the source filter can exclude it.
+        await client.post("/api/races/stop")
+        await _set_event(client, "Imported")
+        imported_race = (await client.post("/api/races/start")).json()["id"]
+        await storage.write_maneuvers(
+            imported_race,
+            [
+                Maneuver(
+                    type="tack",
+                    ts=datetime(2026, 2, 26, 15, 0, 0, tzinfo=UTC),
+                    end_ts=datetime(2026, 2, 26, 15, 0, 8, tzinfo=UTC),
+                    duration_sec=8.0,
+                    loss_kts=0.5,
+                    vmg_loss_kts=None,
+                    tws_bin=12,
+                    twa_bin=40,
+                )
+            ],
+        )
+        await storage._conn().execute(
+            "UPDATE races SET source = 'clubspot' WHERE id = ?", (imported_race,)
+        )
+        await storage._conn().commit()
+        resp = await client.get("/api/maneuvers/sessions")
+    assert resp.status_code == 200
+    ids = {s["id"] for s in resp.json()["sessions"]}
+    assert live_race in ids
+    assert imported_race not in ids
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_regattas_endpoint(storage: Storage) -> None:
+    """GET /api/maneuvers/regattas returns only regattas with linked sessions."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/regattas")
+    assert resp.status_code == 200
+    assert "regattas" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_by_session_ids(storage: Storage) -> None:
+    """GET /api/maneuvers/browse?session_ids= returns only those sessions' maneuvers."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseB", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_ids"] == [race_id]
+    # All returned maneuvers must belong to that session.
+    for m in data["maneuvers"]:
+        assert m["session_id"] == race_id
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filters_by_type(storage: Storage) -> None:
+    """Type filter excludes non-matching maneuvers."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseC", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=gybe")
+    assert resp.status_code == 200
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filters_by_wind(storage: Storage) -> None:
+    """Wind-range filter drops maneuvers whose entry_tws is None or out of band."""
+    # Seeded maneuvers have no instrument data, so entry_tws is None; any
+    # explicit wind filter must exclude them.
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BrowseD", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&tws_min=8&tws_max=10")
+    assert resp.status_code == 200
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_type(storage: Storage) -> None:
+    """Invalid type value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?type=turtle")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_direction(storage: Storage) -> None:
+    """Invalid direction value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?direction=X")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_filters_by_session_type(storage: Storage) -> None:
+    """session_type=race hides practice sessions from the picker (and vice versa)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="RaceOnly", count=1)
+        # Tag a second seeded session as practice
+        await client.post("/api/races/stop")
+        practice_id, _ = await _seed_maneuvers(storage, client, event="PracOnly", count=1)
+        await storage._conn().execute(
+            "UPDATE races SET session_type = 'practice' WHERE id = ?", (practice_id,)
+        )
+        await storage._conn().commit()
+
+        race_resp = await client.get("/api/maneuvers/sessions?session_type=race")
+        prac_resp = await client.get("/api/maneuvers/sessions?session_type=practice")
+
+    race_ids = {s["id"] for s in race_resp.json()["sessions"]}
+    prac_ids = {s["id"] for s in prac_resp.json()["sessions"]}
+    assert race_id in race_ids and practice_id not in race_ids
+    assert practice_id in prac_ids and race_id not in prac_ids
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_sessions_rejects_bad_session_type(storage: Storage) -> None:
+    """Unknown session_type value returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/sessions?session_type=dinghy")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_tws_bands_multi(storage: Storage) -> None:
+    """tws_bands accepts multiple non-contiguous bands as a logical OR."""
+    # No instrument data is seeded, so entry_tws is None and any wind
+    # filter excludes all maneuvers — exercising the code path is enough
+    # to catch parse/filter regressions.
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="BandMulti", count=2)
+        ok = await client.get(
+            f"/api/maneuvers/browse?session_ids={race_id}&tws_bands=6-8,12-15,15-"
+        )
+    assert ok.status_code == 200
+    assert ok.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_tws_bands_rejects_non_numeric(storage: Storage) -> None:
+    """Non-numeric tws_bands token returns 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?tws_bands=foo-bar")
+    assert resp.status_code == 422
+
+
+async def _attach_vakaros_gun(storage: Storage, race_id: int, gun_ts: datetime) -> None:
+    """Give a race a matched Vakaros session + race_start event at ``gun_ts``."""
+    db = storage._conn()
+    cur = await db.execute(
+        "INSERT INTO vakaros_sessions "
+        "(source_hash, source_file, start_utc, end_utc, ingested_at) "
+        "VALUES (?, 'test.csv', ?, ?, ?)",
+        (
+            f"hash-{race_id}",
+            gun_ts.isoformat(),
+            (gun_ts + timedelta(hours=1)).isoformat(),
+            gun_ts.isoformat(),
+        ),
+    )
+    vak_session_id = cur.lastrowid
+    await db.execute(
+        "INSERT INTO vakaros_race_events "
+        "(session_id, event_type, ts, timer_value_s) VALUES (?, 'race_start', ?, 0)",
+        (vak_session_id, gun_ts.isoformat()),
+    )
+    await db.execute(
+        "UPDATE races SET vakaros_session_id = ?, start_utc = ?, end_utc = ? WHERE id = ?",
+        (
+            vak_session_id,
+            (gun_ts - timedelta(minutes=10)).isoformat(),
+            (gun_ts + timedelta(hours=1)).isoformat(),
+            race_id,
+        ),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_synthesizes_start(storage: Storage) -> None:
+    """A session with a Vakaros race_start event gets a synthetic start entry."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="Start", count=1)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    starts = [m for m in data["maneuvers"] if m["type"] == "start"]
+    assert len(starts) == 1
+    assert starts[0]["session_id"] == race_id
+    assert starts[0]["id"] == "S"
+    assert starts[0]["ts"].startswith("2026-02-26T14:20:00")
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_start_filter_excludes_others(storage: Storage) -> None:
+    """type=start returns only synthesized starts; real maneuvers are dropped."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="StartOnly", count=2)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=start")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 1
+    assert data["maneuvers"][0]["type"] == "start"
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_no_start_without_vakaros_gun(storage: Storage) -> None:
+    """Sessions without a Vakaros race_start event get no synthesized start."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="NoGun", count=1)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    starts = [m for m in data["maneuvers"] if m["type"] == "start"]
+    assert starts == []
+
+
+@pytest.mark.asyncio
+async def test_cross_session_compare_resolves_start_token(storage: Storage) -> None:
+    """ids=<sid>:S resolves to a synthesized start on the compare endpoint."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="CmpStart", count=1)
+        gun_ts = datetime(2026, 2, 26, 14, 20, 0, tzinfo=UTC)
+        await _attach_vakaros_gun(storage, race_id, gun_ts)
+        resp = await client.get(f"/api/maneuvers/compare?ids={race_id}:S")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["maneuvers"]) == 1
+    assert data["maneuvers"][0]["type"] == "start"
+    assert data["maneuvers"][0]["id"] == "S"
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_tags_rounding_mark(storage: Storage) -> None:
+    """Each rounding gets a mark=weather|leeward field classified by exit_twa."""
+    # Without instrument data, enrichment produces entry_twa/exit_twa = None,
+    # so _classify_rounding_mark returns None. We patch exit_twa directly on
+    # the enriched payload via a monkey-patched maneuver — easier to just
+    # verify the classifier directly.
+    from helmlog.routes.sessions import _classify_rounding_mark
+
+    assert _classify_rounding_mark({"type": "rounding", "exit_twa": 120}) == "weather"
+    assert _classify_rounding_mark({"type": "rounding", "exit_twa": 40}) == "leeward"
+    assert _classify_rounding_mark({"type": "rounding", "entry_twa": 40}) == "weather"
+    assert _classify_rounding_mark({"type": "rounding", "entry_twa": 120}) == "leeward"
+    assert _classify_rounding_mark({"type": "rounding"}) is None
+    assert _classify_rounding_mark({"type": "tack", "exit_twa": 40}) is None
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filter_weather_implies_rounding(storage: Storage) -> None:
+    """type=weather only returns roundings (tacks/gybes are excluded)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="Marks", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=weather")
+    assert resp.status_code == 200
+    # Seeded maneuvers are tacks — none should pass a weather-mark filter.
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_mark_type(storage: Storage) -> None:
+    """Unknown type token (not tack/gybe/rounding/weather/leeward/start) → 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?type=windward")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_post_start_filter(storage: Storage) -> None:
+    """post_start=1 drops maneuvers whose ts is before the session's start_utc.
+
+    With no Vakaros race_start event, the server falls back to the race's
+    stored start_utc as the effective gun. The seeded tacks use
+    ts = 14:10, 14:11 UTC; start_utc is set to 14:30 via _END_UTC below
+    so both maneuvers land pre-start.
+    """
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="PostStart", count=2)
+        # Push the race start forward so the seeded maneuvers (ts 14:10,14:11)
+        # are firmly before the "gun" (14:30 Z).
+        await storage._conn().execute(
+            "UPDATE races SET start_utc = ? WHERE id = ?",
+            ("2026-02-26T14:30:00+00:00", race_id),
+        )
+        await storage._conn().commit()
+
+        without_filter = await client.get(f"/api/maneuvers/browse?session_ids={race_id}")
+        with_filter = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&post_start=1")
+    assert without_filter.status_code == 200
+    assert with_filter.status_code == 200
+    assert len(without_filter.json()["maneuvers"]) == 2
+    assert with_filter.json()["maneuvers"] == []

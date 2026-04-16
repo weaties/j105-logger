@@ -762,3 +762,46 @@ async def enrich_session_maneuvers(
         {"maneuvers": enriched, "video_sync": video_sync},
     )
     return enriched, video_sync
+
+
+async def enrich_maneuvers_for_ids(
+    storage: Storage, pairs: list[tuple[int, int]]
+) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any] | None]]:
+    """Cross-session version of :func:`enrich_session_maneuvers` (#584).
+
+    Takes a list of ``(session_id, maneuver_id)`` pairs and returns the
+    enriched maneuver payloads across sessions, plus a mapping
+    ``{session_id: video_sync}`` keyed by session. Each returned maneuver
+    has ``session_id``, ``session_name``, ``session_slug``, and
+    ``session_start_utc`` injected so the compare UI can label cells when
+    mixing sessions.
+
+    The underlying per-session enrichment is cached, so repeat calls for
+    the same session only pay the enrichment cost once.
+    """
+    if not pairs:
+        return [], {}
+
+    by_session: dict[int, set[int]] = {}
+    for sid, mid in pairs:
+        by_session.setdefault(sid, set()).add(mid)
+
+    out: list[dict[str, Any]] = []
+    video_sync_by_session: dict[int, dict[str, Any] | None] = {}
+
+    for session_id, wanted_ids in by_session.items():
+        race = await storage.get_race(session_id)
+        if race is None:
+            continue
+        enriched, video_sync = await enrich_session_maneuvers(storage, session_id)
+        video_sync_by_session[session_id] = video_sync
+        for m in enriched:
+            if m.get("id") in wanted_ids:
+                tagged = dict(m)
+                tagged["session_id"] = session_id
+                tagged["session_name"] = race.name
+                tagged["session_slug"] = race.slug or ""
+                tagged["session_start_utc"] = race.start_utc.isoformat() if race.start_utc else None
+                out.append(tagged)
+
+    return out, video_sync_by_session

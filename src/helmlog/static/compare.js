@@ -12,10 +12,27 @@
 // State
 // ---------------------------------------------------------------------------
 
-const SESSION_ID = document.getElementById('app-config').dataset.sessionId;
+// SESSION_ID is null in cross-session mode (page loaded at /compare instead
+// of /session/{id}/compare). _crossSession switches data fetching between
+// the legacy per-session API and the cross-session /api/maneuvers/compare
+// endpoint introduced in #584.
+const SESSION_ID = document.getElementById('app-config').dataset.sessionId || null;
 let _players = [];   // { player, cueSeconds, maneuver, idx, nudge }
 let _allManeuvers = [];
+let _crossSession = false;
+// In single-session mode these are the one-and-only session's data;
+// in cross-session mode they stay empty and the *BySession maps are used.
 let _videoSync = null;
+// Per-session lookup tables — populated whether we're in single- or
+// cross-session mode so rendering paths can uniformly read by session_id.
+const _videoSyncBySession = Object.create(null);
+const _trackBySession = Object.create(null);
+const _replayBySession = Object.create(null);
+const _raceGunMsBySession = Object.create(null);
+// Start-line geometry per session — {pin:[lat,lon], boat:[lat,lon]} or null.
+// Populated alongside track/replay when a cell is a "start" maneuver so the
+// start overlay can compute live distance-to-line during playback (#584).
+const _startLineBySession = Object.create(null);
 let _playing = false;
 let _prerollS = 10;
 let _globalNudge = 0;  // seconds, applied to all videos (#568)
@@ -23,14 +40,21 @@ let _ytReady = false;
 let _muted = true; // default muted — multiple simultaneous audio is never useful
 let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
-let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
-let _replaySamples = null; // [{ts:Date, hdg, cog, stw, sog, tws, twa, twd, aws, awa}]
-let _raceGunMs = null; // race start UTC in ms
 let _gaugeVisible = true;
 let _compareFilter = new Set(); // active filter pills on the compare page
-const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
+const _CMP_TYPE_PILLS = ['tack', 'gybe', 'rounding', 'weather', 'leeward', 'start'];
 const _CMP_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
 const _CMP_RANK_PILLS = ['good', 'bad'];
+// Wind-range pill values look like "tws:8-10" or "tws:15+" so they share
+// the single `_compareFilter` set without colliding with other pill names.
+const _CMP_TWS_BANDS = [
+  { label: '0-6', min: 0, max: 6 },
+  { label: '6-8', min: 6, max: 8 },
+  { label: '8-10', min: 8, max: 10 },
+  { label: '10-12', min: 10, max: 12 },
+  { label: '12-15', min: 12, max: 15 },
+  { label: '15+', min: 15, max: null },
+];
 let _filterPanelOpen = false;
 
 // ---------------------------------------------------------------------------
@@ -41,27 +65,68 @@ let _filterPanelOpen = false;
   _loadYouTubeAPI();
   const ids = new URLSearchParams(window.location.search).get('ids');
   if (!ids) { _showEmpty(); return; }
-  const resp = await fetch(`/api/sessions/${SESSION_ID}/maneuvers/compare?ids=${ids}`);
-  if (!resp.ok) { _showEmpty(); return; }
-  const data = await resp.json();
-  const maneuvers = data.maneuvers || [];
-  _videoSync = data.video_sync;
-  if (!maneuvers.length || !_videoSync) { _showEmpty(); return; }
+
+  // Decide which endpoint to use: any ":" in ids indicates cross-session
+  // <sid>:<mid> pairs (#584); otherwise fall back to the legacy
+  // /api/sessions/{sid}/maneuvers/compare path.
+  _crossSession = ids.includes(':') || !SESSION_ID;
+
+  let maneuvers = [];
+  if (_crossSession) {
+    const resp = await fetch(`/api/maneuvers/compare?ids=${encodeURIComponent(ids)}`);
+    if (!resp.ok) { _showEmpty(); return; }
+    const data = await resp.json();
+    maneuvers = data.maneuvers || [];
+    const vsb = data.video_sync_by_session || {};
+    for (const k of Object.keys(vsb)) _videoSyncBySession[Number(k)] = vsb[k];
+  } else {
+    const resp = await fetch(`/api/sessions/${SESSION_ID}/maneuvers/compare?ids=${ids}`);
+    if (!resp.ok) { _showEmpty(); return; }
+    const data = await resp.json();
+    maneuvers = data.maneuvers || [];
+    _videoSync = data.video_sync;
+    if (_videoSync) _videoSyncBySession[Number(SESSION_ID)] = _videoSync;
+    // Stamp session_id onto each maneuver so downstream code that
+    // looks up by session_id works uniformly across modes.
+    maneuvers.forEach(m => { if (m.session_id == null) m.session_id = Number(SESSION_ID); });
+  }
+
+  if (!maneuvers.length) { _showEmpty(); return; }
 
   _allManeuvers = maneuvers.filter(m => m.youtube_url);
   if (!_allManeuvers.length) { _showEmpty(); return; }
 
-  // Fetch session track and replay data in parallel
-  const [trackResult, replayResult] = await Promise.allSettled([
-    fetch(`/api/sessions/${SESSION_ID}/track`),
-    fetch(`/api/sessions/${SESSION_ID}/replay`),
-  ]);
+  // Fetch track + replay for every distinct session represented in the
+  // maneuver set, in parallel. Each session's data is cached separately
+  // so cells render from the right source even when sessions are mixed.
+  const sessionIds = [...new Set(_allManeuvers.map(m => m.session_id).filter(x => x != null))];
+  await Promise.all(sessionIds.map(_loadSessionOverlays));
+
+  _updateHeaderLink();
+  _buildGrid();
+  document.getElementById('compare-controls').style.display = '';
+  window.addEventListener('resize', _onResize);
+})();
+
+async function _loadSessionOverlays(sid) {
+  // Only fetch course-overlay (start line) when this session contributes a
+  // start maneuver — a large majority of compares will be tack/gybe/rounding
+  // and don't need it.
+  const needStartLine = _allManeuvers.some(
+    m => m.session_id === sid && m.type === 'start'
+  );
+  const tasks = [
+    fetch(`/api/sessions/${sid}/track`),
+    fetch(`/api/sessions/${sid}/replay`),
+  ];
+  if (needStartLine) tasks.push(fetch(`/api/sessions/${sid}/course-overlay`));
+  const [trackResult, replayResult, overlayResult] = await Promise.allSettled(tasks);
   try {
     if (trackResult.status === 'fulfilled' && trackResult.value.ok) {
       const geo = await trackResult.value.json();
       const feat = (geo.features || [])[0];
       if (feat && feat.geometry && feat.geometry.coordinates) {
-        _sessionTrack = {
+        _trackBySession[sid] = {
           coords: feat.geometry.coordinates,
           timestamps: (feat.properties || {}).timestamps || [],
         };
@@ -71,21 +136,39 @@ let _filterPanelOpen = false;
   try {
     if (replayResult.status === 'fulfilled' && replayResult.value.ok) {
       const rData = await replayResult.value.json();
-      _replaySamples = (rData.samples || []).map(s => ({
+      _replayBySession[sid] = (rData.samples || []).map(s => ({
         ts: new Date(s.ts),
         hdg: s.hdg, cog: s.cog, stw: s.stw, sog: s.sog,
         tws: s.tws, twa: s.twa, twd: s.twd, aws: s.aws, awa: s.awa,
       }));
       if (rData.race_gun_utc) {
-        _raceGunMs = _parseUtcMs(rData.race_gun_utc);
+        _raceGunMsBySession[sid] = _parseUtcMs(rData.race_gun_utc);
       }
     }
   } catch (_e) { /* gauge overlay is optional */ }
+  try {
+    if (overlayResult && overlayResult.status === 'fulfilled' && overlayResult.value.ok) {
+      const od = await overlayResult.value.json();
+      const sl = od && od.start_line;
+      if (sl && sl.pin && sl.boat) {
+        _startLineBySession[sid] = { pin: sl.pin, boat: sl.boat };
+      }
+    }
+  } catch (_e) { /* start line is optional */ }
+}
 
-  _buildGrid();
-  document.getElementById('compare-controls').style.display = '';
-  window.addEventListener('resize', _onResize);
-})();
+function _updateHeaderLink() {
+  // In cross-session mode the back-link goes to the browser page; in
+  // single-session mode it's already set by the server template.
+  if (!_crossSession) return;
+  const headerEl = document.getElementById('compare-header');
+  if (!headerEl) return;
+  const back = headerEl.querySelector('a.back-link');
+  if (back) {
+    back.href = '/maneuvers';
+    back.textContent = '\u2190 Maneuvers';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // YouTube IFrame API
@@ -194,9 +277,19 @@ function _buildGrid() {
 
     const trackSvg = _renderTrackOverlay(m, i);
     const courseSvg = _renderCourseOverlay(m, i);
-    const gaugeSvg = _renderGaugePlaceholder(i);
+    const gaugeSvg = _renderGaugePlaceholder(m, i);
     const recoveryBar = _renderRecoveryBar(m, i);
+    const startSvg = _renderStartOverlay(m, i);
     const wrapId = 'yt-wrap-' + i;
+    // In cross-session mode prepend the session label so users can tell
+    // which day/race a given cell came from.
+    const sessionTag = _crossSession && m.session_name
+      ? '<span style="color:var(--text-secondary);font-size:.68rem">'
+        + _esc((m.session_start_utc || '').slice(0, 10)) + ' '
+        + _esc(m.session_name) + '</span> &middot; '
+      : '';
+    const vs = _videoSyncBySession[m.session_id];
+    if (!vs) continue; // skip cells whose session has no video link
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
       + '<div class="yt-wrap" id="' + wrapId + '" style="height:' + Math.max(60, videoH) + 'px">'
@@ -205,8 +298,10 @@ function _buildGrid() {
       + courseSvg
       + gaugeSvg
       + recoveryBar
+      + startSvg
       + '</div>'
       + '<div class="cell-label">'
+      + sessionTag
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
       + dirHint + rank + ' ' + elapsed
       + (turn ? ' &middot; ' + turn : '')
@@ -223,9 +318,9 @@ function _buildGrid() {
       + '</div>';
     grid.appendChild(cell);
 
-    const entry = { divId, videoId: _videoSync.video_id, cueSeconds, maneuver: m, idx: i, nudge };
+    const entry = { divId, videoId: vs.video_id, cueSeconds, maneuver: m, idx: i, nudge };
     if (_ytReady) {
-      _createPlayer(divId, _videoSync.video_id, cueSeconds, m, i, nudge);
+      _createPlayer(divId, vs.video_id, cueSeconds, m, i, nudge);
     } else {
       _pendingPlayers.push(entry);
     }
@@ -453,8 +548,9 @@ function _renderTrackOverlay(m, idx) {
 }
 
 function _renderCourseOverlay(m, idx) {
-  if (!_sessionTrack || !_sessionTrack.coords.length) return '';
-  const coords = _sessionTrack.coords; // [lng, lat]
+  const sessionTrack = _trackBySession[m.session_id];
+  if (!sessionTrack || !sessionTrack.coords.length) return '';
+  const coords = sessionTrack.coords; // [lng, lat]
   if (coords.length < 2) return '';
 
   const size = 100;
@@ -571,9 +667,13 @@ function _tickUpdate() {
     }
 
     // --- Gauge update ---
-    if (_gaugeVisible && _replaySamples && _replaySamples.length) {
-      _updateGauge(p, videoTime);
+    if (_gaugeVisible) {
+      const samples = _replayBySession[p.maneuver.session_id];
+      if (samples && samples.length) _updateGauge(p, videoTime, samples);
     }
+
+    // --- Start overlay update (countdown + DTL) ---
+    if (p.maneuver.type === 'start') _updateStartOverlay(p, videoTime);
   }
 }
 
@@ -581,8 +681,9 @@ function _tickUpdate() {
 // Instrument gauge overlay (#572)
 // ---------------------------------------------------------------------------
 
-function _renderGaugePlaceholder(idx) {
-  if (!_replaySamples || !_replaySamples.length) return '';
+function _renderGaugePlaceholder(m, idx) {
+  const samples = _replayBySession[m.session_id];
+  if (!samples || !samples.length) return '';
   const s = 150; // gauge size
   const r = 62;  // compass radius
   const cx = s / 2, cy = s / 2;
@@ -651,15 +752,15 @@ function _renderGaugePlaceholder(idx) {
     + '</svg>';
 }
 
-function _updateGauge(p, videoTime) {
+function _updateGauge(p, videoTime, samples) {
   // Convert video time to UTC
   const mTs = _parseUtcMs(p.maneuver.ts);
   if (!mTs) return;
   const offsetS = p.maneuver.video_offset_s || 0;
   const utcMs = mTs + (videoTime - offsetS) * 1000;
 
-  // Binary search for nearest sample
-  const sample = _sampleAtTime(utcMs);
+  // Binary search for nearest sample in this maneuver's session replay
+  const sample = _sampleAtTime(utcMs, samples);
   if (!sample) return;
 
   const idx = p.idx;
@@ -719,15 +820,15 @@ function _parseUtcMs(iso) {
   return isNaN(d.getTime()) ? null : d.getTime();
 }
 
-function _sampleAtTime(utcMs) {
-  if (!_replaySamples || !_replaySamples.length) return null;
-  let lo = 0, hi = _replaySamples.length - 1;
+function _sampleAtTime(utcMs, samples) {
+  if (!samples || !samples.length) return null;
+  let lo = 0, hi = samples.length - 1;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
-    if (_replaySamples[mid].ts.getTime() <= utcMs) lo = mid;
+    if (samples[mid].ts.getTime() <= utcMs) lo = mid;
     else hi = mid - 1;
   }
-  return _replaySamples[lo];
+  return samples[lo];
 }
 
 function toggleGaugeOverlay() {
@@ -751,7 +852,8 @@ function toggleGaugeOverlay() {
 // ---------------------------------------------------------------------------
 
 function _renderRecoveryBar(m, idx) {
-  if (!_replaySamples || !_replaySamples.length) return '';
+  const samples = _replayBySession[m.session_id];
+  if (!samples || !samples.length) return '';
   if (m.entry_bsp == null || m.entry_bsp <= 0) return '';
 
   const w = 28, h = 150;
@@ -834,13 +936,132 @@ function _updateRecoveryBar(p, sample) {
 }
 
 // ---------------------------------------------------------------------------
+// Start overlay — countdown to gun + distance to line (#584 follow-up)
+// ---------------------------------------------------------------------------
+
+function _renderStartOverlay(m, idx) {
+  if (m.type !== 'start') return '';
+  const w = 150, h = 56;
+  return '<svg class="start-overlay" id="start-svg-' + idx + '" width="' + w + '" height="' + h + '">'
+    // Background pill
+    + '<rect x="0" y="0" width="' + w + '" height="' + h + '" rx="8" fill="rgba(0,0,0,.72)"/>'
+    // Countdown label (small, above)
+    + '<text x="' + (w / 2) + '" y="12" text-anchor="middle" font-size="8" fill="rgba(255,255,255,.55)" letter-spacing="1">COUNTDOWN</text>'
+    // Countdown value (large, centered)
+    + '<text id="start-countdown-' + idx + '" x="' + (w / 2) + '" y="32" text-anchor="middle" font-size="20" font-weight="700" font-family="monospace" fill="#f59e0b">T-0:00</text>'
+    // DTL label + value (right-aligned on row below)
+    + '<text x="6" y="50" font-size="8" fill="rgba(255,255,255,.55)" letter-spacing="1">DTL</text>'
+    + '<text id="start-dtl-' + idx + '" x="' + (w - 6) + '" y="50" text-anchor="end" font-size="12" font-weight="700" font-family="monospace" fill="#60a5fa">\u2014</text>'
+    + '</svg>';
+}
+
+function _updateStartOverlay(p, videoTime) {
+  const m = p.maneuver;
+  if (m.type !== 'start') return;
+  const idx = p.idx;
+
+  // Countdown: delta relative to the gun in seconds.
+  const delta = videoTime - (m.video_offset_s || 0);
+  const countdownEl = document.getElementById('start-countdown-' + idx);
+  if (countdownEl) {
+    const absS = Math.abs(delta);
+    const mm = Math.floor(absS / 60);
+    const ss = Math.floor(absS % 60);
+    const mmss = String(mm).padStart(1, '0') + ':' + String(ss).padStart(2, '0');
+    let label;
+    let color;
+    if (Math.abs(delta) < 0.5) {
+      label = 'GUN';
+      color = '#3db86e';
+    } else if (delta < 0) {
+      label = 'T-' + mmss;
+      color = '#f59e0b'; // amber pre-gun
+    } else {
+      label = 'T+' + mmss;
+      color = '#60a5fa'; // blue post-gun
+    }
+    countdownEl.textContent = label;
+    countdownEl.setAttribute('fill', color);
+  }
+
+  // Distance to line: look up boat position at the current UTC time and
+  // drop a perpendicular onto the pin\u2194boat segment. Falls back to an em
+  // dash when any piece of data is unavailable.
+  const dtlEl = document.getElementById('start-dtl-' + idx);
+  if (!dtlEl) return;
+  const sid = m.session_id;
+  const line = _startLineBySession[sid];
+  const track = _trackBySession[sid];
+  if (!line || !track || !track.coords || !track.timestamps || !track.timestamps.length) {
+    dtlEl.textContent = '\u2014';
+    return;
+  }
+  const gunMs = _parseUtcMs(m.ts);
+  if (gunMs == null) { dtlEl.textContent = '\u2014'; return; }
+  const utcMs = gunMs + delta * 1000;
+  const pos = _positionAtTime(track, utcMs);
+  if (!pos) { dtlEl.textContent = '\u2014'; return; }
+  const dtl = _distanceToLine(line.pin, line.boat, pos);
+  if (dtl == null) { dtlEl.textContent = '\u2014'; return; }
+  dtlEl.textContent = Math.round(dtl) + 'm';
+  // Red when on/over the line after the gun, amber when close pre-gun.
+  if (delta >= 0 && dtl < 5) dtlEl.setAttribute('fill', '#3db86e');
+  else if (delta < 0 && dtl < 10) dtlEl.setAttribute('fill', '#f59e0b');
+  else dtlEl.setAttribute('fill', '#60a5fa');
+}
+
+function _positionAtTime(track, utcMs) {
+  const timestamps = track.timestamps;
+  const coords = track.coords;
+  if (!timestamps.length || timestamps.length !== coords.length) return null;
+  // Binary search for the largest timestamp <= utcMs.
+  let lo = 0, hi = timestamps.length - 1;
+  const tsMs = (i) => {
+    const iso = timestamps[i];
+    if (!iso) return NaN;
+    let s = iso.replace(' ', 'T');
+    if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+    return new Date(s).getTime();
+  };
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (tsMs(mid) <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  const c = coords[lo];
+  if (!c || c.length < 2) return null;
+  return { lat: c[1], lon: c[0] };
+}
+
+function _distanceToLine(pin, boat, pos) {
+  const pinLat = pin[0], pinLon = pin[1];
+  const boatLat = boat[0], boatLon = boat[1];
+  const mPerDegLat = 111320;
+  const mPerDegLon = 111320 * Math.cos(pinLat * Math.PI / 180);
+  const vx = (boatLon - pinLon) * mPerDegLon;
+  const vy = (boatLat - pinLat) * mPerDegLat;
+  const px = (pos.lon - pinLon) * mPerDegLon;
+  const py = (pos.lat - pinLat) * mPerDegLat;
+  const segLen = Math.hypot(vx, vy);
+  if (segLen === 0) return null;
+  return Math.abs(vx * py - vy * px) / segLen;
+}
+
+// ---------------------------------------------------------------------------
 // Filter panel (#580)
 // ---------------------------------------------------------------------------
 
 function _matchesCompareFilter(m) {
   if (!_compareFilter.size) return true;
   const activeTypes = _CMP_TYPE_PILLS.filter(p => _compareFilter.has(p));
-  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+  if (activeTypes.length) {
+    const hitType = activeTypes.includes(m.type);
+    // weather/leeward pills match roundings with that mark (#584 follow-up).
+    const hitMark = m.type === 'rounding'
+      && ((activeTypes.includes('weather') && m.mark === 'weather')
+       || (activeTypes.includes('leeward') && m.mark === 'leeward'));
+    if (!hitType && !hitMark) return false;
+  }
   const activeRanks = _CMP_RANK_PILLS.filter(p => _compareFilter.has(p));
   if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
   const activeDir = _CMP_DIR_PILLS.filter(p => _compareFilter.has(p));
@@ -850,9 +1071,21 @@ function _matchesCompareFilter(m) {
     if (activeDir.includes('P\u2192S') && !isPS) return false;
     if (activeDir.includes('S\u2192P') && isPS) return false;
   }
-  if (_compareFilter.has('post-start') && _raceGunMs) {
-    const mTs = _parseUtcMs(m.ts);
-    if (!mTs || mTs < _raceGunMs) return false;
+  if (_compareFilter.has('post-start')) {
+    const gunMs = _raceGunMsBySession[m.session_id];
+    if (gunMs) {
+      const mTs = _parseUtcMs(m.ts);
+      if (!mTs || mTs < gunMs) return false;
+    }
+  }
+  // Wind-range bands (#584). Pill values are "tws:<label>"; a single band
+  // filter applies but if two are on we union them (logical OR).
+  const activeTws = _CMP_TWS_BANDS.filter(b => _compareFilter.has('tws:' + b.label));
+  if (activeTws.length) {
+    const t = m.entry_tws;
+    if (t == null) return false;
+    const inAny = activeTws.some(b => t >= b.min && (b.max == null || t <= b.max));
+    if (!inAny) return false;
   }
   return true;
 }
@@ -940,14 +1173,20 @@ function _renderFilterPills() {
   const container = document.getElementById('filter-pills');
   if (!container) return;
 
-  const pills = ['all', 'tack', 'gybe', 'rounding', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
-  if (_raceGunMs) pills.push('post-start');
+  const pills = ['all', 'tack', 'gybe', 'rounding', 'weather', 'leeward', 'start', 'P\u2192S', 'S\u2192P', 'good', 'bad'];
+  // Only show post-start when at least one session has a gun time recorded.
+  const anyGun = Object.values(_raceGunMsBySession).some(Boolean);
+  if (anyGun) pills.push('post-start');
+  // Wind-range pills (#584).
+  for (const b of _CMP_TWS_BANDS) pills.push('tws:' + b.label);
+
   container.innerHTML = pills.map(f => {
     const active = f === 'all' ? _compareFilter.size === 0 : _compareFilter.has(f);
     const style = 'font-size:.72rem;padding:2px 8px;border:1px solid var(--border);background:'
       + (active ? 'var(--accent)' : 'transparent') + ';color:'
       + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px';
-    return '<button style="' + style + '" onclick="setCompareFilter(\'' + f + '\')">' + f + '</button>';
+    const label = f.startsWith('tws:') ? f.slice(4) + ' kt' : f;
+    return '<button style="' + style + '" onclick="setCompareFilter(\'' + f + '\')" title="' + f + '">' + label + '</button>';
   }).join('');
 }
 
