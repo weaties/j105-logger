@@ -22,6 +22,7 @@ let _globalNudge = 0;  // seconds, applied to all videos (#568)
 let _ytReady = false;
 let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
+let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
 
 // ---------------------------------------------------------------------------
 // Init
@@ -40,6 +41,21 @@ let _tickInterval = 0; // playback position poll timer
 
   _allManeuvers = maneuvers.filter(m => m.youtube_url);
   if (!_allManeuvers.length) { _showEmpty(); return; }
+
+  // Fetch session track for the full-course overlay
+  try {
+    const trackResp = await fetch(`/api/sessions/${SESSION_ID}/track`);
+    if (trackResp.ok) {
+      const geo = await trackResp.json();
+      const feat = (geo.features || [])[0];
+      if (feat && feat.geometry && feat.geometry.coordinates) {
+        _sessionTrack = {
+          coords: feat.geometry.coordinates,
+          timestamps: (feat.properties || {}).timestamps || [],
+        };
+      }
+    }
+  } catch (_e) { /* track overlay is optional */ }
 
   _buildGrid();
   document.getElementById('compare-controls').style.display = '';
@@ -148,12 +164,14 @@ function _buildGrid() {
     const nudgeDisplay = nudge !== 0 ? (nudge > 0 ? '+' : '') + nudge.toFixed(1) + 's' : '0.0s';
 
     const trackSvg = _renderTrackOverlay(m, i);
+    const courseSvg = _renderCourseOverlay(m, i);
     const wrapId = 'yt-wrap-' + i;
     cell.innerHTML =
       '<button class="cell-dismiss" onclick="dismissCell(' + i + ')" title="Remove from comparison">&#10005;</button>'
       + '<div class="yt-wrap" id="' + wrapId + '" style="height:' + Math.max(60, videoH) + 'px">'
       + '<div id="' + divId + '" style="width:100%;height:100%"></div>'
       + trackSvg
+      + courseSvg
       + '</div>'
       + '<div class="cell-label">'
       + '<b class="' + typeClass + '">' + _esc(m.type || 'maneuver') + '</b>'
@@ -380,6 +398,65 @@ function _renderTrackOverlay(m, idx) {
     + '</svg>';
 }
 
+function _renderCourseOverlay(m, idx) {
+  if (!_sessionTrack || !_sessionTrack.coords.length) return '';
+  const coords = _sessionTrack.coords; // [lng, lat]
+  if (coords.length < 2) return '';
+
+  const size = 100;
+  const pad = 6;
+
+  // Convert lng/lat to simple x/y (Mercator-ish, fine for local scale)
+  const lat0 = coords[0][1], lng0 = coords[0][0];
+  const cosLat = Math.cos(lat0 * Math.PI / 180);
+  const mPerDeg = 111320;
+  const points = coords.map(c => ({
+    x: (c[0] - lng0) * mPerDeg * cosLat,
+    y: (c[1] - lat0) * mPerDeg,
+  }));
+
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of points) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!isFinite(minX)) return '';
+
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(20, Math.max(maxX - minX, maxY - minY) / 2 * 1.1);
+  const sx = x => pad + (x - (cx - half)) / (2 * half) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - (cy - half)) / (2 * half) * (size - 2 * pad);
+
+  // Downsample for SVG performance (keep every Nth point)
+  const step = Math.max(1, Math.floor(points.length / 300));
+  const pts = [];
+  for (let i = 0; i < points.length; i += step) {
+    pts.push(sx(points[i].x).toFixed(1) + ',' + sy(points[i].y).toFixed(1));
+  }
+
+  // Maneuver position marker
+  let marker = '';
+  if (m.lat != null && m.lon != null) {
+    const mx = (m.lon - lng0) * mPerDeg * cosLat;
+    const my = (m.lat - lat0) * mPerDeg;
+    const msx = sx(mx), msy = sy(my);
+    const rankColors = { good: '#3db86e', bad: '#d64545', avg: '#888' };
+    const mc = rankColors[m.rank] || '#7eb8f7';
+    marker = '<circle cx="' + msx.toFixed(1) + '" cy="' + msy.toFixed(1)
+      + '" r="4" fill="' + mc + '" stroke="#fff" stroke-width="1.5"/>';
+  }
+
+  const display = _trackOverlayVisible ? '' : 'display:none;';
+
+  return '<svg class="track-overlay course-overlay" id="course-svg-' + idx + '" width="' + size + '" height="' + size + '" style="' + display + 'bottom:auto;left:auto;top:6px;right:30px">'
+    + '<rect width="' + size + '" height="' + size + '" rx="6" fill="rgba(0,0,0,.4)"/>'
+    + '<polyline points="' + pts.join(' ') + '" fill="none" stroke="rgba(255,255,255,.4)" stroke-width="1" stroke-linejoin="round"/>'
+    + marker
+    + '</svg>';
+}
+
 function toggleTrackOverlay() {
   _trackOverlayVisible = !_trackOverlayVisible;
   const btn = document.getElementById('track-toggle-btn');
@@ -391,6 +468,8 @@ function toggleTrackOverlay() {
   for (let i = 0; i < _allManeuvers.length; i++) {
     const svg = document.getElementById('track-svg-' + i);
     if (svg) svg.style.display = _trackOverlayVisible ? '' : 'none';
+    const course = document.getElementById('course-svg-' + i);
+    if (course) course.style.display = _trackOverlayVisible ? '' : 'none';
   }
 }
 
