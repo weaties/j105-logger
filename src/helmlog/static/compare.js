@@ -873,8 +873,8 @@ function toggleFilterPanel() {
     btn.style.color = _filterPanelOpen ? 'var(--bg-primary)' : 'var(--text-secondary)';
     btn.style.border = _filterPanelOpen ? 'none' : '1px solid var(--border)';
   }
-  // Re-layout since the header height changed
-  _onResize();
+  // Re-layout grid height without destroying cells
+  _applyFilter();
 }
 
 function _applyFilter() {
