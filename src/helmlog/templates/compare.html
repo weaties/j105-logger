@@ -3,14 +3,16 @@
 
 {% block extra_css %}
 <style>
-.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px}
+.page{max-width:100%!important;padding:8px!important}
+footer{display:none}
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
 @media(max-width:700px){.compare-grid{grid-template-columns:1fr}}
-.compare-cell{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;padding:10px;overflow:hidden}
-.compare-cell .yt-wrap{aspect-ratio:16/9;border-radius:6px;overflow:hidden;background:#000}
-.compare-cell .cell-label{font-size:.78rem;color:var(--text-secondary);margin-top:6px}
+.compare-cell{background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:4px;overflow:hidden}
+.compare-cell .yt-wrap{aspect-ratio:16/9;border-radius:4px;overflow:hidden;background:#000}
+.compare-cell .cell-label{font-size:.72rem;color:var(--text-secondary);margin-top:3px;padding:0 2px}
 .compare-cell .cell-label b{color:var(--text-primary)}
-.compare-controls{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0}
-.compare-controls button{background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;padding:6px 14px;font-size:.85rem;cursor:pointer}
+.compare-controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.compare-controls button{background:var(--accent-strong);color:var(--bg-primary);border:none;border-radius:4px;padding:5px 12px;font-size:.82rem;cursor:pointer}
 .compare-controls button:hover{opacity:.85}
 .compare-controls select{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-size:.82rem}
 .compare-empty{color:var(--text-secondary);font-size:.85rem;padding:20px 0}
@@ -28,15 +30,12 @@
   data-session-slug="{{ session_slug or '' }}"
   style="display:none"></div>
 
-<a href="/session/{{ session_id }}/{{ session_slug or '' }}" class="back-link">&larr; {{ session_name }}</a>
-
-<div class="card">
-  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-    <div>
-      <div style="font-size:1rem;font-weight:600;color:var(--text-primary)">Compare Maneuvers</div>
-      <div id="compare-subtitle" style="font-size:.78rem;color:var(--text-secondary)"></div>
-    </div>
-    <div class="compare-controls" id="compare-controls" style="display:none">
+<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:4px">
+  <a href="/session/{{ session_id }}/{{ session_slug or '' }}" class="back-link" style="margin:0">&larr; {{ session_name }}</a>
+  <span style="font-size:.85rem;font-weight:600;color:var(--text-primary)">Compare</span>
+  <span id="compare-subtitle" style="font-size:.75rem;color:var(--text-secondary)"></span>
+  <span style="flex:1"></span>
+  <div class="compare-controls" id="compare-controls" style="display:none">
       <button id="play-all-btn" type="button" onclick="togglePlayAll()">&#9654; Play All</button>
       <button type="button" onclick="seekAllToStart()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border)">&#9198; Reset</button>
       <label style="font-size:.78rem;color:var(--text-secondary)">Speed
@@ -57,10 +56,9 @@
         </select>
       </label>
     </div>
-  </div>
 </div>
 
-<div id="compare-grid" class="compare-grid cols-2"></div>
+<div id="compare-grid" class="compare-grid"></div>
 <div id="compare-empty" class="card compare-empty" style="display:none">
   No maneuvers selected, or selected maneuvers have no linked video. Return to the session page and select maneuvers with video links, then click Compare.
 </div>
