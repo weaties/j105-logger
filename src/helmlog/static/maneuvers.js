@@ -7,7 +7,7 @@
 
 'use strict';
 
-const TYPE_PILLS = ['tack', 'gybe', 'rounding', 'start'];
+const TYPE_PILLS = ['tack', 'gybe', 'rounding', 'weather', 'leeward', 'start'];
 const DIR_PILLS = [
   { label: 'P\u2192S', value: 'PS' },
   { label: 'S\u2192P', value: 'SP' },
@@ -260,6 +260,11 @@ function renderResults() {
     const turnTxt = m.turn_angle_deg != null ? Math.abs(m.turn_angle_deg).toFixed(0) + '\u00b0' : '—';
     const durTxt = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
     const typeCls = 'mv-badge-' + (m.type || '');
+    // Annotate roundings with the mark type so users can tell weather
+    // from leeward at a glance.
+    const typeLabel = (m.type === 'rounding' && m.mark)
+      ? 'rounding (' + (m.mark === 'weather' ? 'W' : 'L') + ')'
+      : (m.type || '');
     const dir = m.turn_angle_deg != null
       ? (m.turn_angle_deg < 0 ? 'P\u2192S' : 'S\u2192P')
       : '';
@@ -271,7 +276,7 @@ function renderResults() {
       + '<td><input type="checkbox" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();mvToggleRow(\'' + k + '\')"/></td>'
       + '<td>' + _esc(date) + ' \u00b7 ' + _esc(m.session_name || '') + '</td>'
       + '<td>' + _esc(time) + '</td>'
-      + '<td class="' + typeCls + '">' + _esc(m.type || '') + '</td>'
+      + '<td class="' + typeCls + '">' + _esc(typeLabel) + '</td>'
       + '<td>' + dir + '</td>'
       + '<td class="mv-num">' + twsTxt + '</td>'
       + '<td class="mv-num">' + turnTxt + '</td>'

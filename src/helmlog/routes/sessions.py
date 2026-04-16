@@ -1327,6 +1327,28 @@ async def api_session_maneuvers_compare(
 _START_TOKEN = "S"
 
 
+def _classify_rounding_mark(m: dict[str, Any]) -> str | None:
+    """Tag a rounding as ``weather`` / ``leeward`` based on exit heading.
+
+    After a weather (windward) mark the boat is on a downwind leg
+    (exit_twa >= 90°). After a leeward mark the boat is on an upwind
+    leg (exit_twa < 90°). Falls back to entry_twa with inverted logic
+    when exit_twa is missing. Returns ``None`` for non-rounding
+    maneuvers or when TWA data is unavailable.
+    """
+    if m.get("type") != "rounding":
+        return None
+    exit_twa = m.get("exit_twa")
+    if exit_twa is not None:
+        return "weather" if exit_twa >= 90 else "leeward"
+    entry_twa = m.get("entry_twa")
+    if entry_twa is not None:
+        # Mirror logic: exiting inverts the mode — a rounding entered
+        # downwind exits upwind (leeward mark) and vice versa.
+        return "leeward" if entry_twa >= 90 else "weather"
+    return None
+
+
 def _parse_cross_session_ids(ids: str) -> list[tuple[int, int | str]]:
     """Parse ``ids`` query param for cross-session compare (#584).
 
@@ -1509,6 +1531,9 @@ async def api_cross_session_maneuvers_compare(
     video_sync_by_session: dict[int, dict[str, Any] | None] = {}
     if real_pairs:
         maneuvers, video_sync_by_session = await enrich_maneuvers_for_ids(storage, real_pairs)
+        for m in maneuvers:
+            if m.get("type") == "rounding":
+                m["mark"] = _classify_rounding_mark(m)
 
     if start_session_ids:
         db = storage._conn()
@@ -1677,8 +1702,18 @@ async def api_maneuver_browse(
     storage = get_storage(request)
     from helmlog.analysis.maneuvers import enrich_maneuvers_for_ids
 
-    if type is not None and type not in ("tack", "gybe", "rounding", "start"):
-        raise HTTPException(status_code=422, detail="type must be tack|gybe|rounding|start")
+    if type is not None and type not in (
+        "tack",
+        "gybe",
+        "rounding",
+        "weather",
+        "leeward",
+        "start",
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="type must be tack|gybe|rounding|weather|leeward|start",
+        )
     if direction is not None and direction not in ("PS", "SP"):
         raise HTTPException(status_code=422, detail="direction must be PS|SP")
     if session_type is not None and session_type not in ("race", "practice"):
@@ -1761,6 +1796,11 @@ async def api_maneuver_browse(
         )
         pairs = [(r["session_id"], r["id"]) for r in await cur.fetchall()]
         enriched, browse_video_sync = await enrich_maneuvers_for_ids(storage, pairs)
+        # Tag each rounding with weather/leeward so the client can display
+        # the mark type and the weather/leeward type pills can filter.
+        for m in enriched:
+            if m.get("type") == "rounding":
+                m["mark"] = _classify_rounding_mark(m)
 
     # Synthesize one "start" entry per resolved session that has a Vakaros
     # race_start event. Skip sessions where no gun was recorded — synthetic
@@ -1828,7 +1868,12 @@ async def api_maneuver_browse(
         gun_by_session = {r["session_id"]: r["gun_utc"] for r in await gun_cur.fetchall()}
 
     def _keep(m: dict[str, Any]) -> bool:
-        if type is not None and m.get("type") != type:
+        if type in ("weather", "leeward"):
+            if m.get("type") != "rounding":
+                return False
+            if m.get("mark") != type:
+                return False
+        elif type is not None and m.get("type") != type:
             return False
         if direction is not None:
             ang = m.get("turn_angle_deg")

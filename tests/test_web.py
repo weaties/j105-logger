@@ -4694,6 +4694,48 @@ async def test_cross_session_compare_resolves_start_token(storage: Storage) -> N
 
 
 @pytest.mark.asyncio
+async def test_maneuver_browse_tags_rounding_mark(storage: Storage) -> None:
+    """Each rounding gets a mark=weather|leeward field classified by exit_twa."""
+    # Without instrument data, enrichment produces entry_twa/exit_twa = None,
+    # so _classify_rounding_mark returns None. We patch exit_twa directly on
+    # the enriched payload via a monkey-patched maneuver — easier to just
+    # verify the classifier directly.
+    from helmlog.routes.sessions import _classify_rounding_mark
+
+    assert _classify_rounding_mark({"type": "rounding", "exit_twa": 120}) == "weather"
+    assert _classify_rounding_mark({"type": "rounding", "exit_twa": 40}) == "leeward"
+    assert _classify_rounding_mark({"type": "rounding", "entry_twa": 40}) == "weather"
+    assert _classify_rounding_mark({"type": "rounding", "entry_twa": 120}) == "leeward"
+    assert _classify_rounding_mark({"type": "rounding"}) is None
+    assert _classify_rounding_mark({"type": "tack", "exit_twa": 40}) is None
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_filter_weather_implies_rounding(storage: Storage) -> None:
+    """type=weather only returns roundings (tacks/gybes are excluded)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        race_id, _ = await _seed_maneuvers(storage, client, event="Marks", count=2)
+        resp = await client.get(f"/api/maneuvers/browse?session_ids={race_id}&type=weather")
+    assert resp.status_code == 200
+    # Seeded maneuvers are tacks — none should pass a weather-mark filter.
+    assert resp.json()["maneuvers"] == []
+
+
+@pytest.mark.asyncio
+async def test_maneuver_browse_rejects_bad_mark_type(storage: Storage) -> None:
+    """Unknown type token (not tack/gybe/rounding/weather/leeward/start) → 422."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/api/maneuvers/browse?type=windward")
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_maneuver_browse_post_start_filter(storage: Storage) -> None:
     """post_start=1 drops maneuvers whose ts is before the session's start_utc.
 
