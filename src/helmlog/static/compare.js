@@ -20,6 +20,7 @@ let _playing = false;
 let _prerollS = 10;
 let _globalNudge = 0;  // seconds, applied to all videos (#568)
 let _ytReady = false;
+let _muted = true; // default muted — multiple simultaneous audio is never useful
 let _trackOverlayVisible = true;
 let _tickInterval = 0; // playback position poll timer
 let _sessionTrack = null; // { coords: [[lng,lat],...], timestamps: [iso,...] }
@@ -247,6 +248,7 @@ function _createPlayer(divId, videoId, cueSeconds, maneuver, idx, nudge) {
       onReady: function (ev) {
         ev.target.seekTo(cueSeconds, true);
         ev.target.pauseVideo();
+        if (_muted) ev.target.mute();
         const speed = parseFloat(document.getElementById('speed-select').value) || 1;
         ev.target.setPlaybackRate(speed);
         // Initial gauge + track dot update for the paused state
@@ -337,6 +339,15 @@ function seekAllToStart() {
 function setAllSpeed(val) {
   const rate = parseFloat(val) || 1;
   _players.forEach(p => { try { p.player.setPlaybackRate(rate); } catch (_e) { /* not ready */ } });
+}
+
+function toggleMuteAll() {
+  _muted = !_muted;
+  _players.forEach(p => {
+    try { _muted ? p.player.mute() : p.player.unMute(); } catch (_e) { /* not ready */ }
+  });
+  const btn = document.getElementById('mute-btn');
+  if (btn) btn.innerHTML = _muted ? '&#128263; Unmute' : '&#128264; Mute';
 }
 
 function setPreroll(val) {
