@@ -165,7 +165,7 @@ _MARK_REFERENCES: frozenset[str] = frozenset(
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 69
+_CURRENT_VERSION: int = 70
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1593,6 +1593,56 @@ _MIGRATIONS: dict[int, str] = {
            SET start_utc = start_utc || 'T00:00:00+00:00'
          WHERE length(start_utc) = 10;
         UPDATE races SET end_utc = NULL WHERE end_utc = '';
+    """,
+    70: """
+        -- #477 / #588 slice 1: Moments foundation (bookmarks + anchor schema).
+        -- Shared anchor columns across bookmarks and threads lock in the
+        -- primitive that slice 2 (#478) and slice 3 (#587) build on.
+
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id        INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            created_by        INTEGER REFERENCES users(id),
+            name              TEXT NOT NULL,
+            note              TEXT,
+            anchor_kind       TEXT NOT NULL CHECK (anchor_kind = 'timestamp'),
+            anchor_entity_id  INTEGER,
+            anchor_t_start    TEXT NOT NULL,
+            anchor_t_end      TEXT,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_session
+            ON bookmarks(session_id, anchor_t_start);
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_created_by
+            ON bookmarks(created_by);
+
+        ALTER TABLE tags ADD COLUMN usage_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE tags ADD COLUMN last_used_at TEXT;
+
+        -- Polymorphic tag join. entity_type is validated at the app layer;
+        -- session_tags and note_tags remain for this slice and fold in
+        -- during slice 3 (#587).
+        CREATE TABLE IF NOT EXISTS entity_tags (
+            tag_id       INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+            entity_type  TEXT NOT NULL,
+            entity_id    INTEGER NOT NULL,
+            created_at   TEXT NOT NULL,
+            created_by   INTEGER REFERENCES users(id),
+            PRIMARY KEY (tag_id, entity_type, entity_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_entity_tags_entity
+            ON entity_tags(entity_type, entity_id);
+
+        ALTER TABLE comment_threads ADD COLUMN anchor_kind      TEXT;
+        ALTER TABLE comment_threads ADD COLUMN anchor_entity_id INTEGER;
+        ALTER TABLE comment_threads ADD COLUMN anchor_t_start   TEXT;
+        ALTER TABLE comment_threads ADD COLUMN anchor_t_end     TEXT;
+        UPDATE comment_threads
+           SET anchor_kind    = 'timestamp',
+               anchor_t_start = anchor_timestamp
+         WHERE anchor_timestamp IS NOT NULL
+           AND anchor_kind IS NULL;
     """,
 }
 
@@ -6062,6 +6112,98 @@ class Storage:
         await db.execute("DELETE FROM session_tags WHERE tag_id = ?", (tag_id,))
         await db.execute("DELETE FROM note_tags WHERE tag_id = ?", (tag_id,))
         cur = await db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Bookmarks (#477 / #588 slice 1)
+    # ------------------------------------------------------------------
+
+    async def create_bookmark(
+        self,
+        *,
+        session_id: int,
+        user_id: int | None,
+        name: str,
+        note: str | None,
+        t_start: str,
+    ) -> int:
+        """Create a timestamp-kind bookmark on a session. Returns new id."""
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO bookmarks "
+            "(session_id, created_by, name, note, anchor_kind, anchor_t_start, "
+            "created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'timestamp', ?, ?, ?)",
+            (session_id, user_id, name, note, t_start, now, now),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return int(cur.lastrowid)
+
+    async def get_bookmark(self, bookmark_id: int) -> dict[str, Any] | None:
+        """Return a single bookmark row as a dict, or None if not found."""
+        cur = await self._read_conn().execute(
+            "SELECT id, session_id, created_by, name, note, anchor_kind, "
+            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
+            "FROM bookmarks WHERE id = ?",
+            (bookmark_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def list_bookmarks_for_session(self, session_id: int) -> list[dict[str, Any]]:
+        """Return all bookmarks on a session, ordered by anchor_t_start."""
+        cur = await self._read_conn().execute(
+            "SELECT id, session_id, created_by, name, note, anchor_kind, "
+            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
+            "FROM bookmarks WHERE session_id = ? "
+            "ORDER BY anchor_t_start, id",
+            (session_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def update_bookmark(
+        self,
+        bookmark_id: int,
+        *,
+        name: str | None = None,
+        note: str | None = None,
+        clear_note: bool = False,
+    ) -> bool:
+        """Update bookmark name and/or note.
+
+        Pass `clear_note=True` to explicitly set note to NULL; otherwise a
+        `note=None` argument is treated as "don't change note".
+        """
+        parts: list[str] = []
+        params: list[Any] = []
+        if name is not None:
+            parts.append("name = ?")
+            params.append(name)
+        if clear_note:
+            parts.append("note = NULL")
+        elif note is not None:
+            parts.append("note = ?")
+            params.append(note)
+        if not parts:
+            return await self.get_bookmark(bookmark_id) is not None
+        parts.append("updated_at = ?")
+        params.append(datetime.now(UTC).isoformat())
+        params.append(bookmark_id)
+        db = self._conn()
+        cur = await db.execute(
+            f"UPDATE bookmarks SET {', '.join(parts)} WHERE id = ?",  # noqa: S608
+            params,
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def delete_bookmark(self, bookmark_id: int) -> bool:
+        """Delete a bookmark. Returns True if found."""
+        db = self._conn()
+        cur = await db.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
         await db.commit()
         return cur.rowcount > 0
 

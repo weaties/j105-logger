@@ -212,10 +212,19 @@
         <option value="4">4&times;</option>
         <option value="8">8&times;</option>
       </select>
+      <button id="bookmark-drop-btn" type="button" title="Drop bookmark at current time" aria-label="Drop bookmark" onclick="dropBookmark()" style="background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:.78rem;cursor:pointer">&#128278; Bookmark</button>
     </div>
   </div>
   <div id="track-hint" style="font-size:.72rem;color:var(--text-secondary);margin-top:4px"></div>
   <div id="vakaros-line-info" style="display:none;font-size:.78rem;color:var(--text-secondary);margin-top:6px;font-family:monospace"></div>
+</div>
+
+<div id="bookmarks-card" class="card" style="display:none">
+  <div class="section-title" onclick="toggleSection('bookmarks')">Bookmarks <span id="bookmarks-toggle">&#9660;</span></div>
+  <div class="section-body" id="bookmarks-body">
+    <ul id="bookmarks-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"></ul>
+    <p id="bookmarks-empty" style="font-size:.78rem;color:var(--text-secondary);margin:0;display:none">No bookmarks on this session yet. Use the &#128278; Bookmark button in the replay controls to add one.</p>
+  </div>
 </div>
 
 <div id="video-container" class="card" style="display:none">
@@ -397,6 +406,7 @@
 
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/static/tag-chip.js?v={{ git_sha }}"></script>
 <script src="/static/session.js?v={{ git_sha }}"></script>
 <script>
 async function renameSession() {
@@ -426,5 +436,146 @@ async function renameSession() {
     window.alert(`Rename failed: ${err}`);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Bookmarks (#477 / #588 slice 1) — drop at current replay time, list, jump,
+// rename, delete. Backed by /api/sessions/{id}/bookmarks and /api/bookmarks/{id}.
+// ---------------------------------------------------------------------------
+
+function _sessionId() {
+  return document.getElementById('app-config').dataset.sessionId;
+}
+
+async function dropBookmark() {
+  let t = null;
+  try {
+    if (typeof _playClock !== 'undefined' && _playClock.positionUtc) {
+      t = _playClock.positionUtc.toISOString();
+    }
+  } catch { /* ignore */ }
+  if (!t) {
+    window.alert('Play or scrub the session first so there is a timestamp to anchor the bookmark to.');
+    return;
+  }
+  const name = window.prompt('Bookmark name:', '');
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  const note = window.prompt('Optional note (leave blank for none):', '') || null;
+  try {
+    const resp = await fetch(`/api/sessions/${_sessionId()}/bookmarks`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: trimmed, note: note ? note.trim() : null, t_start: t}),
+    });
+    if (!resp.ok) { window.alert(`Create failed: ${resp.status}`); return; }
+    await loadBookmarks();
+  } catch (err) { window.alert(`Create failed: ${err}`); }
+}
+
+async function loadBookmarks() {
+  try {
+    const resp = await fetch(`/api/sessions/${_sessionId()}/bookmarks`);
+    if (!resp.ok) return;
+    const rows = await resp.json();
+    _renderBookmarks(rows);
+  } catch (err) { /* non-fatal */ }
+}
+
+function _renderBookmarks(rows) {
+  const card = document.getElementById('bookmarks-card');
+  const list = document.getElementById('bookmarks-list');
+  const empty = document.getElementById('bookmarks-empty');
+  if (!card || !list) return;
+  card.style.display = '';
+  list.innerHTML = '';
+  if (!rows || rows.length === 0) {
+    empty.style.display = '';
+    return;
+  }
+  empty.style.display = 'none';
+  for (const bm of rows) {
+    const li = document.createElement('li');
+    li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px';
+    const timeLabel = document.createElement('span');
+    timeLabel.style.cssText = 'font-family:monospace;font-size:.72rem;color:var(--text-secondary);min-width:64px';
+    timeLabel.textContent = _fmtBookmarkTime(bm.t_start);
+    const title = document.createElement('button');
+    title.type = 'button';
+    title.style.cssText = 'flex:1;text-align:left;background:none;border:none;color:var(--accent);cursor:pointer;padding:0;font-size:.82rem';
+    title.textContent = bm.name;
+    title.onclick = () => _seekToBookmark(bm.t_start);
+    const noteEl = document.createElement('span');
+    if (bm.note) {
+      noteEl.style.cssText = 'font-size:.72rem;color:var(--text-secondary);flex:2';
+      noteEl.textContent = bm.note;
+    }
+    const renameBtn = document.createElement('button');
+    renameBtn.type = 'button';
+    renameBtn.title = 'Rename';
+    renameBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
+    renameBtn.innerHTML = '&#9998;';
+    renameBtn.onclick = () => renameBookmark(bm.id, bm.name, bm.note);
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.title = 'Delete';
+    delBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
+    delBtn.innerHTML = '&#128465;';
+    delBtn.onclick = () => deleteBookmark(bm.id);
+    li.appendChild(timeLabel);
+    li.appendChild(title);
+    if (bm.note) li.appendChild(noteEl);
+    li.appendChild(renameBtn);
+    li.appendChild(delBtn);
+    list.appendChild(li);
+  }
+}
+
+function _fmtBookmarkTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
+  } catch { return iso; }
+}
+
+function _seekToBookmark(utc) {
+  if (typeof _seekTo === 'function') {
+    _seekTo(utc, 'bookmark');
+  }
+}
+
+async function renameBookmark(id, currentName, currentNote) {
+  const name = window.prompt('Bookmark name:', currentName || '');
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  const note = window.prompt('Note (blank to clear):', currentNote || '');
+  if (note === null) return;
+  const body = {name: trimmed};
+  const trimmedNote = note.trim();
+  body.note = trimmedNote ? trimmedNote : null;
+  try {
+    const resp = await fetch(`/api/bookmarks/${id}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
+    if (resp.status === 403) { window.alert('Only the author or an admin can edit this bookmark.'); return; }
+    if (!resp.ok) { window.alert(`Rename failed: ${resp.status}`); return; }
+    await loadBookmarks();
+  } catch (err) { window.alert(`Rename failed: ${err}`); }
+}
+
+async function deleteBookmark(id) {
+  if (!window.confirm('Delete this bookmark?')) return;
+  try {
+    const resp = await fetch(`/api/bookmarks/${id}`, {method: 'DELETE'});
+    if (resp.status === 403) { window.alert('Only the author or an admin can delete this bookmark.'); return; }
+    if (!resp.ok && resp.status !== 204) { window.alert(`Delete failed: ${resp.status}`); return; }
+    await loadBookmarks();
+  } catch (err) { window.alert(`Delete failed: ${err}`); }
+}
+
+document.addEventListener('DOMContentLoaded', () => { loadBookmarks(); });
 </script>
 {% endblock %}
