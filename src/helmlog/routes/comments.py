@@ -19,23 +19,45 @@ async def api_create_thread(
     session_id: int,
     user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """Create a comment thread for a session."""
+    """Create a comment thread for a session.
+
+    Body: `{ "title": str?, "anchor": Anchor? }`. The Anchor schema is
+    `{kind, entity_id?, t_start?, t_end?}` — see `helmlog.anchors`.
+    Legacy keys `anchor_timestamp` / `mark_reference` return 400 (cutover
+    landed in #478 / slice 2 of the Moments epic).
+    """
+    from helmlog.anchors import Anchor, AnchorError  # noqa: PLC0415
+    from helmlog.storage import AnchorScopeError  # noqa: PLC0415
+
     storage = get_storage(request)
     body = await request.json()
-    anchor_timestamp: str | None = body.get("anchor_timestamp")
-    mark_reference: str | None = body.get("mark_reference")
+    if "anchor_timestamp" in body or "mark_reference" in body:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "anchor_timestamp / mark_reference are no longer accepted; "
+                "use the `anchor` object ({kind, entity_id?, t_start?, t_end?})."
+            ),
+        )
     title: str | None = body.get("title")
-    from helmlog.storage import _MARK_REFERENCES  # noqa: PLC0415
+    anchor_payload = body.get("anchor")
+    anchor: Anchor | None = None
+    if anchor_payload is not None:
+        if not isinstance(anchor_payload, dict):
+            raise HTTPException(status_code=400, detail="anchor must be an object")
+        try:
+            anchor = Anchor.from_dict(anchor_payload)
+        except AnchorError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if mark_reference and mark_reference not in _MARK_REFERENCES:
-        raise HTTPException(status_code=400, detail=f"Unknown mark reference: {mark_reference!r}")
-    thread_id = await storage.create_comment_thread(
-        session_id,
-        user["id"],
-        anchor_timestamp=anchor_timestamp,
-        mark_reference=mark_reference,
-        title=title,
-    )
+    try:
+        thread_id = await storage.create_comment_thread(
+            session_id, user["id"], anchor=anchor, title=title
+        )
+    except AnchorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except AnchorScopeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     await audit(
         request, "thread.create", detail=f"thread={thread_id} session={session_id}", user=user
     )
@@ -44,6 +66,21 @@ async def api_create_thread(
 
     await notify_new_thread(storage, thread_id, session_id, user["id"])
     return JSONResponse({"id": thread_id}, status_code=201)
+
+
+@router.get("/api/sessions/{session_id}/anchors")
+async def api_list_session_anchors(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return a pre-labelled, t_start-ordered list of pickable anchors.
+
+    Consumed by the anchor-picker typeahead when composing a thread.
+    """
+    storage = get_storage(request)
+    anchors = await storage.list_session_anchors(session_id)
+    return JSONResponse(anchors)
 
 
 @router.get("/api/sessions/{session_id}/threads")

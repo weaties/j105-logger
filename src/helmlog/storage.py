@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from helmlog.races import Race
     from helmlog.vakaros import VakarosSession
 
+from helmlog.anchors import Anchor, validate_anchor
 from helmlog.nmea2000 import (
     COGSOGRecord,
     DepthRecord,
@@ -39,6 +40,43 @@ from helmlog.nmea2000 import (
     WindRecord,
 )
 from helmlog.video import VideoSession
+
+
+class AnchorScopeError(ValueError):
+    """Raised when an anchor's referenced entity does not scope to the expected session."""
+
+
+def _hms_from_iso(iso: str | None) -> str:
+    """Return the HH:MM:SS portion of an ISO 8601 timestamp.
+
+    Used by anchor-picker labels where the full ISO is visually noisy but
+    the time-of-day is the useful information. Falls back to the raw
+    input if parsing fails, so malformed rows still surface.
+    """
+    if not iso:
+        return ""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return iso
+
+
+def _project_thread_anchor(row: dict[str, Any]) -> dict[str, Any]:
+    """Build a serializable `anchor` key from the four anchor_* columns."""
+    kind = row.get("anchor_kind")
+    if kind is None:
+        row["anchor"] = None
+        return row
+    anchor: dict[str, Any] = {"kind": kind}
+    if row.get("anchor_entity_id") is not None:
+        anchor["entity_id"] = row["anchor_entity_id"]
+    if row.get("anchor_t_start") is not None:
+        anchor["t_start"] = row["anchor_t_start"]
+    if row.get("anchor_t_end") is not None:
+        anchor["t_end"] = row["anchor_t_end"]
+    row["anchor"] = anchor
+    return row
+
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
@@ -149,23 +187,11 @@ _LIVE_KEYS = (
     "rudder_deg",
 )
 
-_MARK_REFERENCES: frozenset[str] = frozenset(
-    {
-        "start",
-        "finish",
-        *(f"weather_mark_{i}" for i in range(1, 10)),
-        *(f"leeward_mark_{i}" for i in range(1, 10)),
-        *(f"gate_{i}" for i in range(1, 10)),
-        *(f"offset_mark_{i}" for i in range(1, 10)),
-    }
-)
-
-
 # ---------------------------------------------------------------------------
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 70
+_CURRENT_VERSION: int = 71
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1643,6 +1669,19 @@ _MIGRATIONS: dict[int, str] = {
                anchor_t_start = anchor_timestamp
          WHERE anchor_timestamp IS NOT NULL
            AND anchor_kind IS NULL;
+    """,
+    71: """
+        -- #478 / #588 slice 2: clean cutover of legacy thread anchor columns.
+        -- Rows with a mark_reference carry their label into the title so the
+        -- human-readable info isn't lost, then the legacy columns are dropped.
+
+        UPDATE comment_threads
+           SET title = TRIM('[' || REPLACE(mark_reference, '_', ' ') || '] '
+                          || COALESCE(title, ''))
+         WHERE mark_reference IS NOT NULL;
+
+        ALTER TABLE comment_threads DROP COLUMN anchor_timestamp;
+        ALTER TABLE comment_threads DROP COLUMN mark_reference;
     """,
 }
 
@@ -6208,6 +6247,66 @@ class Storage:
         return cur.rowcount > 0
 
     # ------------------------------------------------------------------
+    # Anchor picker data source (#478 / #588 slice 2)
+    # ------------------------------------------------------------------
+
+    async def list_session_anchors(self, session_id: int) -> list[dict[str, Any]]:
+        """Return pickable anchors for a session.
+
+        Each entry is a dict with keys: kind, entity_id, label, t_start.
+        Ordered by t_start so the anchor-picker can render a timeline-ordered
+        list. Consumed by `GET /api/sessions/{id}/anchors`.
+        """
+        race = await self.get_race(session_id)
+        if race is None:
+            return []
+
+        start_utc = race.start_utc.isoformat() if race.start_utc else None
+        race_label = race.name or f"Race {session_id}"
+
+        out: list[dict[str, Any]] = []
+        if start_utc is not None:
+            out.append(
+                {
+                    "kind": "race",
+                    "entity_id": session_id,
+                    "label": race_label,
+                    "t_start": start_utc,
+                }
+            )
+            out.append(
+                {
+                    "kind": "start",
+                    "entity_id": session_id,
+                    "label": "Start sequence",
+                    "t_start": start_utc,
+                }
+            )
+
+        for mv in await self.get_session_maneuvers(session_id):
+            out.append(
+                {
+                    "kind": "maneuver",
+                    "entity_id": mv["id"],
+                    "label": f"{(mv['type'] or 'Maneuver').title()} · {_hms_from_iso(mv['ts'])}",
+                    "t_start": mv["ts"],
+                }
+            )
+
+        for bm in await self.list_bookmarks_for_session(session_id):
+            out.append(
+                {
+                    "kind": "bookmark",
+                    "entity_id": bm["id"],
+                    "label": f"Bookmark: {bm['name']} · {_hms_from_iso(bm['anchor_t_start'])}",
+                    "t_start": bm["anchor_t_start"],
+                }
+            )
+
+        out.sort(key=lambda a: (a["t_start"] or "", a["kind"]))
+        return out
+
+    # ------------------------------------------------------------------
     # Avatars (#100)
     # ------------------------------------------------------------------
 
@@ -7572,28 +7671,88 @@ class Storage:
         session_id: int,
         created_by: int,
         *,
-        anchor_timestamp: str | None = None,
-        mark_reference: str | None = None,
+        anchor: Anchor | None = None,
         title: str | None = None,
     ) -> int:
         """Create a comment thread anchored to a session.
+
+        If `anchor` is supplied, it is validated structurally and entity-ref
+        kinds are scoped to this session (the maneuver / bookmark must
+        belong to `session_id`, the race / start entity_id must *equal*
+        `session_id`). Raises `AnchorScopeError` on violation.
 
         Returns the new thread ID.
         """
         from datetime import UTC
         from datetime import datetime as _datetime
 
+        if anchor is not None:
+            validate_anchor(anchor)
+            await self._assert_anchor_in_session(anchor, session_id)
+
         now = _datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
             "INSERT INTO comment_threads"
-            " (session_id, anchor_timestamp, mark_reference, title,"
-            "  created_by, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (session_id, anchor_timestamp, mark_reference, title, created_by, now, now),
+            " (session_id, anchor_kind, anchor_entity_id, anchor_t_start, anchor_t_end,"
+            "  title, created_by, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                session_id,
+                anchor.kind if anchor else None,
+                anchor.entity_id if anchor else None,
+                anchor.t_start if anchor else None,
+                anchor.t_end if anchor else None,
+                title,
+                created_by,
+                now,
+                now,
+            ),
         )
         await db.commit()
         return cur.lastrowid or 0
+
+    async def _assert_anchor_in_session(self, anchor: Anchor, session_id: int) -> None:
+        """Entity-ref anchor kinds must scope to the thread's session.
+
+        Raises AnchorScopeError on violation. No-op for timestamp / segment
+        kinds (no entity to scope).
+        """
+        kind = anchor.kind
+        ent = anchor.entity_id
+        if ent is None or kind in {"timestamp", "segment"}:
+            return
+
+        if kind == "maneuver":
+            cur = await self._read_conn().execute(
+                "SELECT 1 FROM maneuvers WHERE id = ? AND session_id = ?",
+                (ent, session_id),
+            )
+            if await cur.fetchone() is None:
+                raise AnchorScopeError(f"maneuver {ent} is not part of session {session_id}")
+            return
+
+        if kind == "bookmark":
+            cur = await self._read_conn().execute(
+                "SELECT 1 FROM bookmarks WHERE id = ? AND session_id = ?",
+                (ent, session_id),
+            )
+            if await cur.fetchone() is None:
+                raise AnchorScopeError(f"bookmark {ent} is not part of session {session_id}")
+            return
+
+        if kind in {"race", "start"}:
+            # For helmlog, a session *is* a race — entity_id must equal session_id.
+            if ent != session_id:
+                raise AnchorScopeError(
+                    f"{kind} anchor entity_id {ent} must equal session_id {session_id}"
+                )
+            return
+
+        if kind == "rounding":
+            raise AnchorScopeError(
+                "anchor kind 'rounding' is not yet supported (no rounding entity)"
+            )
 
     async def list_comment_threads(
         self,
@@ -7603,7 +7762,8 @@ class Storage:
         """Return threads for a session with unread counts per user."""
         db = self._conn()
         cur = await db.execute(
-            "SELECT t.id, t.session_id, t.anchor_timestamp, t.mark_reference,"
+            "SELECT t.id, t.session_id,"
+            "   t.anchor_kind, t.anchor_entity_id, t.anchor_t_start, t.anchor_t_end,"
             "   t.title, t.created_by, t.created_at, t.updated_at,"
             "   t.resolved, t.resolved_at, t.resolved_by, t.resolution_summary,"
             "   u.name AS author_name, u.email AS author_email,"
@@ -7621,7 +7781,7 @@ class Storage:
             (user_id, session_id),
         )
         rows = await cur.fetchall()
-        return [dict(r) for r in rows]
+        return [_project_thread_anchor(dict(r)) for r in rows]
 
     async def get_comment_thread(
         self,
@@ -7639,7 +7799,7 @@ class Storage:
         row = await cur.fetchone()
         if row is None:
             return None
-        thread = dict(row)
+        thread = _project_thread_anchor(dict(row))
         cur = await db.execute(
             "SELECT c.id, c.thread_id, c.author, c.body, c.created_at, c.edited_at,"
             "   u.name AS author_name, u.email AS author_email"

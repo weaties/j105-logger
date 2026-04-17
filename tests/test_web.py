@@ -3353,7 +3353,10 @@ async def test_create_thread_and_list(storage: Storage) -> None:
         race_id = await _make_race_for_comments(client)
         resp = await client.post(
             f"/api/sessions/{race_id}/threads",
-            json={"title": "Bad tack at weather mark", "mark_reference": "weather_mark_1"},
+            json={
+                "title": "Bad tack at weather mark",
+                "anchor": {"kind": "race", "entity_id": race_id},
+            },
         )
         assert resp.status_code == 201
         thread_id = resp.json()["id"]
@@ -3364,14 +3367,14 @@ async def test_create_thread_and_list(storage: Storage) -> None:
         assert len(threads) == 1
         assert threads[0]["id"] == thread_id
         assert threads[0]["title"] == "Bad tack at weather mark"
-        assert threads[0]["mark_reference"] == "weather_mark_1"
+        assert threads[0]["anchor"] == {"kind": "race", "entity_id": race_id}
         assert threads[0]["comment_count"] == 0
         assert threads[0]["unread_count"] == 0
 
 
 @pytest.mark.asyncio
-async def test_create_thread_invalid_mark_reference(storage: Storage) -> None:
-    """POST with unknown mark reference returns 400."""
+async def test_create_thread_rejects_legacy_mark_reference(storage: Storage) -> None:
+    """Legacy mark_reference payload returns 400 after #478 cutover."""
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -3379,7 +3382,7 @@ async def test_create_thread_invalid_mark_reference(storage: Storage) -> None:
         race_id = await _make_race_for_comments(client)
         resp = await client.post(
             f"/api/sessions/{race_id}/threads",
-            json={"mark_reference": "bogus_mark"},
+            json={"mark_reference": "weather_mark_1"},
         )
         assert resp.status_code == 400
 
@@ -3402,8 +3405,7 @@ async def test_thread_general_discussion(storage: Storage) -> None:
         resp = await client.get(f"/api/threads/{thread_id}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["anchor_timestamp"] is None
-        assert data["mark_reference"] is None
+        assert data["anchor"] is None
 
 
 @pytest.mark.asyncio
@@ -3686,7 +3688,7 @@ async def test_redact_comment_author_api(storage: Storage) -> None:
 
 @pytest.mark.asyncio
 async def test_thread_with_anchor_timestamp(storage: Storage) -> None:
-    """Thread can be anchored to a specific timestamp."""
+    """Thread can be anchored to a specific timestamp via the new Anchor shape."""
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -3695,13 +3697,13 @@ async def test_thread_with_anchor_timestamp(storage: Storage) -> None:
         ts = "2026-03-12T14:05:30Z"
         resp = await client.post(
             f"/api/sessions/{race_id}/threads",
-            json={"title": "At this moment", "anchor_timestamp": ts},
+            json={"title": "At this moment", "anchor": {"kind": "timestamp", "t_start": ts}},
         )
         assert resp.status_code == 201
         thread_id = resp.json()["id"]
 
         resp = await client.get(f"/api/threads/{thread_id}")
-        assert resp.json()["anchor_timestamp"] == ts
+        assert resp.json()["anchor"] == {"kind": "timestamp", "t_start": ts}
 
 
 # ---------------------------------------------------------------------------
