@@ -233,6 +233,7 @@ is `.env.example` — read it for the full list of available settings.
 - **SQLite is the single source of truth**: all data is written to SQLite with a UTC timestamp. Export and web functions read from SQLite, never from live data.
 - **Timestamps are always UTC**: store and compute in UTC. Convert to local time only at display/export boundaries.
 - **External data is async-friendly**: use `httpx` with async for weather/tide fetching during logging runs.
+- **New domains go in `storage.py`**: new domains go in `storage.py` alongside existing ones. Extraction into per-domain repositories is tracked in #484 and will happen in a dedicated pass once there are 2–3 domains whose shape supports a generalizable pattern. Do not introduce one-off repository modules.
 
 ---
 
