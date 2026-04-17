@@ -165,6 +165,24 @@ async def test_create_thread_rejects_bad_anchor_shape(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_thread_rejects_maneuver_with_t_start(storage: Storage) -> None:
+    """Regression: the anchor-picker used to forward the entity's display
+    timestamp as an Anchor field, which the validator rightly rejects."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        sid = await _make_session(client)
+        mid = await _seed_maneuver(storage, sid)
+        resp = await client.post(
+            f"/api/sessions/{sid}/threads",
+            json={"anchor": {"kind": "maneuver", "entity_id": mid, "t_start": _T0}},
+        )
+        assert resp.status_code == 400
+        assert "t_start" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_list_threads_projects_anchor(storage: Storage) -> None:
     app = create_app(storage)
     async with httpx.AsyncClient(

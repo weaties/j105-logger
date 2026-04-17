@@ -153,10 +153,22 @@ class AnchorPicker extends HTMLElement {
   }
 
   _normalize(raw) {
+    // The /api/sessions/{id}/anchors endpoint includes a `t_start` on every
+    // row so the picker can render a time label, but the Anchor schema only
+    // allows `t_start` on kind=timestamp/segment. Strip it for entity-ref
+    // kinds or the server rejects the payload.
     const a = { kind: raw.kind };
-    if (raw.entity_id !== undefined && raw.entity_id !== null) a.entity_id = raw.entity_id;
-    if (raw.t_start) a.t_start = raw.t_start;
-    if (raw.t_end) a.t_end = raw.t_end;
+    if (raw.kind === 'timestamp') {
+      if (raw.t_start) a.t_start = raw.t_start;
+    } else if (raw.kind === 'segment') {
+      if (raw.t_start) a.t_start = raw.t_start;
+      if (raw.t_end) a.t_end = raw.t_end;
+    } else {
+      // maneuver | bookmark | race | start — entity_id only
+      if (raw.entity_id !== undefined && raw.entity_id !== null) {
+        a.entity_id = raw.entity_id;
+      }
+    }
     return a;
   }
 
