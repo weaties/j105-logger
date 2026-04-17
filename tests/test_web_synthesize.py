@@ -181,3 +181,43 @@ async def test_sessions_filter_synthesized(storage: Storage) -> None:
     assert resp.status_code == 200
     data = resp.json()
     assert "sessions" in data
+
+
+@pytest.mark.asyncio
+async def test_synthesized_session_appears_in_default_list(storage: Storage) -> None:
+    """Synthesized sessions must appear in the unfiltered /api/sessions list.
+
+    Regression: the source='synthesized' filter was excluding them because
+    list_sessions only allowed source IN (NULL, 'live').
+    """
+    await storage.set_daily_event("2026-03-10", "TestRegatta")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        create_resp = await client.post(
+            "/api/sessions/synthesize",
+            json={
+                "course_type": "windward_leeward",
+                "wind_direction": 180,
+                "start_lat": 47.70,
+                "start_lon": -122.44,
+                "laps": 1,
+                "seed": 42,
+            },
+        )
+        assert create_resp.status_code == 201
+        session_id = create_resp.json()["id"]
+
+        # Default list (no type filter) must include the synthesized session
+        list_resp = await client.get("/api/sessions")
+        assert list_resp.status_code == 200
+        ids = [s["id"] for s in list_resp.json()["sessions"]]
+        assert session_id in ids
+
+        # Explicit type=synthesized filter must also include it
+        filtered_resp = await client.get("/api/sessions?type=synthesized")
+        assert filtered_resp.status_code == 200
+        filtered_ids = [s["id"] for s in filtered_resp.json()["sessions"]]
+        assert session_id in filtered_ids
