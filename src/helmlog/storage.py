@@ -46,6 +46,21 @@ class AnchorScopeError(ValueError):
     """Raised when an anchor's referenced entity does not scope to the expected session."""
 
 
+def _hms_from_iso(iso: str | None) -> str:
+    """Return the HH:MM:SS portion of an ISO 8601 timestamp.
+
+    Used by anchor-picker labels where the full ISO is visually noisy but
+    the time-of-day is the useful information. Falls back to the raw
+    input if parsing fails, so malformed rows still surface.
+    """
+    if not iso:
+        return ""
+    try:
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).strftime("%H:%M:%S")
+    except (ValueError, TypeError):
+        return iso
+
+
 def _project_thread_anchor(row: dict[str, Any]) -> dict[str, Any]:
     """Build a serializable `anchor` key from the four anchor_* columns."""
     kind = row.get("anchor_kind")
@@ -6273,7 +6288,7 @@ class Storage:
                 {
                     "kind": "maneuver",
                     "entity_id": mv["id"],
-                    "label": f"{(mv['type'] or 'Maneuver').title()} · {mv['ts']}",
+                    "label": f"{(mv['type'] or 'Maneuver').title()} · {_hms_from_iso(mv['ts'])}",
                     "t_start": mv["ts"],
                 }
             )
@@ -6283,7 +6298,7 @@ class Storage:
                 {
                     "kind": "bookmark",
                     "entity_id": bm["id"],
-                    "label": f"Bookmark: {bm['name']}",
+                    "label": f"Bookmark: {bm['name']} · {_hms_from_iso(bm['anchor_t_start'])}",
                     "t_start": bm["anchor_t_start"],
                 }
             )

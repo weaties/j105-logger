@@ -5952,7 +5952,13 @@ function showNewThreadForm(anchorTimestamp) {
 async function submitNewThread() {
   const title = document.getElementById('new-thread-title').value.trim();
   const picker = document.getElementById('new-thread-anchor-picker');
-  const anchor = picker ? picker.value : null;
+  let anchor = picker ? picker.value : null;
+  // Fallback: if the user didn't pick anything and the replay has a
+  // cursor, anchor at that timestamp. Matches the picker's Enter-on-empty
+  // behaviour for users who click Create Thread without touching the picker.
+  if (!anchor && _playClock.positionUtc) {
+    anchor = {kind: 'timestamp', t_start: _playClock.positionUtc.toISOString()};
+  }
   const firstComment = document.getElementById('new-thread-body').value.trim();
   const payload = {};
   if (title) payload.title = title;
