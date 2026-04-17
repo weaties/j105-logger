@@ -60,12 +60,14 @@ async def _create_user(s: Storage, email: str = "a@example.com") -> int:
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_70(storage: Storage) -> None:
+async def test_bookmarks_migration_applied(storage: Storage) -> None:
+    """Slice-1 migration (v70) lives in the applied set regardless of newer versions."""
     assert storage._db is not None
-    async with storage._db.execute("SELECT MAX(version) FROM schema_version") as cur:
+    async with storage._db.execute(
+        "SELECT 1 FROM schema_version WHERE version = 70"
+    ) as cur:
         row = await cur.fetchone()
     assert row is not None
-    assert row[0] == 70
 
 
 @pytest.mark.asyncio

@@ -33,9 +33,10 @@
 .badge-rounding{color:var(--success)}
 .wf-mark-label{background:var(--bg-primary)!important;border:1px solid var(--warning)!important;color:var(--text-primary)!important;font-size:.7rem!important;padding:1px 4px!important;border-radius:3px!important;box-shadow:none!important}
 .wf-mark-label::before{border-right-color:var(--warning)!important}
-.thread-item{padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;transition:border-color .15s}
+.thread-item{padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;cursor:pointer;transition:border-color .15s,background .15s}
 .thread-item:hover{border-color:var(--accent-strong)}
 .thread-item.resolved{opacity:.7}
+.thread-item.thread-active{border-color:var(--accent);background:var(--bg-secondary)}
 .thread-anchor{font-size:.7rem;color:var(--warning);margin-left:6px}
 .thread-unread{background:var(--accent-strong);color:var(--bg-primary);font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
 .comment-item{padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem}
@@ -407,6 +408,7 @@
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/tag-chip.js?v={{ git_sha }}"></script>
+<script src="/static/anchor-picker.js?v={{ git_sha }}"></script>
 <script src="/static/session.js?v={{ git_sha }}"></script>
 <script>
 async function renameSession() {

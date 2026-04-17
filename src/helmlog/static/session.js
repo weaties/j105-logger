@@ -5623,9 +5623,14 @@ async function loadDiscussion() {
   const card = document.getElementById('discussion-card');
   card.style.display = '';
   const body = document.getElementById('discussion-body');
-  const r = await fetch('/api/sessions/' + SESSION_ID + '/threads');
-  if (!r.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
-  _threads = await r.json();
+  // Fetch anchor index in parallel so entity-ref chips can resolve labels
+  _anchorIndex = null;
+  const [threadsResp] = await Promise.all([
+    fetch('/api/sessions/' + SESSION_ID + '/threads'),
+    _ensureAnchorIndex(),
+  ]);
+  if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
+  _threads = await threadsResp.json();
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
@@ -5635,13 +5640,7 @@ async function loadDiscussion() {
     return;
   }
   body.innerHTML = _threads.map(t => {
-    const anchor = t.mark_reference
-      ? '<span class="thread-anchor">' + esc(t.mark_reference.replace(/_/g, ' ')) + '</span>'
-      : t.anchor_timestamp
-        ? '<span class="thread-anchor" style="cursor:pointer;text-decoration:underline" '
-          + 'onclick="event.stopPropagation();seekToThreadAnchor(\'' + esc(t.anchor_timestamp) + '\')" '
-          + 'title="Seek playback to this moment">' + fmtTime(t.anchor_timestamp) + '</span>'
-        : '';
+    const anchor = _renderAnchorChip(t.anchor);
     const unread = t.unread_count > 0
       ? '<span class="thread-unread">' + t.unread_count + '</span>'
       : '';
@@ -5668,6 +5667,111 @@ function seekToThreadAnchor(ts) {
   if (isNaN(utc.getTime())) return;
   _seekTo(utc, 'thread');
 }
+
+// Resolve an entity-ref anchor (maneuver / bookmark / race / start) to a
+// clickable seek target. Uses the session-wide anchor index fetched when
+// the discussion panel loads, avoiding one /anchors fetch per thread.
+let _anchorIndex = null; // {kind: {entity_id: {t_start, label}}}
+
+async function _ensureAnchorIndex() {
+  if (_anchorIndex) return _anchorIndex;
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/anchors');
+    if (!r.ok) { _anchorIndex = {}; return _anchorIndex; }
+    const rows = await r.json();
+    _anchorIndex = {};
+    for (const a of rows) {
+      if (!_anchorIndex[a.kind]) _anchorIndex[a.kind] = {};
+      _anchorIndex[a.kind][a.entity_id] = {t_start: a.t_start, label: a.label};
+    }
+  } catch { _anchorIndex = {}; }
+  return _anchorIndex;
+}
+
+function _anchorSeekTime(anchor) {
+  if (!anchor) return null;
+  if (anchor.kind === 'timestamp' || anchor.kind === 'segment') return anchor.t_start || null;
+  if (!_anchorIndex) return null;
+  const resolved = _anchorIndex[anchor.kind] && _anchorIndex[anchor.kind][anchor.entity_id];
+  return resolved ? resolved.t_start : null;
+}
+
+function _anchorDisplayLabel(anchor) {
+  if (!anchor) return '';
+  if (anchor.kind === 'timestamp') return fmtTime(anchor.t_start);
+  if (anchor.kind === 'segment') return fmtTime(anchor.t_start) + '\u2013' + fmtTime(anchor.t_end);
+  if (_anchorIndex) {
+    const resolved = _anchorIndex[anchor.kind] && _anchorIndex[anchor.kind][anchor.entity_id];
+    if (resolved) return resolved.label;
+  }
+  return anchor.kind;
+}
+
+function _renderAnchorChip(anchor) {
+  if (!anchor) return '';
+  const seekTo = _anchorSeekTime(anchor);
+  const label = esc(_anchorDisplayLabel(anchor));
+  if (seekTo) {
+    return '<span class="thread-anchor" style="cursor:pointer;text-decoration:underline" '
+      + 'onclick="event.stopPropagation();seekToThreadAnchor(\'' + esc(seekTo) + '\')" '
+      + 'title="Seek playback to this moment">' + label + '</span>';
+  }
+  return '<span class="thread-anchor">' + label + '</span>';
+}
+
+// Cursor-vs-anchor match predicate — mirrors anchor_match.py for the
+// client-side highlight pass. Returns true if `cursor` (Date) is within
+// the anchor's active window. Maneuver/bookmark/start lookups come from
+// _anchorIndex (populated by _ensureAnchorIndex).
+const _ANCHOR_MATCH_WINDOW_S = 15;
+const _ANCHOR_MATCH_START_WINDOW_S = 60;
+
+function _parseUtc(s) {
+  if (!s) return null;
+  const d = new Date(s.endsWith('Z') || s.includes('+') ? s : s + 'Z');
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function anchorMatchesCursor(anchor, cursor) {
+  if (!anchor || !cursor) return false;
+  const k = anchor.kind;
+  if (k === 'timestamp') {
+    const t = _parseUtc(anchor.t_start);
+    return !!t && Math.abs((cursor - t) / 1000) <= _ANCHOR_MATCH_WINDOW_S;
+  }
+  if (k === 'segment') {
+    const s = _parseUtc(anchor.t_start), e = _parseUtc(anchor.t_end);
+    return !!s && !!e && cursor >= s && cursor < e;
+  }
+  if (k === 'race') return true;
+  if (!_anchorIndex) return false;
+  const entry = _anchorIndex[k] && _anchorIndex[k][anchor.entity_id];
+  if (!entry) return false;
+  const base = _parseUtc(entry.t_start);
+  if (!base) return false;
+  if (k === 'start') {
+    return Math.abs((cursor - base) / 1000) <= _ANCHOR_MATCH_START_WINDOW_S;
+  }
+  // maneuver / bookmark — point anchors with a ±15s window
+  return Math.abs((cursor - base) / 1000) <= _ANCHOR_MATCH_WINDOW_S;
+}
+
+function _refreshThreadHighlights(utc) {
+  if (!utc || !_threads || !_threads.length) return;
+  const active = new Set();
+  for (const t of _threads) {
+    if (anchorMatchesCursor(t.anchor, utc)) active.add(t.id);
+  }
+  const items = document.querySelectorAll('.thread-item');
+  items.forEach(el => {
+    const m = el.getAttribute('onclick') && el.getAttribute('onclick').match(/openThread\((\d+)\)/);
+    if (!m) return;
+    const id = parseInt(m[1], 10);
+    el.classList.toggle('thread-active', active.has(id));
+  });
+}
+
+registerSurface('threads', function(utc) { _refreshThreadHighlights(utc); });
 
 function _checkThreadHash() {
   // Prefer query params (?thread=<id>&comment=<id>) — survive Slack unfurls.
@@ -5727,8 +5831,9 @@ function _addDiscussionMarkers() {
   if (!_map || !_trackData) return;
 
   _threads.forEach(t => {
-    if (!t.anchor_timestamp) return;
-    const ts = new Date(t.anchor_timestamp.endsWith('Z') || t.anchor_timestamp.includes('+') ? t.anchor_timestamp : t.anchor_timestamp + 'Z');
+    const seekTo = _anchorSeekTime(t.anchor);
+    if (!seekTo) return;
+    const ts = new Date(seekTo.endsWith('Z') || seekTo.includes('+') ? seekTo : seekTo + 'Z');
     const idx = _indexForUtc(ts);
     const latLng = _trackData.latLngs[idx];
     if (!latLng) return;
@@ -5747,7 +5852,7 @@ function _addDiscussionMarkers() {
 
     const popup = '<div style="max-width:260px">'
       + '<div style="font-weight:600;color:var(--text-primary);font-size:.82rem">' + title + unread + '</div>'
-      + '<div style="font-size:.7rem;color:var(--text-secondary)">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.anchor_timestamp) + '</div>'
+      + '<div style="font-size:.7rem;color:var(--text-secondary)">' + esc(author) + ' &middot; ' + count + ' &middot; ' + esc(_anchorDisplayLabel(t.anchor)) + '</div>'
       + resolvedHtml
       + '<div id="discussion-marker-preview-' + t.id + '">'
       + '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">Loading\u2026</div></div>'
@@ -5816,82 +5921,50 @@ function showNewThreadForm(anchorTimestamp) {
   const form = document.createElement('div');
   form.className = 'thread-form';
   form.style.marginBottom = '10px';
-  // Default anchor to the current playback position if the caller didn't pass one
-  if (!anchorTimestamp && _playClock.positionUtc) {
-    anchorTimestamp = _playClock.positionUtc.toISOString();
-  }
-  const anchorLabel = anchorTimestamp ? fmtTime(anchorTimestamp) : '';
-  const anchorHidden = anchorTimestamp
-    ? '<input type="hidden" id="new-thread-anchor-ts" value="' + esc(anchorTimestamp) + '"/>'
-      + '<div id="new-thread-anchor-row" style="font-size:.72rem;color:var(--warning);margin-bottom:6px">'
-      + 'Anchored at <span id="new-thread-anchor-label">' + anchorLabel + '</span> '
-      + '<button type="button" onclick="clearNewThreadAnchor()" '
-      + 'style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;text-decoration:underline">clear</button>'
-      + '</div>'
-    : '<input type="hidden" id="new-thread-anchor-ts" value=""/>'
-      + '<div id="new-thread-anchor-row" style="font-size:.72rem;color:var(--text-secondary);margin-bottom:6px">'
-      + 'Race-general thread (no anchor) '
-      + '<button type="button" onclick="useCurrentAnchor()" '
-      + 'style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.72rem;text-decoration:underline">use current time</button>'
-      + '</div>';
-  form.innerHTML = anchorHidden
+  const cursor = _playClock.positionUtc ? _playClock.positionUtc.toISOString() : null;
+  form.innerHTML = ''
     + '<div style="display:flex;gap:6px;margin-bottom:6px">'
     + '<input id="new-thread-title" placeholder="Thread title (optional)" style="flex:1"/>'
-    + '<select id="new-thread-mark" style="width:auto"><option value="">No mark anchor</option>'
-    + '<option value="start">Start</option>'
-    + '<option value="weather_mark_1">Weather Mark 1</option><option value="weather_mark_2">Weather Mark 2</option>'
-    + '<option value="leeward_mark_1">Leeward Mark 1</option><option value="leeward_mark_2">Leeward Mark 2</option>'
-    + '<option value="gate_1">Gate 1</option><option value="gate_2">Gate 2</option>'
-    + '<option value="offset_mark_1">Offset Mark 1</option>'
-    + '<option value="finish">Finish</option>'
-    + '</select></div>'
-    + '<textarea id="new-thread-body" placeholder="First comment\u2026"></textarea>'
+    + '</div>'
+    + '<div style="margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">'
+    + 'Anchor (optional):'
+    + '</div>'
+    + '<anchor-picker id="new-thread-anchor-picker" session-id="' + esc(SESSION_ID) + '"></anchor-picker>'
+    + '<textarea id="new-thread-body" placeholder="First comment\u2026" style="margin-top:8px"></textarea>'
     + '<div style="margin-top:6px;display:flex;gap:6px">'
     + '<button class="btn-thread" onclick="submitNewThread()">Create Thread</button>'
     + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadDiscussion()">Cancel</button>'
     + '</div>';
   body.prepend(form);
-}
-
-function clearNewThreadAnchor() {
-  const inp = document.getElementById('new-thread-anchor-ts');
-  if (inp) inp.value = '';
-  const row = document.getElementById('new-thread-anchor-row');
-  if (row) {
-    row.style.color = 'var(--text-secondary)';
-    row.innerHTML = 'Race-general thread (no anchor) '
-      + '<button type="button" onclick="useCurrentAnchor()" '
-      + 'style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.72rem;text-decoration:underline">use current time</button>';
-  }
-}
-
-function useCurrentAnchor() {
-  if (!_playClock.positionUtc) return;
-  const utc = _playClock.positionUtc.toISOString();
-  const inp = document.getElementById('new-thread-anchor-ts');
-  if (inp) inp.value = utc;
-  const row = document.getElementById('new-thread-anchor-row');
-  if (row) {
-    row.style.color = 'var(--warning)';
-    row.innerHTML = 'Anchored at <span id="new-thread-anchor-label">' + fmtTime(utc) + '</span> '
-      + '<button type="button" onclick="clearNewThreadAnchor()" '
-      + 'style="background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.72rem;text-decoration:underline">clear</button>';
+  const picker = document.getElementById('new-thread-anchor-picker');
+  if (picker) {
+    picker.fallbackCursor = cursor;
+    // If caller passed a preferred timestamp (e.g. map-click), preselect it
+    if (anchorTimestamp) {
+      picker.addEventListener('connected', () => {}, {once: true});
+      setTimeout(() => {
+        picker._pickAnchor({kind: 'timestamp', t_start: anchorTimestamp, label: fmtTime(anchorTimestamp)});
+      }, 0);
+    }
   }
 }
 
 async function submitNewThread() {
   const title = document.getElementById('new-thread-title').value.trim();
-  const mark = document.getElementById('new-thread-mark').value || null;
-  const anchorTs = document.getElementById('new-thread-anchor-ts').value || null;
+  const picker = document.getElementById('new-thread-anchor-picker');
+  const anchor = picker ? picker.value : null;
   const firstComment = document.getElementById('new-thread-body').value.trim();
   const payload = {};
   if (title) payload.title = title;
-  if (mark) payload.mark_reference = mark;
-  if (anchorTs) payload.anchor_timestamp = anchorTs;
+  if (anchor) payload.anchor = anchor;
   const r = await fetch('/api/sessions/' + SESSION_ID + '/threads', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
   });
-  if (!r.ok) { alert('Failed to create thread'); return; }
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    alert('Failed to create thread: ' + (detail.detail || r.status));
+    return;
+  }
   const {id} = await r.json();
   if (firstComment) {
     await fetch('/api/threads/' + id + '/comments', {
@@ -5911,13 +5984,8 @@ async function openThread(threadId, scrollToCommentId) {
   if (!r.ok) { loadDiscussion(); return; }
   const t = await r.json();
   const title = _threadTitle(t);
-  const anchor = t.mark_reference
-    ? '<span class="thread-anchor">' + esc(t.mark_reference.replace(/_/g, ' ')) + '</span>'
-    : t.anchor_timestamp
-      ? '<span class="thread-anchor" style="cursor:pointer;text-decoration:underline" '
-        + 'onclick="seekToThreadAnchor(\'' + esc(t.anchor_timestamp) + '\')" '
-        + 'title="Seek playback to this moment">' + fmtTime(t.anchor_timestamp) + '</span>'
-      : '';
+  await _ensureAnchorIndex();
+  const anchor = _renderAnchorChip(t.anchor);
   let resolveBtn = '';
   if (t.resolved) {
     resolveBtn = '<button class="btn-unresolve" onclick="unresolveThread(' + t.id + ')">Unresolve</button>';
