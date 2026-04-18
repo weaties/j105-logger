@@ -140,17 +140,14 @@ function renderTagFilterRow(sessions) {
       + esc(t.name) + '<span class="etype">' + countLbl + '</span></span>';
   }).join('');
 
-  // Mode toggle only meaningful when 2+ tags are active.
-  if (tagFilter.size > 1) {
-    modeWrap.style.display = '';
-    modeWrap.innerHTML = '<span class="tag-mode-toggle">'
-      + '<button class="' + (tagMode === 'and' ? 'active' : '') + '" title="Match sessions that contain every selected tag" onclick="setTagMode(\'and\')">all</button>'
-      + '<button class="' + (tagMode === 'or' ? 'active' : '') + '" title="Match sessions that contain any selected tag" onclick="setTagMode(\'or\')">any</button>'
-      + '</span>';
-  } else {
-    modeWrap.style.display = 'none';
-    modeWrap.innerHTML = '';
-  }
+  // Mode toggle always visible when the tag row is shown, dimmed when
+  // fewer than 2 tags are active so users discover the control up front.
+  modeWrap.style.display = '';
+  const dimStyle = tagFilter.size < 2 ? 'opacity:.6' : '';
+  modeWrap.innerHTML = '<span class="tag-mode-toggle" style="' + dimStyle + '">'
+    + '<button class="' + (tagMode === 'and' ? 'active' : '') + '" title="Match sessions that contain every selected tag" onclick="setTagMode(\'and\')">all</button>'
+    + '<button class="' + (tagMode === 'or' ? 'active' : '') + '" title="Match sessions that contain any selected tag" onclick="setTagMode(\'or\')">any</button>'
+    + '</span>';
 
   clearLink.style.display = tagFilter.size ? '' : 'none';
 }

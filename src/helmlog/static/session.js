@@ -4872,12 +4872,13 @@ function renderManeuverCard() {
     const clearBtn = _maneuverTagFilter.size
       ? '<button style="font-size:.68rem;padding:2px 6px;border:none;background:none;color:var(--text-secondary);cursor:pointer;text-decoration:underline" onclick="clearManeuverTagFilter()">clear</button>'
       : '';
-    const modeToggle = _maneuverTagFilter.size > 1
-      ? '<span style="display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px">'
-        +   _tagModeBtn('and', 'all')
-        +   _tagModeBtn('or', 'any')
-        + '</span>'
-      : '';
+    // Mode toggle always visible when the tag row is shown, dimmed when
+    // fewer than 2 tags are active so users discover the control.
+    const modeDim = _maneuverTagFilter.size < 2 ? ';opacity:.6' : '';
+    const modeToggle = '<span style="display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px' + modeDim + '">'
+      +   _tagModeBtn('and', 'all')
+      +   _tagModeBtn('or', 'any')
+      + '</span>';
     tagFilterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;align-items:center">'
       + '<span style="font-size:.68rem;color:var(--text-secondary);margin-right:2px">Tags:</span>'
       + chips + modeToggle + clearBtn

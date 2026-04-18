@@ -392,12 +392,14 @@ function renderTagFilterRow() {
       + ' onclick="mvToggleTagFilter(' + t.id + ')">'
       + swatch + _esc(t.name) + ' <span class="mv-tag-count">(' + t.count + ')</span></span>';
   }).join('');
-  const modeToggle = state.tagFilter.size > 1
-    ? '<span class="mv-tag-mode">'
-      + '<button class="' + (state.tagMode === 'and' ? 'active' : '') + '" title="Match maneuvers with every selected tag" onclick="mvSetTagMode(\'and\')">all</button>'
-      + '<button class="' + (state.tagMode === 'or' ? 'active' : '') + '" title="Match maneuvers with any selected tag" onclick="mvSetTagMode(\'or\')">any</button>'
-      + '</span>'
-    : '';
+  // Always show the mode toggle when the tag row is visible, so users
+  // discover the control before they've selected tags. Dimmed until a
+  // filter is active to signal it's a preference, not an active setting.
+  const dim = state.tagFilter.size < 2 ? ';opacity:.6' : '';
+  const modeToggle = '<span class="mv-tag-mode" style="margin-left:6px' + dim + '">'
+    + '<button class="' + (state.tagMode === 'and' ? 'active' : '') + '" title="Match maneuvers with every selected tag" onclick="mvSetTagMode(\'and\')">all</button>'
+    + '<button class="' + (state.tagMode === 'or' ? 'active' : '') + '" title="Match maneuvers with any selected tag" onclick="mvSetTagMode(\'or\')">any</button>'
+    + '</span>';
   const clearBtn = state.tagFilter.size
     ? '<a href="#" onclick="event.preventDefault();mvClearTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
     : '';
