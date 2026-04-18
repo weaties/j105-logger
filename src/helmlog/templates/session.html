@@ -102,6 +102,10 @@
     </button>
     {% endif %}
   </div>
+  <div id="session-tags-row" style="margin-top:8px">
+    <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:4px">Tags</div>
+    <tag-picker entity-type="session" entity-id="{{ session_id }}"></tag-picker>
+  </div>
 </div>
 
 <div id="track-container" class="card" style="display:none">
@@ -408,6 +412,7 @@
 {% block scripts %}
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/static/tag-chip.js?v={{ git_sha }}"></script>
+<script src="/static/tag-picker.js?v={{ git_sha }}"></script>
 <script src="/static/anchor-picker.js?v={{ git_sha }}"></script>
 <script src="/static/session.js?v={{ git_sha }}"></script>
 <script>
@@ -498,7 +503,10 @@ function _renderBookmarks(rows) {
   empty.style.display = 'none';
   for (const bm of rows) {
     const li = document.createElement('li');
-    li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px';
+    li.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px';
+
+    const mainRow = document.createElement('div');
+    mainRow.style.cssText = 'display:flex;align-items:center;gap:8px';
     const timeLabel = document.createElement('span');
     timeLabel.style.cssText = 'font-family:monospace;font-size:.72rem;color:var(--text-secondary);min-width:64px';
     timeLabel.textContent = _fmtBookmarkTime(bm.t_start);
@@ -512,6 +520,11 @@ function _renderBookmarks(rows) {
       noteEl.style.cssText = 'font-size:.72rem;color:var(--text-secondary);flex:2';
       noteEl.textContent = bm.note;
     }
+    const tagBtn = document.createElement('button');
+    tagBtn.type = 'button';
+    tagBtn.title = 'Tags';
+    tagBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
+    tagBtn.innerHTML = '&#127991;';
     const renameBtn = document.createElement('button');
     renameBtn.type = 'button';
     renameBtn.title = 'Rename';
@@ -524,11 +537,26 @@ function _renderBookmarks(rows) {
     delBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
     delBtn.innerHTML = '&#128465;';
     delBtn.onclick = () => deleteBookmark(bm.id);
-    li.appendChild(timeLabel);
-    li.appendChild(title);
-    if (bm.note) li.appendChild(noteEl);
-    li.appendChild(renameBtn);
-    li.appendChild(delBtn);
+    mainRow.appendChild(timeLabel);
+    mainRow.appendChild(title);
+    if (bm.note) mainRow.appendChild(noteEl);
+    mainRow.appendChild(tagBtn);
+    mainRow.appendChild(renameBtn);
+    mainRow.appendChild(delBtn);
+
+    const tagRow = document.createElement('div');
+    tagRow.style.cssText = 'display:none;padding-left:72px';
+    const picker = document.createElement('tag-picker');
+    picker.setAttribute('entity-type', 'bookmark');
+    picker.setAttribute('entity-id', String(bm.id));
+    tagRow.appendChild(picker);
+
+    tagBtn.onclick = () => {
+      tagRow.style.display = tagRow.style.display === 'none' ? '' : 'none';
+    };
+
+    li.appendChild(mainRow);
+    li.appendChild(tagRow);
     list.appendChild(li);
   }
 }

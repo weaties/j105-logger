@@ -6023,6 +6023,10 @@ async function openThread(threadId, scrollToCommentId) {
     + '<div style="flex-shrink:0;display:flex;gap:6px">' + copyThreadBtn + resolveBtn + '</div>'
     + '</div>'
     + resolutionHtml
+    + '<div style="margin-top:4px;margin-bottom:6px">'
+    + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:3px">Tags</div>'
+    + '<tag-picker entity-type="thread" entity-id="' + t.id + '"></tag-picker>'
+    + '</div>'
     + '<div id="thread-comments">' + (commentsHtml || '<span style="color:var(--text-secondary)">No comments yet</span>') + '</div>'
     + '<div class="thread-form" style="margin-top:8px">'
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'

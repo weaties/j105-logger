@@ -87,11 +87,31 @@ async def api_list_session_anchors(
 async def api_list_threads(
     request: Request,
     session_id: int,
+    tags: str | None = None,
+    tag_mode: str = "and",
     user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """List threads for a session with unread counts."""
+    """List threads for a session with unread counts.
+
+    `?tags=1,2&tag_mode=and|or` filters to threads carrying the given tags.
+    """
     storage = get_storage(request)
     threads = await storage.list_comment_threads(session_id, user["id"])
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_ids:
+            try:
+                allowed = set(
+                    await storage.list_entities_with_tags("thread", tag_ids, mode=tag_mode)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            threads = [t for t in threads if t["id"] in allowed]
     return JSONResponse(threads)
 
 

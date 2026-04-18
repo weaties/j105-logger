@@ -1946,6 +1946,8 @@ async def api_sessions(
     type: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
+    tags: str | None = None,
+    tag_mode: str = "and",
     limit: int = 25,
     offset: int = 0,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
@@ -1965,6 +1967,22 @@ async def api_sessions(
         limit=limit,
         offset=offset,
     )
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_ids:
+            try:
+                allowed = set(
+                    await storage.list_entities_with_tags("session", tag_ids, mode=tag_mode)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            sessions = [s for s in sessions if s["id"] in allowed]
+            total = len(sessions)
     return JSONResponse({"total": total, "sessions": sessions})
 
 

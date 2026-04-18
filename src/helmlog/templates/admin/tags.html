@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Tags — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+h1{font-size:1.3rem;font-weight:700;color:var(--accent)}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.btn-sm{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);font-size:.78rem;cursor:pointer}
+.btn-edit{color:var(--accent);border-color:var(--accent-strong)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-merge{color:var(--warning);border-color:var(--warning)}
+input.inline{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text-primary);font-size:.82rem}
+</style>
+{% endblock %}
+{% block content %}
+<h1 style="margin-bottom:12px">Tag Manager</h1>
+
+<div class="card">
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+    <input id="new-tag-name" class="inline" placeholder="New tag name" />
+    <input id="new-tag-color" class="inline" type="color" style="width:40px;padding:2px" />
+    <button class="btn-sm btn-edit" onclick="createTag()">Create</button>
+  </div>
+  <div id="tag-flash" style="font-size:.78rem;margin-bottom:6px;color:var(--text-secondary)"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Color</th><th>Usage</th><th>Last used</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="tags-tbody"></tbody>
+  </table>
+</div>
+
+<script>
+async function loadTags() {
+  const r = await fetch('/api/tags?order_by=usage');
+  if (!r.ok) return;
+  const rows = await r.json();
+  const tbody = document.getElementById('tags-tbody');
+  tbody.innerHTML = rows.map(t => {
+    const swatch = t.color
+      ? '<span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:' + t.color + ';border:1px solid var(--border);vertical-align:middle"></span>'
+      : '<span style="color:var(--text-secondary);font-size:.72rem">&ndash;</span>';
+    const last = t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '';
+    return '<tr>'
+      + '<td><strong>' + esc(t.name) + '</strong></td>'
+      + '<td>' + swatch + '</td>'
+      + '<td>' + (t.usage_count || 0) + '</td>'
+      + '<td><span style="font-size:.72rem;color:var(--text-secondary)">' + esc(last) + '</span></td>'
+      + '<td style="display:flex;gap:4px;flex-wrap:wrap">'
+      +   '<button class="btn-sm btn-edit" onclick="renameTag(' + t.id + ',\'' + esc(t.name) + '\')">Rename</button>'
+      +   '<button class="btn-sm btn-merge" onclick="mergeTagInto(' + t.id + ',\'' + esc(t.name) + '\')">Merge\u2026</button>'
+      +   '<button class="btn-sm btn-del" onclick="deleteTag(' + t.id + ',\'' + esc(t.name) + '\')">Delete</button>'
+      + '</td>'
+      + '</tr>';
+  }).join('');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:20px">No tags yet.</td></tr>';
+  }
+}
+
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function createTag() {
+  const name = document.getElementById('new-tag-name').value.trim().toLowerCase();
+  const color = document.getElementById('new-tag-color').value;
+  if (!name) { flash('Name required', true); return; }
+  const r = await fetch('/api/tags', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, color}),
+  });
+  if (!r.ok) { flash('Create failed: ' + r.status, true); return; }
+  document.getElementById('new-tag-name').value = '';
+  await loadTags();
+  flash('Tag created');
+}
+
+async function renameTag(id, current) {
+  const name = window.prompt('Rename tag:', current);
+  if (!name || name === current) return;
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name.trim().toLowerCase()}),
+  });
+  if (!r.ok) { flash('Rename failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Renamed');
+}
+
+async function deleteTag(id, name) {
+  if (!window.confirm('Delete tag "' + name + '"? Any attachments are removed.')) return;
+  const r = await fetch('/api/tags/' + id, {method: 'DELETE'});
+  if (!r.ok && r.status !== 204) { flash('Delete failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Deleted');
+}
+
+async function mergeTagInto(sourceId, sourceName) {
+  const target = window.prompt('Merge "' + sourceName + '" into which tag? Enter tag name:');
+  if (!target) return;
+  const all = await (await fetch('/api/tags')).json();
+  const t = all.find(x => x.name === target.trim().toLowerCase());
+  if (!t) { flash('Target tag not found: ' + target, true); return; }
+  if (t.id === sourceId) { flash('Cannot merge into self', true); return; }
+  const r = await fetch('/api/tags/' + sourceId + '/merge-into/' + t.id, {method: 'POST'});
+  if (!r.ok) { flash('Merge failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Merged into ' + t.name);
+}
+
+function flash(msg, isErr) {
+  const el = document.getElementById('tag-flash');
+  el.textContent = msg;
+  el.style.color = isErr ? 'var(--danger)' : 'var(--success)';
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', loadTags);
+</script>
+{% endblock %}

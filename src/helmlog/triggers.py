@@ -186,9 +186,9 @@ async def scan_transcript(
 
         # Tag the note
         tag_id = await storage.get_or_create_tag(m.rule.tag, _tag_color(m.rule.tag))
-        await storage.add_note_tag(note_id, tag_id)
+        await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
         auto_tag_id = await storage.get_or_create_tag("auto-detected", "#eab308")
-        await storage.add_note_tag(note_id, auto_tag_id)
+        await storage.attach_tag("session_note", note_id, auto_tag_id, user_id=None)
 
         logger.info(
             "Auto-note created: {} at {} (audio_session={})",
@@ -217,8 +217,9 @@ async def _check_existing_note(
     db = storage._conn()
     cur = await db.execute(
         "SELECT sn.id FROM session_notes sn"
-        " JOIN note_tags nt ON sn.id = nt.note_id"
-        " JOIN tags t ON nt.tag_id = t.id"
+        " JOIN entity_tags et"
+        "   ON et.entity_type = 'session_note' AND et.entity_id = sn.id"
+        " JOIN tags t ON et.tag_id = t.id"
         " WHERE t.name = 'auto-detected'"
         " AND sn.ts BETWEEN ? AND ?"
         " AND (sn.race_id = ? OR sn.audio_session_id = ?)"

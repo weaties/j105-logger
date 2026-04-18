@@ -82,8 +82,15 @@ async def api_create_bookmark(
 async def api_list_bookmarks(
     request: Request,
     session_id: int,
+    tags: str | None = None,
+    tag_mode: str = "and",
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
+    """List bookmarks on a session.
+
+    `?tags=1,2` filters to bookmarks carrying the given tag ids; `tag_mode`
+    is `and` (default — must have all) or `or` (must have any).
+    """
     storage = get_storage(request)
 
     session = await storage.get_race(session_id)
@@ -91,6 +98,22 @@ async def api_list_bookmarks(
         raise HTTPException(status_code=404, detail="Session not found")
 
     rows = await storage.list_bookmarks_for_session(session_id)
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_ids:
+            try:
+                allowed = set(
+                    await storage.list_entities_with_tags("bookmark", tag_ids, mode=tag_mode)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            rows = [r for r in rows if r["id"] in allowed]
+
     return JSONResponse([_serialize(r) for r in rows])
 
 
