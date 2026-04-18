@@ -4904,7 +4904,8 @@ function _renderManeuverDetail(m) {
     ];
     el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
       + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
-      + '</div>';
+      + '</div>'
+      + _renderManeuverTagRow(m);
     return;
   }
 
@@ -4968,6 +4969,17 @@ function _renderManeuverDetail(m) {
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
     + (diagram ? '<div>' + diagram + '</div>' : '')
+    + '</div>'
+    + _renderManeuverTagRow(m);
+}
+
+// Small tag-picker strip rendered beneath the maneuver detail metrics
+// whenever a maneuver is selected in the session page table.
+function _renderManeuverTagRow(m) {
+  if (!m || m.id == null) return '';
+  return '<div style="margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:3px">'
+    + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:4px">Tags</div>'
+    + '<tag-picker entity-type="maneuver" entity-id="' + esc(String(m.id)) + '"></tag-picker>'
     + '</div>';
 }
 
