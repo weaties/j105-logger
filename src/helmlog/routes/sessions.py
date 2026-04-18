@@ -1921,6 +1921,18 @@ async def api_maneuver_browse(
         mid = m.get("id")
         m["tags"] = tag_map.get(mid, []) if mid is not None else []
 
+    # Compute available_tags (counts per tag) across the non-tag-filtered
+    # set so the client-side chip row can always offer every tag that
+    # could be added to the filter, regardless of which tags are active.
+    available_counts: dict[int, dict[str, Any]] = {}
+    for m in filtered:
+        for t in m.get("tags") or []:
+            entry = available_counts.setdefault(
+                t["id"], {"id": t["id"], "name": t["name"], "color": t["color"], "count": 0}
+            )
+            entry["count"] += 1
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
     # Optional tag filter — AND/OR over the selected tag ids against each
     # maneuver's attached tags. Unknown tag ids are silently dropped.
     if tags:
@@ -1945,7 +1957,13 @@ async def api_maneuver_browse(
 
             filtered = [m for m in filtered if _tag_match(m)]
 
-    return JSONResponse({"maneuvers": filtered, "session_ids": resolved_session_ids})
+    return JSONResponse(
+        {
+            "maneuvers": filtered,
+            "session_ids": resolved_session_ids,
+            "available_tags": available_tags,
+        }
+    )
 
 
 @router.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)
@@ -2023,39 +2041,51 @@ async def api_sessions(
             if not tag_filter_ids:
                 return JSONResponse({"total": 0, "sessions": []})
 
+    # Pull the full set of sessions matching non-tag filters so we can
+    # compute available_tags across it. The chip row shows every tag
+    # reachable from the current non-tag filters — without this, selecting
+    # one tag would collapse the chip row down to just that tag and the
+    # user couldn't add a second one for AND/OR.
+    _all_total, all_non_tag_matches = await storage.list_sessions(
+        q=q or None,
+        session_type=type,
+        from_date=from_date,
+        to_date=to_date,
+        limit=10_000,
+        offset=0,
+    )
     if tag_filter_ids is not None:
-        # Pull an oversized slice from list_sessions, filter, then paginate.
-        # This is OK because the pre-narrowed tag set is usually small and
-        # the other filters (text / date / type) stay indexed.
-        _total_unfiltered, all_matches = await storage.list_sessions(
-            q=q or None,
-            session_type=type,
-            from_date=from_date,
-            to_date=to_date,
-            limit=10_000,
-            offset=0,
-        )
-        filtered = [s for s in all_matches if s["id"] in tag_filter_ids]
+        filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
         total = len(filtered)
         sessions = filtered[offset : offset + limit]
     else:
-        total, sessions = await storage.list_sessions(
-            q=q or None,
-            session_type=type,
-            from_date=from_date,
-            to_date=to_date,
-            limit=limit,
-            offset=offset,
-        )
+        total = _all_total
+        sessions = all_non_tag_matches[offset : offset + limit]
 
-    # Attach per-session tag summary (grouped by entity type) so history rows
-    # can render tag chips labelled with where each tag is attached.
-    ids = [s["id"] for s in sessions]
-    tag_summary = await storage.list_session_tag_summary(ids)
+    # Aggregate available tags across ALL non-tag-filtered sessions so the
+    # chip row doesn't collapse when the user applies a tag filter.
+    all_ids = [s["id"] for s in all_non_tag_matches]
+    all_tag_summary = await storage.list_session_tag_summary(all_ids)
+    available_counts: dict[int, dict[str, Any]] = {}
+    for sid in all_ids:
+        for r in all_tag_summary.get(sid, []):
+            entry = available_counts.setdefault(
+                r["id"],
+                {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
+            )
+            entry["count"] += r["count"]
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+    # Per-session tag summary only needed for the visible page.
+    page_tag_summary = await storage.list_session_tag_summary(
+        [s["id"] for s in sessions]
+    )
     for s in sessions:
-        s["tag_summary"] = tag_summary.get(s["id"], [])
+        s["tag_summary"] = page_tag_summary.get(s["id"], [])
 
-    return JSONResponse({"total": total, "sessions": sessions})
+    return JSONResponse(
+        {"total": total, "sessions": sessions, "available_tags": available_tags}
+    )
 
 
 @router.get("/api/grafana/annotations")

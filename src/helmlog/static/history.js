@@ -9,6 +9,7 @@ const summaryCache = new Map();
 // Tag filter state — mirrors the maneuvers panel pattern.
 const tagFilter = new Set();
 let tagMode = 'and'; // 'and' | 'or'
+let availableTags = []; // [{id, name, color, count}] from server, pre-tag-filter
 
 function setType(btn, t) {
   currentType = t;
@@ -40,6 +41,7 @@ async function load() {
   params.set('offset', currentOffset);
   const r = await fetch('/api/sessions?' + params);
   const data = await r.json();
+  availableTags = data.available_tags || [];
   render(data);
   renderTagFilterRow(data.sessions);
 }
@@ -108,17 +110,15 @@ function renderTagFilterRow(sessions) {
   const clearLink = document.getElementById('tag-clear');
   if (!wrap || !chipsHost) return;
 
-  // Aggregate tags from all sessions on the page.
+  // Use server-provided available_tags (computed across all sessions
+  // matching the non-tag filters) so selecting a tag doesn't collapse
+  // the chip row down to the current result.
   const byId = new Map();
-  for (const s of sessions || []) {
-    for (const r of (s.tag_summary || [])) {
-      const cur = byId.get(r.id) || {id: r.id, name: r.name, color: r.color, count: 0};
-      cur.count += r.count;
-      byId.set(r.id, cur);
-    }
+  for (const t of availableTags) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
   }
-  // Always include currently-selected tags even if the current page doesn't
-  // contain them, so the user can still deselect.
+  // Always include currently-selected tags even if not in available_tags,
+  // so the user can still deselect them.
   for (const tid of tagFilter) {
     if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
   }

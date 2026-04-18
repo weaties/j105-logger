@@ -34,6 +34,7 @@ const state = {
   hasVideo: false,
   tagFilter: new Set(),    // tag ids
   tagMode: 'and',          // 'and'|'or'
+  availableTags: [],       // [{id, name, color, count}] pre-tag-filter
   maneuvers: [],
   selected: new Set(),     // composite keys "sid:mid"
   loading: false,
@@ -229,6 +230,7 @@ async function reload() {
     if (!r.ok) { state.maneuvers = []; renderResults(); return; }
     const data = await r.json();
     state.maneuvers = data.maneuvers || [];
+    state.availableTags = data.available_tags || [];
     // Purge selection entries that no longer appear in the filtered list
     const ids = new Set(state.maneuvers.map(m => m.session_id + ':' + m.id));
     for (const k of [...state.selected]) if (!ids.has(k)) state.selected.delete(k);
@@ -364,16 +366,15 @@ function _esc(s) {
 function renderTagFilterRow() {
   const wrap = document.getElementById('mv-tag-filter');
   if (!wrap) return;
+  // available_tags comes from the server computed against the pre-tag-filter
+  // set, so every tag that could narrow the result is always offered even
+  // when a chip is already active.
   const byId = new Map();
-  for (const m of state.maneuvers) {
-    for (const t of (m.tags || [])) {
-      const cur = byId.get(t.id) || {id: t.id, name: t.name, color: t.color, count: 0};
-      cur.count++;
-      byId.set(t.id, cur);
-    }
+  for (const t of (state.availableTags || [])) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
   }
-  // Keep currently-selected tags visible even if the filtered set no
-  // longer contains them, so the user can deselect.
+  // Keep currently-selected tags visible even if the result set no longer
+  // contains them so the user can still deselect.
   for (const tid of state.tagFilter) {
     if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
   }
