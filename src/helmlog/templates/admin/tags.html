@@ -12,6 +12,12 @@ td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
 .btn-del{color:var(--danger);border-color:var(--danger)}
 .btn-merge{color:var(--warning);border-color:var(--warning)}
 input.inline{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text-primary);font-size:.82rem}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;width:min(420px,92vw);max-height:80vh;display:flex;flex-direction:column;padding:14px}
+.merge-list{list-style:none;padding:0;margin:0;overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary)}
+.merge-list li{padding:6px 10px;cursor:pointer;font-size:.82rem;display:flex;align-items:center;gap:8px}
+.merge-list li:hover{background:var(--bg-input)}
+.merge-list li.selected{background:var(--bg-input);border-left:3px solid var(--warning)}
 </style>
 {% endblock %}
 {% block content %}
@@ -39,10 +45,13 @@ input.inline{background:var(--bg-input);border:1px solid var(--border);border-ra
 </div>
 
 <script>
+let _allTags = [];
+
 async function loadTags() {
   const r = await fetch('/api/tags?order_by=usage');
   if (!r.ok) return;
   const rows = await r.json();
+  _allTags = rows;
   const tbody = document.getElementById('tags-tbody');
   tbody.innerHTML = rows.map(t => {
     const swatch = t.color
@@ -124,17 +133,113 @@ async function deleteTag(id, name) {
   flash('Deleted');
 }
 
-async function mergeTagInto(sourceId, sourceName) {
-  const target = window.prompt('Merge "' + sourceName + '" into which tag? Enter tag name:');
+// Merge modal — typeahead picker over all tags except the source.
+let _mergeState = null;
+
+function mergeTagInto(sourceId, sourceName) {
+  const candidates = _allTags.filter(t => t.id !== sourceId);
+  _mergeState = {sourceId, sourceName, candidates, filtered: candidates.slice(), selectedIdx: candidates.length ? 0 : -1};
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'merge-overlay';
+  overlay.innerHTML = ''
+    + '<div class="modal-panel" onclick="event.stopPropagation()">'
+    +   '<div style="font-size:.9rem;margin-bottom:8px">Merge <strong>' + esc(sourceName) + '</strong> into\u2026</div>'
+    +   '<input id="merge-filter" class="inline" type="search" autocomplete="off" placeholder="Type to filter\u2026" style="margin-bottom:8px" />'
+    +   '<ul class="merge-list" id="merge-list"></ul>'
+    +   '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
+    +     '<button class="btn-sm" onclick="closeMerge()">Cancel</button>'
+    +     '<button class="btn-sm btn-merge" id="merge-confirm" onclick="confirmMerge()" disabled>Merge</button>'
+    +   '</div>'
+    + '</div>';
+  overlay.addEventListener('click', closeMerge);
+  document.body.appendChild(overlay);
+
+  const inp = document.getElementById('merge-filter');
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    _mergeState.filtered = q
+      ? candidates.filter(t => t.name.includes(q))
+      : candidates.slice();
+    _mergeState.selectedIdx = _mergeState.filtered.length ? 0 : -1;
+    _renderMergeList();
+  });
+  inp.addEventListener('keydown', (ev) => {
+    if (!_mergeState) return;
+    const f = _mergeState.filtered;
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      _mergeState.selectedIdx = Math.min(f.length - 1, _mergeState.selectedIdx + 1);
+      _renderMergeList();
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      _mergeState.selectedIdx = Math.max(0, _mergeState.selectedIdx - 1);
+      _renderMergeList();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      confirmMerge();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMerge();
+    }
+  });
+  setTimeout(() => inp.focus(), 0);
+  _renderMergeList();
+}
+
+function _renderMergeList() {
+  if (!_mergeState) return;
+  const ul = document.getElementById('merge-list');
+  const list = _mergeState.filtered;
+  if (!list.length) {
+    ul.innerHTML = '<li style="color:var(--text-secondary);cursor:default">No matching tags.</li>';
+    document.getElementById('merge-confirm').disabled = true;
+    return;
+  }
+  ul.innerHTML = list.map((t, idx) => {
+    const swatch = t.color
+      ? '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + t.color + '"></span>'
+      : '<span style="width:10px;height:10px"></span>';
+    const selCls = idx === _mergeState.selectedIdx ? ' selected' : '';
+    const count = t.usage_count ? ' <span style="color:var(--text-secondary);font-size:.72rem;margin-left:auto">' + t.usage_count + '</span>' : '';
+    return '<li class="merge-row' + selCls + '" data-idx="' + idx + '">' + swatch + esc(t.name) + count + '</li>';
+  }).join('');
+  ul.querySelectorAll('[data-idx]').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      _mergeState.selectedIdx = parseInt(el.dataset.idx, 10);
+      _renderMergeList();
+    });
+    el.addEventListener('dblclick', (ev) => {
+      ev.stopPropagation();
+      _mergeState.selectedIdx = parseInt(el.dataset.idx, 10);
+      confirmMerge();
+    });
+  });
+  document.getElementById('merge-confirm').disabled = _mergeState.selectedIdx < 0;
+}
+
+function closeMerge() {
+  const overlay = document.getElementById('merge-overlay');
+  if (overlay) overlay.remove();
+  _mergeState = null;
+}
+
+async function confirmMerge() {
+  if (!_mergeState) return;
+  const target = _mergeState.filtered[_mergeState.selectedIdx];
   if (!target) return;
-  const all = await (await fetch('/api/tags')).json();
-  const t = all.find(x => x.name === target.trim().toLowerCase());
-  if (!t) { flash('Target tag not found: ' + target, true); return; }
-  if (t.id === sourceId) { flash('Cannot merge into self', true); return; }
-  const r = await fetch('/api/tags/' + sourceId + '/merge-into/' + t.id, {method: 'POST'});
-  if (!r.ok) { flash('Merge failed: ' + r.status, true); return; }
+  const {sourceId, sourceName} = _mergeState;
+  closeMerge();
+  const r = await fetch('/api/tags/' + sourceId + '/merge-into/' + target.id, {method: 'POST'});
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    flash('Merge failed: ' + (detail.detail || r.status), true);
+    return;
+  }
   await loadTags();
-  flash('Merged into ' + t.name);
+  flash('Merged "' + sourceName + '" into "' + target.name + '"');
 }
 
 function flash(msg, isErr) {
