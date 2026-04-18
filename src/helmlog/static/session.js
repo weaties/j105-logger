@@ -4153,6 +4153,8 @@ let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distan
 // Active filter pills. Multi-select: combined with AND across dimensions
 // (type, rank, time) and OR within a dimension. Empty set == "all".
 let _maneuverFilter = new Set();
+// Tag filter is a separate Set of tag ids. AND semantics against m.tags.
+let _maneuverTagFilter = new Set();
 const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
 const _MANEUVER_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
@@ -4654,27 +4656,46 @@ function _raceStartMs() {
 }
 
 function _matchesManeuverFilter(m) {
-  if (!_maneuverFilter.size) return true;
-  const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
-  const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
-  // Direction filter: P→S = negative turn_angle_deg, S→P = positive
-  const activeDir = _MANEUVER_DIR_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeDir.length) {
-    if (m.turn_angle_deg == null) return false;
-    const isPS = m.turn_angle_deg < 0;  // P→S = negative
-    if (activeDir.includes('P\u2192S') && !isPS) return false;
-    if (activeDir.includes('S\u2192P') && isPS) return false;
+  if (_maneuverFilter.size) {
+    const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+    const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+    // Direction filter: P→S = negative turn_angle_deg, S→P = positive
+    const activeDir = _MANEUVER_DIR_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeDir.length) {
+      if (m.turn_angle_deg == null) return false;
+      const isPS = m.turn_angle_deg < 0;  // P→S = negative
+      if (activeDir.includes('P\u2192S') && !isPS) return false;
+      if (activeDir.includes('S\u2192P') && isPS) return false;
+    }
+    if (_maneuverFilter.has('post-start')) {
+      const startMs = _raceStartMs();
+      if (startMs != null) {
+        const t = _parseUtc(m.ts);
+        if (t == null || t.getTime() < startMs) return false;
+      }
+    }
   }
-  if (_maneuverFilter.has('post-start')) {
-    const startMs = _raceStartMs();
-    if (startMs != null) {
-      const t = _parseUtc(m.ts);
-      if (t == null || t.getTime() < startMs) return false;
+  // Tag filter — AND semantics across selected tag ids.
+  if (_maneuverTagFilter.size) {
+    const have = new Set((m.tags || []).map(t => t.id));
+    for (const tid of _maneuverTagFilter) {
+      if (!have.has(tid)) return false;
     }
   }
   return true;
+}
+
+function setManeuverTagFilter(tagId) {
+  if (_maneuverTagFilter.has(tagId)) _maneuverTagFilter.delete(tagId);
+  else _maneuverTagFilter.add(tagId);
+  renderManeuverCard();
+}
+
+function clearManeuverTagFilter() {
+  _maneuverTagFilter.clear();
+  renderManeuverCard();
 }
 
 function _renderOverlaySvg() {
@@ -4796,6 +4817,40 @@ function renderManeuverCard() {
       }).join('')
     + '</div>';
 
+  // Tag filter bar — only show tags that are actually attached to at least
+  // one maneuver in this session, so unused tags don't clutter the UI.
+  const tagUsage = new Map(); // id → {name, color, count}
+  for (const m of _maneuvers) {
+    for (const t of (m.tags || [])) {
+      const row = tagUsage.get(t.id) || {name: t.name, color: t.color, count: 0};
+      row.count++;
+      tagUsage.set(t.id, row);
+    }
+  }
+  let tagFilterBar = '';
+  if (tagUsage.size > 0) {
+    const sorted = [...tagUsage.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+    const chips = sorted.map(([id, row]) => {
+      const active = _maneuverTagFilter.has(id);
+      const borderColor = row.color || 'var(--border)';
+      const style = 'font-size:.7rem;padding:2px 8px;border:1px solid ' + borderColor
+        + ';background:' + (active ? 'var(--accent)' : 'transparent') + ';color:'
+        + (active ? 'var(--bg-primary)' : 'var(--text-primary)')
+        + ';cursor:pointer;border-radius:10px';
+      const swatch = row.color
+        ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + row.color + ';margin-right:4px;vertical-align:middle"></span>'
+        : '';
+      return '<button style="' + style + '" onclick="setManeuverTagFilter(' + id + ')">' + swatch + esc(row.name) + ' (' + row.count + ')</button>';
+    }).join('');
+    const clearBtn = _maneuverTagFilter.size
+      ? '<button style="font-size:.68rem;padding:2px 6px;border:none;background:none;color:var(--text-secondary);cursor:pointer;text-decoration:underline" onclick="clearManeuverTagFilter()">clear</button>'
+      : '';
+    tagFilterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;align-items:center">'
+      + '<span style="font-size:.68rem;color:var(--text-secondary);margin-right:2px">Tags:</span>'
+      + chips + clearBtn
+      + '</div>';
+  }
+
   const items = _maneuverRows();
   let rows = items.map((m) => {
     const idx = _maneuvers.indexOf(m);
@@ -4863,7 +4918,7 @@ function renderManeuverCard() {
     + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
-  body.innerHTML = summary + filterBar + overlayBlock + selectBar
+  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
     + '<th title="Include in overlay"></th>'
     + _manHeader('Type', 'type')

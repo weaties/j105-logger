@@ -1232,6 +1232,13 @@ async def api_session_maneuvers(
     from helmlog.analysis.maneuvers import enrich_session_maneuvers
 
     enriched, _video_sync = await enrich_session_maneuvers(storage, session_id)
+    # Attach tags in one batch query so the client-side tag filter can work
+    # without N+1 round-trips (#587).
+    ids = [m["id"] for m in enriched if m.get("id") is not None]
+    tag_map = await storage.list_tags_for_entities("maneuver", ids)
+    for m in enriched:
+        mid = m.get("id")
+        m["tags"] = tag_map.get(mid, []) if mid is not None else []
     return JSONResponse(enriched)
 
 

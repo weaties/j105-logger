@@ -6145,6 +6145,34 @@ class Storage:
         await db.commit()
         return cur.rowcount > 0
 
+    async def list_tags_for_entities(
+        self, entity_type: str, entity_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return a {entity_id: [tag, ...]} map for the given ids in one query.
+
+        Missing ids resolve to an empty list. Callers commonly pass "all
+        maneuvers in session X" and want each row enriched with its tags
+        without issuing N separate queries.
+        """
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(f"unknown entity_type {entity_type!r}")
+        out: dict[int, list[dict[str, Any]]] = {eid: [] for eid in entity_ids}
+        if not entity_ids:
+            return out
+        placeholders = ",".join("?" * len(entity_ids))
+        cur = await self._read_conn().execute(
+            f"SELECT et.entity_id, t.id, t.name, t.color"  # noqa: S608
+            f" FROM entity_tags et JOIN tags t ON et.tag_id = t.id"
+            f" WHERE et.entity_type = ? AND et.entity_id IN ({placeholders})"
+            f" ORDER BY t.name",
+            (entity_type, *entity_ids),
+        )
+        for r in await cur.fetchall():
+            out.setdefault(r["entity_id"], []).append(
+                {"id": r["id"], "name": r["name"], "color": r["color"]}
+            )
+        return out
+
     async def list_tags_for_entity(self, entity_type: str, entity_id: int) -> list[dict[str, Any]]:
         """Return tags attached to a specific entity, ordered by name."""
         if entity_type not in ENTITY_TYPES:
