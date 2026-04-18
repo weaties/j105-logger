@@ -1966,14 +1966,12 @@ async def api_sessions(
             detail="type must be 'race', 'practice', 'debrief', or 'synthesized'",
         )
     limit = max(1, min(limit, 200))
-    total, sessions = await storage.list_sessions(
-        q=q or None,
-        session_type=type,
-        from_date=from_date,
-        to_date=to_date,
-        limit=limit,
-        offset=offset,
-    )
+
+    # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
+    # any constituent entity (maneuver / bookmark / thread) carries the tags.
+    # We pre-compute the full matching-id set up front, then page through it
+    # after list_sessions applies the other filters, so total is accurate.
+    tag_filter_ids: set[int] | None = None
     if tags:
         try:
             tag_ids = [int(s) for s in tags.split(",") if s.strip()]
@@ -1983,13 +1981,46 @@ async def api_sessions(
             ) from exc
         if tag_ids:
             try:
-                allowed = set(
-                    await storage.list_entities_with_tags("session", tag_ids, mode=tag_mode)
+                tag_filter_ids = set(
+                    await storage.sessions_matching_tags(tag_ids, mode=tag_mode)
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
-            sessions = [s for s in sessions if s["id"] in allowed]
-            total = len(sessions)
+            if not tag_filter_ids:
+                return JSONResponse({"total": 0, "sessions": []})
+
+    if tag_filter_ids is not None:
+        # Pull an oversized slice from list_sessions, filter, then paginate.
+        # This is OK because the pre-narrowed tag set is usually small and
+        # the other filters (text / date / type) stay indexed.
+        _total_unfiltered, all_matches = await storage.list_sessions(
+            q=q or None,
+            session_type=type,
+            from_date=from_date,
+            to_date=to_date,
+            limit=10_000,
+            offset=0,
+        )
+        filtered = [s for s in all_matches if s["id"] in tag_filter_ids]
+        total = len(filtered)
+        sessions = filtered[offset : offset + limit]
+    else:
+        total, sessions = await storage.list_sessions(
+            q=q or None,
+            session_type=type,
+            from_date=from_date,
+            to_date=to_date,
+            limit=limit,
+            offset=offset,
+        )
+
+    # Attach per-session tag summary (grouped by entity type) so history rows
+    # can render tag chips labelled with where each tag is attached.
+    ids = [s["id"] for s in sessions]
+    tag_summary = await storage.list_session_tag_summary(ids)
+    for s in sessions:
+        s["tag_summary"] = tag_summary.get(s["id"], [])
+
     return JSONResponse({"total": total, "sessions": sessions})
 
 

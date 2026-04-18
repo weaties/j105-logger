@@ -6145,6 +6145,110 @@ class Storage:
         await db.commit()
         return cur.rowcount > 0
 
+    async def sessions_matching_tags(
+        self, tag_ids: list[int], mode: str = "and"
+    ) -> list[int]:
+        """Return session ids whose session row OR any constituent entity
+        (maneuver / bookmark / thread) carries the given tag set.
+
+        AND = every tag must appear somewhere under the session.
+        OR  = at least one tag must appear somewhere under the session.
+        Unknown tag ids are silently dropped, matching the stale-filter
+        tolerance rule used by list_entities_with_tags.
+        """
+        if mode not in {"and", "or"}:
+            raise ValueError(f"mode must be 'and' or 'or', got {mode!r}")
+        if not tag_ids:
+            return []
+        placeholders = ",".join("?" * len(tag_ids))
+        cur = await self._read_conn().execute(
+            f"SELECT id FROM tags WHERE id IN ({placeholders})",  # noqa: S608
+            tag_ids,
+        )
+        known = {r["id"] for r in await cur.fetchall()}
+        filtered = [t for t in tag_ids if t in known]
+        if not filtered:
+            return []
+        placeholders = ",".join("?" * len(filtered))
+        # Union of (session_id, tag_id) pairs across each tagged layer.
+        union = (
+            f"SELECT et.entity_id AS session_id, et.tag_id FROM entity_tags et "
+            f" WHERE et.entity_type = 'session' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT m.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN maneuvers m ON m.id = et.entity_id "
+            f" WHERE et.entity_type = 'maneuver' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT b.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN bookmarks b ON b.id = et.entity_id "
+            f" WHERE et.entity_type = 'bookmark' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT ct.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN comment_threads ct ON ct.id = et.entity_id "
+            f" WHERE et.entity_type = 'thread' AND et.tag_id IN ({placeholders})"
+        )
+        if mode == "and":
+            sql = (
+                f"SELECT session_id FROM ({union}) "  # noqa: S608
+                f"GROUP BY session_id HAVING COUNT(DISTINCT tag_id) = ?"
+            )
+            params = (*filtered, *filtered, *filtered, *filtered, len(filtered))
+        else:
+            sql = f"SELECT DISTINCT session_id FROM ({union})"  # noqa: S608
+            params = (*filtered, *filtered, *filtered, *filtered)
+        cur = await self._read_conn().execute(sql, params)
+        return [r["session_id"] for r in await cur.fetchall()]
+
+    async def list_session_tag_summary(
+        self, session_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return {session_id: [{tag_id, name, color, entity_type, count}, ...]}.
+
+        One row per (session, tag, entity_type) combo with a count. Lets a
+        history row render "weather (session) · good (3 maneuvers)".
+        """
+        out: dict[int, list[dict[str, Any]]] = {sid: [] for sid in session_ids}
+        if not session_ids:
+            return out
+        placeholders = ",".join("?" * len(session_ids))
+        union = (
+            f"SELECT et.tag_id, 'session' AS et_type, et.entity_id AS session_id "
+            f" FROM entity_tags et "
+            f" WHERE et.entity_type = 'session' AND et.entity_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'maneuver' AS et_type, m.session_id "
+            f" FROM entity_tags et JOIN maneuvers m ON m.id = et.entity_id "
+            f" WHERE et.entity_type = 'maneuver' AND m.session_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'bookmark' AS et_type, b.session_id "
+            f" FROM entity_tags et JOIN bookmarks b ON b.id = et.entity_id "
+            f" WHERE et.entity_type = 'bookmark' AND b.session_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'thread' AS et_type, ct.session_id "
+            f" FROM entity_tags et JOIN comment_threads ct ON ct.id = et.entity_id "
+            f" WHERE et.entity_type = 'thread' AND ct.session_id IN ({placeholders})"
+        )
+        sql = (
+            f"SELECT u.session_id, u.tag_id, u.et_type, COUNT(*) AS n, "  # noqa: S608
+            f"       t.name, t.color "
+            f" FROM ({union}) u JOIN tags t ON t.id = u.tag_id "
+            f" GROUP BY u.session_id, u.tag_id, u.et_type "
+            f" ORDER BY t.name, u.et_type"
+        )
+        params = (*session_ids, *session_ids, *session_ids, *session_ids)
+        cur = await self._read_conn().execute(sql, params)
+        for r in await cur.fetchall():
+            out.setdefault(r["session_id"], []).append(
+                {
+                    "id": r["tag_id"],
+                    "name": r["name"],
+                    "color": r["color"],
+                    "entity_type": r["et_type"],
+                    "count": r["n"],
+                }
+            )
+        return out
+
     async def list_tags_for_entities(
         self, entity_type: str, entity_ids: list[int]
     ) -> dict[int, list[dict[str, Any]]]:
