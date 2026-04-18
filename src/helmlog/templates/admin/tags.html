@@ -18,10 +18,13 @@ input.inline{background:var(--bg-input);border:1px solid var(--border);border-ra
 <h1 style="margin-bottom:12px">Tag Manager</h1>
 
 <div class="card">
-  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
     <input id="new-tag-name" class="inline" placeholder="New tag name" />
     <input id="new-tag-color" class="inline" type="color" style="width:40px;padding:2px" />
     <button class="btn-sm btn-edit" onclick="createTag()">Create</button>
+    <span style="flex:1"></span>
+    <input id="tag-filter" class="inline" type="search" placeholder="Filter tags\u2026" style="min-width:180px" oninput="filterTags()" />
+    <span id="tag-filter-count" style="font-size:.72rem;color:var(--text-secondary)"></span>
   </div>
   <div id="tag-flash" style="font-size:.78rem;margin-bottom:6px;color:var(--text-secondary)"></div>
   <table>
@@ -32,6 +35,7 @@ input.inline{background:var(--bg-input);border:1px solid var(--border);border-ra
     </thead>
     <tbody id="tags-tbody"></tbody>
   </table>
+  <div id="tags-empty-filter" style="display:none;text-align:center;color:var(--text-secondary);padding:20px;font-size:.82rem">No tags match that filter.</div>
 </div>
 
 <script>
@@ -45,7 +49,7 @@ async function loadTags() {
       ? '<span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:' + t.color + ';border:1px solid var(--border);vertical-align:middle"></span>'
       : '<span style="color:var(--text-secondary);font-size:.72rem">&ndash;</span>';
     const last = t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '';
-    return '<tr>'
+    return '<tr data-tag-name="' + esc(t.name) + '">'
       + '<td><strong>' + esc(t.name) + '</strong></td>'
       + '<td>' + swatch + '</td>'
       + '<td>' + (t.usage_count || 0) + '</td>'
@@ -59,6 +63,28 @@ async function loadTags() {
   }).join('');
   if (!rows.length) {
     tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:20px">No tags yet.</td></tr>';
+  }
+  filterTags();
+}
+
+function filterTags() {
+  const q = (document.getElementById('tag-filter').value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#tags-tbody tr[data-tag-name]');
+  let shown = 0;
+  rows.forEach(row => {
+    const name = row.dataset.tagName || '';
+    const match = !q || name.includes(q);
+    row.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+  const count = document.getElementById('tag-filter-count');
+  const emptyMsg = document.getElementById('tags-empty-filter');
+  if (q && rows.length) {
+    count.textContent = shown + '/' + rows.length;
+    emptyMsg.style.display = shown === 0 ? '' : 'none';
+  } else {
+    count.textContent = '';
+    emptyMsg.style.display = 'none';
   }
 }
 
