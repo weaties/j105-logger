@@ -2317,3 +2317,121 @@ Pluggable AI Provider** architecture:
   history to train on. The model's ability to handle noisy 1Hz data with
   varying frequencies makes it well-suited for the intermittent nature of
   sailing instrument logs.
+
+---
+
+## IDX-037: Race start management — countdown, flags, line pings, and OCS awareness
+
+- **Date captured:** 2026-04-17
+- **Origin:** Conversation about expanding HelmLog into a capable pre-start tool
+  that the crew actually uses on the water
+- **Status:** `raw`
+- **Related:** `races.py`, `triggers.py`, `sk_reader.py`, `web.py`, IDX-011
+  (write derived data back to B&G), IDX-013 (mark-anchored threads),
+  IDX-021 (on-device audio keyword detection), IDX-032 (ESP32 sea state),
+  `docs/domain.md`
+
+**Description:**
+Turn HelmLog into a full pre-start assistant, not just a passive logger. The
+pre-start is the highest-leverage minute of a race and is currently under-served
+by the app. This idea bundles a set of tightly related features that together
+make HelmLog the helm/tactician's primary start tool.
+
+**Core components:**
+
+1. **Countdown timer.** Standard RRS sequences (5-4-1-0, 3-2-1-0, match-racing
+   dial-up, team-race rolling). Large, glanceable UI suitable for a cockpit
+   screen. Audible callouts ("one minute", "thirty", "ten-nine-eight…") through
+   the cockpit speaker. Sync/reset via a single tap.
+
+2. **Flag display.** Show the flags that *should* currently be up on the RC
+   boat given the selected sequence and elapsed time — class flag, P / I / Z /
+   U / Black, and the transitions between them. Also: AP (postponement),
+   X (individual recall), First Substitute (general recall), N (abandonment).
+   A glance at the phone tells the crew where we are in the sequence without
+   needing binoculars on the committee boat.
+
+3. **Clock sync.** One-tap "sync to gun" — when the crew hears the warning
+   signal, tap to align HelmLog's countdown to the RC's actual signal. Corrects
+   for NTP drift, RC timer drift, and any lag in the sequence. Optional:
+   listen for horn blasts via microphone (tie-in to IDX-021 Hailo NPU audio
+   keyword detection) to auto-sync without a tap.
+
+4. **Rolling starts.** Support for team-race and match-race formats where
+   multiple starts are stacked back-to-back. Countdown rolls into the next
+   sequence automatically. Also support "practice starts" that don't create
+   a session but do capture line pings and start quality.
+
+5. **General recall handling.** One-tap "general recall" rewinds to the
+   warning signal and restarts the sequence (with the First Sub flag
+   convention). Keeps the line pings intact across the restart.
+
+6. **Line pings — boat end and pin end.** While circling near the line, tap
+   to capture GPS coordinates at the boat end (RC boat) and pin end. Store
+   with the session. Compute derived values in real time:
+   - **Line bias:** which end is favoured given current TWD
+   - **Distance to line** (perpendicular)
+   - **Time to line** at current BSP/SOG
+   - **Time-to-burn** (seconds to burn off if we arrive early)
+   - **Line sight** bearing for a visual transit
+   Line coordinates become part of the session's metadata — available to the
+   debrief UI, exported alongside the track, and anchor-able from IDX-013
+   co-op threads ("comment on the line bias for this start").
+
+7. **OCS detection.** After the gun, compare the boat's track to the line
+   segment and flag whether we crossed early (OCS) or clean. Surface as
+   session metadata and a debrief overlay.
+
+8. **Start quality scorecard.** Post-start, compute and display: distance
+   from favoured end at gun, speed at gun vs target, time-on-distance error,
+   and whether we were OCS or clean. Historical trend across sessions so
+   the crew can track improvement.
+
+**Things worth considering:**
+
+- **Course area / start line as part of `races.py` RaceConfig** — the line
+  pings should extend the existing race model, not sit in a separate store.
+- **Broadcast to crew devices.** The helm's phone runs the timer; the tactician
+  and bow also see it. HelmLog's web app already works on multiple phones
+  on the boat's WiFi — reuse that.
+- **Write to B&G network (IDX-011 tie-in).** Publish start-relevant derived
+  values (distance to line, time to burn, line bias) as Signal K paths so
+  they show up on the mast/cockpit displays without a phone in hand.
+- **Postponement handling.** AP flag → pause countdown. AP over A / AP over H
+  → clear the line pings? Or keep? Probably keep and let user reset.
+- **Fleet-specific sequence libraries.** Save named sequences per fleet
+  (e.g., "PHRF Thursday", "J/70 Worlds"). One tap to load the right
+  sequence for the day.
+- **Audio gun detection for auto-sync.** Tie to IDX-021. The Pi is already
+  recording debrief audio — a sharp horn blast at T-5, T-4, T-1, T-0 is a
+  low-effort classification target and eliminates the tap-to-sync UX.
+- **Accessibility.** Countdown screen must be readable in bright sun,
+  one-handed-tappable while helming, and work offline (no internet at
+  most race venues).
+
+**Open design questions:**
+
+- **Source of truth for the countdown.** Pi clock with NTP? Or treat the
+  sync-tap as authoritative and re-derive everything from that offset? Latter
+  is simpler and more honest about what we know.
+- **Line ping UX while maneuvering.** The helm can't fumble with a phone while
+  circling. Needs either a big-target "drop ping now" button on the home
+  screen, a hardware button (pipeline tie to IDX-030 DIY sensor work), or
+  a voice command.
+- **Line expiry.** Should line pings expire if the RC moves the line between
+  races? Probably offer a "re-ping" flow rather than auto-expire.
+- **Multi-boat co-op coordination.** Can a co-op share line pings? (Subject
+  to `docs/data-licensing.md` — probably yes within a co-op, as start-line
+  coordinates aren't sensitive PII.)
+- **Rolling start semantics.** Team racing typically uses a 3-2-1-0 with
+  consecutive flights. Match racing uses 10-6-5-4-1-0 with dial-up. Need
+  to decide how much of the sequence diversity to support up front.
+
+**Notes:**
+- *2026-04-17:* Initial capture. Start minimal: countdown + flag display +
+  sync-tap + two line pings stored with the session. Everything else (OCS
+  detection, scorecard, B&G writeback, audio gun detection, co-op sharing)
+  is additive once the core loop works. The session-integration piece is
+  the key differentiator vs. standalone apps like RaceQs or Sailmon — we
+  can tie the start directly into the same SQLite record that owns the
+  track, maneuvers, debrief audio, and thread anchors.
