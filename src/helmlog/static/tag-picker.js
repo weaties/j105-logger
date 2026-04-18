@@ -204,7 +204,10 @@ class TagPicker extends HTMLElement {
       const bg = selected ? 'background:var(--bg-secondary);' : '';
       const count = t.usage_count ? ` <span style="color:var(--text-secondary);font-size:.7rem">(${t.usage_count})</span>` : '';
       const name = (t.name || '').replace(/</g, '&lt;');
-      return `<div role="option" data-idx="${idx}" style="padding:6px 8px;cursor:pointer;font-size:.82rem;${bg}">${name}${count}</div>`;
+      const swatch = t.color
+        ? `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${t.color};vertical-align:middle;margin-right:6px;border:1px solid var(--border)"></span>`
+        : `<span style="display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:middle"></span>`;
+      return `<div role="option" data-idx="${idx}" style="padding:6px 8px;cursor:pointer;font-size:.82rem;${bg}">${swatch}${name}${count}</div>`;
     }).join('');
   }
 
