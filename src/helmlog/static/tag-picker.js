@@ -24,7 +24,20 @@ class TagPicker extends HTMLElement {
     this._selectedIdx = 0;
   }
 
-  connectedCallback() { this._render(); this._wire(); this._refresh(); }
+  connectedCallback() {
+    this._render();
+    this._wire();
+    this._refresh();
+    // Refresh on cross-picker tag creation so newly-created tags appear in
+    // sibling pickers' dropdowns without a page reload.
+    this._onTagsChanged = () => this._refreshAllTags();
+    window.addEventListener('tags-changed', this._onTagsChanged);
+  }
+  disconnectedCallback() {
+    if (this._onTagsChanged) {
+      window.removeEventListener('tags-changed', this._onTagsChanged);
+    }
+  }
   attributeChangedCallback() { if (this._inputEl) this._refresh(); }
 
   get entityType() { return this.getAttribute('entity-type'); }
@@ -45,6 +58,16 @@ class TagPicker extends HTMLElement {
     this._onInput();
   }
 
+  async _refreshAllTags() {
+    try {
+      const r = await fetch('/api/tags?order_by=usage');
+      if (r.ok) {
+        this._allTags = await r.json();
+        this._onInput();
+      }
+    } catch { /* non-fatal */ }
+  }
+
   _render() {
     this.style.display = 'block';
     this.innerHTML = `
@@ -63,7 +86,11 @@ class TagPicker extends HTMLElement {
 
   _wire() {
     this._inputEl.addEventListener('input', () => this._onInput());
-    this._inputEl.addEventListener('focus', () => this._show());
+    this._inputEl.addEventListener('focus', () => {
+      // Pick up any tags created elsewhere since last render.
+      this._refreshAllTags();
+      this._show();
+    });
     this._inputEl.addEventListener('keydown', (ev) => this._onKey(ev));
     this._inputEl.addEventListener('blur', () => setTimeout(() => this._hide(), 150));
     this._listEl.addEventListener('mousedown', (ev) => {
@@ -114,6 +141,9 @@ class TagPicker extends HTMLElement {
   async _attach(tagOrName) {
     if (!this.entityType || !this.entityId) return;
     const body = tagOrName.id ? {tag_id: tagOrName.id} : {name: tagOrName.name};
+    // Inline-create path — an existing tag attach won't change the global
+    // tag set, but a POST with {name} will.
+    const isInlineCreate = !tagOrName.id;
     try {
       const r = await fetch(`/api/entities/${this.entityType}/${this.entityId}/tags`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -124,6 +154,9 @@ class TagPicker extends HTMLElement {
     this._inputEl.value = '';
     await this._refresh();
     this._emit();
+    if (isInlineCreate) {
+      window.dispatchEvent(new CustomEvent('tags-changed'));
+    }
   }
 
   async _detach(tagId) {
