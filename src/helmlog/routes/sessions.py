@@ -1621,7 +1621,7 @@ async def api_maneuver_browse_sessions(
     if session_type is not None and session_type not in ("race", "practice"):
         raise HTTPException(status_code=422, detail="session_type must be race|practice")
     conds: list[str] = [
-        "(r.source IS NULL OR r.source = 'live')",
+        "(r.source IS NULL OR r.source IN ('live', 'synthesized'))",
         "EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)",
     ]
     params: list[Any] = []
@@ -1696,6 +1696,8 @@ async def api_maneuver_browse(
     has_video: int = 0,
     post_start: int = 0,
     session_limit: int = 20,
+    tags: str | None = None,
+    tag_mode: str = "and",
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
     """Cross-session maneuver browser feed (#584).
@@ -1765,7 +1767,7 @@ async def api_maneuver_browse(
             resolved_session_ids = ids_in
     elif regatta_id is not None:
         sql = (
-            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source = 'live') "
+            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source IN ('live', 'synthesized')) "
         )
         qparams: list[Any] = [regatta_id]
         if session_type is not None:
@@ -1776,7 +1778,7 @@ async def api_maneuver_browse(
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
     else:
         session_limit = max(1, min(session_limit, 100))
-        sql = "SELECT id FROM races WHERE (source IS NULL OR source = 'live') "
+        sql = "SELECT id FROM races WHERE (source IS NULL OR source IN ('live', 'synthesized')) "
         qparams = []
         if session_type is not None:
             sql += "  AND session_type = ? "
@@ -1910,6 +1912,38 @@ async def api_maneuver_browse(
 
     filtered = [m for m in enriched if _keep(m)]
     filtered.sort(key=lambda m: str(m.get("ts") or ""))
+
+    # Attach tags in one batch query so client-side tag filter chips can
+    # render and filter without N+1 lookups (#587).
+    maneuver_ids = [m["id"] for m in filtered if m.get("id") is not None]
+    tag_map = await storage.list_tags_for_entities("maneuver", maneuver_ids)
+    for m in filtered:
+        mid = m.get("id")
+        m["tags"] = tag_map.get(mid, []) if mid is not None else []
+
+    # Optional tag filter — AND/OR over the selected tag ids against each
+    # maneuver's attached tags. Unknown tag ids are silently dropped.
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_mode not in {"and", "or"}:
+            raise HTTPException(
+                status_code=400, detail="tag_mode must be 'and' or 'or'"
+            )
+        if tag_ids:
+            wanted = set(tag_ids)
+
+            def _tag_match(m: dict[str, Any]) -> bool:
+                have = {t["id"] for t in m.get("tags") or []}
+                if tag_mode == "or":
+                    return bool(have & wanted)
+                return wanted.issubset(have)
+
+            filtered = [m for m in filtered if _tag_match(m)]
 
     return JSONResponse({"maneuvers": filtered, "session_ids": resolved_session_ids})
 

@@ -33,6 +33,17 @@
 .mv-badge-gybe{color:var(--warning)}
 .mv-badge-rounding{color:var(--success)}
 .mv-scroll{max-height:calc(100vh - 380px);overflow-y:auto}
+.mv-tag-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;font-size:.7rem;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;margin-right:3px;margin-bottom:3px;color:var(--text-primary)}
+.mv-tag-chip.active{background:var(--accent);color:var(--bg-primary)}
+.mv-tag-chip-row{cursor:default;padding:0 6px;font-size:.66rem;background:transparent}
+.mv-tag-count{color:var(--text-secondary);font-size:.62rem;margin-left:2px}
+.mv-tag-chip.active .mv-tag-count{color:var(--bg-primary);opacity:.8}
+.mv-tag-swatch{display:inline-block;width:8px;height:8px;border-radius:50%}
+.mv-tag-mode{display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px;vertical-align:middle}
+.mv-tag-mode button{font-size:.68rem;padding:2px 8px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer}
+.mv-tag-mode button.active{background:var(--accent);color:var(--bg-primary)}
+.mv-label{font-size:.72rem;color:var(--text-secondary);margin-right:6px;text-transform:uppercase;letter-spacing:.06em}
+#mv-tag-filter{padding:8px 10px;border-bottom:1px solid var(--border);background:var(--bg-input);display:flex;flex-wrap:wrap;align-items:center;gap:4px}
 </style>
 {% endblock %}
 
@@ -93,6 +104,7 @@
     <span class="spacer"></span>
     <button id="mv-compare-btn" onclick="mvOpenCompare()" disabled>Compare Selected</button>
   </div>
+  <div id="mv-tag-filter" style="display:none"></div>
   <div class="mv-scroll">
     <table class="mv-table" id="mv-table">
       <thead>
@@ -107,6 +119,7 @@
           <th class="mv-num">Duration</th>
           <th>Rank</th>
           <th>Video</th>
+          <th>Tags</th>
         </tr>
       </thead>
       <tbody id="mv-tbody"></tbody>
