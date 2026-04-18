@@ -66,9 +66,20 @@ async def api_update_tag(
     body: dict[str, Any],
     _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
-    """Admin only — rename/recolor affects the shared tag namespace."""
+    """Admin only — rename/recolor affects the shared tag namespace.
+
+    ``{"color": null}`` in the body clears the color back to NULL; omitting
+    the key leaves color unchanged.
+    """
     storage = get_storage(request)
-    found = await storage.update_tag(tag_id, name=body.get("name"), color=body.get("color"))
+    # Sentinel to distinguish "color absent" from "color: null".
+    _missing = object()
+    color_in = body.get("color", _missing)
+    clear_color = color_in is None and "color" in body
+    color: str | None = color_in if isinstance(color_in, str) else None
+    found = await storage.update_tag(
+        tag_id, name=body.get("name"), color=color, clear_color=clear_color
+    )
     if not found:
         raise HTTPException(status_code=404, detail="Tag not found")
     await audit(request, "tag.update", detail=str(tag_id), user=_user)

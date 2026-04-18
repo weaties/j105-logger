@@ -18,6 +18,12 @@ input.inline{background:var(--bg-input);border:1px solid var(--border);border-ra
 .merge-list li{padding:6px 10px;cursor:pointer;font-size:.82rem;display:flex;align-items:center;gap:8px}
 .merge-list li:hover{background:var(--bg-input)}
 .merge-list li.selected{background:var(--bg-input);border-left:3px solid var(--warning)}
+.color-cell{display:flex;align-items:center;gap:6px}
+.color-swatch-input{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer}
+.color-swatch-input::-webkit-color-swatch-wrapper{padding:0}
+.color-swatch-input::-webkit-color-swatch{border:none;border-radius:3px}
+.color-clear-btn{background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.9rem;padding:0 2px;line-height:1}
+.color-clear-btn:hover{color:var(--danger)}
 </style>
 {% endblock %}
 {% block content %}
@@ -54,9 +60,13 @@ async function loadTags() {
   _allTags = rows;
   const tbody = document.getElementById('tags-tbody');
   tbody.innerHTML = rows.map(t => {
-    const swatch = t.color
-      ? '<span style="display:inline-block;width:14px;height:14px;border-radius:3px;background:' + t.color + ';border:1px solid var(--border);vertical-align:middle"></span>'
-      : '<span style="color:var(--text-secondary);font-size:.72rem">&ndash;</span>';
+    const colorValue = t.color || '#6b7280';
+    const clearBtn = t.color
+      ? '<button class="color-clear-btn" title="Clear color" onclick="clearTagColor(' + t.id + ')">&times;</button>'
+      : '';
+    const swatch = '<div class="color-cell">'
+      + '<input type="color" class="color-swatch-input" value="' + esc(colorValue) + '" title="Click to change color" onchange="setTagColor(' + t.id + ',this.value)" />'
+      + clearBtn + '</div>';
     const last = t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '';
     return '<tr data-tag-name="' + esc(t.name) + '">'
       + '<td><strong>' + esc(t.name) + '</strong></td>'
@@ -111,6 +121,26 @@ async function createTag() {
   document.getElementById('new-tag-name').value = '';
   await loadTags();
   flash('Tag created');
+}
+
+async function setTagColor(id, color) {
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({color}),
+  });
+  if (!r.ok) { flash('Color update failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Color updated');
+}
+
+async function clearTagColor(id) {
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({color: null}),
+  });
+  if (!r.ok) { flash('Color clear failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Color cleared');
 }
 
 async function renameTag(id, current) {

@@ -6260,15 +6260,26 @@ class Storage:
         return await self.create_tag(name, color)
 
     async def update_tag(
-        self, tag_id: int, *, name: str | None = None, color: str | None = None
+        self,
+        tag_id: int,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+        clear_color: bool = False,
     ) -> bool:
-        """Update a tag's name or color. Returns True if found."""
+        """Update a tag's name or color. Returns True if found.
+
+        Pass ``clear_color=True`` to explicitly set color to NULL; a
+        ``color=None`` argument by itself is treated as "don't change".
+        """
         parts: list[str] = []
         params: list[Any] = []
         if name is not None:
             parts.append("name = ?")
             params.append(name.strip().lower())
-        if color is not None:
+        if clear_color:
+            parts.append("color = NULL")
+        elif color is not None:
             parts.append("color = ?")
             params.append(color)
         if not parts:
