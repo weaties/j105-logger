@@ -4153,8 +4153,9 @@ let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distan
 // Active filter pills. Multi-select: combined with AND across dimensions
 // (type, rank, time) and OR within a dimension. Empty set == "all".
 let _maneuverFilter = new Set();
-// Tag filter is a separate Set of tag ids. AND semantics against m.tags.
+// Tag filter state: a Set of tag ids + an AND/OR mode for multi-select.
 let _maneuverTagFilter = new Set();
+let _maneuverTagMode = 'and'; // 'and' | 'or'
 const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
 const _MANEUVER_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
@@ -4677,11 +4678,19 @@ function _matchesManeuverFilter(m) {
       }
     }
   }
-  // Tag filter — AND semantics across selected tag ids.
+  // Tag filter — AND or OR semantics across selected tag ids.
   if (_maneuverTagFilter.size) {
     const have = new Set((m.tags || []).map(t => t.id));
-    for (const tid of _maneuverTagFilter) {
-      if (!have.has(tid)) return false;
+    if (_maneuverTagMode === 'or') {
+      let matched = false;
+      for (const tid of _maneuverTagFilter) {
+        if (have.has(tid)) { matched = true; break; }
+      }
+      if (!matched) return false;
+    } else {
+      for (const tid of _maneuverTagFilter) {
+        if (!have.has(tid)) return false;
+      }
     }
   }
   return true;
@@ -4693,9 +4702,27 @@ function setManeuverTagFilter(tagId) {
   renderManeuverCard();
 }
 
+function setManeuverTagMode(mode) {
+  if (mode !== 'and' && mode !== 'or') return;
+  _maneuverTagMode = mode;
+  renderManeuverCard();
+}
+
 function clearManeuverTagFilter() {
   _maneuverTagFilter.clear();
   renderManeuverCard();
+}
+
+function _tagModeBtn(mode, label) {
+  const active = _maneuverTagMode === mode;
+  const title = mode === 'and'
+    ? 'Match maneuvers with all selected tags'
+    : 'Match maneuvers with any selected tag';
+  const style = 'font-size:.68rem;padding:2px 8px;border:none;background:'
+    + (active ? 'var(--accent)' : 'transparent') + ';color:'
+    + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer';
+  return '<button style="' + style + '" title="' + title
+    + '" onclick="setManeuverTagMode(\'' + mode + '\')">' + label + '</button>';
 }
 
 function _renderOverlaySvg() {
@@ -4845,9 +4872,15 @@ function renderManeuverCard() {
     const clearBtn = _maneuverTagFilter.size
       ? '<button style="font-size:.68rem;padding:2px 6px;border:none;background:none;color:var(--text-secondary);cursor:pointer;text-decoration:underline" onclick="clearManeuverTagFilter()">clear</button>'
       : '';
+    const modeToggle = _maneuverTagFilter.size > 1
+      ? '<span style="display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px">'
+        +   _tagModeBtn('and', 'all')
+        +   _tagModeBtn('or', 'any')
+        + '</span>'
+      : '';
     tagFilterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;align-items:center">'
       + '<span style="font-size:.68rem;color:var(--text-secondary);margin-right:2px">Tags:</span>'
-      + chips + clearBtn
+      + chips + modeToggle + clearBtn
       + '</div>';
   }
 
