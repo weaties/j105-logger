@@ -1766,9 +1766,7 @@ async def api_maneuver_browse(
         else:
             resolved_session_ids = ids_in
     elif regatta_id is not None:
-        sql = (
-            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source IN ('live', 'synthesized')) "
-        )
+        sql = "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source IN ('live', 'synthesized')) "
         qparams: list[Any] = [regatta_id]
         if session_type is not None:
             sql += "   AND session_type = ? "
@@ -1943,9 +1941,7 @@ async def api_maneuver_browse(
                 status_code=400, detail="tags must be comma-separated ints"
             ) from exc
         if tag_mode not in {"and", "or"}:
-            raise HTTPException(
-                status_code=400, detail="tag_mode must be 'and' or 'or'"
-            )
+            raise HTTPException(status_code=400, detail="tag_mode must be 'and' or 'or'")
         if tag_ids:
             wanted = set(tag_ids)
 
@@ -2033,9 +2029,7 @@ async def api_sessions(
             ) from exc
         if tag_ids:
             try:
-                tag_filter_ids = set(
-                    await storage.sessions_matching_tags(tag_ids, mode=tag_mode)
-                )
+                tag_filter_ids = set(await storage.sessions_matching_tags(tag_ids, mode=tag_mode))
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             if not tag_filter_ids:
@@ -2077,15 +2071,11 @@ async def api_sessions(
     available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
 
     # Per-session tag summary only needed for the visible page.
-    page_tag_summary = await storage.list_session_tag_summary(
-        [s["id"] for s in sessions]
-    )
+    page_tag_summary = await storage.list_session_tag_summary([s["id"] for s in sessions])
     for s in sessions:
         s["tag_summary"] = page_tag_summary.get(s["id"], [])
 
-    return JSONResponse(
-        {"total": total, "sessions": sessions, "available_tags": available_tags}
-    )
+    return JSONResponse({"total": total, "sessions": sessions, "available_tags": available_tags})
 
 
 @router.get("/api/grafana/annotations")

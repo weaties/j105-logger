@@ -127,18 +127,14 @@ async def api_list_bookmarks(
         if tag_ids:
             try:
                 allowed = set(
-                    await storage.list_entities_with_tags(
-                        "bookmark", tag_ids, mode=tag_mode
-                    )
+                    await storage.list_entities_with_tags("bookmark", tag_ids, mode=tag_mode)
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             rows = [r for r in rows if r["id"] in allowed]
 
     serialized = [{**_serialize(r), "tags": r.get("tags") or []} for r in rows]
-    return JSONResponse(
-        {"bookmarks": serialized, "available_tags": available_tags}
-    )
+    return JSONResponse({"bookmarks": serialized, "available_tags": available_tags})
 
 
 def _may_modify(user: dict[str, Any], bm: dict[str, Any]) -> bool:
