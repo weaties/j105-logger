@@ -1,5 +1,18 @@
 {% extends "base.html" %}
 {% block title %}Session History — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+.hist-tag-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 6px;border-radius:10px;font-size:.7rem;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;margin-right:4px;margin-bottom:3px}
+.hist-tag-chip.active{background:var(--accent);color:var(--bg-primary)}
+.hist-tag-chip .swatch{display:inline-block;width:8px;height:8px;border-radius:50%}
+.hist-tag-chip .etype{font-size:.62rem;color:var(--text-secondary);margin-left:3px}
+.hist-tag-chip.active .etype{color:var(--bg-primary);opacity:.75}
+.hist-tag-row-chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:6px}
+.tag-mode-toggle{display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px;vertical-align:middle}
+.tag-mode-toggle button{font-size:.68rem;padding:2px 8px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer}
+.tag-mode-toggle button.active{background:var(--accent);color:var(--bg-primary)}
+</style>
+{% endblock %}
 
 {% block content %}
 <h1 style="margin-bottom:12px">Session History</h1>
@@ -13,7 +26,7 @@
     <button class="filter-btn" onclick="setType(this,'practice')">Practice</button>
     <button class="filter-btn" onclick="setType(this,'synthesized')">Synth</button>
   </div>
-  <div style="display:flex;gap:8px">
+  <div style="display:flex;gap:8px;margin-bottom:10px">
     <div style="flex:1">
       <div class="label">From</div>
       <input id="from-date" type="date" class="event-input" onchange="load()"/>
@@ -22,6 +35,14 @@
       <div class="label">To</div>
       <input id="to-date" type="date" class="event-input" onchange="load()"/>
     </div>
+  </div>
+  <div id="tag-filter-row" style="display:none">
+    <div class="label" style="display:flex;align-items:center;gap:6px">
+      <span>Tags</span>
+      <span id="tag-mode-wrap" style="display:none"></span>
+      <a href="#" id="tag-clear" style="display:none;font-size:.7rem;color:var(--text-secondary)" onclick="event.preventDefault();clearTagFilter()">clear</a>
+    </div>
+    <div id="tag-filter-chips" class="hist-tag-row-chips"></div>
   </div>
 </div>
 

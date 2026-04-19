@@ -6,6 +6,11 @@ const LIMIT = 25;
 let loadTimer = null;
 const summaryCache = new Map();
 
+// Tag filter state — mirrors the maneuvers panel pattern.
+const tagFilter = new Set();
+let tagMode = 'and'; // 'and' | 'or'
+let availableTags = []; // [{id, name, color, count}] from server, pre-tag-filter
+
 function setType(btn, t) {
   currentType = t;
   currentOffset = 0;
@@ -28,11 +33,143 @@ async function load() {
   const to = document.getElementById('to-date').value;
   if (from) params.set('from_date', from);
   if (to) params.set('to_date', to);
+  if (tagFilter.size) {
+    params.set('tags', [...tagFilter].join(','));
+    params.set('tag_mode', tagMode);
+  }
   params.set('limit', LIMIT);
   params.set('offset', currentOffset);
   const r = await fetch('/api/sessions?' + params);
   const data = await r.json();
+  availableTags = data.available_tags || [];
   render(data);
+  renderTagFilterRow(data.sessions);
+}
+
+function esc(s) {
+  return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]
+  ));
+}
+
+function _etypeLabel(et, count) {
+  if (et === 'session') return 'session';
+  // Pluralize when count > 1 for readability.
+  if (count > 1) return et + 's';
+  return et;
+}
+
+function _entityTypeOrder(a, b) {
+  const order = {session: 0, thread: 1, bookmark: 2, maneuver: 3};
+  return (order[a] ?? 99) - (order[b] ?? 99);
+}
+
+// Collapse tag_summary into [{id, name, color, parts: [{et, count}]}] so one
+// chip renders per tag with a compact entity-type label.
+function _groupTagSummary(rows) {
+  const byId = new Map();
+  for (const r of rows) {
+    const existing = byId.get(r.id) || {id: r.id, name: r.name, color: r.color, parts: []};
+    existing.parts.push({et: r.entity_type, count: r.count});
+    byId.set(r.id, existing);
+  }
+  // Sort tags by name; inside each tag, order the parts (session first).
+  const out = [...byId.values()];
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  for (const t of out) {
+    t.parts.sort((a, b) => _entityTypeOrder(a.et, b.et));
+  }
+  return out;
+}
+
+function renderSessionTagChips(summary) {
+  if (!summary || !summary.length) return '';
+  const grouped = _groupTagSummary(summary);
+  const chips = grouped.map(g => {
+    const swatch = g.color
+      ? '<span class="swatch" style="background:' + g.color + '"></span>'
+      : '';
+    const labels = g.parts.map(p => {
+      const lbl = _etypeLabel(p.et, p.count);
+      return p.count > 1 ? p.count + ' ' + lbl : lbl;
+    }).join(', ');
+    return '<span class="hist-tag-chip" title="' + esc(labels) + '">'
+      + swatch + esc(g.name)
+      + ' <span class="etype">(' + esc(labels) + ')</span></span>';
+  }).join('');
+  return '<div class="hist-tag-row-chips">' + chips + '</div>';
+}
+
+// Build the filter chip row from whatever tags the current result page
+// surfaces. This keeps the list focused on tags actually in use rather
+// than every tag in the system.
+function renderTagFilterRow(sessions) {
+  const wrap = document.getElementById('tag-filter-row');
+  const chipsHost = document.getElementById('tag-filter-chips');
+  const modeWrap = document.getElementById('tag-mode-wrap');
+  const clearLink = document.getElementById('tag-clear');
+  if (!wrap || !chipsHost) return;
+
+  // Use server-provided available_tags (computed across all sessions
+  // matching the non-tag filters) so selecting a tag doesn't collapse
+  // the chip row down to the current result.
+  const byId = new Map();
+  for (const t of availableTags) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  }
+  // Always include currently-selected tags even if not in available_tags,
+  // so the user can still deselect them.
+  for (const tid of tagFilter) {
+    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
+  }
+
+  if (byId.size === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  chipsHost.innerHTML = sorted.map(t => {
+    const active = tagFilter.has(t.id);
+    const swatch = t.color
+      ? '<span class="swatch" style="background:' + t.color + '"></span>'
+      : '';
+    const countLbl = t.count ? ' (' + t.count + ')' : '';
+    return '<span class="hist-tag-chip' + (active ? ' active' : '') + '"'
+      + ' onclick="toggleTagFilter(' + t.id + ')">' + swatch
+      + esc(t.name) + '<span class="etype">' + countLbl + '</span></span>';
+  }).join('');
+
+  // Mode toggle always visible when the tag row is shown, dimmed when
+  // fewer than 2 tags are active so users discover the control up front.
+  modeWrap.style.display = '';
+  const dimStyle = tagFilter.size < 2 ? 'opacity:.6' : '';
+  modeWrap.innerHTML = '<span class="tag-mode-toggle" style="' + dimStyle + '">'
+    + '<button class="' + (tagMode === 'and' ? 'active' : '') + '" title="Match sessions that contain every selected tag" onclick="setTagMode(\'and\')">all</button>'
+    + '<button class="' + (tagMode === 'or' ? 'active' : '') + '" title="Match sessions that contain any selected tag" onclick="setTagMode(\'or\')">any</button>'
+    + '</span>';
+
+  clearLink.style.display = tagFilter.size ? '' : 'none';
+}
+
+function toggleTagFilter(tagId) {
+  if (tagFilter.has(tagId)) tagFilter.delete(tagId);
+  else tagFilter.add(tagId);
+  currentOffset = 0;
+  load();
+}
+
+function setTagMode(mode) {
+  if (mode !== 'and' && mode !== 'or') return;
+  tagMode = mode;
+  currentOffset = 0;
+  load();
+}
+
+function clearTagFilter() {
+  tagFilter.clear();
+  currentOffset = 0;
+  load();
 }
 
 function render(data) {
@@ -48,16 +185,18 @@ function render(data) {
     const dur = (s.end_utc && s.duration_s != null) ? ' (' + fmtDuration(Math.round(s.duration_s)) + ')' : '';
     const parent = s.parent_race_name ? '<div class="session-meta">Debrief of ' + s.parent_race_name + '</div>' : '';
     const displayName = s.shared_name || s.name;
-    const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + displayName + '</a>';
-    const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:1px">Local: ' + s.name + '</div>' : '';
+    const nameLink = '<a href="/session/' + s.id + '" style="color:inherit;text-decoration:none">' + esc(displayName) + '</a>';
+    const localNameHint = s.shared_name ? '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:1px">Local: ' + esc(s.name) + '</div>' : '';
     const showSummary = s.type !== 'debrief' && s.end_utc;
     const summaryHtml = showSummary
       ? '<div class="session-summary" id="hist-summary-' + s.id + '"><div class="summary-skeleton"></div></div>'
       : '';
+    const tagChips = renderSessionTagChips(s.tag_summary);
     return '<div class="card"><div class="session-name">' + nameLink + '</div>'
       + '<div class="session-meta">' + s.date + ' &nbsp;·&nbsp; ' + start + ' → ' + end + dur + '</div>'
       + localNameHint
       + parent
+      + tagChips
       + summaryHtml
       + '</div>';
   }).join('');

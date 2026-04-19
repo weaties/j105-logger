@@ -32,6 +32,9 @@ const state = {
   postStart: false,        // drop pre-gun maneuvers when true
   twsBands: new Set(),     // indices into TWS_BANDS — empty = any
   hasVideo: false,
+  tagFilter: new Set(),    // tag ids
+  tagMode: 'and',          // 'and'|'or'
+  availableTags: [],       // [{id, name, color, count}] pre-tag-filter
   maneuvers: [],
   selected: new Set(),     // composite keys "sid:mid"
   loading: false,
@@ -218,14 +221,20 @@ async function reload() {
     }
     if (state.hasVideo) params.set('has_video', '1');
     if (state.postStart) params.set('post_start', '1');
+    if (state.tagFilter.size) {
+      params.set('tags', [...state.tagFilter].join(','));
+      params.set('tag_mode', state.tagMode);
+    }
 
     const r = await fetch('/api/maneuvers/browse?' + params.toString());
     if (!r.ok) { state.maneuvers = []; renderResults(); return; }
     const data = await r.json();
     state.maneuvers = data.maneuvers || [];
+    state.availableTags = data.available_tags || [];
     // Purge selection entries that no longer appear in the filtered list
     const ids = new Set(state.maneuvers.map(m => m.session_id + ':' + m.id));
     for (const k of [...state.selected]) if (!ids.has(k)) state.selected.delete(k);
+    renderTagFilterRow();
     renderResults();
   } finally {
     state.loading = false;
@@ -272,6 +281,7 @@ function renderResults() {
       ? '<span class="mv-video">&#9654;</span>'
       : '<span class="mv-no-video">\u2014</span>';
     const rank = m.rank ? m.rank : '';
+    const tagCell = _renderRowTagChips(m.tags);
     return '<tr class="' + (sel ? 'selected' : '') + '" data-k="' + k + '" onclick="mvToggleRow(\'' + k + '\')">'
       + '<td><input type="checkbox" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();mvToggleRow(\'' + k + '\')"/></td>'
       + '<td>' + _esc(date) + ' \u00b7 ' + _esc(m.session_name || '') + '</td>'
@@ -283,6 +293,7 @@ function renderResults() {
       + '<td class="mv-num">' + durTxt + '</td>'
       + '<td>' + _esc(rank) + '</td>'
       + '<td>' + video + '</td>'
+      + '<td>' + tagCell + '</td>'
       + '</tr>';
   }).join('');
 
@@ -346,4 +357,79 @@ function _esc(s) {
   const d = document.createElement('div');
   d.textContent = s == null ? '' : String(s);
   return d.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Tag filter chip row (#587)
+// ---------------------------------------------------------------------------
+
+function renderTagFilterRow() {
+  const wrap = document.getElementById('mv-tag-filter');
+  if (!wrap) return;
+  // available_tags comes from the server computed against the pre-tag-filter
+  // set, so every tag that could narrow the result is always offered even
+  // when a chip is already active.
+  const byId = new Map();
+  for (const t of (state.availableTags || [])) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  }
+  // Keep currently-selected tags visible even if the result set no longer
+  // contains them so the user can still deselect.
+  for (const tid of state.tagFilter) {
+    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
+  }
+  if (byId.size === 0) {
+    wrap.style.display = 'none';
+    return;
+  }
+  wrap.style.display = '';
+  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const chips = sorted.map(t => {
+    const active = state.tagFilter.has(t.id);
+    const swatch = t.color
+      ? '<span class="mv-tag-swatch" style="background:' + t.color + '"></span>'
+      : '';
+    return '<span class="mv-tag-chip' + (active ? ' active' : '') + '"'
+      + ' onclick="mvToggleTagFilter(' + t.id + ')">'
+      + swatch + _esc(t.name) + ' <span class="mv-tag-count">(' + t.count + ')</span></span>';
+  }).join('');
+  // Always show the mode toggle when the tag row is visible, so users
+  // discover the control before they've selected tags. Dimmed until a
+  // filter is active to signal it's a preference, not an active setting.
+  const dim = state.tagFilter.size < 2 ? ';opacity:.6' : '';
+  const modeToggle = '<span class="mv-tag-mode" style="margin-left:6px' + dim + '">'
+    + '<button class="' + (state.tagMode === 'and' ? 'active' : '') + '" title="Match maneuvers with every selected tag" onclick="mvSetTagMode(\'and\')">all</button>'
+    + '<button class="' + (state.tagMode === 'or' ? 'active' : '') + '" title="Match maneuvers with any selected tag" onclick="mvSetTagMode(\'or\')">any</button>'
+    + '</span>';
+  const clearBtn = state.tagFilter.size
+    ? '<a href="#" onclick="event.preventDefault();mvClearTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
+    : '';
+  wrap.innerHTML = '<span class="mv-label">Tags</span>' + chips + modeToggle + clearBtn;
+}
+
+function mvToggleTagFilter(tagId) {
+  if (state.tagFilter.has(tagId)) state.tagFilter.delete(tagId);
+  else state.tagFilter.add(tagId);
+  reload();
+}
+
+function mvSetTagMode(mode) {
+  if (mode !== 'and' && mode !== 'or') return;
+  state.tagMode = mode;
+  reload();
+}
+
+function mvClearTagFilter() {
+  state.tagFilter.clear();
+  reload();
+}
+
+function _renderRowTagChips(tags) {
+  if (!tags || !tags.length) return '';
+  return tags.map(t => {
+    const swatch = t.color
+      ? '<span class="mv-tag-swatch" style="background:' + t.color + '"></span>'
+      : '';
+    return '<span class="mv-tag-chip mv-tag-chip-row">' + swatch + _esc(t.name) + '</span>';
+  }).join(' ');
 }

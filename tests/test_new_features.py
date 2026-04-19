@@ -83,17 +83,17 @@ async def test_session_tags(storage: Storage) -> None:
     now = datetime.now(UTC)
     race = await storage.start_race("Test", now, now.date().isoformat(), 1, "Test Race 1", "race")
     tag_id = await storage.create_tag("windy")
-    await storage.add_session_tag(race.id, tag_id)
-    tags = await storage.get_session_tags(race.id)
+    await storage.attach_tag("session", race.id, tag_id, user_id=None)
+    tags = await storage.list_tags_for_entity("session", race.id)
     assert len(tags) == 1
     assert tags[0]["name"] == "windy"
 
     # Idempotent
-    await storage.add_session_tag(race.id, tag_id)
-    assert len(await storage.get_session_tags(race.id)) == 1
+    await storage.attach_tag("session", race.id, tag_id, user_id=None)
+    assert len(await storage.list_tags_for_entity("session", race.id)) == 1
 
-    await storage.remove_session_tag(race.id, tag_id)
-    assert len(await storage.get_session_tags(race.id)) == 0
+    await storage.detach_tag("session", race.id, tag_id)
+    assert len(await storage.list_tags_for_entity("session", race.id)) == 0
 
 
 @pytest.mark.asyncio
@@ -102,13 +102,13 @@ async def test_note_tags(storage: Storage) -> None:
     race = await storage.start_race("Test", now, now.date().isoformat(), 1, "Test Race 1", "race")
     note_id = await storage.create_note(now.isoformat(), "test note", race_id=race.id)
     tag_id = await storage.create_tag("protest", "#e53e3e")
-    await storage.add_note_tag(note_id, tag_id)
-    tags = await storage.get_note_tags(note_id)
+    await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
+    tags = await storage.list_tags_for_entity("session_note", note_id)
     assert len(tags) == 1
     assert tags[0]["name"] == "protest"
 
-    await storage.remove_note_tag(note_id, tag_id)
-    assert len(await storage.get_note_tags(note_id)) == 0
+    await storage.detach_tag("session_note", note_id, tag_id)
+    assert len(await storage.list_tags_for_entity("session_note", note_id)) == 0
 
 
 @pytest.mark.asyncio
@@ -126,10 +126,12 @@ async def test_delete_tag(storage: Storage) -> None:
     tag_id = await storage.create_tag("temp")
     now = datetime.now(UTC)
     race = await storage.start_race("T", now, now.date().isoformat(), 1, "T R1", "race")
-    await storage.add_session_tag(race.id, tag_id)
+    await storage.attach_tag("session", race.id, tag_id, user_id=None)
+    assert storage._db is not None
+    await storage._db.execute("PRAGMA foreign_keys = ON")
     found = await storage.delete_tag(tag_id)
     assert found is True
-    assert len(await storage.get_session_tags(race.id)) == 0
+    assert len(await storage.list_tags_for_entity("session", race.id)) == 0
     assert await storage.get_tag_by_name("temp") is None
 
 
@@ -139,12 +141,12 @@ async def test_tag_usage_counts(storage: Storage) -> None:
     now = datetime.now(UTC)
     race = await storage.start_race("T", now, now.date().isoformat(), 1, "T R1", "race")
     note_id = await storage.create_note(now.isoformat(), "test", race_id=race.id)
-    await storage.add_session_tag(race.id, tag_id)
-    await storage.add_note_tag(note_id, tag_id)
+    await storage.attach_tag("session", race.id, tag_id, user_id=None)
+    await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
     tags = await storage.list_tags()
     t = next(t for t in tags if t["id"] == tag_id)
-    assert t["session_count"] == 1
-    assert t["note_count"] == 1
+    # Combined across entity types
+    assert t["usage_count"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +187,7 @@ async def test_trigger_scan_creates_notes(storage: Storage) -> None:
     assert len(auto_notes) == 1
 
     # Verify tags
-    note_tags = await storage.get_note_tags(auto_notes[0]["id"])
+    note_tags = await storage.list_tags_for_entity("session_note", auto_notes[0]["id"])
     tag_names = {t["name"] for t in note_tags}
     assert "protest" in tag_names
     assert "auto-detected" in tag_names

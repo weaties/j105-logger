@@ -502,3 +502,17 @@ async def admin_vakaros_ingest(
 
         params.append(f"flash_error={quote(result.error)}")
     return RedirectResponse(url="/admin/vakaros?" + "&".join(params), status_code=303)
+
+
+# ---------------------------------------------------------------------------
+# Tags admin (#587 / #588 slice 3)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/tags", response_class=HTMLResponse, include_in_schema=False)
+async def admin_tags_page(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    get_storage(request)
+    return templates.TemplateResponse(request, "admin/tags.html", tpl_ctx(request, "/admin/tags"))

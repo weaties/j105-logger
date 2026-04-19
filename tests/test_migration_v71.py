@@ -177,17 +177,18 @@ async def test_v71_preserves_anchor_backfill_from_v70() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_71_on_fresh_db() -> None:
-    """Using the real Storage class (all migrations) — schema version is 71."""
+async def test_v71_migration_applied_on_fresh_db() -> None:
+    """Confirm v71 is in the applied migration set regardless of newer versions."""
     from helmlog.storage import Storage, StorageConfig
 
     s = Storage(StorageConfig(db_path=":memory:"))
     await s.connect()
     try:
         assert s._db is not None
-        async with s._db.execute("SELECT MAX(version) FROM schema_version") as cur:
+        async with s._db.execute(
+            "SELECT 1 FROM schema_version WHERE version = 71"
+        ) as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 71
     finally:
         await s.close()

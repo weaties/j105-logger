@@ -3363,7 +3363,7 @@ async def test_create_thread_and_list(storage: Storage) -> None:
 
         resp = await client.get(f"/api/sessions/{race_id}/threads")
         assert resp.status_code == 200
-        threads = resp.json()
+        threads = resp.json()["threads"]
         assert len(threads) == 1
         assert threads[0]["id"] == thread_id
         assert threads[0]["title"] == "Bad tack at weather mark"

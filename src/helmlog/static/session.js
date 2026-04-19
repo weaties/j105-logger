@@ -4153,6 +4153,9 @@ let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distan
 // Active filter pills. Multi-select: combined with AND across dimensions
 // (type, rank, time) and OR within a dimension. Empty set == "all".
 let _maneuverFilter = new Set();
+// Tag filter state: a Set of tag ids + an AND/OR mode for multi-select.
+let _maneuverTagFilter = new Set();
+let _maneuverTagMode = 'and'; // 'and' | 'or'
 const _MANEUVER_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _MANEUVER_RANK_PILLS = ['good', 'bad'];
 const _MANEUVER_DIR_PILLS = ['P\u2192S', 'S\u2192P'];
@@ -4654,27 +4657,72 @@ function _raceStartMs() {
 }
 
 function _matchesManeuverFilter(m) {
-  if (!_maneuverFilter.size) return true;
-  const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeTypes.length && !activeTypes.includes(m.type)) return false;
-  const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
-  // Direction filter: P→S = negative turn_angle_deg, S→P = positive
-  const activeDir = _MANEUVER_DIR_PILLS.filter(p => _maneuverFilter.has(p));
-  if (activeDir.length) {
-    if (m.turn_angle_deg == null) return false;
-    const isPS = m.turn_angle_deg < 0;  // P→S = negative
-    if (activeDir.includes('P\u2192S') && !isPS) return false;
-    if (activeDir.includes('S\u2192P') && isPS) return false;
+  if (_maneuverFilter.size) {
+    const activeTypes = _MANEUVER_TYPE_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeTypes.length && !activeTypes.includes(m.type)) return false;
+    const activeRanks = _MANEUVER_RANK_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeRanks.length && !activeRanks.includes(m.rank)) return false;
+    // Direction filter: P→S = negative turn_angle_deg, S→P = positive
+    const activeDir = _MANEUVER_DIR_PILLS.filter(p => _maneuverFilter.has(p));
+    if (activeDir.length) {
+      if (m.turn_angle_deg == null) return false;
+      const isPS = m.turn_angle_deg < 0;  // P→S = negative
+      if (activeDir.includes('P\u2192S') && !isPS) return false;
+      if (activeDir.includes('S\u2192P') && isPS) return false;
+    }
+    if (_maneuverFilter.has('post-start')) {
+      const startMs = _raceStartMs();
+      if (startMs != null) {
+        const t = _parseUtc(m.ts);
+        if (t == null || t.getTime() < startMs) return false;
+      }
+    }
   }
-  if (_maneuverFilter.has('post-start')) {
-    const startMs = _raceStartMs();
-    if (startMs != null) {
-      const t = _parseUtc(m.ts);
-      if (t == null || t.getTime() < startMs) return false;
+  // Tag filter — AND or OR semantics across selected tag ids.
+  if (_maneuverTagFilter.size) {
+    const have = new Set((m.tags || []).map(t => t.id));
+    if (_maneuverTagMode === 'or') {
+      let matched = false;
+      for (const tid of _maneuverTagFilter) {
+        if (have.has(tid)) { matched = true; break; }
+      }
+      if (!matched) return false;
+    } else {
+      for (const tid of _maneuverTagFilter) {
+        if (!have.has(tid)) return false;
+      }
     }
   }
   return true;
+}
+
+function setManeuverTagFilter(tagId) {
+  if (_maneuverTagFilter.has(tagId)) _maneuverTagFilter.delete(tagId);
+  else _maneuverTagFilter.add(tagId);
+  renderManeuverCard();
+}
+
+function setManeuverTagMode(mode) {
+  if (mode !== 'and' && mode !== 'or') return;
+  _maneuverTagMode = mode;
+  renderManeuverCard();
+}
+
+function clearManeuverTagFilter() {
+  _maneuverTagFilter.clear();
+  renderManeuverCard();
+}
+
+function _tagModeBtn(mode, label) {
+  const active = _maneuverTagMode === mode;
+  const title = mode === 'and'
+    ? 'Match maneuvers with all selected tags'
+    : 'Match maneuvers with any selected tag';
+  const style = 'font-size:.68rem;padding:2px 8px;border:none;background:'
+    + (active ? 'var(--accent)' : 'transparent') + ';color:'
+    + (active ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer';
+  return '<button style="' + style + '" title="' + title
+    + '" onclick="setManeuverTagMode(\'' + mode + '\')">' + label + '</button>';
 }
 
 function _renderOverlaySvg() {
@@ -4796,6 +4844,47 @@ function renderManeuverCard() {
       }).join('')
     + '</div>';
 
+  // Tag filter bar — only show tags that are actually attached to at least
+  // one maneuver in this session, so unused tags don't clutter the UI.
+  const tagUsage = new Map(); // id → {name, color, count}
+  for (const m of _maneuvers) {
+    for (const t of (m.tags || [])) {
+      const row = tagUsage.get(t.id) || {name: t.name, color: t.color, count: 0};
+      row.count++;
+      tagUsage.set(t.id, row);
+    }
+  }
+  let tagFilterBar = '';
+  if (tagUsage.size > 0) {
+    const sorted = [...tagUsage.entries()].sort((a, b) => a[1].name.localeCompare(b[1].name));
+    const chips = sorted.map(([id, row]) => {
+      const active = _maneuverTagFilter.has(id);
+      const borderColor = row.color || 'var(--border)';
+      const style = 'font-size:.7rem;padding:2px 8px;border:1px solid ' + borderColor
+        + ';background:' + (active ? 'var(--accent)' : 'transparent') + ';color:'
+        + (active ? 'var(--bg-primary)' : 'var(--text-primary)')
+        + ';cursor:pointer;border-radius:10px';
+      const swatch = row.color
+        ? '<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + row.color + ';margin-right:4px;vertical-align:middle"></span>'
+        : '';
+      return '<button style="' + style + '" onclick="setManeuverTagFilter(' + id + ')">' + swatch + esc(row.name) + ' (' + row.count + ')</button>';
+    }).join('');
+    const clearBtn = _maneuverTagFilter.size
+      ? '<button style="font-size:.68rem;padding:2px 6px;border:none;background:none;color:var(--text-secondary);cursor:pointer;text-decoration:underline" onclick="clearManeuverTagFilter()">clear</button>'
+      : '';
+    // Mode toggle always visible when the tag row is shown, dimmed when
+    // fewer than 2 tags are active so users discover the control.
+    const modeDim = _maneuverTagFilter.size < 2 ? ';opacity:.6' : '';
+    const modeToggle = '<span style="display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;margin-left:4px' + modeDim + '">'
+      +   _tagModeBtn('and', 'all')
+      +   _tagModeBtn('or', 'any')
+      + '</span>';
+    tagFilterBar = '<div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap;align-items:center">'
+      + '<span style="font-size:.68rem;color:var(--text-secondary);margin-right:2px">Tags:</span>'
+      + chips + modeToggle + clearBtn
+      + '</div>';
+  }
+
   const items = _maneuverRows();
   let rows = items.map((m) => {
     const idx = _maneuvers.indexOf(m);
@@ -4863,7 +4952,7 @@ function renderManeuverCard() {
     + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
-  body.innerHTML = summary + filterBar + overlayBlock + selectBar
+  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
     + '<th title="Include in overlay"></th>'
     + _manHeader('Type', 'type')
@@ -4904,7 +4993,8 @@ function _renderManeuverDetail(m) {
     ];
     el.innerHTML = '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px 12px;font-size:.72rem;background:var(--bg-secondary);padding:8px;border-radius:3px">'
       + rows.map(([k, v]) => '<div><span style="color:var(--text-secondary)">' + k + '</span> <b>' + esc(v) + '</b></div>').join('')
-      + '</div>';
+      + '</div>'
+      + _renderManeuverTagRow(m);
     return;
   }
 
@@ -4968,6 +5058,17 @@ function _renderManeuverDetail(m) {
   el.innerHTML = '<div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">'
     + '<div style="flex:1;min-width:260px">' + metricsGrid + '</div>'
     + (diagram ? '<div>' + diagram + '</div>' : '')
+    + '</div>'
+    + _renderManeuverTagRow(m);
+}
+
+// Small tag-picker strip rendered beneath the maneuver detail metrics
+// whenever a maneuver is selected in the session page table.
+function _renderManeuverTagRow(m) {
+  if (!m || m.id == null) return '';
+  return '<div style="margin-top:8px;padding:8px;background:var(--bg-secondary);border-radius:3px">'
+    + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:4px">Tags</div>'
+    + '<tag-picker entity-type="maneuver" entity-id="' + esc(String(m.id)) + '"></tag-picker>'
     + '</div>';
 }
 
@@ -5619,27 +5720,46 @@ function _threadTitle(t) {
   return 'Thread #' + t.id;
 }
 
+// Tag filter state for the Discussion card.
+const _threadTagFilter = new Set();
+let _threadTagMode = 'and';
+let _threadAvailableTags = [];
+
 async function loadDiscussion() {
   const card = document.getElementById('discussion-card');
   card.style.display = '';
   const body = document.getElementById('discussion-body');
   // Fetch anchor index in parallel so entity-ref chips can resolve labels
   _anchorIndex = null;
+  const params = new URLSearchParams();
+  if (_threadTagFilter.size) {
+    params.set('tags', [..._threadTagFilter].join(','));
+    params.set('tag_mode', _threadTagMode);
+  }
+  const qs = params.toString();
+  const threadsUrl = '/api/sessions/' + SESSION_ID + '/threads' + (qs ? '?' + qs : '');
   const [threadsResp] = await Promise.all([
-    fetch('/api/sessions/' + SESSION_ID + '/threads'),
+    fetch(threadsUrl),
     _ensureAnchorIndex(),
   ]);
   if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
-  _threads = await threadsResp.json();
+  const data = await threadsResp.json();
+  _threads = data.threads || [];
+  _threadAvailableTags = data.available_tags || [];
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
   _addDiscussionMarkers();
+
+  const filterBar = _renderThreadTagFilterRow();
   if (!_threads.length) {
-    body.innerHTML = '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+    const emptyMsg = _threadTagFilter.size
+      ? '<span style="color:var(--text-secondary)">No discussions match the current tag filter.</span>'
+      : '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+    body.innerHTML = filterBar + emptyMsg;
     return;
   }
-  body.innerHTML = _threads.map(t => {
+  const threadItems = _threads.map(t => {
     const anchor = _renderAnchorChip(t.anchor);
     const unread = t.unread_count > 0
       ? '<span class="thread-unread">' + t.unread_count + '</span>'
@@ -5653,12 +5773,60 @@ async function loadDiscussion() {
       ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:var(--success)">'
         + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
       : '';
+    const tagChips = _renderRowTagChipsInline(t.tags);
     return '<div class="thread-item' + resolved + '" onclick="openThread(' + t.id + ')">'
       + '<div><strong style="color:var(--text-primary)">' + title + '</strong>' + anchor + unread + resolvedTag + '</div>'
       + '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:2px">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.created_at) + '</div>'
       + resolutionHtml
+      + tagChips
       + '</div>';
   }).join('');
+  body.innerHTML = filterBar + threadItems;
+}
+
+function _renderThreadTagFilterRow() {
+  const byId = new Map();
+  for (const t of _threadAvailableTags) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  }
+  for (const tid of _threadTagFilter) {
+    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
+  }
+  if (byId.size === 0) return '';
+  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const chips = sorted.map(t => {
+    const active = _threadTagFilter.has(t.id);
+    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+    return `<span class="session-tag-chip${active ? ' active' : ''}" onclick="event.stopPropagation();_toggleThreadTagFilter(${t.id})">${swatch}${esc(t.name)} <span class="session-tag-count">(${t.count})</span></span>`;
+  }).join('');
+  const dim = _threadTagFilter.size < 2 ? ';opacity:.6' : '';
+  const modeToggle = `<span class="session-tag-mode" style="margin-left:6px${dim}">`
+    + `<button class="${_threadTagMode === 'and' ? 'active' : ''}" onclick="event.stopPropagation();_setThreadTagMode('and')" title="Require every selected tag">all</button>`
+    + `<button class="${_threadTagMode === 'or' ? 'active' : ''}" onclick="event.stopPropagation();_setThreadTagMode('or')" title="Match any selected tag">any</button>`
+    + '</span>';
+  const clear = _threadTagFilter.size
+    ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();_clearThreadTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
+    : '';
+  return '<div class="session-tag-filter-row">'
+    + '<span class="session-tag-label">Tags</span>' + chips + modeToggle + clear
+    + '</div>';
+}
+
+function _toggleThreadTagFilter(id) {
+  if (_threadTagFilter.has(id)) _threadTagFilter.delete(id);
+  else _threadTagFilter.add(id);
+  loadDiscussion();
+}
+function _setThreadTagMode(m) { _threadTagMode = m; loadDiscussion(); }
+function _clearThreadTagFilter() { _threadTagFilter.clear(); loadDiscussion(); }
+
+function _renderRowTagChipsInline(tags) {
+  if (!tags || !tags.length) return '';
+  const chips = tags.map(t => {
+    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+    return `<span class="session-tag-chip" style="cursor:default;font-size:.66rem">${swatch}${esc(t.name)}</span>`;
+  }).join(' ');
+  return '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">' + chips + '</div>';
 }
 
 function seekToThreadAnchor(ts) {
@@ -6023,6 +6191,10 @@ async function openThread(threadId, scrollToCommentId) {
     + '<div style="flex-shrink:0;display:flex;gap:6px">' + copyThreadBtn + resolveBtn + '</div>'
     + '</div>'
     + resolutionHtml
+    + '<div style="margin-top:4px;margin-bottom:6px">'
+    + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:3px">Tags</div>'
+    + '<tag-picker entity-type="thread" entity-id="' + t.id + '"></tag-picker>'
+    + '</div>'
     + '<div id="thread-comments">' + (commentsHtml || '<span style="color:var(--text-secondary)">No comments yet</span>') + '</div>'
     + '<div class="thread-form" style="margin-top:8px">'
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'

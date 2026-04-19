@@ -1232,6 +1232,13 @@ async def api_session_maneuvers(
     from helmlog.analysis.maneuvers import enrich_session_maneuvers
 
     enriched, _video_sync = await enrich_session_maneuvers(storage, session_id)
+    # Attach tags in one batch query so the client-side tag filter can work
+    # without N+1 round-trips (#587).
+    ids = [m["id"] for m in enriched if m.get("id") is not None]
+    tag_map = await storage.list_tags_for_entities("maneuver", ids)
+    for m in enriched:
+        mid = m.get("id")
+        m["tags"] = tag_map.get(mid, []) if mid is not None else []
     return JSONResponse(enriched)
 
 
@@ -1614,7 +1621,7 @@ async def api_maneuver_browse_sessions(
     if session_type is not None and session_type not in ("race", "practice"):
         raise HTTPException(status_code=422, detail="session_type must be race|practice")
     conds: list[str] = [
-        "(r.source IS NULL OR r.source = 'live')",
+        "(r.source IS NULL OR r.source IN ('live', 'synthesized'))",
         "EXISTS (SELECT 1 FROM maneuvers m WHERE m.session_id = r.id)",
     ]
     params: list[Any] = []
@@ -1689,6 +1696,8 @@ async def api_maneuver_browse(
     has_video: int = 0,
     post_start: int = 0,
     session_limit: int = 20,
+    tags: str | None = None,
+    tag_mode: str = "and",
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
     """Cross-session maneuver browser feed (#584).
@@ -1758,7 +1767,7 @@ async def api_maneuver_browse(
             resolved_session_ids = ids_in
     elif regatta_id is not None:
         sql = (
-            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source = 'live') "
+            "SELECT id FROM races  WHERE regatta_id = ?    AND (source IS NULL OR source IN ('live', 'synthesized')) "
         )
         qparams: list[Any] = [regatta_id]
         if session_type is not None:
@@ -1769,7 +1778,7 @@ async def api_maneuver_browse(
         resolved_session_ids = [r["id"] for r in await cur.fetchall()]
     else:
         session_limit = max(1, min(session_limit, 100))
-        sql = "SELECT id FROM races WHERE (source IS NULL OR source = 'live') "
+        sql = "SELECT id FROM races WHERE (source IS NULL OR source IN ('live', 'synthesized')) "
         qparams = []
         if session_type is not None:
             sql += "  AND session_type = ? "
@@ -1904,7 +1913,57 @@ async def api_maneuver_browse(
     filtered = [m for m in enriched if _keep(m)]
     filtered.sort(key=lambda m: str(m.get("ts") or ""))
 
-    return JSONResponse({"maneuvers": filtered, "session_ids": resolved_session_ids})
+    # Attach tags in one batch query so client-side tag filter chips can
+    # render and filter without N+1 lookups (#587).
+    maneuver_ids = [m["id"] for m in filtered if m.get("id") is not None]
+    tag_map = await storage.list_tags_for_entities("maneuver", maneuver_ids)
+    for m in filtered:
+        mid = m.get("id")
+        m["tags"] = tag_map.get(mid, []) if mid is not None else []
+
+    # Compute available_tags (counts per tag) across the non-tag-filtered
+    # set so the client-side chip row can always offer every tag that
+    # could be added to the filter, regardless of which tags are active.
+    available_counts: dict[int, dict[str, Any]] = {}
+    for m in filtered:
+        for t in m.get("tags") or []:
+            entry = available_counts.setdefault(
+                t["id"], {"id": t["id"], "name": t["name"], "color": t["color"], "count": 0}
+            )
+            entry["count"] += 1
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+    # Optional tag filter — AND/OR over the selected tag ids against each
+    # maneuver's attached tags. Unknown tag ids are silently dropped.
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_mode not in {"and", "or"}:
+            raise HTTPException(
+                status_code=400, detail="tag_mode must be 'and' or 'or'"
+            )
+        if tag_ids:
+            wanted = set(tag_ids)
+
+            def _tag_match(m: dict[str, Any]) -> bool:
+                have = {t["id"] for t in m.get("tags") or []}
+                if tag_mode == "or":
+                    return bool(have & wanted)
+                return wanted.issubset(have)
+
+            filtered = [m for m in filtered if _tag_match(m)]
+
+    return JSONResponse(
+        {
+            "maneuvers": filtered,
+            "session_ids": resolved_session_ids,
+            "available_tags": available_tags,
+        }
+    )
 
 
 @router.post("/api/sessions/{session_id}/detect-maneuvers", status_code=202)
@@ -1946,6 +2005,8 @@ async def api_sessions(
     type: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
+    tags: str | None = None,
+    tag_mode: str = "and",
     limit: int = 25,
     offset: int = 0,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
@@ -1957,15 +2018,74 @@ async def api_sessions(
             detail="type must be 'race', 'practice', 'debrief', or 'synthesized'",
         )
     limit = max(1, min(limit, 200))
-    total, sessions = await storage.list_sessions(
+
+    # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
+    # any constituent entity (maneuver / bookmark / thread) carries the tags.
+    # We pre-compute the full matching-id set up front, then page through it
+    # after list_sessions applies the other filters, so total is accurate.
+    tag_filter_ids: set[int] | None = None
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_ids:
+            try:
+                tag_filter_ids = set(
+                    await storage.sessions_matching_tags(tag_ids, mode=tag_mode)
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            if not tag_filter_ids:
+                return JSONResponse({"total": 0, "sessions": []})
+
+    # Pull the full set of sessions matching non-tag filters so we can
+    # compute available_tags across it. The chip row shows every tag
+    # reachable from the current non-tag filters — without this, selecting
+    # one tag would collapse the chip row down to just that tag and the
+    # user couldn't add a second one for AND/OR.
+    _all_total, all_non_tag_matches = await storage.list_sessions(
         q=q or None,
         session_type=type,
         from_date=from_date,
         to_date=to_date,
-        limit=limit,
-        offset=offset,
+        limit=10_000,
+        offset=0,
     )
-    return JSONResponse({"total": total, "sessions": sessions})
+    if tag_filter_ids is not None:
+        filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
+        total = len(filtered)
+        sessions = filtered[offset : offset + limit]
+    else:
+        total = _all_total
+        sessions = all_non_tag_matches[offset : offset + limit]
+
+    # Aggregate available tags across ALL non-tag-filtered sessions so the
+    # chip row doesn't collapse when the user applies a tag filter.
+    all_ids = [s["id"] for s in all_non_tag_matches]
+    all_tag_summary = await storage.list_session_tag_summary(all_ids)
+    available_counts: dict[int, dict[str, Any]] = {}
+    for sid in all_ids:
+        for r in all_tag_summary.get(sid, []):
+            entry = available_counts.setdefault(
+                r["id"],
+                {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
+            )
+            entry["count"] += r["count"]
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+    # Per-session tag summary only needed for the visible page.
+    page_tag_summary = await storage.list_session_tag_summary(
+        [s["id"] for s in sessions]
+    )
+    for s in sessions:
+        s["tag_summary"] = page_tag_summary.get(s["id"], [])
+
+    return JSONResponse(
+        {"total": total, "sessions": sessions, "available_tags": available_tags}
+    )
 
 
 @router.get("/api/grafana/annotations")

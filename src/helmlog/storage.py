@@ -46,6 +46,13 @@ class AnchorScopeError(ValueError):
     """Raised when an anchor's referenced entity does not scope to the expected session."""
 
 
+# Valid values for entity_tags.entity_type. Extended carefully — every
+# addition needs a list_entity_ids() branch in storage plus attach UI.
+ENTITY_TYPES: frozenset[str] = frozenset(
+    {"session", "maneuver", "thread", "bookmark", "session_note"}
+)
+
+
 def _hms_from_iso(iso: str | None) -> str:
     """Return the HH:MM:SS portion of an ISO 8601 timestamp.
 
@@ -191,7 +198,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 71
+_CURRENT_VERSION: int = 72
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1682,6 +1689,28 @@ _MIGRATIONS: dict[int, str] = {
 
         ALTER TABLE comment_threads DROP COLUMN anchor_timestamp;
         ALTER TABLE comment_threads DROP COLUMN mark_reference;
+    """,
+    72: """
+        -- #587 / #588 slice 3. Folds the legacy tag join tables into the
+        -- polymorphic entity_tags introduced in slice 1. session_tags and
+        -- note_tags rows get copied across, tags.usage_count is backfilled
+        -- from the combined counts, and the old tables are dropped.
+
+        INSERT OR IGNORE INTO entity_tags (tag_id, entity_type, entity_id, created_at)
+        SELECT tag_id, 'session', session_id, '2024-01-01T00:00:00+00:00'
+          FROM session_tags;
+
+        INSERT OR IGNORE INTO entity_tags (tag_id, entity_type, entity_id, created_at)
+        SELECT tag_id, 'session_note', note_id, '2024-01-01T00:00:00+00:00'
+          FROM note_tags;
+
+        UPDATE tags
+           SET usage_count = (
+                 SELECT COUNT(*) FROM entity_tags WHERE entity_tags.tag_id = tags.id
+               );
+
+        DROP TABLE session_tags;
+        DROP TABLE note_tags;
     """,
 }
 
@@ -6048,72 +6077,312 @@ class Storage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def list_tags(self) -> list[dict[str, Any]]:
-        """Return all tags with usage counts."""
+    async def list_tags(self, *, order_by: str = "name") -> list[dict[str, Any]]:
+        """Return all tags with usage counts, ordered by name or usage.
+
+        order_by="usage" sorts by usage_count DESC, last_used_at DESC,
+        name ASC — the picker's most-useful-first ordering.
+        """
+        if order_by not in {"name", "usage"}:
+            raise ValueError(f"order_by must be 'name' or 'usage', got {order_by!r}")
+        sql = "SELECT id, name, color, created_at, usage_count, last_used_at FROM tags ORDER BY "
+        sql += (
+            "usage_count DESC, COALESCE(last_used_at, '') DESC, name"
+            if order_by == "usage"
+            else "name"
+        )
+        cur = await self._read_conn().execute(sql)
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def attach_tag(
+        self,
+        entity_type: str,
+        entity_id: int,
+        tag_id: int,
+        *,
+        user_id: int | None,
+    ) -> None:
+        """Attach a tag to an entity. Idempotent; duplicate call is a no-op.
+
+        On a new attachment, increments tags.usage_count and stamps
+        tags.last_used_at to the current UTC time.
+        """
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(
+                f"unknown entity_type {entity_type!r} (allowed: {sorted(ENTITY_TYPES)})"
+            )
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT OR IGNORE INTO entity_tags "
+            "(tag_id, entity_type, entity_id, created_at, created_by) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (tag_id, entity_type, entity_id, now, user_id),
+        )
+        if cur.rowcount > 0:
+            await db.execute(
+                "UPDATE tags SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
+                (now, tag_id),
+            )
+        await db.commit()
+
+    async def detach_tag(self, entity_type: str, entity_id: int, tag_id: int) -> bool:
+        """Remove a tag from an entity. Returns True if a row was removed."""
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(
+                f"unknown entity_type {entity_type!r} (allowed: {sorted(ENTITY_TYPES)})"
+            )
+        db = self._conn()
+        cur = await db.execute(
+            "DELETE FROM entity_tags WHERE tag_id = ? AND entity_type = ? AND entity_id = ?",
+            (tag_id, entity_type, entity_id),
+        )
+        if cur.rowcount > 0:
+            await db.execute(
+                "UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?",
+                (tag_id,),
+            )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def sessions_matching_tags(
+        self, tag_ids: list[int], mode: str = "and"
+    ) -> list[int]:
+        """Return session ids whose session row OR any constituent entity
+        (maneuver / bookmark / thread) carries the given tag set.
+
+        AND = every tag must appear somewhere under the session.
+        OR  = at least one tag must appear somewhere under the session.
+        Unknown tag ids are silently dropped, matching the stale-filter
+        tolerance rule used by list_entities_with_tags.
+        """
+        if mode not in {"and", "or"}:
+            raise ValueError(f"mode must be 'and' or 'or', got {mode!r}")
+        if not tag_ids:
+            return []
+        placeholders = ",".join("?" * len(tag_ids))
         cur = await self._read_conn().execute(
-            "SELECT t.id, t.name, t.color, t.created_at,"
-            " (SELECT COUNT(*) FROM session_tags st WHERE st.tag_id = t.id) AS session_count,"
-            " (SELECT COUNT(*) FROM note_tags nt WHERE nt.tag_id = t.id) AS note_count"
-            " FROM tags t ORDER BY t.name"
+            f"SELECT id FROM tags WHERE id IN ({placeholders})",  # noqa: S608
+            tag_ids,
         )
-        rows = await cur.fetchall()
-        return [dict(r) for r in rows]
-
-    async def add_session_tag(self, session_id: int, tag_id: int) -> None:
-        """Tag a session. Idempotent."""
-        db = self._conn()
-        await db.execute(
-            "INSERT OR IGNORE INTO session_tags (session_id, tag_id) VALUES (?, ?)",
-            (session_id, tag_id),
+        known = {r["id"] for r in await cur.fetchall()}
+        filtered = [t for t in tag_ids if t in known]
+        if not filtered:
+            return []
+        placeholders = ",".join("?" * len(filtered))
+        # Union of (session_id, tag_id) pairs across each tagged layer.
+        union = (
+            f"SELECT et.entity_id AS session_id, et.tag_id FROM entity_tags et "
+            f" WHERE et.entity_type = 'session' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT m.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN maneuvers m ON m.id = et.entity_id "
+            f" WHERE et.entity_type = 'maneuver' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT b.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN bookmarks b ON b.id = et.entity_id "
+            f" WHERE et.entity_type = 'bookmark' AND et.tag_id IN ({placeholders}) "
+            f"UNION "
+            f"SELECT ct.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN comment_threads ct ON ct.id = et.entity_id "
+            f" WHERE et.entity_type = 'thread' AND et.tag_id IN ({placeholders})"
         )
-        await db.commit()
+        if mode == "and":
+            sql = (
+                f"SELECT session_id FROM ({union}) "  # noqa: S608
+                f"GROUP BY session_id HAVING COUNT(DISTINCT tag_id) = ?"
+            )
+            params = (*filtered, *filtered, *filtered, *filtered, len(filtered))
+        else:
+            sql = f"SELECT DISTINCT session_id FROM ({union})"  # noqa: S608
+            params = (*filtered, *filtered, *filtered, *filtered)
+        cur = await self._read_conn().execute(sql, params)
+        return [r["session_id"] for r in await cur.fetchall()]
 
-    async def remove_session_tag(self, session_id: int, tag_id: int) -> None:
-        """Remove a tag from a session."""
-        db = self._conn()
-        await db.execute(
-            "DELETE FROM session_tags WHERE session_id = ? AND tag_id = ?",
-            (session_id, tag_id),
+    async def list_session_tag_summary(
+        self, session_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return {session_id: [{tag_id, name, color, entity_type, count}, ...]}.
+
+        One row per (session, tag, entity_type) combo with a count. Lets a
+        history row render "weather (session) · good (3 maneuvers)".
+        """
+        out: dict[int, list[dict[str, Any]]] = {sid: [] for sid in session_ids}
+        if not session_ids:
+            return out
+        placeholders = ",".join("?" * len(session_ids))
+        union = (
+            f"SELECT et.tag_id, 'session' AS et_type, et.entity_id AS session_id "
+            f" FROM entity_tags et "
+            f" WHERE et.entity_type = 'session' AND et.entity_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'maneuver' AS et_type, m.session_id "
+            f" FROM entity_tags et JOIN maneuvers m ON m.id = et.entity_id "
+            f" WHERE et.entity_type = 'maneuver' AND m.session_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'bookmark' AS et_type, b.session_id "
+            f" FROM entity_tags et JOIN bookmarks b ON b.id = et.entity_id "
+            f" WHERE et.entity_type = 'bookmark' AND b.session_id IN ({placeholders}) "
+            f"UNION ALL "
+            f"SELECT et.tag_id, 'thread' AS et_type, ct.session_id "
+            f" FROM entity_tags et JOIN comment_threads ct ON ct.id = et.entity_id "
+            f" WHERE et.entity_type = 'thread' AND ct.session_id IN ({placeholders})"
         )
-        await db.commit()
+        sql = (
+            f"SELECT u.session_id, u.tag_id, u.et_type, COUNT(*) AS n, "  # noqa: S608
+            f"       t.name, t.color "
+            f" FROM ({union}) u JOIN tags t ON t.id = u.tag_id "
+            f" GROUP BY u.session_id, u.tag_id, u.et_type "
+            f" ORDER BY t.name, u.et_type"
+        )
+        params = (*session_ids, *session_ids, *session_ids, *session_ids)
+        cur = await self._read_conn().execute(sql, params)
+        for r in await cur.fetchall():
+            out.setdefault(r["session_id"], []).append(
+                {
+                    "id": r["tag_id"],
+                    "name": r["name"],
+                    "color": r["color"],
+                    "entity_type": r["et_type"],
+                    "count": r["n"],
+                }
+            )
+        return out
 
-    async def get_session_tags(self, session_id: int) -> list[dict[str, Any]]:
-        """Return tags for a session."""
+    async def list_tags_for_entities(
+        self, entity_type: str, entity_ids: list[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return a {entity_id: [tag, ...]} map for the given ids in one query.
+
+        Missing ids resolve to an empty list. Callers commonly pass "all
+        maneuvers in session X" and want each row enriched with its tags
+        without issuing N separate queries.
+        """
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(f"unknown entity_type {entity_type!r}")
+        out: dict[int, list[dict[str, Any]]] = {eid: [] for eid in entity_ids}
+        if not entity_ids:
+            return out
+        placeholders = ",".join("?" * len(entity_ids))
+        cur = await self._read_conn().execute(
+            f"SELECT et.entity_id, t.id, t.name, t.color"  # noqa: S608
+            f" FROM entity_tags et JOIN tags t ON et.tag_id = t.id"
+            f" WHERE et.entity_type = ? AND et.entity_id IN ({placeholders})"
+            f" ORDER BY t.name",
+            (entity_type, *entity_ids),
+        )
+        for r in await cur.fetchall():
+            out.setdefault(r["entity_id"], []).append(
+                {"id": r["id"], "name": r["name"], "color": r["color"]}
+            )
+        return out
+
+    async def list_tags_for_entity(self, entity_type: str, entity_id: int) -> list[dict[str, Any]]:
+        """Return tags attached to a specific entity, ordered by name."""
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(f"unknown entity_type {entity_type!r}")
         cur = await self._read_conn().execute(
             "SELECT t.id, t.name, t.color FROM tags t"
-            " JOIN session_tags st ON t.id = st.tag_id"
-            " WHERE st.session_id = ? ORDER BY t.name",
-            (session_id,),
+            " JOIN entity_tags et ON t.id = et.tag_id"
+            " WHERE et.entity_type = ? AND et.entity_id = ?"
+            " ORDER BY t.name",
+            (entity_type, entity_id),
         )
         return [dict(r) for r in await cur.fetchall()]
 
-    async def add_note_tag(self, note_id: int, tag_id: int) -> None:
-        """Tag a note. Idempotent."""
-        db = self._conn()
-        await db.execute(
-            "INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)",
-            (note_id, tag_id),
-        )
-        await db.commit()
+    async def list_entities_with_tags(
+        self, entity_type: str, tag_ids: list[int], mode: str = "and"
+    ) -> list[int]:
+        """Return entity_ids of this type that match the tag filter.
 
-    async def remove_note_tag(self, note_id: int, tag_id: int) -> None:
-        """Remove a tag from a note."""
-        db = self._conn()
-        await db.execute(
-            "DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?",
-            (note_id, tag_id),
-        )
-        await db.commit()
+        - Empty tag_ids → return every entity of this type.
+        - mode="and": entity must carry *every* tag in the list.
+        - mode="or":  entity must carry *any* tag in the list.
+        - Unknown tag ids are silently dropped (stale-filter tolerance).
+        """
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(f"unknown entity_type {entity_type!r}")
+        if mode not in {"and", "or"}:
+            raise ValueError(f"mode must be 'and' or 'or', got {mode!r}")
 
-    async def get_note_tags(self, note_id: int) -> list[dict[str, Any]]:
-        """Return tags for a note."""
+        if not tag_ids:
+            return await self._all_entity_ids(entity_type)
+
+        # Drop unknown ids before querying so they don't skew AND matches.
+        placeholders = ",".join("?" * len(tag_ids))
         cur = await self._read_conn().execute(
-            "SELECT t.id, t.name, t.color FROM tags t"
-            " JOIN note_tags nt ON t.id = nt.tag_id"
-            " WHERE nt.note_id = ? ORDER BY t.name",
-            (note_id,),
+            f"SELECT id FROM tags WHERE id IN ({placeholders})",  # noqa: S608
+            tag_ids,
         )
-        return [dict(r) for r in await cur.fetchall()]
+        known = {r["id"] for r in await cur.fetchall()}
+        filtered = [t for t in tag_ids if t in known]
+        if not filtered:
+            return await self._all_entity_ids(entity_type)
+
+        placeholders = ",".join("?" * len(filtered))
+        if mode == "or":
+            cur = await self._read_conn().execute(
+                f"SELECT DISTINCT entity_id FROM entity_tags "  # noqa: S608
+                f"WHERE entity_type = ? AND tag_id IN ({placeholders})",
+                (entity_type, *filtered),
+            )
+        else:  # and
+            cur = await self._read_conn().execute(
+                f"SELECT entity_id FROM entity_tags "  # noqa: S608
+                f"WHERE entity_type = ? AND tag_id IN ({placeholders}) "
+                f"GROUP BY entity_id HAVING COUNT(DISTINCT tag_id) = ?",
+                (entity_type, *filtered, len(filtered)),
+            )
+        return [r["entity_id"] for r in await cur.fetchall()]
+
+    async def _all_entity_ids(self, entity_type: str) -> list[int]:
+        """Return all entity ids of a given type. Source-of-truth per type."""
+        table_col = {
+            "session": ("races", "id"),
+            "maneuver": ("maneuvers", "id"),
+            "thread": ("comment_threads", "id"),
+            "bookmark": ("bookmarks", "id"),
+            "session_note": ("session_notes", "id"),
+        }[entity_type]
+        table, col = table_col
+        cur = await self._read_conn().execute(
+            f"SELECT {col} AS entity_id FROM {table} ORDER BY {col}"  # noqa: S608
+        )
+        return [r["entity_id"] for r in await cur.fetchall()]
+
+    async def merge_tags(self, source_id: int, target_id: int) -> None:
+        """Merge `source` into `target`. Source is deleted; source's entity
+        associations are reassigned to target (de-duping where an entity
+        already had both), and target.usage_count is recomputed from the
+        resulting entity_tags rows.
+        """
+        if source_id == target_id:
+            raise ValueError("cannot merge a tag into itself (source == target)")
+        db = self._conn()
+        for check_id, label in ((source_id, "source"), (target_id, "target")):
+            cur = await db.execute("SELECT id FROM tags WHERE id=?", (check_id,))
+            if await cur.fetchone() is None:
+                raise ValueError(f"{label} tag {check_id} does not exist")
+
+        # Move source rows to target, ignoring duplicates that would violate
+        # the (tag_id, entity_type, entity_id) PK.
+        await db.execute(
+            "INSERT OR IGNORE INTO entity_tags "
+            "(tag_id, entity_type, entity_id, created_at, created_by) "
+            "SELECT ?, entity_type, entity_id, created_at, created_by "
+            "FROM entity_tags WHERE tag_id = ?",
+            (target_id, source_id),
+        )
+        await db.execute("DELETE FROM entity_tags WHERE tag_id = ?", (source_id,))
+        # Recompute usage_count on target from the entity_tags rows.
+        await db.execute(
+            "UPDATE tags SET usage_count = "
+            "(SELECT COUNT(*) FROM entity_tags WHERE tag_id = ?) "
+            "WHERE id = ?",
+            (target_id, target_id),
+        )
+        await db.execute("DELETE FROM tags WHERE id = ?", (source_id,))
+        await db.commit()
 
     async def get_or_create_tag(self, name: str, color: str | None = None) -> int:
         """Return the tag id for *name*, creating it if it doesn't exist."""
@@ -6123,15 +6392,26 @@ class Storage:
         return await self.create_tag(name, color)
 
     async def update_tag(
-        self, tag_id: int, *, name: str | None = None, color: str | None = None
+        self,
+        tag_id: int,
+        *,
+        name: str | None = None,
+        color: str | None = None,
+        clear_color: bool = False,
     ) -> bool:
-        """Update a tag's name or color. Returns True if found."""
+        """Update a tag's name or color. Returns True if found.
+
+        Pass ``clear_color=True`` to explicitly set color to NULL; a
+        ``color=None`` argument by itself is treated as "don't change".
+        """
         parts: list[str] = []
         params: list[Any] = []
         if name is not None:
             parts.append("name = ?")
             params.append(name.strip().lower())
-        if color is not None:
+        if clear_color:
+            parts.append("color = NULL")
+        elif color is not None:
             parts.append("color = ?")
             params.append(color)
         if not parts:
@@ -6146,10 +6426,12 @@ class Storage:
         return cur.rowcount > 0
 
     async def delete_tag(self, tag_id: int) -> bool:
-        """Delete a tag and all its associations. Returns True if found."""
+        """Delete a tag. entity_tags.tag_id has ON DELETE CASCADE, so any
+        attachments are removed automatically (requires PRAGMA foreign_keys=ON
+        on the connection; tests explicitly enable it where they assert the
+        cascade). Returns True if the tag existed.
+        """
         db = self._conn()
-        await db.execute("DELETE FROM session_tags WHERE tag_id = ?", (tag_id,))
-        await db.execute("DELETE FROM note_tags WHERE tag_id = ?", (tag_id,))
         cur = await db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
         await db.commit()
         return cur.rowcount > 0

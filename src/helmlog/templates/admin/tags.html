@@ -1,0 +1,284 @@
+{% extends "base.html" %}
+{% block title %}Tags — HelmLog{% endblock %}
+{% block extra_css %}
+<style>
+h1{font-size:1.3rem;font-weight:700;color:var(--accent)}
+.card{background:var(--bg-secondary);border-radius:12px;padding:16px;margin-bottom:12px}
+table{width:100%;border-collapse:collapse;font-size:.87rem}
+th{text-align:left;color:var(--text-secondary);font-size:.75rem;text-transform:uppercase;letter-spacing:.06em;padding:6px 8px;border-bottom:1px solid var(--border)}
+td{padding:7px 8px;border-bottom:1px solid var(--border);vertical-align:middle}
+.btn-sm{padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--bg-input);font-size:.78rem;cursor:pointer}
+.btn-edit{color:var(--accent);border-color:var(--accent-strong)}
+.btn-del{color:var(--danger);border-color:var(--danger)}
+.btn-merge{color:var(--warning);border-color:var(--warning)}
+input.inline{background:var(--bg-input);border:1px solid var(--border);border-radius:4px;padding:4px 6px;color:var(--text-primary);font-size:.82rem}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1000}
+.modal-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:8px;width:min(420px,92vw);max-height:80vh;display:flex;flex-direction:column;padding:14px}
+.merge-list{list-style:none;padding:0;margin:0;overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:4px;background:var(--bg-primary)}
+.merge-list li{padding:6px 10px;cursor:pointer;font-size:.82rem;display:flex;align-items:center;gap:8px}
+.merge-list li:hover{background:var(--bg-input)}
+.merge-list li.selected{background:var(--bg-input);border-left:3px solid var(--warning)}
+.color-cell{display:flex;align-items:center;gap:6px}
+.color-swatch-input{width:28px;height:22px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer}
+.color-swatch-input::-webkit-color-swatch-wrapper{padding:0}
+.color-swatch-input::-webkit-color-swatch{border:none;border-radius:3px}
+.color-clear-btn{background:none;border:none;color:var(--text-secondary);cursor:pointer;font-size:.9rem;padding:0 2px;line-height:1}
+.color-clear-btn:hover{color:var(--danger)}
+</style>
+{% endblock %}
+{% block content %}
+<h1 style="margin-bottom:12px">Tag Manager</h1>
+
+<div class="card">
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <input id="new-tag-name" class="inline" placeholder="New tag name" />
+    <input id="new-tag-color" class="inline" type="color" style="width:40px;padding:2px" />
+    <button class="btn-sm btn-edit" onclick="createTag()">Create</button>
+    <span style="flex:1"></span>
+    <input id="tag-filter" class="inline" type="search" placeholder="Filter tags\u2026" style="min-width:180px" oninput="filterTags()" />
+    <span id="tag-filter-count" style="font-size:.72rem;color:var(--text-secondary)"></span>
+  </div>
+  <div id="tag-flash" style="font-size:.78rem;margin-bottom:6px;color:var(--text-secondary)"></div>
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th><th>Color</th><th>Usage</th><th>Last used</th><th>Actions</th>
+      </tr>
+    </thead>
+    <tbody id="tags-tbody"></tbody>
+  </table>
+  <div id="tags-empty-filter" style="display:none;text-align:center;color:var(--text-secondary);padding:20px;font-size:.82rem">No tags match that filter.</div>
+</div>
+
+<script>
+let _allTags = [];
+
+async function loadTags() {
+  const r = await fetch('/api/tags?order_by=usage');
+  if (!r.ok) return;
+  const rows = await r.json();
+  _allTags = rows;
+  const tbody = document.getElementById('tags-tbody');
+  tbody.innerHTML = rows.map(t => {
+    const colorValue = t.color || '#6b7280';
+    const clearBtn = t.color
+      ? '<button class="color-clear-btn" title="Clear color" onclick="clearTagColor(' + t.id + ')">&times;</button>'
+      : '';
+    const swatch = '<div class="color-cell">'
+      + '<input type="color" class="color-swatch-input" value="' + esc(colorValue) + '" title="Click to change color" onchange="setTagColor(' + t.id + ',this.value)" />'
+      + clearBtn + '</div>';
+    const last = t.last_used_at ? new Date(t.last_used_at).toLocaleString() : '';
+    return '<tr data-tag-name="' + esc(t.name) + '">'
+      + '<td><strong>' + esc(t.name) + '</strong></td>'
+      + '<td>' + swatch + '</td>'
+      + '<td>' + (t.usage_count || 0) + '</td>'
+      + '<td><span style="font-size:.72rem;color:var(--text-secondary)">' + esc(last) + '</span></td>'
+      + '<td style="display:flex;gap:4px;flex-wrap:wrap">'
+      +   '<button class="btn-sm btn-edit" onclick="renameTag(' + t.id + ',\'' + esc(t.name) + '\')">Rename</button>'
+      +   '<button class="btn-sm btn-merge" onclick="mergeTagInto(' + t.id + ',\'' + esc(t.name) + '\')">Merge\u2026</button>'
+      +   '<button class="btn-sm btn-del" onclick="deleteTag(' + t.id + ',\'' + esc(t.name) + '\')">Delete</button>'
+      + '</td>'
+      + '</tr>';
+  }).join('');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:20px">No tags yet.</td></tr>';
+  }
+  filterTags();
+}
+
+function filterTags() {
+  const q = (document.getElementById('tag-filter').value || '').trim().toLowerCase();
+  const rows = document.querySelectorAll('#tags-tbody tr[data-tag-name]');
+  let shown = 0;
+  rows.forEach(row => {
+    const name = row.dataset.tagName || '';
+    const match = !q || name.includes(q);
+    row.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+  const count = document.getElementById('tag-filter-count');
+  const emptyMsg = document.getElementById('tags-empty-filter');
+  if (q && rows.length) {
+    count.textContent = shown + '/' + rows.length;
+    emptyMsg.style.display = shown === 0 ? '' : 'none';
+  } else {
+    count.textContent = '';
+    emptyMsg.style.display = 'none';
+  }
+}
+
+function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+async function createTag() {
+  const name = document.getElementById('new-tag-name').value.trim().toLowerCase();
+  const color = document.getElementById('new-tag-color').value;
+  if (!name) { flash('Name required', true); return; }
+  const r = await fetch('/api/tags', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name, color}),
+  });
+  if (!r.ok) { flash('Create failed: ' + r.status, true); return; }
+  document.getElementById('new-tag-name').value = '';
+  await loadTags();
+  flash('Tag created');
+}
+
+async function setTagColor(id, color) {
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({color}),
+  });
+  if (!r.ok) { flash('Color update failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Color updated');
+}
+
+async function clearTagColor(id) {
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({color: null}),
+  });
+  if (!r.ok) { flash('Color clear failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Color cleared');
+}
+
+async function renameTag(id, current) {
+  const name = window.prompt('Rename tag:', current);
+  if (!name || name === current) return;
+  const r = await fetch('/api/tags/' + id, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({name: name.trim().toLowerCase()}),
+  });
+  if (!r.ok) { flash('Rename failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Renamed');
+}
+
+async function deleteTag(id, name) {
+  if (!window.confirm('Delete tag "' + name + '"? Any attachments are removed.')) return;
+  const r = await fetch('/api/tags/' + id, {method: 'DELETE'});
+  if (!r.ok && r.status !== 204) { flash('Delete failed: ' + r.status, true); return; }
+  await loadTags();
+  flash('Deleted');
+}
+
+// Merge modal — typeahead picker over all tags except the source.
+let _mergeState = null;
+
+function mergeTagInto(sourceId, sourceName) {
+  const candidates = _allTags.filter(t => t.id !== sourceId);
+  _mergeState = {sourceId, sourceName, candidates, filtered: candidates.slice(), selectedIdx: candidates.length ? 0 : -1};
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.id = 'merge-overlay';
+  overlay.innerHTML = ''
+    + '<div class="modal-panel" onclick="event.stopPropagation()">'
+    +   '<div style="font-size:.9rem;margin-bottom:8px">Merge <strong>' + esc(sourceName) + '</strong> into\u2026</div>'
+    +   '<input id="merge-filter" class="inline" type="search" autocomplete="off" placeholder="Type to filter\u2026" style="margin-bottom:8px" />'
+    +   '<ul class="merge-list" id="merge-list"></ul>'
+    +   '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
+    +     '<button class="btn-sm" onclick="closeMerge()">Cancel</button>'
+    +     '<button class="btn-sm btn-merge" id="merge-confirm" onclick="confirmMerge()" disabled>Merge</button>'
+    +   '</div>'
+    + '</div>';
+  overlay.addEventListener('click', closeMerge);
+  document.body.appendChild(overlay);
+
+  const inp = document.getElementById('merge-filter');
+  inp.addEventListener('input', () => {
+    const q = inp.value.trim().toLowerCase();
+    _mergeState.filtered = q
+      ? candidates.filter(t => t.name.includes(q))
+      : candidates.slice();
+    _mergeState.selectedIdx = _mergeState.filtered.length ? 0 : -1;
+    _renderMergeList();
+  });
+  inp.addEventListener('keydown', (ev) => {
+    if (!_mergeState) return;
+    const f = _mergeState.filtered;
+    if (ev.key === 'ArrowDown') {
+      ev.preventDefault();
+      _mergeState.selectedIdx = Math.min(f.length - 1, _mergeState.selectedIdx + 1);
+      _renderMergeList();
+    } else if (ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      _mergeState.selectedIdx = Math.max(0, _mergeState.selectedIdx - 1);
+      _renderMergeList();
+    } else if (ev.key === 'Enter') {
+      ev.preventDefault();
+      confirmMerge();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      closeMerge();
+    }
+  });
+  setTimeout(() => inp.focus(), 0);
+  _renderMergeList();
+}
+
+function _renderMergeList() {
+  if (!_mergeState) return;
+  const ul = document.getElementById('merge-list');
+  const list = _mergeState.filtered;
+  if (!list.length) {
+    ul.innerHTML = '<li style="color:var(--text-secondary);cursor:default">No matching tags.</li>';
+    document.getElementById('merge-confirm').disabled = true;
+    return;
+  }
+  ul.innerHTML = list.map((t, idx) => {
+    const swatch = t.color
+      ? '<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:' + t.color + '"></span>'
+      : '<span style="width:10px;height:10px"></span>';
+    const selCls = idx === _mergeState.selectedIdx ? ' selected' : '';
+    const count = t.usage_count ? ' <span style="color:var(--text-secondary);font-size:.72rem;margin-left:auto">' + t.usage_count + '</span>' : '';
+    return '<li class="merge-row' + selCls + '" data-idx="' + idx + '">' + swatch + esc(t.name) + count + '</li>';
+  }).join('');
+  ul.querySelectorAll('[data-idx]').forEach(el => {
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      _mergeState.selectedIdx = parseInt(el.dataset.idx, 10);
+      _renderMergeList();
+    });
+    el.addEventListener('dblclick', (ev) => {
+      ev.stopPropagation();
+      _mergeState.selectedIdx = parseInt(el.dataset.idx, 10);
+      confirmMerge();
+    });
+  });
+  document.getElementById('merge-confirm').disabled = _mergeState.selectedIdx < 0;
+}
+
+function closeMerge() {
+  const overlay = document.getElementById('merge-overlay');
+  if (overlay) overlay.remove();
+  _mergeState = null;
+}
+
+async function confirmMerge() {
+  if (!_mergeState) return;
+  const target = _mergeState.filtered[_mergeState.selectedIdx];
+  if (!target) return;
+  const {sourceId, sourceName} = _mergeState;
+  closeMerge();
+  const r = await fetch('/api/tags/' + sourceId + '/merge-into/' + target.id, {method: 'POST'});
+  if (!r.ok) {
+    const detail = await r.json().catch(() => ({}));
+    flash('Merge failed: ' + (detail.detail || r.status), true);
+    return;
+  }
+  await loadTags();
+  flash('Merged "' + sourceName + '" into "' + target.name + '"');
+}
+
+function flash(msg, isErr) {
+  const el = document.getElementById('tag-flash');
+  el.textContent = msg;
+  el.style.color = isErr ? 'var(--danger)' : 'var(--success)';
+  setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+document.addEventListener('DOMContentLoaded', loadTags);
+</script>
+{% endblock %}

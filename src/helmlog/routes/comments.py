@@ -87,12 +87,57 @@ async def api_list_session_anchors(
 async def api_list_threads(
     request: Request,
     session_id: int,
+    tags: str | None = None,
+    tag_mode: str = "and",
     user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """List threads for a session with unread counts."""
+    """List threads for a session with unread counts.
+
+    Response: `{threads: [...], available_tags: [...]}`. Each thread gets
+    a `tags` array; `available_tags` stays populated across the chip row
+    even when a tag filter is active. `?tags=1,2&tag_mode=and|or` narrows
+    the list.
+    """
     storage = get_storage(request)
     threads = await storage.list_comment_threads(session_id, user["id"])
-    return JSONResponse(threads)
+    thread_ids = [t["id"] for t in threads]
+    tag_map = await storage.list_tags_for_entities("thread", thread_ids)
+    for t in threads:
+        t["tags"] = tag_map.get(t["id"], [])
+
+    available_counts: dict[int, dict[str, Any]] = {}
+    for t in threads:
+        for tag in t.get("tags") or []:
+            entry = available_counts.setdefault(
+                tag["id"],
+                {
+                    "id": tag["id"],
+                    "name": tag["name"],
+                    "color": tag["color"],
+                    "count": 0,
+                },
+            )
+            entry["count"] += 1
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+    if tags:
+        try:
+            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="tags must be comma-separated ints"
+            ) from exc
+        if tag_ids:
+            try:
+                allowed = set(
+                    await storage.list_entities_with_tags(
+                        "thread", tag_ids, mode=tag_mode
+                    )
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            threads = [t for t in threads if t["id"] in allowed]
+    return JSONResponse({"threads": threads, "available_tags": available_tags})
 
 
 @router.get("/api/threads/{thread_id}")

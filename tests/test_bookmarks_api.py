@@ -137,7 +137,7 @@ async def test_list_bookmarks_returns_in_time_order(storage: Storage) -> None:
         )
         resp = await client.get(f"/api/sessions/{sid}/bookmarks")
         assert resp.status_code == 200
-        names = [b["name"] for b in resp.json()]
+        names = [b["name"] for b in resp.json()["bookmarks"]]
         assert names == ["early", "late"]
 
 
@@ -219,7 +219,7 @@ async def test_delete_bookmark_as_admin_mock(storage: Storage) -> None:
         assert resp.status_code == 204
 
         resp = await client.get(f"/api/sessions/{sid}/bookmarks")
-        assert resp.json() == []
+        assert resp.json()["bookmarks"] == []
 
 
 @pytest.mark.asyncio
