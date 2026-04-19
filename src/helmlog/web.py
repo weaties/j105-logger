@@ -87,6 +87,13 @@ def create_app(
     app.state.startup_sha = STARTUP_SHA
     app.state.ws_clients = set()  # WebSocket client connections
 
+    # -- Web response cache (#594) --
+    from helmlog.cache import WebCache
+
+    web_cache = WebCache(storage)
+    storage.bind_race_cache(web_cache)
+    app.state.web_cache = web_cache
+
     from helmlog.races import RaceConfig
 
     app.state.race_config = RaceConfig()

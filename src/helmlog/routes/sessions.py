@@ -14,7 +14,7 @@ from loguru import logger
 
 from helmlog.auth import require_auth, require_developer
 from helmlog.current import compute_set_drift
-from helmlog.routes._helpers import audit, get_storage, limiter
+from helmlog.routes._helpers import audit, cached_json_response, get_storage, limiter
 
 router = APIRouter()
 
@@ -286,78 +286,85 @@ async def api_session_track(
     request: Request,
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Return GPS track as GeoJSON for map display."""
     storage = get_storage(request)
-    db = storage._conn()
-    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
-    row = await cur.fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Race not found")
-    start_utc = row["start_utc"]
-    end_utc = row["end_utc"] or start_utc
 
-    # Prefer race_id filter (exact match for synthesized sessions);
-    # fall back to time-range query for real instrument data.
-    rid_cur = await db.execute(
-        "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
+    async def _compute() -> dict[str, Any]:
+        db = storage._conn()
+        cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+        row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Race not found")
+        start_utc = row["start_utc"]
+        end_utc = row["end_utc"] or start_utc
+
+        # Prefer race_id filter (exact match for synthesized sessions);
+        # fall back to time-range query for real instrument data.
+        rid_cur = await db.execute(
+            "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
+        )
+        rid_row = await rid_cur.fetchone()
+        has_race_id = rid_row["cnt"] > 0 if rid_row else False
+
+        if has_race_id:
+            pos_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE race_id = ? ORDER BY ts",
+                (session_id,),
+            )
+        else:
+            pos_cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, ts FROM positions"
+                " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+                (start_utc, end_utc),
+            )
+        positions = await pos_cur.fetchall()
+        if not positions:
+            return {"type": "FeatureCollection", "features": []}
+
+        # Per-second mean averaging. The SK reader currently records every fix
+        # with source_addr=0 even when Signal K is multiplexing two physical
+        # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
+        # Bucketing to 1Hz and averaging within the bucket collapses the
+        # zig-zag into a smooth single line midway between the antennas — what
+        # you'd get from a single GPS anyway. Also gives the frontend a
+        # naturally Vakaros-density polyline so its dash style reads cleanly.
+        buckets: dict[str, list[tuple[float, float]]] = {}
+        bucket_order: list[str] = []
+        for r in positions:
+            ts_raw = r["ts"]
+            if not ts_raw:
+                continue
+            key = str(ts_raw)[:19]  # truncate to whole-second precision
+            if key not in buckets:
+                buckets[key] = []
+                bucket_order.append(key)
+            buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+        coords: list[list[float]] = []
+        timestamps: list[str] = []
+        for key in bucket_order:
+            rows = buckets[key]
+            avg_lat = sum(p[0] for p in rows) / len(rows)
+            avg_lng = sum(p[1] for p in rows) / len(rows)
+            coords.append([avg_lng, avg_lat])
+            timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
+
+        feature = {
+            "type": "Feature",
+            "geometry": {"type": "LineString", "coordinates": coords},
+            "properties": {
+                "session_id": session_id,
+                "points": len(coords),
+                "timestamps": timestamps,
+            },
+        }
+        return {"type": "FeatureCollection", "features": [feature]}
+
+    return await cached_json_response(
+        request, race_id=session_id, key_family="session_track", compute=_compute
     )
-    rid_row = await rid_cur.fetchone()
-    has_race_id = rid_row["cnt"] > 0 if rid_row else False
-
-    if has_race_id:
-        pos_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions WHERE race_id = ? ORDER BY ts",
-            (session_id,),
-        )
-    else:
-        pos_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions"
-            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
-            (start_utc, end_utc),
-        )
-    positions = await pos_cur.fetchall()
-    if not positions:
-        return JSONResponse({"type": "FeatureCollection", "features": []})
-
-    # Per-second mean averaging. The SK reader currently records every fix
-    # with source_addr=0 even when Signal K is multiplexing two physical
-    # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
-    # Bucketing to 1Hz and averaging within the bucket collapses the
-    # zig-zag into a smooth single line midway between the antennas — what
-    # you'd get from a single GPS anyway. Also gives the frontend a
-    # naturally Vakaros-density polyline so its dash style reads cleanly.
-    buckets: dict[str, list[tuple[float, float]]] = {}
-    bucket_order: list[str] = []
-    for r in positions:
-        ts_raw = r["ts"]
-        if not ts_raw:
-            continue
-        key = str(ts_raw)[:19]  # truncate to whole-second precision
-        if key not in buckets:
-            buckets[key] = []
-            bucket_order.append(key)
-        buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
-
-    coords: list[list[float]] = []
-    timestamps: list[str] = []
-    for key in bucket_order:
-        rows = buckets[key]
-        avg_lat = sum(p[0] for p in rows) / len(rows)
-        avg_lng = sum(p[1] for p in rows) / len(rows)
-        coords.append([avg_lng, avg_lat])
-        timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
-
-    feature = {
-        "type": "Feature",
-        "geometry": {"type": "LineString", "coordinates": coords},
-        "properties": {
-            "session_id": session_id,
-            "points": len(coords),
-            "timestamps": timestamps,
-        },
-    }
-    return JSONResponse({"type": "FeatureCollection", "features": [feature]})
 
 
 @router.get("/api/sessions/{session_id}/summary")
@@ -366,13 +373,23 @@ async def api_session_summary(
     request: Request,
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Compact per-race summary for the history page thumbnails.
 
     Returns a downsampled track, event markers (tacks, gybes, roundings,
     start, finish) indexed into that track, average wind, and top-3
     finishers. Designed to be cheap enough for per-row lazy fetch.
     """
+
+    async def _compute() -> dict[str, Any]:
+        return await _compute_session_summary(request, session_id)
+
+    return await cached_json_response(
+        request, race_id=session_id, key_family="session_summary", compute=_compute
+    )
+
+
+async def _compute_session_summary(request: Request, session_id: int) -> dict[str, Any]:
     import math
     from bisect import bisect_left
 
@@ -532,14 +549,12 @@ async def api_session_summary(
     if own_result and not any(str(row.get("sail_number") or "") == str(own_sail) for row in top3):
         results.append(own_result)
 
-    return JSONResponse(
-        {
-            "track": track,
-            "events": events,
-            "wind": wind,
-            "results": results,
-        }
-    )
+    return {
+        "track": track,
+        "events": events,
+        "wind": wind,
+        "results": results,
+    }
 
 
 @router.get("/api/sessions/{session_id}/vakaros-overlay")
@@ -759,12 +774,29 @@ async def api_session_wind_field(
     elapsed_s: float = 0.0,
     grid_size: int = 20,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Return a spatial grid of TWD/TWS values and course marks."""
+    # The wind field is a function of (session_id, elapsed_s, grid_size). Bake
+    # the non-race parameters into the T2 key_family so distinct query shapes
+    # don't collide. data_hash still comes from the race row so race-mutation
+    # invalidation works without bespoke hooks per parameter.
+    clamped_grid = min(max(grid_size, 5), 40)
+    key_family = f"wind_field:grid={clamped_grid}:t={elapsed_s:.3f}"
+
+    async def _compute() -> dict[str, Any]:
+        return await _compute_wind_field(request, session_id, elapsed_s, clamped_grid)
+
+    return await cached_json_response(
+        request, race_id=session_id, key_family=key_family, compute=_compute
+    )
+
+
+async def _compute_wind_field(
+    request: Request, session_id: int, elapsed_s: float, grid_size: int
+) -> dict[str, Any]:
     storage = get_storage(request)
     from helmlog.wind_field import WindField
 
-    grid_size = min(max(grid_size, 5), 40)
     params = await storage.get_synth_wind_params(session_id)
     if params is None:
         raise HTTPException(status_code=404, detail="No wind field for this session")
@@ -827,25 +859,23 @@ async def api_session_wind_field(
 
     cells = await asyncio.to_thread(_compute)
 
-    return JSONResponse(
-        {
-            "elapsed_s": elapsed_s,
-            "duration_s": params["duration_s"],
-            "base_twd": params["base_twd"],
-            "tws_low": params["tws_low"],
-            "tws_high": params["tws_high"],
-            "grid": {
-                "rows": grid_size,
-                "cols": grid_size,
-                "lat_min": round(lat_min, 6),
-                "lat_max": round(lat_max, 6),
-                "lon_min": round(lon_min, 6),
-                "lon_max": round(lon_max, 6),
-                "cells": cells,
-            },
-            "marks": marks,
-        }
-    )
+    return {
+        "elapsed_s": elapsed_s,
+        "duration_s": params["duration_s"],
+        "base_twd": params["base_twd"],
+        "tws_low": params["tws_low"],
+        "tws_high": params["tws_high"],
+        "grid": {
+            "rows": grid_size,
+            "cols": grid_size,
+            "lat_min": round(lat_min, 6),
+            "lat_max": round(lat_max, 6),
+            "lon_min": round(lon_min, 6),
+            "lon_max": round(lon_max, 6),
+            "cells": cells,
+        },
+        "marks": marks,
+    }
 
 
 @router.get("/api/sessions/{session_id}/wind-timeseries")

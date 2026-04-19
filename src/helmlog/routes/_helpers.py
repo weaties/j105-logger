@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from fastapi import Response
+from fastapi.responses import JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from slowapi import Limiter
@@ -16,10 +18,12 @@ from slowapi.util import get_remote_address
 
 if TYPE_CHECKING:
     import asyncio
+    from collections.abc import Awaitable, Callable
     from datetime import datetime
 
     from fastapi import Request
 
+    from helmlog.cache import WebCache
     from helmlog.storage import Storage
 
 # ---------------------------------------------------------------------------
@@ -99,6 +103,74 @@ except Exception:  # noqa: BLE001
 def get_storage(request: Request) -> Storage:
     """Return the Storage instance from the app state."""
     return request.app.state.storage  # type: ignore[no-any-return]
+
+
+def get_web_cache(request: Request) -> WebCache | None:
+    """Return the WebCache bound to the app, or None if not configured."""
+    return getattr(request.app.state, "web_cache", None)
+
+
+_CACHE_CONTROL = "private, max-age=0, must-revalidate"
+
+
+async def cached_json_response(
+    request: Request,
+    *,
+    race_id: int,
+    key_family: str,
+    compute: Callable[[], Awaitable[Any]],
+) -> Response:
+    """ETag + 304 + T2 caching wrapper for per-race JSON endpoints (#594).
+
+    Flow:
+      1. Resolve the race's ``data_hash``. If the race doesn't exist, let
+         ``compute`` run so it can raise the correct 404.
+      2. If ``If-None-Match`` matches ``data_hash``, return 304 immediately.
+      3. If the T2 cache has an entry for ``(key_family, race_id)`` with
+         matching hash, return it as JSON.
+      4. Otherwise call ``compute``, store the result in T2, emit the
+         ``ETag`` + ``Cache-Control`` headers, and return JSON.
+
+    Cache failures never fail the request — a missing ``WebCache`` or any
+    raise from cache read/write degrades to un-cached behaviour.
+    """
+    from helmlog.cache import resolve_race_data_hash
+
+    cache = get_web_cache(request)
+    storage = get_storage(request)
+
+    data_hash: str | None = None
+    if cache is not None:
+        try:
+            data_hash = await resolve_race_data_hash(storage, race_id)
+        except Exception:  # noqa: BLE001 — cache failures must never fail a request
+            data_hash = None
+
+    if data_hash is not None:
+        if_none_match = request.headers.get("if-none-match", "").strip().strip('"')
+        if if_none_match == data_hash:
+            return Response(
+                status_code=304,
+                headers={"ETag": f'"{data_hash}"', "Cache-Control": _CACHE_CONTROL},
+            )
+        cached = None
+        if cache is not None:
+            cached = await cache.t2_get(key_family, race_id=race_id, data_hash=data_hash)
+        if cached is not None:
+            return JSONResponse(
+                cached,
+                headers={"ETag": f'"{data_hash}"', "Cache-Control": _CACHE_CONTROL},
+            )
+
+    payload = await compute()
+
+    if cache is not None and data_hash is not None:
+        await cache.t2_put(key_family, race_id=race_id, data_hash=data_hash, value=payload)
+
+    headers = (
+        {"ETag": f'"{data_hash}"', "Cache-Control": _CACHE_CONTROL} if data_hash is not None else {}
+    )
+    return JSONResponse(payload, headers=headers)
 
 
 def tpl_ctx(request: Request, page: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
