@@ -314,12 +314,12 @@ async def test_bookmark_list_filters_by_tags_and(storage: Storage) -> None:
 
         # AND: only b1 has both
         resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags={t_red},{t_hot}")
-        ids = [b["id"] for b in resp.json()]
+        ids = [b["id"] for b in resp.json()["bookmarks"]]
         assert ids == [b1]
 
         # OR: both b1 and b2 carry red
         resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags={t_red},{t_hot}&tag_mode=or")
-        ids = sorted(b["id"] for b in resp.json())
+        ids = sorted(b["id"] for b in resp.json()["bookmarks"])
         assert ids == sorted([b1, b2])
 
 
@@ -336,7 +336,7 @@ async def test_thread_list_filters_by_tags(storage: Storage) -> None:
         await client.post(f"/api/entities/thread/{t1}/tags", json={"tag_id": tag})
 
         resp = await client.get(f"/api/sessions/{sid}/threads?tags={tag}")
-        ids = [t["id"] for t in resp.json()]
+        ids = [t["id"] for t in resp.json()["threads"]]
         assert ids == [t1]
         assert t2 not in ids
 

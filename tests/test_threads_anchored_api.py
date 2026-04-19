@@ -196,7 +196,7 @@ async def test_list_threads_projects_anchor(storage: Storage) -> None:
         await client.post(f"/api/sessions/{sid}/threads", json={"title": "no anchor"})
         resp = await client.get(f"/api/sessions/{sid}/threads")
         assert resp.status_code == 200
-        threads = resp.json()
+        threads = resp.json()["threads"]
         anchors = [t["anchor"] for t in threads]
         assert {"kind": "timestamp", "t_start": _T0} in anchors
         assert None in anchors

@@ -5720,27 +5720,46 @@ function _threadTitle(t) {
   return 'Thread #' + t.id;
 }
 
+// Tag filter state for the Discussion card.
+const _threadTagFilter = new Set();
+let _threadTagMode = 'and';
+let _threadAvailableTags = [];
+
 async function loadDiscussion() {
   const card = document.getElementById('discussion-card');
   card.style.display = '';
   const body = document.getElementById('discussion-body');
   // Fetch anchor index in parallel so entity-ref chips can resolve labels
   _anchorIndex = null;
+  const params = new URLSearchParams();
+  if (_threadTagFilter.size) {
+    params.set('tags', [..._threadTagFilter].join(','));
+    params.set('tag_mode', _threadTagMode);
+  }
+  const qs = params.toString();
+  const threadsUrl = '/api/sessions/' + SESSION_ID + '/threads' + (qs ? '?' + qs : '');
   const [threadsResp] = await Promise.all([
-    fetch('/api/sessions/' + SESSION_ID + '/threads'),
+    fetch(threadsUrl),
     _ensureAnchorIndex(),
   ]);
   if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
-  _threads = await threadsResp.json();
+  const data = await threadsResp.json();
+  _threads = data.threads || [];
+  _threadAvailableTags = data.available_tags || [];
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
   _addDiscussionMarkers();
+
+  const filterBar = _renderThreadTagFilterRow();
   if (!_threads.length) {
-    body.innerHTML = '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+    const emptyMsg = _threadTagFilter.size
+      ? '<span style="color:var(--text-secondary)">No discussions match the current tag filter.</span>'
+      : '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+    body.innerHTML = filterBar + emptyMsg;
     return;
   }
-  body.innerHTML = _threads.map(t => {
+  const threadItems = _threads.map(t => {
     const anchor = _renderAnchorChip(t.anchor);
     const unread = t.unread_count > 0
       ? '<span class="thread-unread">' + t.unread_count + '</span>'
@@ -5754,12 +5773,60 @@ async function loadDiscussion() {
       ? '<div style="background:var(--bg-secondary);border:1px solid var(--success);border-radius:4px;padding:4px 8px;margin-top:4px;font-size:.72rem;color:var(--success)">'
         + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
       : '';
+    const tagChips = _renderRowTagChipsInline(t.tags);
     return '<div class="thread-item' + resolved + '" onclick="openThread(' + t.id + ')">'
       + '<div><strong style="color:var(--text-primary)">' + title + '</strong>' + anchor + unread + resolvedTag + '</div>'
       + '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:2px">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.created_at) + '</div>'
       + resolutionHtml
+      + tagChips
       + '</div>';
   }).join('');
+  body.innerHTML = filterBar + threadItems;
+}
+
+function _renderThreadTagFilterRow() {
+  const byId = new Map();
+  for (const t of _threadAvailableTags) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  }
+  for (const tid of _threadTagFilter) {
+    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
+  }
+  if (byId.size === 0) return '';
+  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const chips = sorted.map(t => {
+    const active = _threadTagFilter.has(t.id);
+    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+    return `<span class="session-tag-chip${active ? ' active' : ''}" onclick="event.stopPropagation();_toggleThreadTagFilter(${t.id})">${swatch}${esc(t.name)} <span class="session-tag-count">(${t.count})</span></span>`;
+  }).join('');
+  const dim = _threadTagFilter.size < 2 ? ';opacity:.6' : '';
+  const modeToggle = `<span class="session-tag-mode" style="margin-left:6px${dim}">`
+    + `<button class="${_threadTagMode === 'and' ? 'active' : ''}" onclick="event.stopPropagation();_setThreadTagMode('and')" title="Require every selected tag">all</button>`
+    + `<button class="${_threadTagMode === 'or' ? 'active' : ''}" onclick="event.stopPropagation();_setThreadTagMode('or')" title="Match any selected tag">any</button>`
+    + '</span>';
+  const clear = _threadTagFilter.size
+    ? '<a href="#" onclick="event.preventDefault();event.stopPropagation();_clearThreadTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
+    : '';
+  return '<div class="session-tag-filter-row">'
+    + '<span class="session-tag-label">Tags</span>' + chips + modeToggle + clear
+    + '</div>';
+}
+
+function _toggleThreadTagFilter(id) {
+  if (_threadTagFilter.has(id)) _threadTagFilter.delete(id);
+  else _threadTagFilter.add(id);
+  loadDiscussion();
+}
+function _setThreadTagMode(m) { _threadTagMode = m; loadDiscussion(); }
+function _clearThreadTagFilter() { _threadTagFilter.clear(); loadDiscussion(); }
+
+function _renderRowTagChipsInline(tags) {
+  if (!tags || !tags.length) return '';
+  const chips = tags.map(t => {
+    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+    return `<span class="session-tag-chip" style="cursor:default;font-size:.66rem">${swatch}${esc(t.name)}</span>`;
+  }).join(' ');
+  return '<div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:3px">' + chips + '</div>';
 }
 
 function seekToThreadAnchor(ts) {

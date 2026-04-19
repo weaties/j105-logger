@@ -88,8 +88,10 @@ async def api_list_bookmarks(
 ) -> JSONResponse:
     """List bookmarks on a session.
 
-    `?tags=1,2` filters to bookmarks carrying the given tag ids; `tag_mode`
-    is `and` (default — must have all) or `or` (must have any).
+    Response: `{bookmarks: [...], available_tags: [...]}`. Each bookmark
+    carries a `tags` array; `available_tags` is computed across the
+    pre-tag-filter set so the chip row stays populated when a tag is
+    active. `?tags=1,2&tag_mode=and|or` narrows the list.
     """
     storage = get_storage(request)
 
@@ -98,6 +100,23 @@ async def api_list_bookmarks(
         raise HTTPException(status_code=404, detail="Session not found")
 
     rows = await storage.list_bookmarks_for_session(session_id)
+    bm_ids = [r["id"] for r in rows]
+    tag_map = await storage.list_tags_for_entities("bookmark", bm_ids)
+    for r in rows:
+        r["tags"] = tag_map.get(r["id"], [])
+
+    # available_tags computed from the pre-tag-filter set so chip row
+    # offers every tag a user could add to narrow further.
+    available_counts: dict[int, dict[str, Any]] = {}
+    for r in rows:
+        for t in r.get("tags") or []:
+            entry = available_counts.setdefault(
+                t["id"],
+                {"id": t["id"], "name": t["name"], "color": t["color"], "count": 0},
+            )
+            entry["count"] += 1
+    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
     if tags:
         try:
             tag_ids = [int(s) for s in tags.split(",") if s.strip()]
@@ -108,13 +127,18 @@ async def api_list_bookmarks(
         if tag_ids:
             try:
                 allowed = set(
-                    await storage.list_entities_with_tags("bookmark", tag_ids, mode=tag_mode)
+                    await storage.list_entities_with_tags(
+                        "bookmark", tag_ids, mode=tag_mode
+                    )
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             rows = [r for r in rows if r["id"] in allowed]
 
-    return JSONResponse([_serialize(r) for r in rows])
+    serialized = [{**_serialize(r), "tags": r.get("tags") or []} for r in rows]
+    return JSONResponse(
+        {"bookmarks": serialized, "available_tags": available_tags}
+    )
 
 
 def _may_modify(user: dict[str, Any], bm: dict[str, Any]) -> bool:

@@ -37,6 +37,16 @@
 .thread-item:hover{border-color:var(--accent-strong)}
 .thread-item.resolved{opacity:.7}
 .thread-item.thread-active{border-color:var(--accent);background:var(--bg-secondary)}
+.session-tag-filter-row{display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:6px;padding:4px 0}
+.session-tag-label{font-size:.68rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+.session-tag-chip{display:inline-flex;align-items:center;gap:4px;padding:1px 7px;border-radius:10px;font-size:.7rem;border:1px solid var(--border);background:var(--bg-secondary);cursor:pointer;color:var(--text-primary)}
+.session-tag-chip.active{background:var(--accent);color:var(--bg-primary)}
+.session-tag-chip .hist-tag-chip-swatch{display:inline-block;width:8px;height:8px;border-radius:50%}
+.session-tag-count{color:var(--text-secondary);font-size:.62rem;margin-left:2px}
+.session-tag-chip.active .session-tag-count{color:var(--bg-primary);opacity:.8}
+.session-tag-mode{display:inline-flex;border:1px solid var(--border);border-radius:3px;overflow:hidden;vertical-align:middle}
+.session-tag-mode button{font-size:.68rem;padding:2px 8px;border:none;background:transparent;color:var(--text-secondary);cursor:pointer}
+.session-tag-mode button.active{background:var(--accent);color:var(--bg-primary)}
 .thread-anchor{font-size:.7rem;color:var(--warning);margin-left:6px}
 .thread-unread{background:var(--accent-strong);color:var(--bg-primary);font-size:.65rem;padding:1px 5px;border-radius:8px;margin-left:6px}
 .comment-item{padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem}
@@ -227,6 +237,7 @@
 <div id="bookmarks-card" class="card" style="display:none">
   <div class="section-title" onclick="toggleSection('bookmarks')">Bookmarks <span id="bookmarks-toggle">&#9660;</span></div>
   <div class="section-body" id="bookmarks-body">
+    <div id="bookmarks-tag-filter" class="session-tag-filter-row" style="display:none"></div>
     <ul id="bookmarks-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"></ul>
     <p id="bookmarks-empty" style="font-size:.78rem;color:var(--text-secondary);margin:0;display:none">No bookmarks on this session yet. Use the &#128278; Bookmark button in the replay controls to add one.</p>
   </div>
@@ -480,14 +491,65 @@ async function dropBookmark() {
   } catch (err) { window.alert(`Create failed: ${err}`); }
 }
 
+// Tag filter state for the Bookmarks card.
+const _bookmarkTagFilter = new Set();
+let _bookmarkTagMode = 'and'; // 'and'|'or'
+let _bookmarkAvailableTags = [];
+
 async function loadBookmarks() {
   try {
-    const resp = await fetch(`/api/sessions/${_sessionId()}/bookmarks`);
+    const params = new URLSearchParams();
+    if (_bookmarkTagFilter.size) {
+      params.set('tags', [...(_bookmarkTagFilter)].join(','));
+      params.set('tag_mode', _bookmarkTagMode);
+    }
+    const qs = params.toString();
+    const url = `/api/sessions/${_sessionId()}/bookmarks` + (qs ? '?' + qs : '');
+    const resp = await fetch(url);
     if (!resp.ok) return;
-    const rows = await resp.json();
-    _renderBookmarks(rows);
+    const data = await resp.json();
+    _bookmarkAvailableTags = data.available_tags || [];
+    _renderBookmarks(data.bookmarks || []);
+    _renderBookmarkTagFilterRow();
   } catch (err) { /* non-fatal */ }
 }
+
+function _renderBookmarkTagFilterRow() {
+  const wrap = document.getElementById('bookmarks-tag-filter');
+  if (!wrap) return;
+  const byId = new Map();
+  for (const t of _bookmarkAvailableTags) {
+    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  }
+  for (const tid of _bookmarkTagFilter) {
+    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
+  }
+  if (byId.size === 0) { wrap.style.display = 'none'; return; }
+  wrap.style.display = '';
+  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const chips = sorted.map(t => {
+    const active = _bookmarkTagFilter.has(t.id);
+    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+    return `<span class="session-tag-chip${active ? ' active' : ''}" onclick="_toggleBookmarkTagFilter(${t.id})">${swatch}${esc(t.name)} <span class="session-tag-count">(${t.count})</span></span>`;
+  }).join('');
+  const dim = _bookmarkTagFilter.size < 2 ? ';opacity:.6' : '';
+  const modeToggle = `<span class="session-tag-mode" style="margin-left:6px${dim}">`
+    + `<button class="${_bookmarkTagMode === 'and' ? 'active' : ''}" onclick="_setBookmarkTagMode('and')" title="Require every selected tag">all</button>`
+    + `<button class="${_bookmarkTagMode === 'or' ? 'active' : ''}" onclick="_setBookmarkTagMode('or')" title="Match any selected tag">any</button>`
+    + '</span>';
+  const clear = _bookmarkTagFilter.size
+    ? '<a href="#" onclick="event.preventDefault();_clearBookmarkTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
+    : '';
+  wrap.innerHTML = '<span class="session-tag-label">Tags</span>' + chips + modeToggle + clear;
+}
+
+function _toggleBookmarkTagFilter(id) {
+  if (_bookmarkTagFilter.has(id)) _bookmarkTagFilter.delete(id);
+  else _bookmarkTagFilter.add(id);
+  loadBookmarks();
+}
+function _setBookmarkTagMode(m) { _bookmarkTagMode = m; loadBookmarks(); }
+function _clearBookmarkTagFilter() { _bookmarkTagFilter.clear(); loadBookmarks(); }
 
 function _renderBookmarks(rows) {
   const card = document.getElementById('bookmarks-card');
@@ -497,7 +559,10 @@ function _renderBookmarks(rows) {
   card.style.display = '';
   list.innerHTML = '';
   if (!rows || rows.length === 0) {
-    empty.style.display = '';
+    empty.style.display = _bookmarkTagFilter.size ? 'none' : '';
+    if (_bookmarkTagFilter.size) {
+      list.innerHTML = '<li style="list-style:none;padding:8px;color:var(--text-secondary);font-size:.78rem">No bookmarks match the current tag filter.</li>';
+    }
     return;
   }
   empty.style.display = 'none';
@@ -544,11 +609,29 @@ function _renderBookmarks(rows) {
     mainRow.appendChild(renameBtn);
     mainRow.appendChild(delBtn);
 
+    // Inline tag chip strip shown below the main row when tags are attached,
+    // so users can see the tags at a glance without expanding the picker.
+    const chipStrip = document.createElement('div');
+    chipStrip.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;padding-left:72px';
+    const tags = Array.isArray(bm.tags) ? bm.tags : [];
+    if (tags.length) {
+      chipStrip.innerHTML = tags.map(t => {
+        const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
+        const name = (t.name || '').replace(/</g, '&lt;');
+        return `<span class="session-tag-chip" style="cursor:default;font-size:.66rem">${swatch}${name}</span>`;
+      }).join('');
+    } else {
+      chipStrip.style.display = 'none';
+    }
+
     const tagRow = document.createElement('div');
     tagRow.style.cssText = 'display:none;padding-left:72px';
     const picker = document.createElement('tag-picker');
     picker.setAttribute('entity-type', 'bookmark');
     picker.setAttribute('entity-id', String(bm.id));
+    // When the user attaches/detaches from the expanded picker, refresh
+    // the list so the inline chip strip + filter row pick up the change.
+    picker.addEventListener('change', () => { loadBookmarks(); });
     tagRow.appendChild(picker);
 
     tagBtn.onclick = () => {
@@ -556,6 +639,7 @@ function _renderBookmarks(rows) {
     };
 
     li.appendChild(mainRow);
+    if (tags.length) li.appendChild(chipStrip);
     li.appendChild(tagRow);
     list.appendChild(li);
   }
