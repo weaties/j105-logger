@@ -63,6 +63,47 @@ def compute_race_data_hash(
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
+async def resolve_race_data_hash(storage: Storage, race_id: int) -> str | None:
+    """Read the race row + instrument row counts and return its data_hash.
+
+    Returns ``None`` when the race doesn't exist. Row count comes from
+    ``positions`` (the dominant data source for summary/track/wind-field)
+    filtered by ``race_id`` if tagged, else by the race time window. A
+    completed race's hash is stable; an open race's hash changes as data
+    streams in, which keeps ETag revalidation meaningful for the home page.
+    """
+    db = storage._conn()
+    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (race_id,))
+    race = await cur.fetchone()
+    if race is None:
+        return None
+    start_iso = str(race["start_utc"])
+    end_iso = str(race["end_utc"]) if race["end_utc"] is not None else None
+
+    # Row count: prefer race_id tagging, fall back to time window.
+    rid_cur = await db.execute(
+        "SELECT COUNT(*) AS cnt FROM positions WHERE race_id = ?", (race_id,)
+    )
+    rid_row = await rid_cur.fetchone()
+    n_tagged = int(rid_row["cnt"]) if rid_row else 0
+    if n_tagged > 0:
+        row_count = n_tagged
+    else:
+        window_end = end_iso or start_iso
+        win_cur = await db.execute(
+            "SELECT COUNT(*) AS cnt FROM positions WHERE ts >= ? AND ts <= ?",
+            (start_iso, window_end),
+        )
+        win_row = await win_cur.fetchone()
+        row_count = int(win_row["cnt"]) if win_row else 0
+
+    start_dt = datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(end_iso.replace("Z", "+00:00")) if end_iso else None
+    return compute_race_data_hash(
+        race_id=race_id, start_utc=start_dt, end_utc=end_dt, row_count=row_count
+    )
+
+
 class _T1Entry:
     __slots__ = ("expires_at", "value")
 
