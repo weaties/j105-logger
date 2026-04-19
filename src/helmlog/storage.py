@@ -6145,9 +6145,7 @@ class Storage:
         await db.commit()
         return cur.rowcount > 0
 
-    async def sessions_matching_tags(
-        self, tag_ids: list[int], mode: str = "and"
-    ) -> list[int]:
+    async def sessions_matching_tags(self, tag_ids: list[int], mode: str = "and") -> list[int]:
         """Return session ids whose session row OR any constituent entity
         (maneuver / bookmark / thread) carries the given tag set.
 

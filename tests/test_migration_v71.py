@@ -185,9 +185,7 @@ async def test_v71_migration_applied_on_fresh_db() -> None:
     await s.connect()
     try:
         assert s._db is not None
-        async with s._db.execute(
-            "SELECT 1 FROM schema_version WHERE version = 71"
-        ) as cur:
+        async with s._db.execute("SELECT 1 FROM schema_version WHERE version = 71") as cur:
             row = await cur.fetchone()
         assert row is not None
     finally:

@@ -130,9 +130,7 @@ async def api_list_threads(
         if tag_ids:
             try:
                 allowed = set(
-                    await storage.list_entities_with_tags(
-                        "thread", tag_ids, mode=tag_mode
-                    )
+                    await storage.list_entities_with_tags("thread", tag_ids, mode=tag_mode)
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
