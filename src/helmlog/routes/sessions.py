@@ -995,7 +995,7 @@ async def api_session_replay(
     request: Request,
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Return the payload the replay UI needs: session bounds, a per-second
     instrument series for the HUD, and per-segment polar grades (#464/#469).
 
@@ -1004,6 +1004,16 @@ async def api_session_replay(
     without loading the full raw tables. Fields are nulled out when a given
     sensor had no reading for that second.
     """
+
+    async def _compute() -> dict[str, Any]:
+        return await _compute_session_replay(request, session_id)
+
+    return await cached_json_response(
+        request, race_id=session_id, key_family="session_replay", compute=_compute
+    )
+
+
+async def _compute_session_replay(request: Request, session_id: int) -> dict[str, Any]:
     storage = get_storage(request)
     db = storage._conn()
     cur = await db.execute("SELECT id, start_utc, end_utc FROM races WHERE id = ?", (session_id,))
@@ -1220,28 +1230,26 @@ async def api_session_replay(
             }
         )
 
-    return JSONResponse(
-        {
-            "session_id": session_id,
-            # Normalize for the JS Date() parser: if the row already carries a
-            # timezone indicator (isoformat on an aware UTC datetime produces
-            # "...+00:00") leave it alone, otherwise append "Z". The previous
-            # unconditional-append produced the invalid "...+00:00Z" that made
-            # new Date() return Invalid Date and silently broke the scrubber,
-            # time label, and YT sync.
-            "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
-            "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
-            # Effective race gun (prefers the latest Vakaros race_start
-            # event inside the race window). Frontend uses this to filter
-            # pre-gun "roundings" out of the replay laylines.
-            "race_gun_utc": (
-                race_gun_utc if ("Z" in race_gun_utc or "+" in race_gun_utc) else race_gun_utc + "Z"
-            ),
-            "segment_seconds": _polar.POLAR_SEGMENT_SECONDS,
-            "grades": grades_out,
-            "samples": samples,
-        }
-    )
+    return {
+        "session_id": session_id,
+        # Normalize for the JS Date() parser: if the row already carries a
+        # timezone indicator (isoformat on an aware UTC datetime produces
+        # "...+00:00") leave it alone, otherwise append "Z". The previous
+        # unconditional-append produced the invalid "...+00:00Z" that made
+        # new Date() return Invalid Date and silently broke the scrubber,
+        # time label, and YT sync.
+        "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
+        "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
+        # Effective race gun (prefers the latest Vakaros race_start
+        # event inside the race window). Frontend uses this to filter
+        # pre-gun "roundings" out of the replay laylines.
+        "race_gun_utc": (
+            race_gun_utc if ("Z" in race_gun_utc or "+" in race_gun_utc) else race_gun_utc + "Z"
+        ),
+        "segment_seconds": _polar.POLAR_SEGMENT_SECONDS,
+        "grades": grades_out,
+        "samples": samples,
+    }
 
 
 @router.get("/api/sessions/{session_id}/maneuvers")

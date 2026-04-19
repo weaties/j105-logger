@@ -178,6 +178,55 @@ async def test_track_emits_etag_and_304(storage: Storage, monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_replay_emits_etag_and_304(storage: Storage, monkeypatch: pytest.MonkeyPatch) -> None:
+    """/api/sessions/{id}/replay rolls up set/drift + polar grades + instrument
+    series. Same caching semantics as summary/track.
+    """
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race_id = await _seed_completed_race(storage)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r1 = await client.get(f"/api/sessions/{race_id}/replay")
+        assert r1.status_code == 200
+        payload = r1.json()
+        assert "samples" in payload
+        etag = r1.headers["etag"]
+        assert etag
+        r2 = await client.get(f"/api/sessions/{race_id}/replay", headers={"If-None-Match": etag})
+    assert r2.status_code == 304
+
+
+@pytest.mark.asyncio
+async def test_replay_cache_blob_written_and_invalidated(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race_id = await _seed_completed_race(storage)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.get(f"/api/sessions/{race_id}/replay")
+
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT COUNT(*) AS n FROM web_cache WHERE race_id = ? AND key_family = ?",
+        (race_id, "session_replay"),
+    )
+    assert (await cur.fetchone())["n"] == 1
+
+    # rename fires the invalidation hook — replay blob must be dropped.
+    await storage.rename_race(race_id, new_name="After Rename")
+    cur = await db.execute(
+        "SELECT COUNT(*) AS n FROM web_cache WHERE race_id = ? AND key_family = ?",
+        (race_id, "session_replay"),
+    )
+    assert (await cur.fetchone())["n"] == 0
+
+
+@pytest.mark.asyncio
 async def test_t2_blob_written_on_summary_miss(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
