@@ -458,6 +458,13 @@ async def _run() -> None:
         aruco_task = asyncio.create_task(_aruco_poll_loop(storage))
         web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
         monitor_task = asyncio.create_task(monitor_loop())
+        # Eager re-enrichment of maneuver sessions whose cached payload is
+        # behind the current ENRICH_CACHE_VERSION (#612 / #613). Runs once
+        # at startup and exits; each subsequent version bump picks up
+        # where the last pass left off via the app_settings checkpoint.
+        from helmlog.analysis.maneuvers import backfill_stale_maneuver_cache
+
+        maneuver_backfill_task = asyncio.create_task(backfill_stale_maneuver_cache(storage))
         deploy_config = DeployConfig()
         if deploy_config.mode == "evergreen":
             deploy_task = asyncio.create_task(_deploy_loop(storage, deploy_config))
@@ -505,6 +512,7 @@ async def _run() -> None:
             web_task.cancel()
             monitor_task.cancel()
             deploy_task.cancel()
+            maneuver_backfill_task.cancel()
             await asyncio.gather(
                 aruco_task,
                 weather_task,
@@ -512,6 +520,7 @@ async def _run() -> None:
                 web_task,
                 monitor_task,
                 deploy_task,
+                maneuver_backfill_task,
                 return_exceptions=True,
             )
             await storage.close()
