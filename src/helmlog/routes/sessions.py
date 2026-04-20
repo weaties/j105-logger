@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -21,6 +21,9 @@ from helmlog.routes._helpers import (
     limiter,
     t1_cached_json_response,
 )
+
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
 
 router = APIRouter()
 
@@ -297,80 +300,90 @@ async def api_session_track(
     storage = get_storage(request)
 
     async def _compute() -> dict[str, Any]:
-        db = storage._conn()
-        cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
-        row = await cur.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Race not found")
-        start_utc = row["start_utc"]
-        end_utc = row["end_utc"] or start_utc
-
-        # Prefer race_id filter (exact match for synthesized sessions);
-        # fall back to time-range query for real instrument data.
-        rid_cur = await db.execute(
-            "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
-        )
-        rid_row = await rid_cur.fetchone()
-        has_race_id = rid_row["cnt"] > 0 if rid_row else False
-
-        if has_race_id:
-            pos_cur = await db.execute(
-                "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE race_id = ? ORDER BY ts",
-                (session_id,),
-            )
-        else:
-            pos_cur = await db.execute(
-                "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts >= ? AND ts <= ? ORDER BY ts",
-                (start_utc, end_utc),
-            )
-        positions = await pos_cur.fetchall()
-        if not positions:
-            return {"type": "FeatureCollection", "features": []}
-
-        # Per-second mean averaging. The SK reader currently records every fix
-        # with source_addr=0 even when Signal K is multiplexing two physical
-        # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
-        # Bucketing to 1Hz and averaging within the bucket collapses the
-        # zig-zag into a smooth single line midway between the antennas — what
-        # you'd get from a single GPS anyway. Also gives the frontend a
-        # naturally Vakaros-density polyline so its dash style reads cleanly.
-        buckets: dict[str, list[tuple[float, float]]] = {}
-        bucket_order: list[str] = []
-        for r in positions:
-            ts_raw = r["ts"]
-            if not ts_raw:
-                continue
-            key = str(ts_raw)[:19]  # truncate to whole-second precision
-            if key not in buckets:
-                buckets[key] = []
-                bucket_order.append(key)
-            buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
-
-        coords: list[list[float]] = []
-        timestamps: list[str] = []
-        for key in bucket_order:
-            rows = buckets[key]
-            avg_lat = sum(p[0] for p in rows) / len(rows)
-            avg_lng = sum(p[1] for p in rows) / len(rows)
-            coords.append([avg_lng, avg_lat])
-            timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
-
-        feature = {
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": coords},
-            "properties": {
-                "session_id": session_id,
-                "points": len(coords),
-                "timestamps": timestamps,
-            },
-        }
-        return {"type": "FeatureCollection", "features": [feature]}
+        return await _compute_session_track(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_track", compute=_compute
     )
+
+
+async def _compute_session_track(storage: Storage, session_id: int) -> dict[str, Any]:
+    """Build the GeoJSON FeatureCollection for a session's GPS track.
+
+    Called by the HTTP endpoint and by the warm-on-complete hook in
+    ``cache.warm_race_cache`` (#611). Raises ``HTTPException(404)`` when
+    the race doesn't exist — the HTTP path surfaces that; the warmer
+    catches and logs it.
+    """
+    db = storage._conn()
+    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+    start_utc = row["start_utc"]
+    end_utc = row["end_utc"] or start_utc
+
+    # Prefer race_id filter (exact match for synthesized sessions);
+    # fall back to time-range query for real instrument data.
+    rid_cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
+    )
+    rid_row = await rid_cur.fetchone()
+    has_race_id = rid_row["cnt"] > 0 if rid_row else False
+
+    if has_race_id:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions WHERE race_id = ? ORDER BY ts",
+            (session_id,),
+        )
+    else:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions"
+            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (start_utc, end_utc),
+        )
+    positions = await pos_cur.fetchall()
+    if not positions:
+        return {"type": "FeatureCollection", "features": []}
+
+    # Per-second mean averaging. The SK reader currently records every fix
+    # with source_addr=0 even when Signal K is multiplexing two physical
+    # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
+    # Bucketing to 1Hz and averaging within the bucket collapses the
+    # zig-zag into a smooth single line midway between the antennas — what
+    # you'd get from a single GPS anyway. Also gives the frontend a
+    # naturally Vakaros-density polyline so its dash style reads cleanly.
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    bucket_order: list[str] = []
+    for r in positions:
+        ts_raw = r["ts"]
+        if not ts_raw:
+            continue
+        key = str(ts_raw)[:19]  # truncate to whole-second precision
+        if key not in buckets:
+            buckets[key] = []
+            bucket_order.append(key)
+        buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+    coords: list[list[float]] = []
+    timestamps: list[str] = []
+    for key in bucket_order:
+        rows = buckets[key]
+        avg_lat = sum(p[0] for p in rows) / len(rows)
+        avg_lng = sum(p[1] for p in rows) / len(rows)
+        coords.append([avg_lng, avg_lat])
+        timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
+
+    feature = {
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": coords},
+        "properties": {
+            "session_id": session_id,
+            "points": len(coords),
+            "timestamps": timestamps,
+        },
+    }
+    return {"type": "FeatureCollection", "features": [feature]}
 
 
 @router.get("/api/sessions/{session_id}/summary")
@@ -387,19 +400,20 @@ async def api_session_summary(
     finishers. Designed to be cheap enough for per-row lazy fetch.
     """
 
+    storage = get_storage(request)
+
     async def _compute() -> dict[str, Any]:
-        return await _compute_session_summary(request, session_id)
+        return await _compute_session_summary(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_summary", compute=_compute
     )
 
 
-async def _compute_session_summary(request: Request, session_id: int) -> dict[str, Any]:
+async def _compute_session_summary(storage: Storage, session_id: int) -> dict[str, Any]:
     import math
     from bisect import bisect_left
 
-    storage = get_storage(request)
     db = storage._conn()
 
     cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
@@ -668,9 +682,10 @@ async def api_session_detail(
     # 60s TTL guards against audio / wind-field / video-link changes that
     # don't flow through the races-row invalidation hook.
     cache_key = f"session_detail::race={session_id}"
+    storage = get_storage(request)
 
     async def _compute() -> dict[str, Any]:
-        return await _compute_session_detail(request, session_id)
+        return await _compute_session_detail(storage, session_id)
 
     return await t1_cached_json_response(
         request,
@@ -680,8 +695,7 @@ async def api_session_detail(
     )
 
 
-async def _compute_session_detail(request: Request, session_id: int) -> dict[str, Any]:
-    storage = get_storage(request)
+async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str, Any]:
     db = storage._conn()
     cur = await db.execute(
         "SELECT r.id, r.name, r.event, r.race_num, r.date,"
@@ -806,9 +820,10 @@ async def api_session_wind_field(
     # invalidation works without bespoke hooks per parameter.
     clamped_grid = min(max(grid_size, 5), 40)
     key_family = f"wind_field:grid={clamped_grid}:t={elapsed_s:.3f}"
+    storage = get_storage(request)
 
     async def _compute() -> dict[str, Any]:
-        return await _compute_wind_field(request, session_id, elapsed_s, clamped_grid)
+        return await _compute_wind_field(storage, session_id, elapsed_s, clamped_grid)
 
     return await cached_json_response(
         request, race_id=session_id, key_family=key_family, compute=_compute
@@ -816,9 +831,8 @@ async def api_session_wind_field(
 
 
 async def _compute_wind_field(
-    request: Request, session_id: int, elapsed_s: float, grid_size: int
+    storage: Storage, session_id: int, elapsed_s: float, grid_size: int
 ) -> dict[str, Any]:
-    storage = get_storage(request)
     from helmlog.wind_field import WindField
 
     params = await storage.get_synth_wind_params(session_id)
@@ -1029,16 +1043,17 @@ async def api_session_replay(
     sensor had no reading for that second.
     """
 
+    storage = get_storage(request)
+
     async def _compute() -> dict[str, Any]:
-        return await _compute_session_replay(request, session_id)
+        return await _compute_session_replay(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_replay", compute=_compute
     )
 
 
-async def _compute_session_replay(request: Request, session_id: int) -> dict[str, Any]:
-    storage = get_storage(request)
+async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str, Any]:
     db = storage._conn()
     cur = await db.execute("SELECT id, start_utc, end_utc FROM races WHERE id = ?", (session_id,))
     row = await cur.fetchone()

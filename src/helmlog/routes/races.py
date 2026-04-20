@@ -505,6 +505,15 @@ async def api_end_race(
     asyncio.ensure_future(_network_auto_switch_end())
     asyncio.ensure_future(_auto_detect_maneuvers(race_id))
 
+    # Warm-on-complete (#594 / #611): pre-compute summary/track/wind-field
+    # in the background so the history page hits a warm T2 cache on first
+    # view. Failure logged but never surfaces.
+    _cache = getattr(request.app.state, "web_cache", None)
+    if _cache is not None:
+        from helmlog.cache import warm_race_cache
+
+        asyncio.ensure_future(warm_race_cache(storage, _cache, race_id))
+
     if request.app.state.recorder is not None and ss.audio_session_id is not None:
         from helmlog.audio import capture_stop
 
