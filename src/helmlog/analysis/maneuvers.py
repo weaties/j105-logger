@@ -14,6 +14,7 @@ reference — the simplest useful proxy for tacking loss, iterable later.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import statistics
@@ -55,11 +56,13 @@ class ManeuverMetrics:
     turn_rate_deg_s: float | None
     distance_loss_m: float | None
     time_to_recover_s: float | None
+    head_to_wind_ts: datetime | None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["entry_ts"] = self.entry_ts.isoformat() if self.entry_ts else None
         d["exit_ts"] = self.exit_ts.isoformat() if self.exit_ts else None
+        d["head_to_wind_ts"] = self.head_to_wind_ts.isoformat() if self.head_to_wind_ts else None
         return d
 
 
@@ -138,6 +141,59 @@ def _average_cog_between(
     return (math.degrees(bearing_rad) + 360.0) % 360.0
 
 
+_HTW_POST_WINDOW_S = 30  # used when exit_ts is unknown
+_HTW_MIN_SAMPLES = 3
+
+
+def _find_head_to_wind(
+    maneuver_type: str | None,
+    signed_twa: list[tuple[datetime, float]],
+    start: datetime,
+    end: datetime,
+) -> datetime | None:
+    """Return the head-to-wind timestamp for a maneuver, or None.
+
+    For ``tack``: first signed-TWA zero crossing in ``[start, end]``; if
+    no strict crossing is present (helm stalled), the sample with
+    minimum ``|signed_twa|``.
+
+    For ``gybe``: first ±180° crossing (detected as a wraparound between
+    two opposite-signed samples whose magnitudes sum > 180°); if no
+    wraparound, the sample with maximum ``|signed_twa|``.
+
+    For any other type (``rounding``, ``maneuver``, None), return None.
+    Returns None when the window has fewer than ``_HTW_MIN_SAMPLES``.
+    """
+    if maneuver_type not in ("tack", "gybe"):
+        return None
+    window = [(ts, v) for ts, v in signed_twa if start <= ts <= end]
+    if len(window) < _HTW_MIN_SAMPLES:
+        return None
+
+    if maneuver_type == "tack":
+        # First sign-flip between consecutive samples both within a
+        # plausible close-hauled range (<90°).
+        for i in range(len(window) - 1):
+            ts_a, va = window[i]
+            ts_b, vb = window[i + 1]
+            if va * vb < 0 and abs(va) < 90.0 and abs(vb) < 90.0:
+                return ts_a if abs(va) <= abs(vb) else ts_b
+        # Stall: nearest-to-zero sample.
+        return min(window, key=lambda p: abs(p[1]))[0]
+
+    # Gybe: first ±180 wraparound between two opposite-signed samples
+    # whose combined magnitudes exceed 180° (i.e., both are beyond
+    # abeam and on opposite sides of the wind behind the boat).
+    for i in range(len(window) - 1):
+        ts_a, va = window[i]
+        ts_b, vb = window[i + 1]
+        if va * vb < 0 and (abs(va) + abs(vb)) > 180.0:
+            return ts_a if abs(va) >= abs(vb) else ts_b
+    # No wraparound captured in samples: fall back to the sample closest
+    # to ±180° (equivalently, folded TWA maximum).
+    return max(window, key=lambda p: abs(p[1]))[0]
+
+
 def _entry_sog(
     positions: list[tuple[datetime, float, float]],
     start: datetime,
@@ -166,6 +222,8 @@ def enrich_maneuver(
     twa: list[tuple[datetime, float]],
     tws: list[tuple[datetime, float]],
     positions: list[tuple[datetime, float, float]],
+    signed_twa: list[tuple[datetime, float]] | None = None,
+    maneuver_type: str | None = None,
 ) -> ManeuverMetrics:
     """Compute entry/exit metrics, turn geometry, and distance loss.
 
@@ -252,6 +310,16 @@ def enrich_maneuver(
 
     time_to_recover = duration  # entry→resettle == maneuver duration
 
+    # Head-to-wind timestamp (#613). Search window is [ts, exit_ts or ts+30s]
+    # so slow tacks that don't fully recover still get a HTW.
+    htw_end = exit_ts or (maneuver_ts + timedelta(seconds=_HTW_POST_WINDOW_S))
+    head_to_wind_ts = _find_head_to_wind(
+        maneuver_type,
+        signed_twa or [],
+        maneuver_ts,
+        htw_end,
+    )
+
     return ManeuverMetrics(
         entry_ts=maneuver_ts,
         exit_ts=exit_ts,
@@ -270,6 +338,7 @@ def enrich_maneuver(
         turn_rate_deg_s=round(turn_rate, 2) if turn_rate is not None else None,
         distance_loss_m=round(distance_loss, 2) if distance_loss is not None else None,
         time_to_recover_s=round(time_to_recover, 1) if time_to_recover is not None else None,
+        head_to_wind_ts=head_to_wind_ts,
     )
 
 
@@ -325,7 +394,8 @@ _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session wind
 # Bump this when the shape of the enriched maneuver payload changes (new
 # fields, recomputed ranks, changed ghost/track math). All cached payloads
 # with a different code_version are treated as a cache miss and rebuilt.
-ENRICH_CACHE_VERSION = 2
+# v3: adds head_to_wind_ts per maneuver (#613).
+ENRICH_CACHE_VERSION = 3
 
 
 def _bucket_positions_per_second(
@@ -536,6 +606,10 @@ async def enrich_session_maneuvers(
         hdg_by_sec.setdefault(ts_h.isoformat()[:19], hv)
 
     twa: list[tuple[datetime, float]] = []
+    # Pre-fold signed TWA in [-180, 180] (positive-starboard). Needed for
+    # head-to-wind detection (#613): tacks cross zero, gybes wrap through
+    # ±180°, and folding destroys the sign information.
+    signed_twa_series: list[tuple[datetime, float]] = []
     tws: list[tuple[datetime, float]] = []
     # North-referenced true wind direction (TWD) per second. Used to
     # rotate per-maneuver tracks into a wind-up frame and to compute the
@@ -556,6 +630,9 @@ async def enrich_session_maneuvers(
         tws.append((ts, float(r["wind_speed_kts"])))
         if ref == 0:
             signed_twa = float(r["wind_angle_deg"])
+            # Normalize to [-180, 180].
+            signed_wrapped = ((signed_twa + 180.0) % 360.0) - 180.0
+            signed_twa_series.append((ts, signed_wrapped))
             folded = abs(signed_twa) % 360.0
             twa.append((ts, folded if folded <= 180.0 else 360.0 - folded))
             # TWD = heading + signed TWA (wind_angle_deg is positive-starboard).
@@ -569,6 +646,8 @@ async def enrich_session_maneuvers(
             if hv_opt is not None:
                 raw = (twd_val - hv_opt + 360.0) % 360.0
                 twa.append((ts, raw if raw <= 180.0 else 360.0 - raw))
+                # Signed form: raw > 180 means wind on port (negative).
+                signed_twa_series.append((ts, raw if raw <= 180.0 else raw - 360.0))
 
     positions_unbucketed: list[tuple[datetime, float, float]] = [
         (_ts_of(r), float(r["latitude_deg"]), float(r["longitude_deg"])) for r in positions_raw
@@ -602,6 +681,7 @@ async def enrich_session_maneuvers(
     hdg.sort(key=lambda p: p[0])
     bsp.sort(key=lambda p: p[0])
     twa.sort(key=lambda p: p[0])
+    signed_twa_series.sort(key=lambda p: p[0])
     tws.sort(key=lambda p: p[0])
     twd.sort(key=lambda p: p[0])
 
@@ -639,6 +719,7 @@ async def enrich_session_maneuvers(
         m_ts = _parse_iso(str(d["ts"]))
         exit_ts = _parse_iso(str(d["end_ts"])) if d.get("end_ts") else None
 
+        stored_type = str(d.get("type") or "")
         metrics = enrich_maneuver(
             maneuver_ts=m_ts,
             exit_ts=exit_ts,
@@ -647,6 +728,8 @@ async def enrich_session_maneuvers(
             twa=twa,
             tws=tws,
             positions=positions,
+            signed_twa=signed_twa_series,
+            maneuver_type=stored_type,
         )
         md = metrics.to_dict()
         # Don't let entry_ts/exit_ts clobber the stored ts/end_ts fields.
@@ -655,6 +738,15 @@ async def enrich_session_maneuvers(
         # Storage's duration_sec is already present; metrics duration matches it.
         md.pop("duration_sec", None)
         d.update(md)
+
+        # Persist head-to-wind onto the maneuvers row so downstream callers
+        # (phase-split metrics #614, overlay chart #619) can query the
+        # column directly without going through the enrichment cache.
+        if d.get("id") is not None:
+            await storage.set_maneuver_head_to_wind_ts(
+                int(d["id"]),
+                metrics.head_to_wind_ts.isoformat() if metrics.head_to_wind_ts else None,
+            )
 
         # Reclassify a wildly-large-turn gybe as a rounding. The detector
         # classifies by pre/post TWA mode, which misses "Mexican" roundings
@@ -805,3 +897,75 @@ async def enrich_maneuvers_for_ids(
                 out.append(tagged)
 
     return out, video_sync_by_session
+
+
+# ---------------------------------------------------------------------------
+# Eager backfill worker (#613)
+# ---------------------------------------------------------------------------
+
+# Checkpoint key — records the last session_id fully re-enriched, so a
+# service restart mid-run resumes from the next session instead of
+# recomputing from scratch.
+_BACKFILL_CHECKPOINT_KEY = "maneuver_backfill_checkpoint"
+# Seconds between sessions when sleep_s is not overridden. Keeps the
+# event loop responsive while the web UI is serving requests.
+_BACKFILL_YIELD_S = 0.05
+
+
+async def backfill_stale_maneuver_cache(
+    storage: Storage, *, yield_s: float = _BACKFILL_YIELD_S
+) -> int:
+    """Re-enrich every session whose cached maneuver payload is stale.
+
+    Runs once at service start. Any session with stored maneuvers but a
+    missing or older cache ``code_version`` is rebuilt oldest-first via
+    :func:`enrich_session_maneuvers`, which also persists the new fields
+    (e.g. ``head_to_wind_ts``) back onto the maneuvers row.
+
+    The last processed ``session_id`` is checkpointed in ``app_settings``
+    so a restart mid-run resumes from where it left off. The worker
+    yields ``yield_s`` seconds between sessions to keep the web UI
+    responsive while long backfills run. Returns the number of sessions
+    processed in this call.
+    """
+    from loguru import logger
+
+    stale = await storage.session_ids_with_stale_maneuver_cache(ENRICH_CACHE_VERSION)
+    if not stale:
+        logger.debug("maneuver backfill: nothing stale at code_version={}", ENRICH_CACHE_VERSION)
+        return 0
+
+    checkpoint_raw = await storage.get_setting(_BACKFILL_CHECKPOINT_KEY)
+    try:
+        checkpoint = int(checkpoint_raw) if checkpoint_raw else 0
+    except ValueError:
+        checkpoint = 0
+
+    todo = [sid for sid in stale if sid > checkpoint]
+    if not todo:
+        # Checkpoint is ahead of everything still stale — either a prior
+        # run completed, or we're resuming past the queue. Clear it.
+        await storage.delete_setting(_BACKFILL_CHECKPOINT_KEY)
+        todo = stale
+
+    logger.info(
+        "maneuver backfill: {} session(s) at code_version<{}", len(todo), ENRICH_CACHE_VERSION
+    )
+    processed = 0
+    for sid in todo:
+        try:
+            await enrich_session_maneuvers(storage, sid)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("maneuver backfill: session {} failed: {}", sid, exc)
+            continue
+        processed += 1
+        await storage.set_setting(_BACKFILL_CHECKPOINT_KEY, str(sid))
+        logger.info("maneuver backfill: session {} done ({}/{})", sid, processed, len(todo))
+        if yield_s > 0:
+            await asyncio.sleep(yield_s)
+
+    # Caught up — clear the checkpoint so the next bump starts from the
+    # beginning of its own stale list.
+    await storage.delete_setting(_BACKFILL_CHECKPOINT_KEY)
+    logger.info("maneuver backfill: complete, {} session(s) processed", processed)
+    return processed

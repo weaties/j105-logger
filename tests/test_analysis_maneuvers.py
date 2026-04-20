@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from helmlog.storage import Storage
 
 from helmlog.analysis.maneuvers import (
+    ENRICH_CACHE_VERSION,
+    backfill_stale_maneuver_cache,
     enrich_maneuver,
     enrich_session_maneuvers,
     extract_local_track,
@@ -214,6 +216,147 @@ class TestEnrichManeuver:
         )
         # Should still compute entry_bsp from pre-window
         assert m.entry_bsp is not None and abs(m.entry_bsp - 5.0) < 0.01
+
+
+class TestHeadToWindTimestamp:
+    """#613: enrich_maneuver populates head_to_wind_ts from signed TWA series."""
+
+    def _basic_inputs(self) -> dict:
+        """Common defaults — straight-line positions, constant BSP/TWS."""
+        return {
+            "maneuver_ts": _BASE_TS + timedelta(seconds=30),
+            "exit_ts": _BASE_TS + timedelta(seconds=40),
+            "hdg": _const(70, 0.0),
+            "bsp": _const(70, 5.0),
+            "twa": _const(70, 40.0),
+            "tws": _const(70, 12.0),
+            "positions": _straight_positions(37.0, -122.0, 0.0, 5.0, 70),
+        }
+
+    def test_tack_clean_zero_crossing(self) -> None:
+        # Signed TWA: +40° pre, linear down to -40° across 10s (zero at t=35).
+        vals: list[float] = []
+        for i in range(70):
+            if i < 30:
+                vals.append(40.0)
+            elif i < 40:
+                vals.append(40.0 - 8.0 * (i - 30))
+            else:
+                vals.append(-40.0)
+        signed_twa = _series(vals)
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="tack",
+        )
+        assert m.head_to_wind_ts is not None
+        # Crossing lands at t=35; allow ±1s tolerance for nearest-sample picking.
+        delta = (m.head_to_wind_ts - (_BASE_TS + timedelta(seconds=35))).total_seconds()
+        assert abs(delta) <= 1.0
+
+    def test_tack_stall_no_crossing_picks_min_abs(self) -> None:
+        # Helm stalls: signed TWA starts +40, dips to +5 at t=35, recovers to +40.
+        # No true zero-crossing — should fall back to the min-abs sample.
+        vals = []
+        for i in range(70):
+            if i < 30:
+                vals.append(40.0)
+            elif i <= 35:
+                vals.append(40.0 - 7.0 * (i - 30))  # 40 → 5
+            elif i <= 40:
+                vals.append(5.0 + 7.0 * (i - 35))  # 5 → 40
+            else:
+                vals.append(40.0)
+        signed_twa = _series(vals)
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="tack",
+        )
+        assert m.head_to_wind_ts is not None
+        delta = (m.head_to_wind_ts - (_BASE_TS + timedelta(seconds=35))).total_seconds()
+        assert abs(delta) <= 1.0
+
+    def test_gybe_180_wrap_crossing(self) -> None:
+        # Signed TWA wraps through ±180 during a gybe: +140 → +179 → -179 → -140.
+        vals = []
+        for i in range(70):
+            if i < 30:
+                vals.append(140.0)
+            elif i < 35:
+                vals.append(140.0 + 8.0 * (i - 30))  # 140 → 180
+            elif i < 40:
+                # Wrap: 180 at i=35 flips to -180 continuing toward -140.
+                vals.append(-180.0 + 8.0 * (i - 35))  # -180 → -140
+            else:
+                vals.append(-140.0)
+        signed_twa = _series(vals)
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="gybe",
+        )
+        assert m.head_to_wind_ts is not None
+        delta = (m.head_to_wind_ts - (_BASE_TS + timedelta(seconds=35))).total_seconds()
+        assert abs(delta) <= 1.0
+
+    def test_rounding_returns_none(self) -> None:
+        # Even with a clean zero-crossing, rounding/maneuver types stay NULL.
+        vals = [40.0 - i for i in range(70)]  # crosses zero at i=40
+        signed_twa = _series(vals)
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="rounding",
+        )
+        assert m.head_to_wind_ts is None
+
+    def test_missing_signed_twa_returns_none(self) -> None:
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=[],
+            maneuver_type="tack",
+        )
+        assert m.head_to_wind_ts is None
+
+    def test_too_few_samples_returns_none(self) -> None:
+        # Only 2 samples in the maneuver window.
+        signed_twa = [
+            (_BASE_TS + timedelta(seconds=30), 10.0),
+            (_BASE_TS + timedelta(seconds=40), -10.0),
+        ]
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="tack",
+        )
+        assert m.head_to_wind_ts is None
+
+    def test_head_to_wind_ts_serializes_in_to_dict(self) -> None:
+        vals: list[float] = []
+        for i in range(70):
+            if i < 30:
+                vals.append(40.0)
+            elif i < 40:
+                vals.append(40.0 - 8.0 * (i - 30))
+            else:
+                vals.append(-40.0)
+        signed_twa = _series(vals)
+        inputs = self._basic_inputs()
+        m = enrich_maneuver(
+            **inputs,
+            signed_twa=signed_twa,
+            maneuver_type="tack",
+        )
+        d = m.to_dict()
+        assert isinstance(d["head_to_wind_ts"], str)
+        assert "T" in d["head_to_wind_ts"]
 
 
 class TestExtractLocalTrack:
@@ -579,6 +722,176 @@ class TestEnrichSessionManeuversWindRefZero:
         enriched, _ = await enrich_session_maneuvers(storage, 3)
         assert len(enriched) == 1
         assert enriched[0]["type"] == "tack"
+
+
+class TestHeadToWindPersistence:
+    """#613: head_to_wind_ts is persisted to the maneuvers table and cached payload."""
+
+    @pytest.mark.asyncio
+    async def test_enrich_writes_head_to_wind_to_table_and_payload(self, storage: Storage) -> None:
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        end = start + timedelta(seconds=120)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (10, 'htw-test', 'e', 1, ?, 'race', ?, ?)",
+            (start.date().isoformat(), start.isoformat(), end.isoformat()),
+        )
+        # 121 samples of signed TWA that cleanly crosses zero at offset 65s.
+        # Pre-maneuver: +30°; tack spans 60→70s, with a continuous linear
+        # crossing through zero at t=65s; post: -30°.
+        for i in range(121):
+            ts_dt = start + timedelta(seconds=i)
+            ts = ts_dt.isoformat()
+            hdg = 10.0 if i < 60 else 280.0
+            await db.execute(
+                "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                (ts, 0x05, hdg),
+            )
+            await db.execute(
+                "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                (ts, 0x05, 6.0),
+            )
+            if i < 60:
+                wind_angle = 30.0
+            elif i <= 70:
+                wind_angle = 30.0 - 6.0 * (i - 60)  # 30 → -30, zero at i=65
+            else:
+                wind_angle = -30.0
+            await db.execute(
+                "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, 0)",
+                (ts, 0x05, 12.0, wind_angle),
+            )
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+            )
+        await db.execute(
+            "INSERT INTO maneuvers"
+            " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+            "  vmg_loss_kts, tws_bin, twa_bin, details)"
+            " VALUES (10, 'tack', ?, ?, 10.0, 3.0, NULL, 12, 30, NULL)",
+            (
+                (start + timedelta(seconds=60)).isoformat(),
+                (start + timedelta(seconds=70)).isoformat(),
+            ),
+        )
+        await db.commit()
+
+        enriched, _ = await enrich_session_maneuvers(storage, 10)
+        assert len(enriched) == 1
+        m = enriched[0]
+        assert m.get("head_to_wind_ts") is not None
+        # Zero-crossing sample is at offset 65s.
+        htw = datetime.fromisoformat(m["head_to_wind_ts"])
+        assert abs((htw - (start + timedelta(seconds=65))).total_seconds()) <= 1.0
+
+        # Column was persisted on the maneuvers table.
+        cur = await db.execute("SELECT head_to_wind_ts FROM maneuvers WHERE session_id = 10")
+        row = await cur.fetchone()
+        assert row is not None and row["head_to_wind_ts"] is not None
+
+
+class TestBackfillStaleManeuverCache:
+    """#613: backfill worker re-enriches sessions whose cache code_version is stale."""
+
+    @pytest.mark.asyncio
+    async def test_backfill_rebuilds_stale_cache_entries(self, storage: Storage) -> None:
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+
+        # Seed two sessions with minimal data.
+        for rid in (20, 21):
+            offset = 0 if rid == 20 else 3600
+            s = start + timedelta(seconds=offset)
+            e = s + timedelta(seconds=120)
+            await db.execute(
+                "INSERT INTO races"
+                " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+                " VALUES (?, ?, 'e', ?, ?, 'race', ?, ?)",
+                (rid, f"s-{rid}", rid, s.date().isoformat(), s.isoformat(), e.isoformat()),
+            )
+            for i in range(121):
+                ts = (s + timedelta(seconds=i)).isoformat()
+                hdg = 10.0 if i < 60 else 280.0
+                await db.execute(
+                    "INSERT INTO headings (ts, source_addr, heading_deg) VALUES (?, ?, ?)",
+                    (ts, 0x05, hdg),
+                )
+                await db.execute(
+                    "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+                    (ts, 0x05, 6.0),
+                )
+                await db.execute(
+                    "INSERT INTO winds (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                    " VALUES (?, ?, ?, ?, 0)",
+                    (ts, 0x05, 12.0, 30.0 if i < 65 else -30.0),
+                )
+                await db.execute(
+                    "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                    " VALUES (?, ?, ?, ?)",
+                    (ts, 0x05, 37.0 + i * 1e-5, -122.0),
+                )
+            await db.execute(
+                "INSERT INTO maneuvers"
+                " (session_id, type, ts, end_ts, duration_sec, loss_kts,"
+                "  vmg_loss_kts, tws_bin, twa_bin, details)"
+                " VALUES (?, 'tack', ?, ?, 10.0, 3.0, NULL, 12, 30, NULL)",
+                (
+                    rid,
+                    (s + timedelta(seconds=60)).isoformat(),
+                    (s + timedelta(seconds=70)).isoformat(),
+                ),
+            )
+            # Pre-populate the cache at an older code_version so the worker
+            # treats it as stale and rebuilds.
+            await db.execute(
+                "INSERT INTO maneuver_cache (session_id, payload, code_version, computed_at)"
+                " VALUES (?, '{}', 1, ?)",
+                (rid, datetime.now(UTC).isoformat()),
+            )
+        await db.commit()
+
+        processed = await backfill_stale_maneuver_cache(storage)
+        assert processed == 2
+
+        # Both cache entries are now at the current code_version with real payloads.
+        for rid in (20, 21):
+            cur = await db.execute(
+                "SELECT code_version, payload FROM maneuver_cache WHERE session_id = ?",
+                (rid,),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            assert int(row["code_version"]) == ENRICH_CACHE_VERSION
+            assert len(row["payload"]) > 2  # real JSON, not "{}"
+
+    @pytest.mark.asyncio
+    async def test_backfill_is_idempotent_when_caught_up(self, storage: Storage) -> None:
+        db = storage._conn()
+        start = datetime(2024, 6, 15, 14, 0, 0, tzinfo=UTC)
+        await db.execute(
+            "INSERT INTO races"
+            " (id, name, event, race_num, date, session_type, start_utc, end_utc)"
+            " VALUES (30, 'caught-up', 'e', 1, ?, 'race', ?, ?)",
+            (
+                start.date().isoformat(),
+                start.isoformat(),
+                (start + timedelta(seconds=120)).isoformat(),
+            ),
+        )
+        await db.execute(
+            "INSERT INTO maneuver_cache (session_id, payload, code_version, computed_at)"
+            ' VALUES (30, \'{"maneuvers": [], "video_sync": null}\', ?, ?)',
+            (ENRICH_CACHE_VERSION, datetime.now(UTC).isoformat()),
+        )
+        await db.commit()
+
+        processed = await backfill_stale_maneuver_cache(storage)
+        assert processed == 0
 
 
 class TestRankManeuvers:
