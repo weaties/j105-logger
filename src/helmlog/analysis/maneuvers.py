@@ -78,6 +78,19 @@ def _mean_in_range(
     return statistics.fmean(vals)
 
 
+def _median_in_range(
+    series: list[tuple[datetime, float]], start: datetime, end: datetime
+) -> float | None:
+    """Median of scalar values in [start, end) — robust to a low-tail
+    pre-tack speed bleed (#615). Used for entry-window aggregates."""
+    if not series:
+        return None
+    vals = [v for ts, v in series if start <= ts < end]
+    if not vals:
+        return None
+    return statistics.median(vals)
+
+
 def _circular_mean_deg(
     series: list[tuple[datetime, float]], start: datetime, end: datetime
 ) -> float | None:
@@ -242,13 +255,18 @@ def enrich_maneuver(
 
     duration = (exit_ts - maneuver_ts).total_seconds() if exit_ts else None
 
-    entry_bsp = _mean_in_range(bsp, entry_start, entry_end)
+    # Entry-window aggregates use median (#615) so a pre-tack speed
+    # bleed in the last few seconds of the window doesn't drag the
+    # baseline down. Exit-window stays mean — the recovery dynamic IS
+    # the signal there. Heading uses circular mean for both since
+    # angular-median is more complexity than the simple cases warrant.
+    entry_bsp = _median_in_range(bsp, entry_start, entry_end)
     exit_bsp = _mean_in_range(bsp, exit_start, exit_end)
     entry_hdg = _mean_in_range(hdg, entry_start, entry_end)
     exit_hdg = _mean_in_range(hdg, exit_start, exit_end)
-    entry_twa_raw = _mean_in_range(twa, entry_start, entry_end)
+    entry_twa_raw = _median_in_range(twa, entry_start, entry_end)
     exit_twa_raw = _mean_in_range(twa, exit_start, exit_end)
-    entry_tws = _mean_in_range(tws, entry_start, entry_end)
+    entry_tws = _median_in_range(tws, entry_start, entry_end)
     exit_tws = _mean_in_range(tws, exit_start, exit_end)
 
     # Fold TWA to [0, 180] for readability.
@@ -409,7 +427,9 @@ _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session wind
 # v3: adds head_to_wind_ts per maneuver (#613).
 # v4: adds time_to_head_to_wind_s + redefines time_to_recover_s as the
 #     real recovery phase (HTW → exit), not a duration alias (#614).
-ENRICH_CACHE_VERSION = 4
+# v5: entry-window aggregates use median, not mean (#615). entry_bsp,
+#     entry_twa, entry_tws (and downstream distance_loss_m) shift.
+ENRICH_CACHE_VERSION = 5
 
 
 def _bucket_positions_per_second(

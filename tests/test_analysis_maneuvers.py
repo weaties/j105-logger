@@ -724,6 +724,110 @@ class TestEnrichSessionManeuversWindRefZero:
         assert enriched[0]["type"] == "tack"
 
 
+class TestMedianEntryBaseline:
+    """#615: entry-window aggregates use median instead of mean.
+
+    Median is robust to a low tail caused by a helm bleeding speed in
+    the seconds before a ready-about. Mean would pull ``entry_bsp``
+    down toward the bleed and under-report ``distance_loss_m``.
+    """
+
+    def test_entry_bsp_uses_median_under_pre_tack_speed_bleed(self) -> None:
+        # Entry window is 15s ending 3s before maneuver_ts (line 177-178):
+        # for maneuver_ts = _BASE_TS+30s, the window is [12s, 27s).
+        # Seed the boat at 6.0 kt for 10s, then bleed to 4.0 kt for 5s
+        # right before the helm calls "ready about".
+        bsp_entry = [6.0] * 10 + [4.0] * 5
+        # Pad with same baseline before/after the entry window.
+        hdg = _const(70, 0.0)
+        bsp = _const(12, 6.0) + _series(bsp_entry, 12) + _const(43, 5.0, 27)
+        twa = _const(70, 40.0)
+        tws = _const(70, 12.0)
+        positions = _straight_positions(37.0, -122.0, 0.0, 6.0, 70)
+        m = enrich_maneuver(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=40),
+            hdg=hdg,
+            bsp=bsp,
+            twa=twa,
+            tws=tws,
+            positions=positions,
+        )
+        # Median of [6,6,6,6,6,6,6,6,6,6,4,4,4,4,4] = 6.0.
+        # Old mean would have given (10*6 + 5*4) / 15 = 5.33.
+        assert m.entry_bsp is not None
+        assert abs(m.entry_bsp - 6.0) < 0.01
+
+    def test_entry_twa_uses_median(self) -> None:
+        # Entry TWA bleeds from 40° to 35° in the last 5s of the window.
+        twa_entry = [40.0] * 10 + [35.0] * 5
+        hdg = _const(70, 0.0)
+        bsp = _const(70, 6.0)
+        twa = _const(12, 40.0) + _series(twa_entry, 12) + _const(43, 40.0, 27)
+        tws = _const(70, 12.0)
+        positions = _straight_positions(37.0, -122.0, 0.0, 6.0, 70)
+        m = enrich_maneuver(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=40),
+            hdg=hdg,
+            bsp=bsp,
+            twa=twa,
+            tws=tws,
+            positions=positions,
+        )
+        assert m.entry_twa is not None
+        assert abs(m.entry_twa - 40.0) < 0.1
+
+    def test_entry_tws_uses_median(self) -> None:
+        # A wind sensor glitch in the last 3s of the entry window dumps
+        # TWS samples to 6 kt. Mean would pull entry_tws down. Median
+        # ignores the spike.
+        tws_entry = [12.0] * 12 + [6.0] * 3
+        hdg = _const(70, 0.0)
+        bsp = _const(70, 6.0)
+        twa = _const(70, 40.0)
+        tws = _const(12, 12.0) + _series(tws_entry, 12) + _const(43, 12.0, 27)
+        positions = _straight_positions(37.0, -122.0, 0.0, 6.0, 70)
+        m = enrich_maneuver(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=40),
+            hdg=hdg,
+            bsp=bsp,
+            twa=twa,
+            tws=tws,
+            positions=positions,
+        )
+        assert m.entry_tws is not None
+        assert abs(m.entry_tws - 12.0) < 0.01
+
+    def test_exit_window_still_mean(self) -> None:
+        # Exit BSP is the recovery dynamic — keep mean. Test that a
+        # bleeding-then-recovering exit window still gets a mean-shaped
+        # value (not the median that would smooth out the climb).
+        # Exit window for exit_ts=40s is [43s, 58s) (43 = 40 + _SKIP_S).
+        bsp_exit = [4.0] * 5 + [5.0] * 5 + [6.0] * 5  # mean=5.0, median=5.0
+        # Use a lopsided distribution where mean ≠ median to make the
+        # distinction visible: [4]*10 + [6]*5 → mean=4.67, median=4.0.
+        bsp_exit = [4.0] * 10 + [6.0] * 5
+        hdg = _const(70, 0.0)
+        bsp = _const(43, 6.0) + _series(bsp_exit, 43) + _const(12, 6.0, 58)
+        twa = _const(70, 40.0)
+        tws = _const(70, 12.0)
+        positions = _straight_positions(37.0, -122.0, 0.0, 6.0, 70)
+        m = enrich_maneuver(
+            maneuver_ts=_BASE_TS + timedelta(seconds=30),
+            exit_ts=_BASE_TS + timedelta(seconds=40),
+            hdg=hdg,
+            bsp=bsp,
+            twa=twa,
+            tws=tws,
+            positions=positions,
+        )
+        # Mean of [4]*10 + [6]*5 = 4.667, NOT the median 4.0.
+        assert m.exit_bsp is not None
+        assert abs(m.exit_bsp - 4.667) < 0.01
+
+
 class TestPhaseSplitMetrics:
     """#614: duration splits into time_to_head_to_wind_s + time_to_recover_s."""
 
