@@ -1081,6 +1081,78 @@ class TestBackfillStaleManeuverCache:
         assert processed == 0
 
 
+class TestSpreadAwareRanking:
+    """#616: rank_maneuvers labels everything 'consistent' when the spread
+    on distance_loss_m is too small to mean anything, and exposes a
+    numeric loss_percentile alongside the bucket label."""
+
+    def _mk(self, loss: float | None) -> dict:
+        return {"type": "tack", "ts": _BASE_TS.isoformat(), "distance_loss_m": loss}
+
+    def test_tight_session_all_labeled_consistent(self) -> None:
+        # 10 maneuvers losing 7.0–7.9 m. stdev≈0.3, median≈7.45 →
+        # stdev / median ≈ 0.04 (well under 0.5). max-min = 0.9 m
+        # (under 3.0). Both spread tests fail → all 'consistent'.
+        items = [self._mk(7.0 + i / 10.0) for i in range(10)]
+        ranked = rank_maneuvers(items)
+        assert all(m["rank"] == "consistent" for m in ranked)
+        # Percentiles still spread 0–90 (10 items, stride 10).
+        percentiles = sorted(m["loss_percentile"] for m in ranked)
+        assert percentiles == list(range(0, 100, 10))
+
+    def test_wide_session_uses_quartile_split(self) -> None:
+        # Losses 2..20 by 2s. median=11, sample stdev≈6.05, ratio≈0.55
+        # (passes 0.5 floor), spread=18 (passes 3 m floor). Quartile
+        # split active. NB: the issue example [3..12] doesn't satisfy
+        # its own relative threshold (ratio ≈ 0.40); using [2..20] keeps
+        # the test stable while leaving the constants tunable in code.
+        losses = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+        items = [self._mk(float(v)) for v in losses]
+        ranked = rank_maneuvers(items)
+        labels = [m["rank"] for m in ranked]
+        assert "good" in labels and "bad" in labels and "consistent" not in labels
+        lo = next(m for m in ranked if m["distance_loss_m"] == 2.0)
+        hi = next(m for m in ranked if m["distance_loss_m"] == 20.0)
+        assert lo["rank"] == "good" and lo["loss_percentile"] == 0
+        assert hi["rank"] == "bad" and hi["loss_percentile"] == 90
+
+    def test_absolute_floor_wins_when_relative_spread_high(self) -> None:
+        # 10 maneuvers losing 0.05, 0.10, 0.15, ..., 0.50 m. Big relative
+        # stdev (median ≈ 0.275, stdev ≈ 0.15 → ratio ≈ 0.55, *passes*
+        # the relative check), but max-min = 0.45 m → far under 3.0 m.
+        # Absolute floor must veto and return 'consistent'.
+        items = [self._mk(0.05 * (i + 1)) for i in range(10)]
+        ranked = rank_maneuvers(items)
+        assert all(m["rank"] == "consistent" for m in ranked)
+
+    def test_relative_threshold_wins_when_absolute_spread_passes(self) -> None:
+        # 10 maneuvers around a high baseline of 100m, total spread 30m
+        # (max=115, min=85). max-min = 30 ≥ 3 (passes absolute floor),
+        # but stdev ≈ 9–10 vs median ≈ 100 → ratio < 0.5. Relative
+        # threshold vetoes → 'consistent'. Boundary case in the AC.
+        losses = [85, 90, 95, 98, 100, 100, 102, 105, 110, 115]
+        items = [self._mk(float(v)) for v in losses]
+        ranked = rank_maneuvers(items)
+        assert all(m["rank"] == "consistent" for m in ranked)
+
+    def test_loss_percentile_present_even_when_consistent(self) -> None:
+        items = [self._mk(7.0 + i / 10.0) for i in range(5)]
+        ranked = rank_maneuvers(items)
+        for m in ranked:
+            assert isinstance(m["loss_percentile"], int)
+            assert 0 <= m["loss_percentile"] <= 100
+
+    def test_unrankable_items_stay_none(self) -> None:
+        items = [
+            {"type": "tack", "distance_loss_m": None, "loss_kts": None},
+            {"type": "tack", "distance_loss_m": None, "loss_kts": None},
+        ]
+        ranked = rank_maneuvers(items)
+        for m in ranked:
+            assert m["rank"] is None
+            assert m.get("loss_percentile") is None
+
+
 class TestRankManeuvers:
     def _mk(self, distance_loss: float | None, bsp_loss: float | None) -> dict:
         return {
