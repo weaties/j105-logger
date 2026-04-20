@@ -19,6 +19,7 @@ from loguru import logger
 from websockets.asyncio.client import connect as _ws_connect
 
 from helmlog.nmea2000 import (
+    PGN_ATTITUDE,
     PGN_COG_SOG_RAPID,
     PGN_ENVIRONMENTAL,
     PGN_POSITION_RAPID,
@@ -27,6 +28,7 @@ from helmlog.nmea2000 import (
     PGN_VESSEL_HEADING,
     PGN_WATER_DEPTH,
     PGN_WIND_DATA,
+    AttitudeRecord,
     COGSOGRecord,
     DepthRecord,
     EnvironmentalRecord,
@@ -260,6 +262,32 @@ def process_delta(
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     logger.warning("SK: bad position value {!r}: {}", value, exc)
+                continue
+
+            if path == "navigation.attitude":
+                # Compound value {roll, pitch, yaw} in radians. Yaw is already
+                # covered by navigation.headingTrue; we only care about
+                # heel (roll) and trim (pitch).
+                try:
+                    roll = value.get("roll")
+                    pitch = value.get("pitch")
+                except AttributeError:
+                    logger.warning("SK: non-dict attitude value {!r}", value)
+                    continue
+                if roll is None or pitch is None:
+                    continue
+                try:
+                    records.append(
+                        AttitudeRecord(
+                            PGN_ATTITUDE,
+                            update_source_addr,
+                            ts,
+                            float(roll) * _RAD_TO_DEG,
+                            float(pitch) * _RAD_TO_DEG,
+                        )
+                    )
+                except (TypeError, ValueError) as exc:
+                    logger.warning("SK: bad attitude value {!r}: {}", value, exc)
                 continue
 
             if simple_fn := _SIMPLE.get(path):

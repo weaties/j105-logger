@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from helmlog.nmea2000 import (
+    PGN_ATTITUDE,
     PGN_COG_SOG_RAPID,
     PGN_ENVIRONMENTAL,
     PGN_POSITION_RAPID,
@@ -15,6 +16,7 @@ from helmlog.nmea2000 import (
     PGN_VESSEL_HEADING,
     PGN_WATER_DEPTH,
     PGN_WIND_DATA,
+    AttitudeRecord,
     COGSOGRecord,
     DepthRecord,
     EnvironmentalRecord,
@@ -56,6 +58,7 @@ class TestMigration:
             "tides",
             "session_notes",
             "race_videos",
+            "attitudes",
         }:
             assert expected in names, f"Table {expected!r} not found"
 
@@ -290,6 +293,25 @@ class TestWriteQuery:
         rows = await storage.query_range("environmental", _TS, _TS + timedelta(seconds=1))
         assert len(rows) == 1
         assert abs(rows[0]["water_temp_c"] - 20.0) < 0.001
+
+    async def test_attitude_round_trip(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Disable the write-rate gate so every record lands in the table.
+        monkeypatch.setenv("ATTITUDE_STORAGE_HZ", "0")
+        record = AttitudeRecord(
+            pgn=PGN_ATTITUDE,
+            source_addr=5,
+            timestamp=_TS,
+            heel_deg=12.5,
+            trim_deg=-1.25,
+        )
+        await storage.write(record)
+        rows = await storage.query_range("attitudes", _TS, _TS + timedelta(seconds=1))
+        assert len(rows) == 1
+        assert abs(rows[0]["heel_deg"] - 12.5) < 0.001
+        assert abs(rows[0]["trim_deg"] - -1.25) < 0.001
+        assert rows[0]["source_addr"] == 5
 
     async def test_none_fields_stored_as_null(self, storage: Storage) -> None:
         record = HeadingRecord(

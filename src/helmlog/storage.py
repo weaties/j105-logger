@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
 from helmlog.anchors import Anchor, validate_anchor
 from helmlog.nmea2000 import (
+    AttitudeRecord,
     COGSOGRecord,
     DepthRecord,
     EnvironmentalRecord,
@@ -199,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 74
+_CURRENT_VERSION: int = 75
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1740,6 +1741,20 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE web_cache ADD COLUMN expires_utc TEXT;
         CREATE INDEX IF NOT EXISTS idx_web_cache_expires ON web_cache(expires_utc);
     """,
+    75: """
+        -- #622: attitude (heel/trim) from PGN 127257 / SK navigation.attitude.
+        -- heel_deg = roll (positive = starboard down),
+        -- trim_deg = pitch (positive = bow up). Yaw is already covered by
+        -- headings (navigation.headingTrue) and not stored here.
+        CREATE TABLE IF NOT EXISTS attitudes (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts          TEXT    NOT NULL,
+            source_addr INTEGER NOT NULL,
+            heel_deg    REAL    NOT NULL,
+            trim_deg    REAL    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_attitudes_ts ON attitudes(ts);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -1803,6 +1818,7 @@ class Storage:
         self._live_tw_angle_raw: float | None = None
         self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
         self._last_rudder_write: float = 0.0
+        self._last_attitude_write: float = 0.0
         # Web response cache (#594). Optional; web.py binds a WebCache
         # instance after Storage is connected so any race mutation flows
         # through cache.invalidate(race_id) in-transaction.
@@ -1889,6 +1905,9 @@ class Storage:
                 self._recompute_true_wind()
             case RudderRecord():
                 self._live["rudder_deg"] = round(record.rudder_angle_deg, 1)
+            case AttitudeRecord():
+                self._live["heel_deg"] = round(record.heel_deg, 1)
+                self._live["trim_deg"] = round(record.trim_deg, 1)
         if self._on_live_update is not None:
             self._on_live_update(dict(self._live))
 
@@ -2424,6 +2443,8 @@ class Storage:
                 await self._write_environmental(record)
             case RudderRecord():
                 await self._write_rudder(record)
+            case AttitudeRecord():
+                await self._write_attitude(record)
         self._pending += 1
         await self._auto_flush()
 
@@ -2516,6 +2537,21 @@ class Storage:
             (_ts(r.timestamp), r.source_addr, r.rudder_angle_deg),
         )
 
+    async def _write_attitude(self, r: AttitudeRecord) -> None:
+        now = time.monotonic()
+        try:
+            hz = float(os.environ.get("ATTITUDE_STORAGE_HZ", "2"))
+        except ValueError:
+            hz = 2.0
+        if hz > 0 and (now - self._last_attitude_write) < (1.0 / hz):
+            return
+        self._last_attitude_write = now
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO attitudes (ts, source_addr, heel_deg, trim_deg) VALUES (?, ?, ?, ?)",
+            (_ts(r.timestamp), r.source_addr, r.heel_deg, r.trim_deg),
+        )
+
     # ------------------------------------------------------------------
     # Query
     # ------------------------------------------------------------------
@@ -2545,6 +2581,7 @@ class Storage:
             "positions",
             "cogsog",
             "winds",
+            "attitudes",
             "environmental",
         }
         if table not in _ALLOWED_TABLES:

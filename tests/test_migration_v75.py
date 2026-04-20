@@ -1,4 +1,4 @@
-"""Tests for migration v74 — expires_utc column on web_cache (#610)."""
+"""Tests for migration v75 — attitudes table for heel/trim (#622)."""
 
 from __future__ import annotations
 
@@ -35,54 +35,41 @@ async def _build_db_at(version: int) -> aiosqlite.Connection:
 
 
 @pytest.mark.asyncio
-async def test_v74_adds_expires_utc_column() -> None:
-    db = await _build_db_at(73)
-    try:
-        await _apply_migration(db, 74)
-        async with db.execute("PRAGMA table_info(web_cache)") as cur:
-            cols = {r[1] for r in await cur.fetchall()}
-        assert "expires_utc" in cols
-    finally:
-        await db.close()
-
-
-@pytest.mark.asyncio
-async def test_v74_allows_null_expires_utc() -> None:
-    """Existing race-keyed rows leave expires_utc NULL and rely on the
-    race-mutation invalidation hook — this is explicitly allowed."""
+async def test_v75_creates_attitudes_table() -> None:
     db = await _build_db_at(74)
     try:
-        await db.execute(
-            "INSERT INTO web_cache (key_family, race_id, data_hash, blob, created_utc)"
-            " VALUES (?, ?, ?, ?, ?)",
-            ("session_summary", 1, "h", "{}", "2026-04-20T00:00:00+00:00"),
-        )
-        await db.commit()
-
-        async with db.execute(
-            "SELECT expires_utc FROM web_cache WHERE key_family = 'session_summary'"
-        ) as cur:
-            row = await cur.fetchone()
-        assert row is not None
-        assert row["expires_utc"] is None
+        await _apply_migration(db, 75)
+        async with db.execute("PRAGMA table_info(attitudes)") as cur:
+            cols = {r[1]: r for r in await cur.fetchall()}
+        assert {"id", "ts", "source_addr", "heel_deg", "trim_deg"} <= cols.keys()
     finally:
         await db.close()
 
 
 @pytest.mark.asyncio
-async def test_v74_migration_applied_on_fresh_db() -> None:
-    """Confirm v74 is applied on a fresh DB.
+async def test_v75_attitudes_ts_index_exists() -> None:
+    db = await _build_db_at(75)
+    try:
+        async with db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'attitudes'"
+        ) as cur:
+            names = {r[0] for r in await cur.fetchall()}
+        assert "idx_attitudes_ts" in names
+    finally:
+        await db.close()
 
-    (Latest-version assertion lives in test_migration_v75.)
-    """
+
+@pytest.mark.asyncio
+async def test_schema_version_is_75_on_fresh_db() -> None:
     from helmlog.storage import Storage, StorageConfig
 
     s = Storage(StorageConfig(db_path=":memory:"))
     await s.connect()
     try:
         assert s._db is not None
-        async with s._db.execute("SELECT 1 FROM schema_version WHERE version = 74") as cur:
+        async with s._db.execute("SELECT MAX(version) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
+        assert row[0] == 75
     finally:
         await s.close()
