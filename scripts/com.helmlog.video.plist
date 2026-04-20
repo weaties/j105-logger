@@ -35,6 +35,8 @@
         <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>PI_API_URL</key>
         <string>PI_API_URL_VALUE</string>
+        <key>YOUTUBE_ACCOUNT</key>
+        <string>YOUTUBE_ACCOUNT_VALUE</string>
         <key>PI_SESSION_COOKIE</key>
         <string>PI_SESSION_COOKIE_VALUE</string>
     </dict>

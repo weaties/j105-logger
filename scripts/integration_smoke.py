@@ -4,9 +4,9 @@ Runs on one Pi and tests federation endpoints on a peer Pi. Validates real
 network paths, Ed25519 signing over Tailscale, and service health.
 
 Usage:
-    uv run python scripts/integration_smoke.py --peer corvopi-live
-    uv run python scripts/integration_smoke.py --peer 100.78.208.87 --port 3002
-    uv run python scripts/integration_smoke.py --peer corvopi-live --json
+    uv run python scripts/integration_smoke.py --peer <peer-hostname>
+    uv run python scripts/integration_smoke.py --peer <peer-ip> --port 3002
+    uv run python scripts/integration_smoke.py --peer <peer-hostname> --json
 
 Requires:
     - This Pi has an initialized identity (helmlog identity init)

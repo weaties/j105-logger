@@ -3,17 +3,27 @@
 <!--
   com.helmlog.video-watch — folder watcher for Insta360 stitched exports.
 
-  Install:
-    cp launchd/com.helmlog.video-watch.plist ~/Library/LaunchAgents/
+  This is a TEMPLATE. Copy it, substitute the placeholders, then install:
+
+    sed \
+      -e "s|__PROJECT_DIR__|$(cd "$(git rev-parse --show-toplevel)" \&\& pwd)|g" \
+      -e "s|__HOME__|$HOME|g" \
+      -e "s|__PI_API_URL__|http://your-pi-hostname:3002|g" \
+      -e "s|__YOUTUBE_ACCOUNT__|your-youtube-channel-handle|g" \
+      -e "s|__TIMEZONE__|America/Los_Angeles|g" \
+      launchd/com.helmlog.video-watch.plist.template \
+      > ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+
+    # Edit PI_SESSION_COOKIE in the copied file, then:
     launchctl load ~/Library/LaunchAgents/com.helmlog.video-watch.plist
 
   Uninstall:
     launchctl unload ~/Library/LaunchAgents/com.helmlog.video-watch.plist
     rm ~/Library/LaunchAgents/com.helmlog.video-watch.plist
 
-  Logs (rotated by helmlog/scripts; truncate or delete as needed):
-    ~/Library/Logs/helmlog/video-watch.log
-    ~/Library/Logs/helmlog/video-watch.err
+  Logs (rotate or delete as needed):
+    $HOME/Library/Logs/helmlog/video-watch.log
+    $HOME/Library/Logs/helmlog/video-watch.err
 
   Notes:
     - PI_SESSION_COOKIE must be edited below for the linker to work; without
@@ -29,22 +39,22 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/Users/dweatbrook/src/helmlog/scripts/watch-exports.sh</string>
+        <string>__PROJECT_DIR__/scripts/watch-exports.sh</string>
     </array>
 
     <key>WorkingDirectory</key>
-    <string>/Users/dweatbrook/src/helmlog</string>
+    <string>__PROJECT_DIR__</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>PI_API_URL</key>
-        <string>http://corvopi-live:3002</string>
+        <string>__PI_API_URL__</string>
         <key>YOUTUBE_ACCOUNT</key>
-        <string>corvo105</string>
+        <string>__YOUTUBE_ACCOUNT__</string>
         <key>TIMEZONE</key>
-        <string>America/Los_Angeles</string>
+        <string>__TIMEZONE__</string>
         <key>VIDEO_PRIVACY</key>
         <string>unlisted</string>
         <!-- Edit this with your active Pi session cookie. Without it the
@@ -60,9 +70,9 @@
     <true/>
 
     <key>StandardOutPath</key>
-    <string>/Users/dweatbrook/Library/Logs/helmlog/video-watch.log</string>
+    <string>__HOME__/Library/Logs/helmlog/video-watch.log</string>
 
     <key>StandardErrorPath</key>
-    <string>/Users/dweatbrook/Library/Logs/helmlog/video-watch.err</string>
+    <string>__HOME__/Library/Logs/helmlog/video-watch.err</string>
 </dict>
 </plist>

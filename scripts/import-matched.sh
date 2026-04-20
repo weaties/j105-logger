@@ -13,11 +13,13 @@
 #   ./scripts/import-matched.sh                    # auto-detect SD card
 #   ./scripts/import-matched.sh /Volumes/Sailing360
 #
-# Environment overrides:
+# Required environment:
+#   PI_API_URL            HelmLog API base URL, e.g. http://<pi-hostname>:3002
+#   PI_SESSION_COOKIE     Pi auth cookie (REQUIRED — fetch fails open but then
+#                          nothing matches and nothing is copied)
+#
+# Optional environment overrides:
 #   HELMLOG_IMPORT_DIR    where to copy matches  (default: ~/Insta360 Imports)
-#   PI_API_URL            HelmLog API            (default: http://corvopi-live:3002)
-#   PI_SESSION_COOKIE     Pi auth cookie         (REQUIRED — fetch fails open
-#                          but then nothing matches and nothing is copied)
 #   TIMEZONE              camera local TZ        (default: America/Los_Angeles)
 #
 # Idempotent: re-running skips files that are already in the import dir.
@@ -27,8 +29,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+: "${PI_API_URL:?PI_API_URL must be set — e.g. export PI_API_URL=http://<pi-hostname>:3002}"
 IMPORT_DIR="${HELMLOG_IMPORT_DIR:-$HOME/Insta360 Imports}"
-PI_API="${PI_API_URL:-http://corvopi-live:3002}"
+PI_API="$PI_API_URL"
 COOKIE="${PI_SESSION_COOKIE:-}"
 TZ_NAME="${TIMEZONE:-America/Los_Angeles}"
 

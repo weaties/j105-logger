@@ -782,7 +782,7 @@
       },
       {
         "current": {
-          "value": "http://corvopi:3002"
+          "value": "http://__HOSTNAME__:3002"
         },
         "hide": 2,
         "label": "Logger URL",
@@ -790,11 +790,11 @@
         "options": [
           {
             "selected": true,
-            "text": "http://corvopi:3002",
-            "value": "http://corvopi:3002"
+            "text": "http://__HOSTNAME__:3002",
+            "value": "http://__HOSTNAME__:3002"
           }
         ],
-        "query": "http://corvopi:3002",
+        "query": "http://__HOSTNAME__:3002",
         "skipUrlSync": false,
         "type": "constant"
       }

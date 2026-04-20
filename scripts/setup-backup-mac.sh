@@ -2,10 +2,10 @@
 # setup-backup-mac.sh — Install the daily Pi-to-Mac backup launchd agent.
 #
 # Run once on your Mac from the project root:
-#   ./scripts/setup-backup-mac.sh
+#   PI=user@pi-hostname ./scripts/setup-backup-mac.sh
 #
 # What it does:
-#   1. Verifies SSH connectivity to the Pi (set PI=user@host to override)
+#   1. Verifies SSH connectivity to $PI (required)
 #   2. Creates ~/backups/helmlog/
 #   3. Copies com.helmlog.backup.plist → ~/Library/LaunchAgents/ (with real paths)
 #   4. Loads (enables) the agent — runs daily at 03:00
@@ -22,7 +22,7 @@ PLIST_SRC="$SCRIPT_DIR/com.helmlog.backup.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/com.helmlog.backup.plist"
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 LOG_FILE="$BACKUP_DEST/backup.log"
-PI="${PI:-weaties@corvopi}"
+: "${PI:?PI must be set — e.g. export PI=user@pi-hostname}"
 
 log() { echo "==> $*"; }
 warn() { echo "    WARNING: $*" >&2; }

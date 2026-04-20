@@ -6,7 +6,8 @@ full setup → seed → test → teardown lifecycle over SSH and HTTP.
 Usage:
     # Full lifecycle
     uv run python scripts/pi_harness.py \\
-        --pi-a 100.73.127.5 --pi-b 100.78.208.87 \\
+        --pi-a <pi-a-ip-or-host> --pi-b <pi-b-ip-or-host> \\
+        --ssh-user <ssh-login-user> \\
         --ssh-key ~/.ssh/helmlog-harness
 
     # Setup only (leave federation in place for manual testing)
@@ -61,7 +62,7 @@ class PiHost:
 
     ip: str
     ssh_key: str
-    ssh_user: str = "weaties"
+    ssh_user: str
     port: int = 80
     name: str = ""
     branch: str = ""
@@ -452,7 +453,7 @@ def seed(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> dict[str, Any]:
         _log("seed", f"Seeding sessions on {pi.name}...")
         # Stop service to release DB lock so the seeder can write.
         # storage.py connect() ensures the DB is group-writable (664) on
-        # creation, so the seeder (weaties) can write to a helmlog-owned DB.
+        # creation, so the SSH login user can write to a helmlog-owned DB.
         pi.ssh("pkill -f harness_seed || true", check=False)
         pi.ssh("sudo systemctl stop helmlog", check=False)
         time.sleep(1)
@@ -497,21 +498,21 @@ def test(pi_a: PiHost, pi_b: PiHost, co_op_id: str = "") -> list[dict[str, Any]]
         check=False,
     )
 
-    # Copy the service identity to weaties' home so load_identity() works.
-    # The service stores keys at /var/cache/helmlog/.helmlog/identity/
-    # but the smoke script runs as weaties and looks in ~/.helmlog/identity/.
+    # Copy the service identity to the SSH login user's home so load_identity()
+    # works. The service stores keys at /var/cache/helmlog/.helmlog/identity/
+    # but the smoke script runs as the SSH user and looks in ~/.helmlog/identity/.
     # sudo rsync is NOPASSWD in the helmlog sudoers config.
     pi_a.ssh(
         "mkdir -p ~/.helmlog/identity"
-        " && sudo rsync -a --chown=weaties:weaties"
+        f" && sudo rsync -a --chown={pi_a.ssh_user}:{pi_a.ssh_user}"
         " /var/cache/helmlog/.helmlog/identity/ ~/.helmlog/identity/"
         " && chmod 600 ~/.helmlog/identity/boat.key",
         check=False,
     )
 
     output = pi_a.ssh(
-        "cd /home/weaties/helmlog"
-        " && /home/weaties/.local/bin/uv run --no-sync"
+        "cd ~/helmlog"
+        " && ~/.local/bin/uv run --no-sync"
         " python scripts/integration_smoke.py"
         f" --peer {pi_b.ip} --port {pi_b.port}"
         f"{f' --co-op-id {co_op_id}' if co_op_id else ''}"
@@ -847,7 +848,7 @@ def main() -> None:
     parser.add_argument("--pi-a", required=True, help="Pi A (admin) IP/hostname")
     parser.add_argument("--pi-b", required=True, help="Pi B (member) IP/hostname")
     parser.add_argument("--ssh-key", required=True, help="Path to SSH private key")
-    parser.add_argument("--ssh-user", default="weaties", help="SSH username")
+    parser.add_argument("--ssh-user", required=True, help="SSH username on both Pis")
     parser.add_argument("--port", type=int, default=80, help="helmlog HTTP port")
     parser.add_argument("--co-op-name", default="harness-test", help="Co-op name")
     parser.add_argument("--issue", type=int, help="GitHub issue to post results to")

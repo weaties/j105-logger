@@ -2,6 +2,8 @@
 # setup-video-mac.sh — Install the Insta360 video pipeline launchd agent.
 #
 # Run once on your Mac from the project root:
+#   PI_API_URL=http://<pi-hostname>:3002 \
+#   YOUTUBE_ACCOUNT=<your-channel-handle> \
 #   ./scripts/setup-video-mac.sh
 #
 # What it does:
@@ -119,7 +121,10 @@ fi
 
 log "Installing launchd agent..."
 
-PI_API="${PI_API_URL:-http://corvopi:3002}"
+: "${PI_API_URL:?PI_API_URL must be set — e.g. export PI_API_URL=http://<pi-hostname>:3002}"
+: "${YOUTUBE_ACCOUNT:?YOUTUBE_ACCOUNT must be set — selects ~/.config/helmlog/youtube/<account>.json}"
+PI_API="$PI_API_URL"
+YT_ACCOUNT="$YOUTUBE_ACCOUNT"
 PI_COOKIE="${PI_SESSION_COOKIE:-}"
 
 sed \
@@ -127,6 +132,7 @@ sed \
   -e "s|VIDEO_LOG_PATH|$LOG_FILE|g" \
   -e "s|HOME_PATH|$HOME|g" \
   -e "s|PI_API_URL_VALUE|$PI_API|g" \
+  -e "s|YOUTUBE_ACCOUNT_VALUE|$YT_ACCOUNT|g" \
   -e "s|PI_SESSION_COOKIE_VALUE|$PI_COOKIE|g" \
   "$PLIST_SRC" > "$PLIST_DEST"
 

@@ -13,12 +13,14 @@
 #   - sudo rsync allowed on the Pi for the SSH user (for Grafana dir)
 #   - Python 3 on PATH (for the email report helper; stdlib only)
 #
-# Environment overrides:
-#   PI                 SSH target                (default: weaties@corvopi)
+# Required environment:
+#   PI                 SSH target, e.g. user@pi-hostname (no default)
+#   REPORT_TO          email recipient (required unless SKIP_EMAIL=1)
+#
+# Optional environment overrides:
 #   BACKUP_DEST        local snapshot root       (default: ~/backups/helmlog)
 #   KEEP_SNAPSHOTS     how many to retain        (default: 10)
 #   INFLUX_TOKEN_FILE  path on the Pi            (default: ~/influx-token.txt)
-#   REPORT_TO          email recipient           (default: weaties@gmail.com)
 #   SMTP_CACHE         local creds cache path    (default: ~/.config/helmlog-backup/smtp.env)
 #   MIN_SNAPSHOT_BYTES safety-gate threshold     (default: 10485760 — 10 MiB)
 #   SKIP_EMAIL         set to 1 to suppress mail (default: unset)
@@ -31,11 +33,13 @@
 
 set -uo pipefail
 
-PI="${PI:-weaties@corvopi}"
+: "${PI:?PI must be set — e.g. export PI=user@pi-hostname}"
+if [ "${SKIP_EMAIL:-0}" != "1" ]; then
+  : "${REPORT_TO:?REPORT_TO must be set (or set SKIP_EMAIL=1)}"
+fi
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 KEEP_SNAPSHOTS="${KEEP_SNAPSHOTS:-10}"
 INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-~/influx-token.txt}"
-REPORT_TO="${REPORT_TO:-weaties@gmail.com}"
 SMTP_CACHE="${SMTP_CACHE:-$HOME/.config/helmlog-backup/smtp.env}"
 MIN_SNAPSHOT_BYTES="${MIN_SNAPSHOT_BYTES:-10485760}"
 
