@@ -4187,7 +4187,12 @@ function _setPolarHighlightSegments(grades) {
 // ---------------------------------------------------------------------------
 
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
-const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
+const _RANK_COLORS = {
+  good: cssVar('--success'),
+  bad: cssVar('--error'),
+  avg: cssVar('--text-secondary'),
+  consistent: cssVar('--text-secondary'),
+};
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 // Active filter pills. Multi-select: combined with AND across dimensions
 // (type, rank, time) and OR within a dimension. Empty set == "all".
@@ -4637,9 +4642,10 @@ function showOverlayTip(ev, idx) {
     ['TWS', twsStr],
     ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
   ];
+  const rankPctStr = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const header = '<div style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px">'
     + '<span><span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
-    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '') + '</span>'
+    + (m.rank ? ' <span style="color:' + rankColor + '" title="loss percentile (lower = less loss)">●' + esc(m.rank) + rankPctStr + '</span>' : '') + '</span>'
     + '<span style="color:var(--text-secondary);cursor:pointer;font-size:.8rem" onclick="hideOverlayTip()" title="Close">✕</span>'
     + '</div>';
   const grid = '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px">'

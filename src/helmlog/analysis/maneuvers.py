@@ -372,12 +372,37 @@ def enrich_maneuver(
     )
 
 
+# Spread-aware ranking thresholds (#616). When a session's loss spread
+# is too small to mean anything we label every maneuver ``consistent``
+# instead of manufacturing a good/bad distinction.
+#
+# - Relative: stdev / median ≥ 0.5 keeps the spread meaningful as a
+#   fraction of typical loss. In tight one-design fleets, mean tack
+#   loss varies session-to-session by ~3–6 m; half-median captures
+#   that without per-class calibration.
+# - Absolute floor: total range ≥ 3 m. Below that, we're inside the
+#   GPS positional-noise floor of the loss calc (SK multiplexed
+#   antennas bucket to ~2–3 m — see ``_bucket_positions_per_second``).
+# Both thresholds must pass for a quartile split to fire. If either
+# fails, every rankable item is labeled ``consistent``.
+_CONSISTENT_STDEV_FRAC = 0.5
+_CONSISTENT_ABS_SPREAD_M = 3.0
+
+
 def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Attach a ``rank`` label (``good`` / ``avg`` / ``bad``) in-place.
+    """Attach a ``rank`` label and ``loss_percentile`` in-place (#616).
 
     Ranking is by ``distance_loss_m`` when available, else ``loss_kts``.
-    Top quartile (lowest loss) → ``good``; bottom quartile → ``bad``;
-    middle half → ``avg``. Entries with no loss data get ``rank=None``.
+    When the set's loss spread is too small to be meaningful (low
+    relative stdev OR small absolute range), every rankable item gets
+    rank ``consistent`` instead of the quartile split. Otherwise top
+    quartile (lowest loss) → ``good``, bottom quartile → ``bad``,
+    middle half → ``avg``. Entries with no loss data get rank ``None``.
+
+    ``loss_percentile`` is the 0–100 within-set rank (lowest loss = 0)
+    on every rankable item, regardless of bucket. The UI renders it
+    as a tooltip number so a user can see the underlying ordering
+    even when the bucket label is ``consistent``.
     """
     if not items:
         return items
@@ -398,6 +423,32 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     sorted_items = sorted(ranked, key=lambda m: _key(m) or 0.0)
     n = len(sorted_items)
+
+    # Loss percentile per rankable item: 0 for the lowest loss, scaled
+    # to 100 across the set. Single-item sets get 0 to avoid div/0.
+    for i, m in enumerate(sorted_items):
+        m["loss_percentile"] = int(round(100 * i / n)) if n > 1 else 0
+
+    losses = [_key(m) or 0.0 for m in sorted_items]
+    spread = losses[-1] - losses[0]
+    median_loss = statistics.median(losses)
+    stdev_loss = statistics.pstdev(losses) if n > 1 else 0.0
+    relative_passes = median_loss > 0 and (stdev_loss / median_loss) >= _CONSISTENT_STDEV_FRAC
+    # The 3 m floor is unit-specific (GPS positional noise on
+    # ``distance_loss_m``). When falling back to ``loss_kts`` we can't
+    # apply it — knots aren't meters — so only the relative test gates
+    # the spread call on those rows.
+    using_distance = all(m.get("distance_loss_m") is not None for m in sorted_items)
+    absolute_passes = (not using_distance) or spread >= _CONSISTENT_ABS_SPREAD_M
+
+    if not (relative_passes and absolute_passes):
+        for m in ranked:
+            m["rank"] = "consistent"
+        for m in unranked:
+            m["rank"] = None
+            m.setdefault("loss_percentile", None)
+        return items
+
     q1 = max(1, n // 4)
     q3 = max(q1, n - n // 4)
     good = {id(m) for m in sorted_items[:q1]}
@@ -411,6 +462,7 @@ def rank_maneuvers(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             m["rank"] = "avg"
     for m in unranked:
         m["rank"] = None
+        m.setdefault("loss_percentile", None)
     return items
 
 
@@ -429,7 +481,9 @@ _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session wind
 #     real recovery phase (HTW → exit), not a duration alias (#614).
 # v5: entry-window aggregates use median, not mean (#615). entry_bsp,
 #     entry_twa, entry_tws (and downstream distance_loss_m) shift.
-ENRICH_CACHE_VERSION = 5
+# v6: spread-aware ranking with new ``consistent`` label and numeric
+#     ``loss_percentile`` (#616).
+ENRICH_CACHE_VERSION = 6
 
 
 def _bucket_positions_per_second(

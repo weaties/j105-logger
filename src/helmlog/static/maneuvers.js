@@ -285,6 +285,9 @@ function renderResults() {
       ? '<span class="mv-video">&#9654;</span>'
       : '<span class="mv-no-video">\u2014</span>';
     const rank = m.rank ? m.rank : '';
+    const rankTitle = m.loss_percentile != null
+      ? 'loss percentile: ' + m.loss_percentile + ' (lower = less loss)'
+      : '';
     const tagCell = _renderRowTagChips(m.tags);
     return '<tr class="' + (sel ? 'selected' : '') + '" data-k="' + k + '" onclick="mvToggleRow(\'' + k + '\')">'
       + '<td><input type="checkbox" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();mvToggleRow(\'' + k + '\')"/></td>'
@@ -297,7 +300,7 @@ function renderResults() {
       + '<td class="mv-num">' + durTxt + '</td>'
       + '<td class="mv-num">' + turnPhaseTxt + '</td>'
       + '<td class="mv-num">' + recoverPhaseTxt + '</td>'
-      + '<td>' + _esc(rank) + '</td>'
+      + '<td' + (rankTitle ? ' title="' + _esc(rankTitle) + '"' : '') + '>' + _esc(rank) + '</td>'
       + '<td>' + video + '</td>'
       + '<td>' + tagCell + '</td>'
       + '</tr>';
