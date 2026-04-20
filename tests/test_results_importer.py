@@ -526,3 +526,43 @@ async def test_race_with_no_date_skipped(storage: Storage) -> None:
     async with db.execute("SELECT COUNT(*) FROM races WHERE source_id = 'no_date_race'") as cur:
         (n,) = await cur.fetchone()  # type: ignore[misc]
     assert n == 0
+
+
+@pytest.mark.asyncio
+async def test_two_regattas_same_class_do_not_collide_on_name(storage: Storage) -> None:
+    """Regression for #605: races.name UNIQUE must not block a second regatta
+    that shares a class name (e.g. J/105) with a previously-imported regatta.
+
+    Before the fix, the importer generated name="Race 1 - J/105" for every
+    J/105 class race regardless of regatta, so the second regatta's INSERT
+    tripped the UNIQUE constraint on races.name.
+    """
+    from helmlog.results.base import BoatFinish, RaceData, Regatta, RegattaResults
+
+    def _make(source_id: str, reg_name: str) -> RegattaResults:
+        race = RaceData(
+            source_id=f"{source_id}_R1_J/105",
+            race_number=1,
+            name="Race 1",
+            date="2026-04-18",
+            class_name="J/105",
+            finishes=(BoatFinish(sail_number="105", place=1),),
+        )
+        return RegattaResults(
+            regatta=Regatta(source="clubspot", source_id=source_id, name=reg_name),
+            races=(race,),
+        )
+
+    counts_a = await import_results(storage, _make("regA", "Sound Wednesday"))
+    assert counts_a["races_upserted"] == 1
+
+    # Second regatta, same class, same race_number — must not raise.
+    counts_b = await import_results(storage, _make("regB", "CYC Spring"))
+    assert counts_b["races_upserted"] == 1
+
+    db = storage._conn()
+    async with db.execute(
+        "SELECT COUNT(*) FROM races WHERE source = 'clubspot' AND event = 'J/105'"
+    ) as cur:
+        (n,) = await cur.fetchone()  # type: ignore[misc]
+    assert n == 2

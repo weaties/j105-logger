@@ -81,7 +81,7 @@ async def import_results(
             )
             continue
 
-        race_id = await _upsert_race(db, race_data, regatta_id, reg.source)
+        race_id = await _upsert_race(db, race_data, regatta_id, reg)
 
         ranked = _assign_places(race_data.finishes)
         for place, finish in ranked:
@@ -281,20 +281,34 @@ async def _upsert_regatta(db: aiosqlite.Connection, reg: Regatta, now: str) -> i
     return cur.lastrowid  # type: ignore[return-value]
 
 
+def _imported_race_name(race: RaceData, reg: Regatta) -> str:  # noqa: F821
+    """Build the ``races.name`` value for an imported race.
+
+    The ``races.name`` column carries a global UNIQUE constraint that
+    pre-dates multi-source imports. Clubspot (and other providers) generate
+    the same human race number / class pair across regattas — e.g.
+    ``"Race 1 - J/105"`` — so the regatta's ``source_id`` is appended to
+    keep the name unique per regatta (#605).
+    """
+    base = f"{race.name} - {race.class_name}" if race.class_name else race.name
+    return f"{base} [{reg.source_id}]"
+
+
 async def _upsert_race(
     db: aiosqlite.Connection,
     race: RaceData,  # noqa: F821
     regatta_id: int,
-    source: str,
+    reg: Regatta,  # noqa: F821
 ) -> int:
     from helmlog.results.base import RaceData
 
     assert isinstance(race, RaceData)
     cur = await db.execute(
         "SELECT id, local_session_id FROM races WHERE source = ? AND source_id = ?",
-        (source, race.source_id),
+        (reg.source, race.source_id),
     )
     row = await cur.fetchone()
+    name = _imported_race_name(race, reg)
     if row:
         # Clear old results so the fresh set from the provider can be
         # re-inserted without UNIQUE constraint violations on (race_id, place).
@@ -314,7 +328,7 @@ async def _upsert_race(
             + (", local_session_id = NULL" if date_changed else "")
             + " WHERE id = ?",
             (
-                f"{race.name} - {race.class_name}" if race.class_name else race.name,
+                name,
                 race.race_number,
                 race.date,
                 placeholder_iso,
@@ -345,14 +359,14 @@ async def _upsert_race(
         "session_type, regatta_id, source, source_id) "
         "VALUES (?, ?, ?, ?, ?, ?, 'race', ?, ?, ?)",
         (
-            f"{race.name} - {race.class_name}" if race.class_name else race.name,
+            name,
             race.class_name,
             race.race_number,
             race.date,
             placeholder_iso,
             placeholder_iso,
             regatta_id,
-            source,
+            reg.source,
             race.source_id,
         ),
     )
