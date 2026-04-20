@@ -55,6 +55,7 @@ class ManeuverMetrics:
     turn_angle_deg: float | None
     turn_rate_deg_s: float | None
     distance_loss_m: float | None
+    time_to_head_to_wind_s: float | None
     time_to_recover_s: float | None
     head_to_wind_ts: datetime | None
 
@@ -308,8 +309,6 @@ def enrich_maneuver(
             actual_forward_m = ex_x * ux + ex_y * uy
             distance_loss = ideal_distance_m - actual_forward_m
 
-    time_to_recover = duration  # entry→resettle == maneuver duration
-
     # Head-to-wind timestamp (#613). Search window is [ts, exit_ts or ts+30s]
     # so slow tacks that don't fully recover still get a HTW.
     htw_end = exit_ts or (maneuver_ts + timedelta(seconds=_HTW_POST_WINDOW_S))
@@ -319,6 +318,16 @@ def enrich_maneuver(
         maneuver_ts,
         htw_end,
     )
+
+    # Phase split (#614). Turn phase = entry → HTW; recovery phase = HTW
+    # → exit. Diagnostic value: a slow turn / fast recovery is a helm
+    # problem; a fast turn / slow recovery is a trim problem.
+    time_to_head_to_wind: float | None = None
+    time_to_recover: float | None = None
+    if head_to_wind_ts is not None:
+        time_to_head_to_wind = (head_to_wind_ts - maneuver_ts).total_seconds()
+        if exit_ts is not None:
+            time_to_recover = (exit_ts - head_to_wind_ts).total_seconds()
 
     return ManeuverMetrics(
         entry_ts=maneuver_ts,
@@ -337,6 +346,9 @@ def enrich_maneuver(
         turn_angle_deg=round(turn_angle, 1) if turn_angle is not None else None,
         turn_rate_deg_s=round(turn_rate, 2) if turn_rate is not None else None,
         distance_loss_m=round(distance_loss, 2) if distance_loss is not None else None,
+        time_to_head_to_wind_s=(
+            round(time_to_head_to_wind, 1) if time_to_head_to_wind is not None else None
+        ),
         time_to_recover_s=round(time_to_recover, 1) if time_to_recover is not None else None,
         head_to_wind_ts=head_to_wind_ts,
     )
@@ -395,7 +407,9 @@ _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session wind
 # fields, recomputed ranks, changed ghost/track math). All cached payloads
 # with a different code_version are treated as a cache miss and rebuilt.
 # v3: adds head_to_wind_ts per maneuver (#613).
-ENRICH_CACHE_VERSION = 3
+# v4: adds time_to_head_to_wind_s + redefines time_to_recover_s as the
+#     real recovery phase (HTW → exit), not a duration alias (#614).
+ENRICH_CACHE_VERSION = 4
 
 
 def _bucket_positions_per_second(

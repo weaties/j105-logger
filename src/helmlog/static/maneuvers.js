@@ -268,6 +268,10 @@ function renderResults() {
     const twsTxt = m.entry_tws != null ? m.entry_tws.toFixed(1) : '—';
     const turnTxt = m.turn_angle_deg != null ? Math.abs(m.turn_angle_deg).toFixed(0) + '\u00b0' : '—';
     const durTxt = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
+    const turnPhaseTxt = m.time_to_head_to_wind_s != null
+      ? m.time_to_head_to_wind_s.toFixed(1) + 's' : '—';
+    const recoverPhaseTxt = m.time_to_recover_s != null
+      ? m.time_to_recover_s.toFixed(1) + 's' : '—';
     const typeCls = 'mv-badge-' + (m.type || '');
     // Annotate roundings with the mark type so users can tell weather
     // from leeward at a glance.
@@ -291,6 +295,8 @@ function renderResults() {
       + '<td class="mv-num">' + twsTxt + '</td>'
       + '<td class="mv-num">' + turnTxt + '</td>'
       + '<td class="mv-num">' + durTxt + '</td>'
+      + '<td class="mv-num">' + turnPhaseTxt + '</td>'
+      + '<td class="mv-num">' + recoverPhaseTxt + '</td>'
       + '<td>' + _esc(rank) + '</td>'
       + '<td>' + video + '</td>'
       + '<td>' + tagCell + '</td>'
