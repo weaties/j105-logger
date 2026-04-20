@@ -111,7 +111,7 @@ def verify_channel(service: object, expected_account: str) -> str:
 
     Args:
         service: The YouTube API service from :func:`build_service`.
-        expected_account: Channel handle or title (e.g. ``"corvo105"``).
+        expected_account: Channel handle or title (e.g. ``"my-sailing-channel"``).
 
     Returns:
         The actual channel title returned by the API.

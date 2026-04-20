@@ -185,9 +185,9 @@ def detect_all_capture_devices(*, min_channels: int = 1) -> list[DetectedDevice]
 
     **PortAudio cache refresh:** sounddevice caches the device list at
     library init time and does not pick up USB hot-plug / hot-unplug
-    events during process lifetime. That caused silent data loss on
-    corvopi-tst1 when a second Jieli receiver was plugged in after
-    service startup (#509). On Linux we force a terminate/initialize
+    events during process lifetime. That caused silent data loss on a
+    Pi when a second Jieli receiver was plugged in after service
+    startup (#509). On Linux we force a terminate/initialize
     cycle here so detection always sees the current state. macOS and
     dev machines skip the re-init — it's a no-op on first call and
     risks breaking held streams on second, and hot-plug is not a

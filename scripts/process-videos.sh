@@ -12,7 +12,11 @@
 # Called by com.helmlog.video.plist (launchd) when a volume is mounted,
 # or run manually after inserting the SD card.
 #
-# Environment overrides:
+# Required environment:
+#   PI_API_URL                HelmLog API base URL, e.g. http://<pi-hostname>:3002
+#   YOUTUBE_ACCOUNT           YouTube channel handle (selects ~/.config/helmlog/youtube/<account>.json)
+#
+# Optional environment overrides:
 #   VIDEO_OUTPUT_DIR          base dir for stitched MP4s (default: ~/Insta360 Exports)
 #                              Each camera's videos go in <VIDEO_OUTPUT_DIR>/<camera_label>/
 #   VIDEO_RESOLUTION          output resolution        (default: 3840x1920)
@@ -20,11 +24,8 @@
 #   VIDEO_FLOWSTATE           FlowState stabilization  (default: true)
 #   VIDEO_DIRECTION_LOCK      FlowState direction lock (default: true)
 #   DOCKER_IMAGE              stitcher image           (default: insta360-cli-utils)
-#   PI_API_URL                HelmLog API              (default: http://corvopi:3002)
 #   VIDEO_PRIVACY             YouTube privacy          (default: unlisted)
 #   TIMEZONE                  camera local timezone    (default: America/Los_Angeles)
-#   YOUTUBE_ACCOUNT           YouTube channel handle   (default: corvo105)
-#                              Selects ~/.config/helmlog/youtube/<account>.json
 #   YOUTUBE_CLIENT_SECRETS    OAuth2 client secrets    (default: ~/.helmlog-youtube-client-secrets.json)
 #   PI_SESSION_COOKIE         session cookie for Pi API (enables auto-linking videos to sessions)
 #
@@ -45,10 +46,12 @@ BITRATE="${VIDEO_BITRATE:-}"
 FLOWSTATE="${VIDEO_FLOWSTATE:-true}"
 DIRECTION_LOCK="${VIDEO_DIRECTION_LOCK:-true}"
 IMAGE="${DOCKER_IMAGE:-insta360-cli-utils}"
-PI_API="${PI_API_URL:-http://corvopi:3002}"
+: "${PI_API_URL:?PI_API_URL must be set — e.g. export PI_API_URL=http://<pi-hostname>:3002}"
+: "${YOUTUBE_ACCOUNT:?YOUTUBE_ACCOUNT must be set — selects ~/.config/helmlog/youtube/<account>.json}"
+PI_API="$PI_API_URL"
 PRIVACY="${VIDEO_PRIVACY:-unlisted}"
 TZ_NAME="${TIMEZONE:-America/Los_Angeles}"
-YT_ACCOUNT="${YOUTUBE_ACCOUNT:-corvo105}"
+YT_ACCOUNT="$YOUTUBE_ACCOUNT"
 
 log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
 warn() { echo "[$(date -u +%H:%M:%SZ)] WARNING: $*" >&2; }
@@ -284,7 +287,7 @@ from helmlog.pipeline import PipelineConfig, fetch_sessions_from_pi, process_rec
 
 async def main():
     cfg = PipelineConfig(
-        pi_api_url=os.environ.get('PI_API_URL', 'http://corvopi:3002'),
+        pi_api_url=os.environ.get('PI_API_URL', 'http://localhost:3002'),
         pi_session_cookie=os.environ.get('PI_SESSION_COOKIE', ''),
         privacy=os.environ.get('VIDEO_PRIVACY', 'unlisted'),
         timezone=os.environ.get('TIMEZONE', 'America/Los_Angeles'),

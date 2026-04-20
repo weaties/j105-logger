@@ -66,7 +66,7 @@ bootstrap() {
     fi
 
     if [[ "$(id -u)" -eq 0 ]]; then
-        err "Do not run as root. Run as your normal Pi user (e.g. weaties)."
+        err "Do not run as root. Run as your normal Pi login user (e.g. pi)."
         return 1
     fi
 

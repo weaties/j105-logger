@@ -1619,7 +1619,7 @@ _MIGRATIONS: dict[int, str] = {
         UPDATE races SET end_utc = NULL WHERE end_utc = '';
     """,
     69: """
-        -- #532: Belt-and-suspenders re-run of the v68 backfill. On corvopi-live
+        -- #532: Belt-and-suspenders re-run of the v68 backfill. On a live Pi
         -- the schema_version was observed to advance while the UPDATE payload
         -- never touched any rows (a partial apply of an earlier buggy text
         -- that sqlite rejected mid-migration). Re-running the same UPDATEs
@@ -1932,8 +1932,9 @@ class Storage:
         await self._db.execute("PRAGMA journal_mode = WAL")
         if is_new and os.path.exists(db_path):
             # Python sqlite3 creates files with 0644 regardless of umask.
-            # Add group-write so both the helmlog service (helmlog:weaties)
-            # and the deploy user (weaties) can read/write the DB.
+            # Add group-write so both the helmlog service account and the
+            # SSH login user (which setup.sh places in the helmlog group)
+            # can read/write the DB.
             st = os.stat(db_path)
             os.chmod(db_path, st.st_mode | stat.S_IWGRP)
         self._last_flush = time.monotonic()

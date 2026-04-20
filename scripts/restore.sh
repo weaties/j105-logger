@@ -2,7 +2,7 @@
 # restore.sh — Restore a helmlog snapshot onto a target Pi.
 #
 # Usage:
-#   PI=weaties@corvopi-tst1 ./scripts/restore.sh [SNAPSHOT_DIR]
+#   PI=user@pi-hostname ./scripts/restore.sh [SNAPSHOT_DIR]
 #
 # If SNAPSHOT_DIR is omitted, the most recent snapshot in $BACKUP_DEST is used.
 #
@@ -27,7 +27,7 @@
 
 set -euo pipefail
 
-PI="${PI:?set PI to the target SSH host, e.g. weaties@corvopi-tst1}"
+PI="${PI:?set PI to the target SSH host, e.g. user@pi-hostname}"
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 KEEP_IDENTITY="${KEEP_IDENTITY:-0}"
 INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-~/influx-token.txt}"
@@ -75,7 +75,7 @@ ssh "$PI" "sudo systemctl stop helmlog signalk grafana-server" || \
 # ── 2. SQLite + file data ─────────────────────────────────────────────────────
 log "Step 2/7: Restoring SQLite + file data → ~/helmlog/data/"
 # --omit-dir-times: ~/helmlog/data/ subdirs are owned by the `helmlog` service
-# user (with `weaties` in the group via setgid), so rsync as `weaties` can write
+# user (with the SSH login user in the group via setgid), so rsync can write
 # files inside them but cannot update the directory mtimes.
 # shellcheck disable=SC2086
 rsync -az --delete --omit-dir-times $RSYNC_PROGRESS \

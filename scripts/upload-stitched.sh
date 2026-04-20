@@ -13,10 +13,12 @@
 #   - are still being written (size still growing)
 #   - are already in the upload ledger
 #
-# Environment overrides (same names as process-videos.sh):
-#   PI_API_URL              default http://corvopi-live:3002
+# Required environment (same names as process-videos.sh):
+#   PI_API_URL              HelmLog API base URL, e.g. http://<pi-hostname>:3002
+#   YOUTUBE_ACCOUNT         YouTube channel handle (selects the OAuth token file)
+#
+# Optional environment overrides:
 #   PI_SESSION_COOKIE       required for linking (no link if empty)
-#   YOUTUBE_ACCOUNT         default corvo105
 #   HELMLOG_CAMERA_LABEL    default derived from parent dir name
 #   TIMEZONE                default America/Los_Angeles
 #   VIDEO_PRIVACY           default unlisted
@@ -66,9 +68,11 @@ if [ -z "${HELMLOG_CAMERA_LABEL:-}" ]; then
   fi
 fi
 
-export PI_API_URL="${PI_API_URL:-http://corvopi-live:3002}"
+: "${PI_API_URL:?PI_API_URL must be set — e.g. export PI_API_URL=http://<pi-hostname>:3002}"
+: "${YOUTUBE_ACCOUNT:?YOUTUBE_ACCOUNT must be set — selects ~/.config/helmlog/youtube/<account>.json}"
+export PI_API_URL
+export YOUTUBE_ACCOUNT
 export PI_SESSION_COOKIE="${PI_SESSION_COOKIE:-}"
-export YOUTUBE_ACCOUNT="${YOUTUBE_ACCOUNT:-corvo105}"
 export TIMEZONE="${TIMEZONE:-America/Los_Angeles}"
 export VIDEO_PRIVACY="${VIDEO_PRIVACY:-unlisted}"
 export HELMLOG_IMPORT_DIR="${HELMLOG_IMPORT_DIR:-$HOME/Insta360 Imports}"

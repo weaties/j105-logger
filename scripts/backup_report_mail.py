@@ -10,7 +10,7 @@ Usage:
     backup_report_mail.py --status ok|failed \
         --report /tmp/helmlog-backup-report-<ts>.md \
         --creds ~/.config/helmlog-backup/smtp.env \
-        --to weaties@gmail.com \
+        --to you@example.com \
         [--stderr /tmp/helmlog-backup-stderr-<ts>.log]
 
 Exit codes:

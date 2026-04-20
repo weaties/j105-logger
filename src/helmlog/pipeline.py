@@ -43,7 +43,7 @@ class PipelineConfig:
             :func:`helmlog.youtube.upload_video`.
     """
 
-    pi_api_url: str = "http://corvopi:3002"
+    pi_api_url: str = "http://localhost:3002"
     pi_session_cookie: str = ""
     privacy: str = "unlisted"
     timezone: str = "America/Los_Angeles"

@@ -286,7 +286,7 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
         key="PI_API_URL",
         label="Pi API URL",
         input_type="text",
-        default="http://corvopi:3002",
+        default="http://localhost:3002",
         help_text="Base URL for the HelmLog API (used by the video pipeline).",
     ),
     SettingDef(

@@ -21,7 +21,7 @@ scrape_configs:
     journal:
       max_age: 12h
       labels:
-        host: corvopi
+        host: __HOSTNAME__
     relabel_configs:
       # Keep only our services
       - source_labels: [__journal__systemd_unit]

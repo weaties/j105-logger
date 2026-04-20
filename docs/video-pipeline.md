@@ -197,14 +197,30 @@ won't re-upload anything.
 
 ### Auto-start on login (launchd)
 
-```bash
-# Edit the plist to set your PI_SESSION_COOKIE first:
-$EDITOR launchd/com.helmlog.video-watch.plist
+The plist in `launchd/` is a template — substitute your paths and per-boat
+values, install the result into `~/Library/LaunchAgents/`, then edit
+`PI_SESSION_COOKIE`:
 
-cp launchd/com.helmlog.video-watch.plist ~/Library/LaunchAgents/
+```bash
+mkdir -p ~/Library/Logs/helmlog ~/Library/LaunchAgents
+
+sed \
+  -e "s|__PROJECT_DIR__|$(cd "$(git rev-parse --show-toplevel)" && pwd)|g" \
+  -e "s|__HOME__|$HOME|g" \
+  -e "s|__PI_API_URL__|http://your-pi-hostname:3002|g" \
+  -e "s|__YOUTUBE_ACCOUNT__|your-youtube-channel-handle|g" \
+  -e "s|__TIMEZONE__|America/Los_Angeles|g" \
+  launchd/com.helmlog.video-watch.plist.template \
+  > ~/Library/LaunchAgents/com.helmlog.video-watch.plist
+
+# Fill in PI_SESSION_COOKIE (copy from your browser's devtools after logging
+# into the Pi web UI), then:
+$EDITOR ~/Library/LaunchAgents/com.helmlog.video-watch.plist
 launchctl load ~/Library/LaunchAgents/com.helmlog.video-watch.plist
-mkdir -p ~/Library/Logs/helmlog
 ```
+
+The SD-import agent (`launchd/com.helmlog.sd-import.plist.template`) installs
+the same way — same `sed` command, swap the filename.
 
 The watcher then runs at every login and respawns on crash.
 

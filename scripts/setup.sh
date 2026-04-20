@@ -633,7 +633,7 @@ if [[ -n "${SK_ADMIN_PASS:-}" ]]; then
     unset SK_ADMIN_PASS
 fi
 
-# Restrict .env so only weaties (and root via systemd EnvironmentFile) can read it
+# Restrict .env so only the login user (and root via systemd EnvironmentFile) can read it
 chmod 600 "$ENV_FILE"
 info ".env permissions set to 600."
 
@@ -714,7 +714,7 @@ fi
 # ---------------------------------------------------------------------------
 # k) helmlog systemd service
 #    Runs as the dedicated helmlog account (not as the Pi user).
-#    --no-sync: use the existing venv without trying to modify it (weaties owns it).
+#    --no-sync: use the existing venv without trying to modify it (the login user owns it).
 #    UV_CACHE_DIR: helmlog has no home dir, so point uv cache to /var/cache.
 # ---------------------------------------------------------------------------
 
@@ -765,9 +765,12 @@ sudo apt-get install -y loki promtail
 sudo mkdir -p /etc/loki
 sudo cp "$SCRIPT_DIR/loki/loki-config.yaml" /etc/loki/loki-config.yaml
 
-# Deploy Promtail config
+# Deploy Promtail config — substitute this Pi's hostname into the host label
+# so logs from multiple boats are distinguishable in Loki/Grafana.
 sudo mkdir -p /etc/promtail
-sudo cp "$SCRIPT_DIR/loki/promtail-config.yaml" /etc/promtail/promtail-config.yaml
+sudo sed "s|__HOSTNAME__|$(hostname)|g" \
+  "$SCRIPT_DIR/loki/promtail-config.yaml" \
+  | sudo tee /etc/promtail/promtail-config.yaml > /dev/null
 
 # Ensure loki/promtail groups exist (Debian packages create the users with
 # nogroup as primary group, but don't always create a matching group).
@@ -1029,7 +1032,7 @@ else
 fi
 
 # Remove blanket NOPASSWD from Raspberry Pi OS default sudoers files.
-# weaties still has sudo — just needs to type the password for non-scoped commands.
+# The login user still has sudo — just needs to type the password for non-scoped commands.
 for SUDO_BLANKET in /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/90-cloud-init-users; do
     if sudo test -f "$SUDO_BLANKET" 2>/dev/null; then
         # Replace NOPASSWD: with nothing (preserves the rest of the rule)

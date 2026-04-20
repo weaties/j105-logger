@@ -327,14 +327,16 @@ teardown. Validates Tailscale networking, systemd, nginx, NTP sync, and the
 real federation API end-to-end.
 
 ```bash
-# One-time SSH key setup (per Pi)
+# One-time SSH key setup (per Pi). Replace <ssh-user> with the login
+# account you created on the Pi (not the helmlog service account).
 ssh-keygen -t ed25519 -f ~/.ssh/helmlog-harness
-ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-a>
-ssh-copy-id -i ~/.ssh/helmlog-harness.pub weaties@<pi-b>
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-a>
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-b>
 
 # Full lifecycle (setup → seed → test → teardown)
 uv run python scripts/pi_harness.py \
     --pi-a <pi-a-ip> --pi-b <pi-b-ip> \
+    --ssh-user <ssh-user> \
     --ssh-key ~/.ssh/helmlog-harness
 
 # Modes for iterative testing

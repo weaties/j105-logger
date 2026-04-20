@@ -20,7 +20,12 @@ PROVISION_DEST="/etc/grafana/provisioning/dashboards/helmlog.yaml"
 DATASOURCE_DEST="/etc/grafana/provisioning/datasources/helmlog.yaml"
 
 echo "==> Copying dashboard JSONs"
-sudo rsync --mkpath --chown=root:grafana --chmod=0640 "$DASHBOARD_SRC" "$DASHBOARD_DEST_DIR/sailing-data.json"
+# sailing-data.json templates the logger URL on __HOSTNAME__ so click-through
+# links work on whatever Pi this is deployed to. Substitute before install.
+SAILING_TMP="$(mktemp)"
+sed "s|__HOSTNAME__|$(hostname)|g" "$DASHBOARD_SRC" > "$SAILING_TMP"
+sudo rsync --mkpath --chown=root:grafana --chmod=0640 "$SAILING_TMP" "$DASHBOARD_DEST_DIR/sailing-data.json"
+rm -f "$SAILING_TMP"
 sudo rsync --chown=root:grafana --chmod=0640 "$PI_HEALTH_SRC" "$DASHBOARD_DEST_DIR/pi-health.json"
 sudo rsync --chown=root:grafana --chmod=0640 "$SERVICE_LOGS_SRC" "$DASHBOARD_DEST_DIR/service-logs.json"
 sudo rsync --chown=root:grafana --chmod=0640 "$NET_BW_SRC" "$DASHBOARD_DEST_DIR/network-bandwidth.json"
