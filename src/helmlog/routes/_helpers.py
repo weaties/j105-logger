@@ -113,6 +113,36 @@ def get_web_cache(request: Request) -> WebCache | None:
 _CACHE_CONTROL = "private, max-age=0, must-revalidate"
 
 
+async def t1_cached_json_response(
+    request: Request,
+    *,
+    cache_key: str,
+    ttl_seconds: float,
+    compute: Callable[[], Awaitable[Any]],
+) -> Response:
+    """T1 (in-process dict + TTL) caching wrapper for JSON endpoints (#594/#608).
+
+    Unlike :func:`cached_json_response`, there's no ETag negotiation — T1 is
+    process-scoped and typical payloads are thin enough that a full-body
+    round-trip is acceptable. Used for list endpoints (the session list)
+    where the key space is large (many filter combinations) and correctness
+    beyond ``ttl_seconds`` is handled by explicit invalidation from the
+    race-mutation hook.
+
+    Cache failures degrade to un-cached behaviour — the request never fails
+    because of a cache problem.
+    """
+    cache = get_web_cache(request)
+    if cache is not None:
+        hit = cache.t1_get(cache_key)
+        if hit is not None:
+            return JSONResponse(hit)
+    payload = await compute()
+    if cache is not None:
+        cache.t1_put(cache_key, payload, ttl_seconds=ttl_seconds)
+    return JSONResponse(payload)
+
+
 async def cached_json_response(
     request: Request,
     *,

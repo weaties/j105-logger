@@ -8,7 +8,14 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 from helmlog.auth import generate_token, invite_expires_at, require_auth
-from helmlog.routes._helpers import audit, get_storage, limiter, templates, tpl_ctx
+from helmlog.routes._helpers import (
+    audit,
+    get_storage,
+    get_web_cache,
+    limiter,
+    templates,
+    tpl_ctx,
+)
 
 router = APIRouter()
 
@@ -516,3 +523,52 @@ async def admin_tags_page(
 ) -> Response:
     get_storage(request)
     return templates.TemplateResponse(request, "admin/tags.html", tpl_ctx(request, "/admin/tags"))
+
+
+# ---------------------------------------------------------------------------
+# Web-cache observability (#594 / #611)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/api/admin/cache/stats", include_in_schema=False)
+async def admin_cache_stats(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> JSONResponse:
+    """Return per-family hit/miss/invalidate counters for the web response
+    cache (EARS Req. 18). Also surfaces cache row counts by tier so we can
+    spot unexpected growth on the test Pi.
+    """
+    cache = get_web_cache(request)
+    if cache is None:
+        return JSONResponse({"families": {}, "t1_entries": 0, "t2_rows": 0})
+
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT COUNT(*) AS n FROM web_cache")
+    t2_row = await cur.fetchone()
+    t2_rows = int(t2_row["n"]) if t2_row else 0
+
+    # Avoid touching protected attrs from the route layer: expose via
+    # small public helpers on WebCache.
+    return JSONResponse(
+        {
+            "families": cache.stats(),
+            "t1_entries": cache.t1_size(),
+            "t2_rows": t2_rows,
+        }
+    )
+
+
+@router.post("/api/admin/cache/stats/reset", status_code=204, include_in_schema=False)
+async def admin_cache_stats_reset(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
+) -> Response:
+    """Zero the per-family counters. Useful when measuring before/after a
+    specific user flow on the test Pi without restarting the service."""
+    cache = get_web_cache(request)
+    if cache is not None:
+        cache.reset_stats()
+    await audit(request, action="cache_stats_reset")
+    return Response(status_code=204)

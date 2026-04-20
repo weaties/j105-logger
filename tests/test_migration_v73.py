@@ -81,16 +81,19 @@ async def test_v73_web_cache_primary_key_is_family_plus_race() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_version_tracks_current_on_fresh_db() -> None:
-    from helmlog.storage import _CURRENT_VERSION, Storage, StorageConfig
+async def test_v73_migration_applied_on_fresh_db() -> None:
+    """Confirm v73 is applied on a fresh DB.
+
+    (Latest-version assertion lives in test_migration_v74.)
+    """
+    from helmlog.storage import Storage, StorageConfig
 
     s = Storage(StorageConfig(db_path=":memory:"))
     await s.connect()
     try:
         assert s._db is not None
-        async with s._db.execute("SELECT MAX(version) FROM schema_version") as cur:
+        async with s._db.execute("SELECT 1 FROM schema_version WHERE version = 73") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == _CURRENT_VERSION
     finally:
         await s.close()

@@ -6,7 +6,7 @@ import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -14,7 +14,16 @@ from loguru import logger
 
 from helmlog.auth import require_auth, require_developer
 from helmlog.current import compute_set_drift
-from helmlog.routes._helpers import audit, cached_json_response, get_storage, limiter
+from helmlog.routes._helpers import (
+    audit,
+    cached_json_response,
+    get_storage,
+    limiter,
+    t1_cached_json_response,
+)
+
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
 
 router = APIRouter()
 
@@ -291,80 +300,90 @@ async def api_session_track(
     storage = get_storage(request)
 
     async def _compute() -> dict[str, Any]:
-        db = storage._conn()
-        cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
-        row = await cur.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="Race not found")
-        start_utc = row["start_utc"]
-        end_utc = row["end_utc"] or start_utc
-
-        # Prefer race_id filter (exact match for synthesized sessions);
-        # fall back to time-range query for real instrument data.
-        rid_cur = await db.execute(
-            "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
-        )
-        rid_row = await rid_cur.fetchone()
-        has_race_id = rid_row["cnt"] > 0 if rid_row else False
-
-        if has_race_id:
-            pos_cur = await db.execute(
-                "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE race_id = ? ORDER BY ts",
-                (session_id,),
-            )
-        else:
-            pos_cur = await db.execute(
-                "SELECT latitude_deg, longitude_deg, ts FROM positions"
-                " WHERE ts >= ? AND ts <= ? ORDER BY ts",
-                (start_utc, end_utc),
-            )
-        positions = await pos_cur.fetchall()
-        if not positions:
-            return {"type": "FeatureCollection", "features": []}
-
-        # Per-second mean averaging. The SK reader currently records every fix
-        # with source_addr=0 even when Signal K is multiplexing two physical
-        # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
-        # Bucketing to 1Hz and averaging within the bucket collapses the
-        # zig-zag into a smooth single line midway between the antennas — what
-        # you'd get from a single GPS anyway. Also gives the frontend a
-        # naturally Vakaros-density polyline so its dash style reads cleanly.
-        buckets: dict[str, list[tuple[float, float]]] = {}
-        bucket_order: list[str] = []
-        for r in positions:
-            ts_raw = r["ts"]
-            if not ts_raw:
-                continue
-            key = str(ts_raw)[:19]  # truncate to whole-second precision
-            if key not in buckets:
-                buckets[key] = []
-                bucket_order.append(key)
-            buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
-
-        coords: list[list[float]] = []
-        timestamps: list[str] = []
-        for key in bucket_order:
-            rows = buckets[key]
-            avg_lat = sum(p[0] for p in rows) / len(rows)
-            avg_lng = sum(p[1] for p in rows) / len(rows)
-            coords.append([avg_lng, avg_lat])
-            timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
-
-        feature = {
-            "type": "Feature",
-            "geometry": {"type": "LineString", "coordinates": coords},
-            "properties": {
-                "session_id": session_id,
-                "points": len(coords),
-                "timestamps": timestamps,
-            },
-        }
-        return {"type": "FeatureCollection", "features": [feature]}
+        return await _compute_session_track(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_track", compute=_compute
     )
+
+
+async def _compute_session_track(storage: Storage, session_id: int) -> dict[str, Any]:
+    """Build the GeoJSON FeatureCollection for a session's GPS track.
+
+    Called by the HTTP endpoint and by the warm-on-complete hook in
+    ``cache.warm_race_cache`` (#611). Raises ``HTTPException(404)`` when
+    the race doesn't exist — the HTTP path surfaces that; the warmer
+    catches and logs it.
+    """
+    db = storage._conn()
+    cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    row = await cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+    start_utc = row["start_utc"]
+    end_utc = row["end_utc"] or start_utc
+
+    # Prefer race_id filter (exact match for synthesized sessions);
+    # fall back to time-range query for real instrument data.
+    rid_cur = await db.execute(
+        "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
+    )
+    rid_row = await rid_cur.fetchone()
+    has_race_id = rid_row["cnt"] > 0 if rid_row else False
+
+    if has_race_id:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions WHERE race_id = ? ORDER BY ts",
+            (session_id,),
+        )
+    else:
+        pos_cur = await db.execute(
+            "SELECT latitude_deg, longitude_deg, ts FROM positions"
+            " WHERE ts >= ? AND ts <= ? ORDER BY ts",
+            (start_utc, end_utc),
+        )
+    positions = await pos_cur.fetchall()
+    if not positions:
+        return {"type": "FeatureCollection", "features": []}
+
+    # Per-second mean averaging. The SK reader currently records every fix
+    # with source_addr=0 even when Signal K is multiplexing two physical
+    # GPS antennas, so the raw rows zig-zag between antennas (~3m apart).
+    # Bucketing to 1Hz and averaging within the bucket collapses the
+    # zig-zag into a smooth single line midway between the antennas — what
+    # you'd get from a single GPS anyway. Also gives the frontend a
+    # naturally Vakaros-density polyline so its dash style reads cleanly.
+    buckets: dict[str, list[tuple[float, float]]] = {}
+    bucket_order: list[str] = []
+    for r in positions:
+        ts_raw = r["ts"]
+        if not ts_raw:
+            continue
+        key = str(ts_raw)[:19]  # truncate to whole-second precision
+        if key not in buckets:
+            buckets[key] = []
+            bucket_order.append(key)
+        buckets[key].append((float(r["latitude_deg"]), float(r["longitude_deg"])))
+
+    coords: list[list[float]] = []
+    timestamps: list[str] = []
+    for key in bucket_order:
+        rows = buckets[key]
+        avg_lat = sum(p[0] for p in rows) / len(rows)
+        avg_lng = sum(p[1] for p in rows) / len(rows)
+        coords.append([avg_lng, avg_lat])
+        timestamps.append(key + ("" if key.endswith("Z") or "+" in key else "Z"))
+
+    feature = {
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": coords},
+        "properties": {
+            "session_id": session_id,
+            "points": len(coords),
+            "timestamps": timestamps,
+        },
+    }
+    return {"type": "FeatureCollection", "features": [feature]}
 
 
 @router.get("/api/sessions/{session_id}/summary")
@@ -381,19 +400,20 @@ async def api_session_summary(
     finishers. Designed to be cheap enough for per-row lazy fetch.
     """
 
+    storage = get_storage(request)
+
     async def _compute() -> dict[str, Any]:
-        return await _compute_session_summary(request, session_id)
+        return await _compute_session_summary(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_summary", compute=_compute
     )
 
 
-async def _compute_session_summary(request: Request, session_id: int) -> dict[str, Any]:
+async def _compute_session_summary(storage: Storage, session_id: int) -> dict[str, Any]:
     import math
     from bisect import bisect_left
 
-    storage = get_storage(request)
     db = storage._conn()
 
     cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
@@ -648,14 +668,34 @@ async def api_session_course_overlay(
     )
 
 
+_SESSION_DETAIL_TTL_S: float = 60.0
+
+
 @router.get("/api/sessions/{session_id}/detail")
 async def api_session_detail(
     request: Request,
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Return full metadata for a single session."""
+    # Race-mutation hook invalidates the race-keyed T1 entry directly; the
+    # 60s TTL guards against audio / wind-field / video-link changes that
+    # don't flow through the races-row invalidation hook.
+    cache_key = f"session_detail::race={session_id}"
     storage = get_storage(request)
+
+    async def _compute() -> dict[str, Any]:
+        return await _compute_session_detail(storage, session_id)
+
+    return await t1_cached_json_response(
+        request,
+        cache_key=cache_key,
+        ttl_seconds=_SESSION_DETAIL_TTL_S,
+        compute=_compute,
+    )
+
+
+async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str, Any]:
     db = storage._conn()
     cur = await db.execute(
         "SELECT r.id, r.name, r.event, r.race_num, r.date,"
@@ -733,38 +773,36 @@ async def api_session_detail(
     )
     has_wind_field = await wf_cur.fetchone() is not None
 
-    return JSONResponse(
-        {
-            "id": row["id"],
-            "type": row["session_type"],
-            "name": row["name"],
-            "event": row["event"],
-            "race_num": row["race_num"],
-            "date": row["date"],
-            "start_utc": start_utc.isoformat(),
-            "end_utc": end_utc.isoformat() if end_utc else None,
-            "duration_s": round(duration_s, 1) if duration_s is not None else None,
-            "has_track": bool(row["has_track"]),
-            "first_video_url": row["first_video_url"],
-            "has_audio": arow is not None,
-            "audio_session_id": arow["id"] if arow else None,
-            "audio_start_utc": (
-                datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
-            ),
-            "audio_channels": (
-                len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
-            ),
-            "audio_siblings": audio_siblings,
-            "debrief_audio": debrief_audio,
-            "peer_fingerprint": row["peer_fingerprint"],
-            "has_wind_field": has_wind_field,
-            "shared_name": row["shared_name"],
-            "match_group_id": row["match_group_id"],
-            "match_status": "confirmed"
-            if row["match_confirmed"]
-            else ("candidate" if row["match_group_id"] else "unmatched"),
-        }
-    )
+    return {
+        "id": row["id"],
+        "type": row["session_type"],
+        "name": row["name"],
+        "event": row["event"],
+        "race_num": row["race_num"],
+        "date": row["date"],
+        "start_utc": start_utc.isoformat(),
+        "end_utc": end_utc.isoformat() if end_utc else None,
+        "duration_s": round(duration_s, 1) if duration_s is not None else None,
+        "has_track": bool(row["has_track"]),
+        "first_video_url": row["first_video_url"],
+        "has_audio": arow is not None,
+        "audio_session_id": arow["id"] if arow else None,
+        "audio_start_utc": (
+            datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
+        ),
+        "audio_channels": (
+            len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
+        ),
+        "audio_siblings": audio_siblings,
+        "debrief_audio": debrief_audio,
+        "peer_fingerprint": row["peer_fingerprint"],
+        "has_wind_field": has_wind_field,
+        "shared_name": row["shared_name"],
+        "match_group_id": row["match_group_id"],
+        "match_status": "confirmed"
+        if row["match_confirmed"]
+        else ("candidate" if row["match_group_id"] else "unmatched"),
+    }
 
 
 @router.get("/api/sessions/{session_id}/wind-field")
@@ -782,9 +820,10 @@ async def api_session_wind_field(
     # invalidation works without bespoke hooks per parameter.
     clamped_grid = min(max(grid_size, 5), 40)
     key_family = f"wind_field:grid={clamped_grid}:t={elapsed_s:.3f}"
+    storage = get_storage(request)
 
     async def _compute() -> dict[str, Any]:
-        return await _compute_wind_field(request, session_id, elapsed_s, clamped_grid)
+        return await _compute_wind_field(storage, session_id, elapsed_s, clamped_grid)
 
     return await cached_json_response(
         request, race_id=session_id, key_family=key_family, compute=_compute
@@ -792,9 +831,8 @@ async def api_session_wind_field(
 
 
 async def _compute_wind_field(
-    request: Request, session_id: int, elapsed_s: float, grid_size: int
+    storage: Storage, session_id: int, elapsed_s: float, grid_size: int
 ) -> dict[str, Any]:
-    storage = get_storage(request)
     from helmlog.wind_field import WindField
 
     params = await storage.get_synth_wind_params(session_id)
@@ -1005,16 +1043,17 @@ async def api_session_replay(
     sensor had no reading for that second.
     """
 
+    storage = get_storage(request)
+
     async def _compute() -> dict[str, Any]:
-        return await _compute_session_replay(request, session_id)
+        return await _compute_session_replay(storage, session_id)
 
     return await cached_json_response(
         request, race_id=session_id, key_family="session_replay", compute=_compute
     )
 
 
-async def _compute_session_replay(request: Request, session_id: int) -> dict[str, Any]:
-    storage = get_storage(request)
+async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str, Any]:
     db = storage._conn()
     cur = await db.execute("SELECT id, start_utc, end_utc FROM races WHERE id = ?", (session_id,))
     row = await cur.fetchone()
@@ -2032,6 +2071,9 @@ async def api_detect_maneuvers(
     )
 
 
+_SESSIONS_LIST_TTL_S: float = 60.0
+
+
 @router.get("/api/sessions")
 async def api_sessions(
     request: Request,
@@ -2044,8 +2086,7 @@ async def api_sessions(
     limit: int = 25,
     offset: int = 0,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
+) -> Response:
     if type is not None and type not in ("race", "practice", "debrief", "synthesized"):
         raise HTTPException(
             status_code=422,
@@ -2053,67 +2094,88 @@ async def api_sessions(
         )
     limit = max(1, min(limit, 200))
 
-    # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
-    # any constituent entity (maneuver / bookmark / thread) carries the tags.
-    # We pre-compute the full matching-id set up front, then page through it
-    # after list_sessions applies the other filters, so total is accurate.
-    tag_filter_ids: set[int] | None = None
-    if tags:
-        try:
-            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail="tags must be comma-separated ints"
-            ) from exc
-        if tag_ids:
+    # Build a cache key from the filter tuple. 60s TTL keeps this bounded
+    # even across many filter combinations; race mutations also drop the
+    # whole `sessions_list` family via the invalidation hook in cache.py.
+    import hashlib
+
+    key_payload = f"q={q}|type={type}|from={from_date}|to={to_date}|tags={tags}|mode={tag_mode}|limit={limit}|offset={offset}"
+    key_hash = hashlib.sha256(key_payload.encode()).hexdigest()[:16]
+    cache_key = f"sessions_list:{key_hash}"
+
+    async def _compute() -> dict[str, Any]:
+        storage = get_storage(request)
+        # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
+        # any constituent entity (maneuver / bookmark / thread) carries the
+        # tags. We pre-compute the full matching-id set up front, then page
+        # through it after list_sessions applies the other filters, so total
+        # is accurate.
+        tag_filter_ids: set[int] | None = None
+        if tags:
             try:
-                tag_filter_ids = set(await storage.sessions_matching_tags(tag_ids, mode=tag_mode))
+                tag_ids = [int(s) for s in tags.split(",") if s.strip()]
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if not tag_filter_ids:
-                return JSONResponse({"total": 0, "sessions": []})
+                raise HTTPException(
+                    status_code=400, detail="tags must be comma-separated ints"
+                ) from exc
+            if tag_ids:
+                try:
+                    tag_filter_ids = set(
+                        await storage.sessions_matching_tags(tag_ids, mode=tag_mode)
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if not tag_filter_ids:
+                    return {"total": 0, "sessions": []}
 
-    # Pull the full set of sessions matching non-tag filters so we can
-    # compute available_tags across it. The chip row shows every tag
-    # reachable from the current non-tag filters — without this, selecting
-    # one tag would collapse the chip row down to just that tag and the
-    # user couldn't add a second one for AND/OR.
-    _all_total, all_non_tag_matches = await storage.list_sessions(
-        q=q or None,
-        session_type=type,
-        from_date=from_date,
-        to_date=to_date,
-        limit=10_000,
-        offset=0,
+        # Pull the full set of sessions matching non-tag filters so we can
+        # compute available_tags across it. The chip row shows every tag
+        # reachable from the current non-tag filters — without this,
+        # selecting one tag would collapse the chip row down to just that
+        # tag and the user couldn't add a second one for AND/OR.
+        _all_total, all_non_tag_matches = await storage.list_sessions(
+            q=q or None,
+            session_type=type,
+            from_date=from_date,
+            to_date=to_date,
+            limit=10_000,
+            offset=0,
+        )
+        if tag_filter_ids is not None:
+            filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
+            total = len(filtered)
+            sessions = filtered[offset : offset + limit]
+        else:
+            total = _all_total
+            sessions = all_non_tag_matches[offset : offset + limit]
+
+        # Aggregate available tags across ALL non-tag-filtered sessions so
+        # the chip row doesn't collapse when the user applies a tag filter.
+        all_ids = [s["id"] for s in all_non_tag_matches]
+        all_tag_summary = await storage.list_session_tag_summary(all_ids)
+        available_counts: dict[int, dict[str, Any]] = {}
+        for sid in all_ids:
+            for r in all_tag_summary.get(sid, []):
+                entry = available_counts.setdefault(
+                    r["id"],
+                    {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
+                )
+                entry["count"] += r["count"]
+        available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+        # Per-session tag summary only needed for the visible page.
+        page_tag_summary = await storage.list_session_tag_summary([s["id"] for s in sessions])
+        for s in sessions:
+            s["tag_summary"] = page_tag_summary.get(s["id"], [])
+
+        return {"total": total, "sessions": sessions, "available_tags": available_tags}
+
+    return await t1_cached_json_response(
+        request,
+        cache_key=cache_key,
+        ttl_seconds=_SESSIONS_LIST_TTL_S,
+        compute=_compute,
     )
-    if tag_filter_ids is not None:
-        filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
-        total = len(filtered)
-        sessions = filtered[offset : offset + limit]
-    else:
-        total = _all_total
-        sessions = all_non_tag_matches[offset : offset + limit]
-
-    # Aggregate available tags across ALL non-tag-filtered sessions so the
-    # chip row doesn't collapse when the user applies a tag filter.
-    all_ids = [s["id"] for s in all_non_tag_matches]
-    all_tag_summary = await storage.list_session_tag_summary(all_ids)
-    available_counts: dict[int, dict[str, Any]] = {}
-    for sid in all_ids:
-        for r in all_tag_summary.get(sid, []):
-            entry = available_counts.setdefault(
-                r["id"],
-                {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
-            )
-            entry["count"] += r["count"]
-    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
-
-    # Per-session tag summary only needed for the visible page.
-    page_tag_summary = await storage.list_session_tag_summary([s["id"] for s in sessions])
-    for s in sessions:
-        s["tag_summary"] = page_tag_summary.get(s["id"], [])
-
-    return JSONResponse({"total": total, "sessions": sessions, "available_tags": available_tags})
 
 
 @router.get("/api/grafana/annotations")

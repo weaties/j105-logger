@@ -6,7 +6,7 @@ an async context manager to manage the shared HTTP client lifetime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
 import httpx
@@ -14,6 +14,8 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from datetime import date, datetime
+
+    from helmlog.cache import WebCache
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -103,10 +105,14 @@ def _track_response(component: str, resp: httpx.Response) -> None:
 class ExternalFetcher:
     """Fetches external environmental data from web APIs."""
 
-    def __init__(self) -> None:
+    def __init__(self, cache: WebCache | None = None) -> None:
         self._client: httpx.AsyncClient | None = None
         # NOAA tide station list — fetched once and reused for the session
         self._stations_cache: list[dict[str, Any]] | None = None
+        # Optional T2 cache for successful API responses (#594 / #610).
+        # Weather entries expire after 1h; tides never expire (predictions
+        # for a given date are immutable once published).
+        self._cache: WebCache | None = cache
 
     async def __aenter__(self) -> ExternalFetcher:
         self._client = httpx.AsyncClient(timeout=10.0)
@@ -182,6 +188,28 @@ class ExternalFetcher:
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
 
+        # T2 cache lookup (#610). Predictions for a station+date are
+        # immutable once published, so there's no TTL — cache-forever is
+        # correct. Key by (lat, lon, date) rather than station id because
+        # the nearest-station lookup is the slow-moving input.
+        cache_hash = f"{_reduce_precision(lat)},{_reduce_precision(lon)}:{for_date.isoformat()}"
+        if self._cache is not None:
+            cached = await self._cache.t2_get_global("tides", data_hash=cache_hash)
+            if isinstance(cached, list):
+                try:
+                    return [
+                        TideReading(
+                            timestamp=_datetime.fromisoformat(r["timestamp"]),
+                            height_m=float(r["height_m"]),
+                            type=str(r["type"]),
+                            station_id=str(r["station_id"]),
+                            station_name=str(r["station_name"]),
+                        )
+                        for r in cached
+                    ]
+                except (KeyError, ValueError, TypeError) as exc:
+                    logger.warning("Tide cache decode failed, refetching: {}", exc)
+
         stations = await self._get_tide_stations()
         station = self._nearest_station(stations, lat, lon)
         if station is None:
@@ -253,6 +281,22 @@ class ExternalFetcher:
             station_name,
             station_id,
         )
+
+        if self._cache is not None and readings:
+            blob = [
+                {
+                    "timestamp": r.timestamp.isoformat(),
+                    "height_m": r.height_m,
+                    "type": r.type,
+                    "station_id": r.station_id,
+                    "station_name": r.station_name,
+                }
+                for r in readings
+            ]
+            await self._cache.t2_put_global(
+                "tides", data_hash=cache_hash, value=blob, ttl_seconds=None
+            )
+
         return readings
 
     async def fetch_tides(
@@ -311,6 +355,33 @@ class ExternalFetcher:
         lon = _reduce_precision(lon)
         logger.debug("fetch_weather: lat={:.2f} lon={:.2f} dt={}", lat, lon, dt)
 
+        # T2 cache lookup (#610). The data_hash encodes the location + hour
+        # so the cache naturally invalidates when the hour boundary is
+        # crossed (Open-Meteo's ``current`` block advances hourly). TTL 1h
+        # is a belt-and-suspenders safety net against clock skew or
+        # missed hour rollovers.
+        hour_key = dt.strftime("%Y-%m-%dT%H")
+        cache_hash = f"{lat:.2f},{lon:.2f}:{hour_key}"
+        if self._cache is not None:
+            cached = await self._cache.t2_get_global("weather", data_hash=cache_hash)
+            if cached is not None:
+                try:
+                    from datetime import datetime as _dt
+
+                    ts_iso = cached["timestamp"] if isinstance(cached, dict) else None
+                    if isinstance(cached, dict) and isinstance(ts_iso, str):
+                        return WeatherReading(
+                            timestamp=_dt.fromisoformat(ts_iso),
+                            lat=float(cached["lat"]),
+                            lon=float(cached["lon"]),
+                            wind_speed_kts=float(cached["wind_speed_kts"]),
+                            wind_direction_deg=float(cached["wind_direction_deg"]),
+                            air_temp_c=float(cached["air_temp_c"]),
+                            pressure_hpa=float(cached["pressure_hpa"]),
+                        )
+                except (KeyError, ValueError, TypeError) as exc:
+                    logger.warning("Weather cache decode failed, refetching: {}", exc)
+
         params: dict[str, Any] = {
             "latitude": lat,
             "longitude": lon,
@@ -353,4 +424,12 @@ class ExternalFetcher:
             reading.air_temp_c,
             reading.pressure_hpa,
         )
+
+        if self._cache is not None:
+            blob = asdict(reading)
+            blob["timestamp"] = reading.timestamp.isoformat()
+            await self._cache.t2_put_global(
+                "weather", data_hash=cache_hash, value=blob, ttl_seconds=3600.0
+            )
+
         return reading

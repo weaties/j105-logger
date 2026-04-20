@@ -88,10 +88,17 @@ def create_app(
     app.state.ws_clients = set()  # WebSocket client connections
 
     # -- Web response cache (#594) --
+    # Reuse a pre-bound cache if main.py already set one up (so background
+    # tasks like ExternalFetcher and the web routes share a single cache).
+    # Otherwise create a fresh one here — the test harness path.
     from helmlog.cache import WebCache
 
-    web_cache = WebCache(storage)
-    storage.bind_race_cache(web_cache)
+    existing = getattr(storage, "_race_cache", None)
+    if isinstance(existing, WebCache):
+        web_cache = existing
+    else:
+        web_cache = WebCache(storage)
+        storage.bind_race_cache(web_cache)
     app.state.web_cache = web_cache
 
     from helmlog.races import RaceConfig
