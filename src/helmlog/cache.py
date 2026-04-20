@@ -227,6 +227,18 @@ class WebCache:
         if row["data_hash"] != data_hash:
             self._bump(key_family, "miss")
             return None
+        # v74+ schema: expires_utc is always present (NULL for race-keyed
+        # rows that rely on invalidation hooks rather than TTL).
+        expires = row["expires_utc"]
+        if expires is not None:
+            try:
+                exp_dt = datetime.fromisoformat(str(expires).replace("Z", "+00:00"))
+            except ValueError:
+                exp_dt = None
+            if exp_dt is not None and exp_dt <= datetime.now(UTC):
+                await self._delete_row(key_family, race_id)
+                self._bump(key_family, "miss")
+                return None
         try:
             decoded: object = json.loads(row["blob"])
             self._bump(key_family, "hit")
@@ -249,6 +261,7 @@ class WebCache:
         race_id: int,
         data_hash: str,
         value: object,
+        ttl_seconds: float | None = None,
         _now: datetime | None = None,
     ) -> None:
         try:
@@ -256,12 +269,42 @@ class WebCache:
         except (TypeError, ValueError) as exc:
             logger.warning("web cache encode failed for {}: {}", key_family, exc)
             return
-        created = (_now or datetime.now(UTC)).isoformat()
+        now = _now or datetime.now(UTC)
+        created = now.isoformat()
+        expires_iso: str | None = None
+        if ttl_seconds is not None and ttl_seconds > 0:
+            from datetime import timedelta
+
+            expires_iso = (now + timedelta(seconds=ttl_seconds)).isoformat()
         try:
-            await self._write_row(key_family, race_id, data_hash, blob, created)
+            await self._write_row(key_family, race_id, data_hash, blob, created, expires_iso)
             await self._evict_over_cap()
         except Exception as exc:
             logger.warning("web cache write failed ({}): {}", key_family, exc)
+
+    # ------------------------------------------------------------------
+    # T2 — global (non-race-keyed) entries (#610)
+    # ------------------------------------------------------------------
+    #
+    # External API fetches (weather, tides) aren't tied to any race, so
+    # they share the T2 table via a race_id=0 sentinel. Invalidation of
+    # these entries is TTL-only — the race-mutation hook leaves them
+    # alone (race_id=0 never matches a real race).
+
+    async def t2_get_global(self, key_family: str, *, data_hash: str) -> object | None:
+        return await self.t2_get(key_family, race_id=0, data_hash=data_hash)
+
+    async def t2_put_global(
+        self,
+        key_family: str,
+        *,
+        data_hash: str,
+        value: object,
+        ttl_seconds: float | None,
+    ) -> None:
+        await self.t2_put(
+            key_family, race_id=0, data_hash=data_hash, value=value, ttl_seconds=ttl_seconds
+        )
 
     # ------------------------------------------------------------------
     # Invalidation — called by storage race-mutation paths
@@ -304,7 +347,8 @@ class WebCache:
     async def _read_row(self, key_family: str, race_id: int) -> aiosqlite.Row | None:
         db = self._storage._conn()  # noqa: SLF001
         cur = await db.execute(
-            "SELECT data_hash, blob FROM web_cache WHERE key_family = ? AND race_id = ?",
+            "SELECT data_hash, blob, expires_utc FROM web_cache"
+            " WHERE key_family = ? AND race_id = ?",
             (key_family, race_id),
         )
         return await cur.fetchone()
@@ -316,16 +360,18 @@ class WebCache:
         data_hash: str,
         blob: str,
         created_utc: str,
+        expires_utc: str | None,
     ) -> None:
         db = self._storage._conn()  # noqa: SLF001
         await db.execute(
-            "INSERT INTO web_cache (key_family, race_id, data_hash, blob, created_utc)"
-            " VALUES (?, ?, ?, ?, ?)"
+            "INSERT INTO web_cache (key_family, race_id, data_hash, blob,"
+            " created_utc, expires_utc) VALUES (?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(key_family, race_id) DO UPDATE SET"
             "   data_hash = excluded.data_hash,"
             "   blob = excluded.blob,"
-            "   created_utc = excluded.created_utc",
-            (key_family, race_id, data_hash, blob, created_utc),
+            "   created_utc = excluded.created_utc,"
+            "   expires_utc = excluded.expires_utc",
+            (key_family, race_id, data_hash, blob, created_utc, expires_utc),
         )
         await db.commit()
 
