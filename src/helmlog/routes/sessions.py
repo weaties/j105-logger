@@ -14,7 +14,13 @@ from loguru import logger
 
 from helmlog.auth import require_auth, require_developer
 from helmlog.current import compute_set_drift
-from helmlog.routes._helpers import audit, cached_json_response, get_storage, limiter
+from helmlog.routes._helpers import (
+    audit,
+    cached_json_response,
+    get_storage,
+    limiter,
+    t1_cached_json_response,
+)
 
 router = APIRouter()
 
@@ -648,13 +654,33 @@ async def api_session_course_overlay(
     )
 
 
+_SESSION_DETAIL_TTL_S: float = 60.0
+
+
 @router.get("/api/sessions/{session_id}/detail")
 async def api_session_detail(
     request: Request,
     session_id: int,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
+) -> Response:
     """Return full metadata for a single session."""
+    # Race-mutation hook invalidates the race-keyed T1 entry directly; the
+    # 60s TTL guards against audio / wind-field / video-link changes that
+    # don't flow through the races-row invalidation hook.
+    cache_key = f"session_detail::race={session_id}"
+
+    async def _compute() -> dict[str, Any]:
+        return await _compute_session_detail(request, session_id)
+
+    return await t1_cached_json_response(
+        request,
+        cache_key=cache_key,
+        ttl_seconds=_SESSION_DETAIL_TTL_S,
+        compute=_compute,
+    )
+
+
+async def _compute_session_detail(request: Request, session_id: int) -> dict[str, Any]:
     storage = get_storage(request)
     db = storage._conn()
     cur = await db.execute(
@@ -733,38 +759,36 @@ async def api_session_detail(
     )
     has_wind_field = await wf_cur.fetchone() is not None
 
-    return JSONResponse(
-        {
-            "id": row["id"],
-            "type": row["session_type"],
-            "name": row["name"],
-            "event": row["event"],
-            "race_num": row["race_num"],
-            "date": row["date"],
-            "start_utc": start_utc.isoformat(),
-            "end_utc": end_utc.isoformat() if end_utc else None,
-            "duration_s": round(duration_s, 1) if duration_s is not None else None,
-            "has_track": bool(row["has_track"]),
-            "first_video_url": row["first_video_url"],
-            "has_audio": arow is not None,
-            "audio_session_id": arow["id"] if arow else None,
-            "audio_start_utc": (
-                datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
-            ),
-            "audio_channels": (
-                len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
-            ),
-            "audio_siblings": audio_siblings,
-            "debrief_audio": debrief_audio,
-            "peer_fingerprint": row["peer_fingerprint"],
-            "has_wind_field": has_wind_field,
-            "shared_name": row["shared_name"],
-            "match_group_id": row["match_group_id"],
-            "match_status": "confirmed"
-            if row["match_confirmed"]
-            else ("candidate" if row["match_group_id"] else "unmatched"),
-        }
-    )
+    return {
+        "id": row["id"],
+        "type": row["session_type"],
+        "name": row["name"],
+        "event": row["event"],
+        "race_num": row["race_num"],
+        "date": row["date"],
+        "start_utc": start_utc.isoformat(),
+        "end_utc": end_utc.isoformat() if end_utc else None,
+        "duration_s": round(duration_s, 1) if duration_s is not None else None,
+        "has_track": bool(row["has_track"]),
+        "first_video_url": row["first_video_url"],
+        "has_audio": arow is not None,
+        "audio_session_id": arow["id"] if arow else None,
+        "audio_start_utc": (
+            datetime.fromisoformat(arow["start_utc"]).isoformat() if arow else None
+        ),
+        "audio_channels": (
+            len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
+        ),
+        "audio_siblings": audio_siblings,
+        "debrief_audio": debrief_audio,
+        "peer_fingerprint": row["peer_fingerprint"],
+        "has_wind_field": has_wind_field,
+        "shared_name": row["shared_name"],
+        "match_group_id": row["match_group_id"],
+        "match_status": "confirmed"
+        if row["match_confirmed"]
+        else ("candidate" if row["match_group_id"] else "unmatched"),
+    }
 
 
 @router.get("/api/sessions/{session_id}/wind-field")
@@ -2032,6 +2056,9 @@ async def api_detect_maneuvers(
     )
 
 
+_SESSIONS_LIST_TTL_S: float = 60.0
+
+
 @router.get("/api/sessions")
 async def api_sessions(
     request: Request,
@@ -2044,8 +2071,7 @@ async def api_sessions(
     limit: int = 25,
     offset: int = 0,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
+) -> Response:
     if type is not None and type not in ("race", "practice", "debrief", "synthesized"):
         raise HTTPException(
             status_code=422,
@@ -2053,67 +2079,88 @@ async def api_sessions(
         )
     limit = max(1, min(limit, 200))
 
-    # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
-    # any constituent entity (maneuver / bookmark / thread) carries the tags.
-    # We pre-compute the full matching-id set up front, then page through it
-    # after list_sessions applies the other filters, so total is accurate.
-    tag_filter_ids: set[int] | None = None
-    if tags:
-        try:
-            tag_ids = [int(s) for s in tags.split(",") if s.strip()]
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail="tags must be comma-separated ints"
-            ) from exc
-        if tag_ids:
+    # Build a cache key from the filter tuple. 60s TTL keeps this bounded
+    # even across many filter combinations; race mutations also drop the
+    # whole `sessions_list` family via the invalidation hook in cache.py.
+    import hashlib
+
+    key_payload = f"q={q}|type={type}|from={from_date}|to={to_date}|tags={tags}|mode={tag_mode}|limit={limit}|offset={offset}"
+    key_hash = hashlib.sha256(key_payload.encode()).hexdigest()[:16]
+    cache_key = f"sessions_list:{key_hash}"
+
+    async def _compute() -> dict[str, Any]:
+        storage = get_storage(request)
+        # Tag filter — if tag ids are supplied, narrow to sessions whose row OR
+        # any constituent entity (maneuver / bookmark / thread) carries the
+        # tags. We pre-compute the full matching-id set up front, then page
+        # through it after list_sessions applies the other filters, so total
+        # is accurate.
+        tag_filter_ids: set[int] | None = None
+        if tags:
             try:
-                tag_filter_ids = set(await storage.sessions_matching_tags(tag_ids, mode=tag_mode))
+                tag_ids = [int(s) for s in tags.split(",") if s.strip()]
             except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-            if not tag_filter_ids:
-                return JSONResponse({"total": 0, "sessions": []})
+                raise HTTPException(
+                    status_code=400, detail="tags must be comma-separated ints"
+                ) from exc
+            if tag_ids:
+                try:
+                    tag_filter_ids = set(
+                        await storage.sessions_matching_tags(tag_ids, mode=tag_mode)
+                    )
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                if not tag_filter_ids:
+                    return {"total": 0, "sessions": []}
 
-    # Pull the full set of sessions matching non-tag filters so we can
-    # compute available_tags across it. The chip row shows every tag
-    # reachable from the current non-tag filters — without this, selecting
-    # one tag would collapse the chip row down to just that tag and the
-    # user couldn't add a second one for AND/OR.
-    _all_total, all_non_tag_matches = await storage.list_sessions(
-        q=q or None,
-        session_type=type,
-        from_date=from_date,
-        to_date=to_date,
-        limit=10_000,
-        offset=0,
+        # Pull the full set of sessions matching non-tag filters so we can
+        # compute available_tags across it. The chip row shows every tag
+        # reachable from the current non-tag filters — without this,
+        # selecting one tag would collapse the chip row down to just that
+        # tag and the user couldn't add a second one for AND/OR.
+        _all_total, all_non_tag_matches = await storage.list_sessions(
+            q=q or None,
+            session_type=type,
+            from_date=from_date,
+            to_date=to_date,
+            limit=10_000,
+            offset=0,
+        )
+        if tag_filter_ids is not None:
+            filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
+            total = len(filtered)
+            sessions = filtered[offset : offset + limit]
+        else:
+            total = _all_total
+            sessions = all_non_tag_matches[offset : offset + limit]
+
+        # Aggregate available tags across ALL non-tag-filtered sessions so
+        # the chip row doesn't collapse when the user applies a tag filter.
+        all_ids = [s["id"] for s in all_non_tag_matches]
+        all_tag_summary = await storage.list_session_tag_summary(all_ids)
+        available_counts: dict[int, dict[str, Any]] = {}
+        for sid in all_ids:
+            for r in all_tag_summary.get(sid, []):
+                entry = available_counts.setdefault(
+                    r["id"],
+                    {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
+                )
+                entry["count"] += r["count"]
+        available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
+
+        # Per-session tag summary only needed for the visible page.
+        page_tag_summary = await storage.list_session_tag_summary([s["id"] for s in sessions])
+        for s in sessions:
+            s["tag_summary"] = page_tag_summary.get(s["id"], [])
+
+        return {"total": total, "sessions": sessions, "available_tags": available_tags}
+
+    return await t1_cached_json_response(
+        request,
+        cache_key=cache_key,
+        ttl_seconds=_SESSIONS_LIST_TTL_S,
+        compute=_compute,
     )
-    if tag_filter_ids is not None:
-        filtered = [s for s in all_non_tag_matches if s["id"] in tag_filter_ids]
-        total = len(filtered)
-        sessions = filtered[offset : offset + limit]
-    else:
-        total = _all_total
-        sessions = all_non_tag_matches[offset : offset + limit]
-
-    # Aggregate available tags across ALL non-tag-filtered sessions so the
-    # chip row doesn't collapse when the user applies a tag filter.
-    all_ids = [s["id"] for s in all_non_tag_matches]
-    all_tag_summary = await storage.list_session_tag_summary(all_ids)
-    available_counts: dict[int, dict[str, Any]] = {}
-    for sid in all_ids:
-        for r in all_tag_summary.get(sid, []):
-            entry = available_counts.setdefault(
-                r["id"],
-                {"id": r["id"], "name": r["name"], "color": r["color"], "count": 0},
-            )
-            entry["count"] += r["count"]
-    available_tags = sorted(available_counts.values(), key=lambda t: t["name"])
-
-    # Per-session tag summary only needed for the visible page.
-    page_tag_summary = await storage.list_session_tag_summary([s["id"] for s in sessions])
-    for s in sessions:
-        s["tag_summary"] = page_tag_summary.get(s["id"], [])
-
-    return JSONResponse({"total": total, "sessions": sessions, "available_tags": available_tags})
 
 
 @router.get("/api/grafana/annotations")
