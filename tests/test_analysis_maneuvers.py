@@ -724,6 +724,89 @@ class TestEnrichSessionManeuversWindRefZero:
         assert enriched[0]["type"] == "tack"
 
 
+class TestPhaseSplitMetrics:
+    """#614: duration splits into time_to_head_to_wind_s + time_to_recover_s."""
+
+    def _inputs_with_htw_at_offset(self, htw_offset_s: float) -> dict:
+        """Build enrich_maneuver inputs whose signed TWA crosses zero at a
+        specified offset past maneuver_ts. The HTW sample lands at
+        _BASE_TS + 30s + htw_offset_s."""
+        maneuver_ts = _BASE_TS + timedelta(seconds=30)
+        exit_ts = _BASE_TS + timedelta(seconds=60)
+        # Signed TWA: +20° pre, linear to -20° over the maneuver window,
+        # crossing zero at exactly the requested offset.
+        vals: list[float] = []
+        for i in range(90):
+            rel = i - 30  # 0 at maneuver_ts
+            if rel < 0:
+                vals.append(20.0)
+            elif rel <= 30:
+                # Slope crafted so that value == 0 when rel == htw_offset_s.
+                vals.append(20.0 - 20.0 * (rel / htw_offset_s))
+            else:
+                vals.append(-20.0)
+        signed_twa = _series(vals)
+        return {
+            "maneuver_ts": maneuver_ts,
+            "exit_ts": exit_ts,
+            "hdg": _const(90, 0.0),
+            "bsp": _const(90, 5.0),
+            "twa": _const(90, 20.0),
+            "tws": _const(90, 12.0),
+            "positions": _straight_positions(37.0, -122.0, 0.0, 5.0, 90),
+            "signed_twa": signed_twa,
+            "maneuver_type": "tack",
+        }
+
+    def test_slow_turn_fast_recovery(self) -> None:
+        # HTW at +25s of a 30s duration → turn=25s, recovery=5s.
+        m = enrich_maneuver(**self._inputs_with_htw_at_offset(25.0))
+        assert m.time_to_head_to_wind_s is not None
+        assert m.time_to_recover_s is not None
+        assert abs(m.time_to_head_to_wind_s - 25.0) <= 1.0
+        assert abs(m.time_to_recover_s - 5.0) <= 1.0
+        # Invariant: duration = turn + recovery within rounding.
+        assert m.duration_sec is not None
+        split_total = m.time_to_head_to_wind_s + m.time_to_recover_s
+        assert abs(split_total - m.duration_sec) <= 0.5
+
+    def test_fast_turn_slow_recovery(self) -> None:
+        # HTW at +5s of a 30s duration → turn=5s, recovery=25s.
+        m = enrich_maneuver(**self._inputs_with_htw_at_offset(5.0))
+        assert m.time_to_head_to_wind_s is not None
+        assert m.time_to_recover_s is not None
+        assert abs(m.time_to_head_to_wind_s - 5.0) <= 1.0
+        assert abs(m.time_to_recover_s - 25.0) <= 1.0
+
+    def test_null_htw_leaves_both_null(self) -> None:
+        # Rounding types get head_to_wind_ts = None; the phase-split fields
+        # must follow suit — never raise, never synthesize a value.
+        inputs = self._inputs_with_htw_at_offset(15.0)
+        inputs["maneuver_type"] = "rounding"
+        m = enrich_maneuver(**inputs)
+        assert m.head_to_wind_ts is None
+        assert m.time_to_head_to_wind_s is None
+        assert m.time_to_recover_s is None
+
+    def test_missing_exit_ts_leaves_recovery_null(self) -> None:
+        # With no exit_ts the recovery phase is undefined, but we can still
+        # compute the turn phase from maneuver_ts → HTW.
+        inputs = self._inputs_with_htw_at_offset(10.0)
+        inputs["exit_ts"] = None
+        m = enrich_maneuver(**inputs)
+        assert m.time_to_head_to_wind_s is not None
+        assert abs(m.time_to_head_to_wind_s - 10.0) <= 1.0
+        assert m.time_to_recover_s is None
+
+    def test_fields_in_to_dict(self) -> None:
+        m = enrich_maneuver(**self._inputs_with_htw_at_offset(15.0))
+        d = m.to_dict()
+        assert "time_to_head_to_wind_s" in d
+        assert "time_to_recover_s" in d
+        assert isinstance(d["time_to_head_to_wind_s"], float)
+        assert isinstance(d["time_to_recover_s"], float)
+
+
 class TestHeadToWindPersistence:
     """#613: head_to_wind_ts is persisted to the maneuvers table and cached payload."""
 
