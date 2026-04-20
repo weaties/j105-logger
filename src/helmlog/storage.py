@@ -199,7 +199,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 73
+_CURRENT_VERSION: int = 74
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1731,6 +1731,14 @@ _MIGRATIONS: dict[int, str] = {
         );
         CREATE INDEX IF NOT EXISTS idx_web_cache_race ON web_cache(race_id);
         CREATE INDEX IF NOT EXISTS idx_web_cache_created ON web_cache(created_utc);
+    """,
+    74: """
+        -- #610: TTL support for non-race-keyed T2 entries (external API
+        -- fetches). Existing race-keyed rows leave expires_utc NULL and
+        -- rely on the race-mutation invalidation hook as before. Global
+        -- entries use race_id=0 as a sentinel (no race ever has id 0).
+        ALTER TABLE web_cache ADD COLUMN expires_utc TEXT;
+        CREATE INDEX IF NOT EXISTS idx_web_cache_expires ON web_cache(expires_utc);
     """,
 }
 

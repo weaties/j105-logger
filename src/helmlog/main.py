@@ -436,7 +436,15 @@ async def _run() -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    async with ExternalFetcher() as fetcher:
+    # Web response cache (#594). Created here so the ExternalFetcher and
+    # the web app share a single cache instance; web.py reuses the bound
+    # cache rather than creating its own.
+    from helmlog.cache import WebCache
+
+    web_cache = WebCache(storage)
+    storage.bind_race_cache(web_cache)
+
+    async with ExternalFetcher(cache=web_cache) as fetcher:
         if external_data_should_fetch():
             weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
             tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
