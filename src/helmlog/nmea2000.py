@@ -2,6 +2,7 @@
 
 Supported PGNs:
     127250 — Vessel Heading
+    127257 — Attitude (heel/trim)
     128259 — Speed Through Water
     128267 — Water Depth
     129025 — Position Rapid Update
@@ -27,6 +28,7 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 
 PGN_VESSEL_HEADING: Final[int] = 127250
+PGN_ATTITUDE: Final[int] = 127257
 PGN_SPEED_THROUGH_WATER: Final[int] = 128259
 PGN_WATER_DEPTH: Final[int] = 128267
 PGN_POSITION_RAPID: Final[int] = 129025
@@ -38,6 +40,7 @@ PGN_RUDDER_ANGLE: Final[int] = 127245
 SUPPORTED_PGNS: Final[frozenset[int]] = frozenset(
     {
         PGN_VESSEL_HEADING,
+        PGN_ATTITUDE,
         PGN_SPEED_THROUGH_WATER,
         PGN_WATER_DEPTH,
         PGN_POSITION_RAPID,
@@ -168,6 +171,17 @@ class RudderRecord:
     rudder_angle_deg: float  # degrees (positive = starboard)
 
 
+@dataclass(frozen=True)
+class AttitudeRecord:
+    """PGN 127257 — Attitude (heel/trim)."""
+
+    pgn: int
+    source_addr: int
+    timestamp: datetime
+    heel_deg: float  # roll, degrees (positive = starboard down)
+    trim_deg: float  # pitch, degrees (positive = bow up)
+
+
 # Union type for all PGN record types
 PGNRecord = (
     HeadingRecord
@@ -178,6 +192,7 @@ PGNRecord = (
     | WindRecord
     | EnvironmentalRecord
     | RudderRecord
+    | AttitudeRecord
 )
 
 # ---------------------------------------------------------------------------

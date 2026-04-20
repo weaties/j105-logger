@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 from helmlog.nmea2000 import (
+    AttitudeRecord,
     COGSOGRecord,
     DepthRecord,
     EnvironmentalRecord,
@@ -147,6 +148,34 @@ class TestPathConversions:
         assert abs(rec.rudder_angle_deg - 10.0) < 0.1
         assert rec.source_addr == SK_SOURCE_ADDR
         assert rec.timestamp == _TS_DT
+
+    def test_attitude_rad_to_deg(self) -> None:
+        buf: dict[str, float] = {}
+        # heel = 15°, trim = -2° (bow down)
+        value = {"roll": math.radians(15.0), "pitch": math.radians(-2.0), "yaw": 0.0}
+        records = process_delta(_delta("navigation.attitude", value), buf)
+        assert len(records) == 1
+        rec = records[0]
+        assert isinstance(rec, AttitudeRecord)
+        assert abs(rec.heel_deg - 15.0) < 1e-6
+        assert abs(rec.trim_deg - -2.0) < 1e-6
+        assert rec.source_addr == SK_SOURCE_ADDR
+        assert rec.timestamp == _TS_DT
+
+    def test_attitude_missing_yaw_ok(self) -> None:
+        buf: dict[str, float] = {}
+        # Some SK sources omit yaw — should still emit a record
+        records = process_delta(_delta("navigation.attitude", {"roll": 0.1, "pitch": 0.05}), buf)
+        assert len(records) == 1
+        assert isinstance(records[0], AttitudeRecord)
+
+    def test_attitude_partial_dropped(self) -> None:
+        buf: dict[str, float] = {}
+        # Missing either roll or pitch → no record (avoid partial writes)
+        records = process_delta(_delta("navigation.attitude", {"roll": 0.1}), buf)
+        assert records == []
+        records = process_delta(_delta("navigation.attitude", {"pitch": 0.1}), buf)
+        assert records == []
 
     def test_true_wind_ref_zero(self) -> None:
         buf: dict[str, float] = {}
