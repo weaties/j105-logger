@@ -1821,6 +1821,23 @@ class Storage:
         except Exception as exc:
             logger.warning("race cache invalidate failed id={}: {}", race_id, exc)
 
+    def _invalidate_sessions_list_cache(self) -> None:
+        """Drop T1 `sessions_list` family — used by tag-mutation paths (#608).
+
+        Tag writes (attach/detach/update/delete/merge) change the chip row
+        and per-session tag summary that the ``/api/sessions`` response
+        carries, but don't flow through the race-mutation path. Calling
+        this keeps the list cache coherent without the cost of touching
+        per-race T2 entries (which are unaffected by tag writes today).
+        """
+        cache = self._race_cache
+        if cache is None:
+            return
+        try:
+            cache.t1_invalidate_family("sessions_list")
+        except Exception as exc:
+            logger.warning("sessions_list cache invalidate failed: {}", exc)
+
     @property
     def session_active(self) -> bool:
         """True when a race or practice session is currently in progress."""
@@ -6168,12 +6185,15 @@ class Storage:
             "VALUES (?, ?, ?, ?, ?)",
             (tag_id, entity_type, entity_id, now, user_id),
         )
-        if cur.rowcount > 0:
+        changed = cur.rowcount > 0
+        if changed:
             await db.execute(
                 "UPDATE tags SET usage_count = usage_count + 1, last_used_at = ? WHERE id = ?",
                 (now, tag_id),
             )
         await db.commit()
+        if changed:
+            self._invalidate_sessions_list_cache()
 
     async def detach_tag(self, entity_type: str, entity_id: int, tag_id: int) -> bool:
         """Remove a tag from an entity. Returns True if a row was removed."""
@@ -6186,13 +6206,16 @@ class Storage:
             "DELETE FROM entity_tags WHERE tag_id = ? AND entity_type = ? AND entity_id = ?",
             (tag_id, entity_type, entity_id),
         )
-        if cur.rowcount > 0:
+        changed = cur.rowcount > 0
+        if changed:
             await db.execute(
                 "UPDATE tags SET usage_count = MAX(0, usage_count - 1) WHERE id = ?",
                 (tag_id,),
             )
         await db.commit()
-        return cur.rowcount > 0
+        if changed:
+            self._invalidate_sessions_list_cache()
+        return changed
 
     async def sessions_matching_tags(self, tag_ids: list[int], mode: str = "and") -> list[int]:
         """Return session ids whose session row OR any constituent entity
@@ -6430,6 +6453,7 @@ class Storage:
         )
         await db.execute("DELETE FROM tags WHERE id = ?", (source_id,))
         await db.commit()
+        self._invalidate_sessions_list_cache()
 
     async def get_or_create_tag(self, name: str, color: str | None = None) -> int:
         """Return the tag id for *name*, creating it if it doesn't exist."""
@@ -6470,7 +6494,10 @@ class Storage:
             params,  # noqa: S608
         )
         await db.commit()
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+        if changed:
+            self._invalidate_sessions_list_cache()
+        return changed
 
     async def delete_tag(self, tag_id: int) -> bool:
         """Delete a tag. entity_tags.tag_id has ON DELETE CASCADE, so any
@@ -6481,7 +6508,10 @@ class Storage:
         db = self._conn()
         cur = await db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
         await db.commit()
-        return cur.rowcount > 0
+        changed = cur.rowcount > 0
+        if changed:
+            self._invalidate_sessions_list_cache()
+        return changed
 
     # ------------------------------------------------------------------
     # Bookmarks (#477 / #588 slice 1)

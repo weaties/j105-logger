@@ -38,6 +38,8 @@ class RaceCache(Protocol):
 
     async def invalidate(self, race_id: int) -> None: ...
 
+    def t1_invalidate_family(self, family: str) -> None: ...
+
 
 def compute_race_data_hash(
     *,
@@ -217,6 +219,10 @@ class WebCache:
         suffix = f"::race={race_id}"
         for key in [k for k in self._t1 if k.endswith(suffix)]:
             self._t1.pop(key, None)
+        # T1 — drop list-shaped families whose contents depend on the set of
+        # races (not on any single race_id). Any race insert/update/delete
+        # changes /api/sessions output, so its list-family entries must go.
+        self.t1_invalidate_family("sessions_list")
         # T2 — drop every row for this race
         try:
             db = self._storage._conn()  # noqa: SLF001
