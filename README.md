@@ -952,6 +952,11 @@ uv run ruff check --fix . && uv run ruff format .
 
 This covers everything from a blank SD card to a fully running stack.
 
+> **New owner, new boat?** Read [`docs/bootstrap-new-pi.md`](docs/bootstrap-new-pi.md)
+> first — it covers prerequisites, decisions (fork vs. upstream, hostname,
+> accounts), verification, and first-boot troubleshooting around the
+> mechanical steps below.
+
 ### 1. Flash the OS
 
 Download and install **[Raspberry Pi Imager](https://www.raspberrypi.com/software/)**.
