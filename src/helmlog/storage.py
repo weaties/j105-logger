@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from helmlog.audio import AudioSession
+    from helmlog.cache import RaceCache
     from helmlog.external import TideReading, WeatherReading
     from helmlog.races import Race
     from helmlog.vakaros import VakarosSession
@@ -198,7 +199,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 72
+_CURRENT_VERSION: int = 73
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1712,6 +1713,25 @@ _MIGRATIONS: dict[int, str] = {
         DROP TABLE session_tags;
         DROP TABLE note_tags;
     """,
+    73: """
+        -- #594: web response cache. Content-addressed by (key_family, race_id)
+        -- with a data_hash derived from the race row. The storage layer
+        -- notifies the cache on any race mutation so entries invalidate
+        -- in-transaction.
+        -- No FK to races(id): the cache is best-effort, and the storage
+        -- invalidation hook drops entries in-transaction on race mutations.
+        -- Orphans from external DELETEs are harmless and swept via cap eviction.
+        CREATE TABLE IF NOT EXISTS web_cache (
+            key_family  TEXT NOT NULL,
+            race_id     INTEGER NOT NULL,
+            data_hash   TEXT NOT NULL,
+            blob        TEXT NOT NULL,
+            created_utc TEXT NOT NULL,
+            PRIMARY KEY (key_family, race_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_web_cache_race ON web_cache(race_id);
+        CREATE INDEX IF NOT EXISTS idx_web_cache_created ON web_cache(created_utc);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -1775,6 +1795,31 @@ class Storage:
         self._live_tw_angle_raw: float | None = None
         self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
         self._last_rudder_write: float = 0.0
+        # Web response cache (#594). Optional; web.py binds a WebCache
+        # instance after Storage is connected so any race mutation flows
+        # through cache.invalidate(race_id) in-transaction.
+        self._race_cache: RaceCache | None = None
+
+    # ------------------------------------------------------------------
+    # Race-cache hook (#594)
+    # ------------------------------------------------------------------
+
+    def bind_race_cache(self, cache: RaceCache | None) -> None:
+        """Register a cache object with an async ``invalidate(race_id)`` method.
+
+        The cache is best-effort — exceptions raised by ``invalidate`` are
+        logged and swallowed so cache failures cannot fail a write.
+        """
+        self._race_cache = cache
+
+    async def _invalidate_race_cache(self, race_id: int) -> None:
+        cache = self._race_cache
+        if cache is None:
+            return
+        try:
+            await cache.invalidate(race_id)
+        except Exception as exc:
+            logger.warning("race cache invalidate failed id={}: {}", race_id, exc)
 
     @property
     def session_active(self) -> bool:
@@ -2960,6 +3005,7 @@ class Storage:
         slug = await self._allocate_slug(base, exclude_race_id=cur.lastrowid)
         await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, cur.lastrowid))
         await db.commit()
+        await self._invalidate_race_cache(cur.lastrowid)
         logger.info("Race started: {} (id={}) type={}", name, cur.lastrowid, session_type)
         self._session_active = True
         return _Race(
@@ -2982,6 +3028,7 @@ class Storage:
             (end_utc.isoformat(), race_id),
         )
         await db.commit()
+        await self._invalidate_race_cache(race_id)
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
@@ -3076,6 +3123,7 @@ class Storage:
             retired = old_slug
 
         await db.commit()
+        await self._invalidate_race_cache(race_id)
         logger.info(
             "Race {} renamed: {!r} → {!r} (slug {!r} → {!r})",
             race_id,
@@ -3226,6 +3274,7 @@ class Storage:
         slug = await self._allocate_slug(base, exclude_race_id=race_id)
         await db.execute("UPDATE races SET slug = ? WHERE id = ?", (slug, race_id))
         await db.commit()
+        await self._invalidate_race_cache(race_id)
         logger.info("Imported race {} (source={}, source_id={})", race_id, source, source_id)
         return race_id
 
@@ -6884,6 +6933,7 @@ class Storage:
 
         await db.execute("DELETE FROM races WHERE id = ?", (session_id,))
         await db.commit()
+        await self._invalidate_race_cache(session_id)
         logger.info("Session {} deleted (cascade + {} files)", session_id, len(files))
         return files
 

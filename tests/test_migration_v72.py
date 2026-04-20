@@ -161,16 +161,19 @@ async def test_v72_leaves_untagged_tag_with_usage_zero() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_72_on_fresh_db() -> None:
+async def test_v72_migration_applied_on_fresh_db() -> None:
+    """Confirm v72 is applied on a fresh DB.
+
+    (Latest-version assertion lives in test_migration_v73.)
+    """
     from helmlog.storage import Storage, StorageConfig
 
     s = Storage(StorageConfig(db_path=":memory:"))
     await s.connect()
     try:
         assert s._db is not None
-        async with s._db.execute("SELECT MAX(version) FROM schema_version") as cur:
+        async with s._db.execute("SELECT 1 FROM schema_version WHERE version = 72") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 72
     finally:
         await s.close()
