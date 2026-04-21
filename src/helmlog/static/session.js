@@ -300,6 +300,39 @@ async function init() {
   loadMatch();
   renderExports();
   renderDangerZone();
+  if (cfg.dataset.live === '1') _startLiveRefresh();
+}
+
+// ---------------------------------------------------------------------------
+// Live refresh — while a race is in progress and this session is served at /
+// (see #635). Reload the track + videos periodically so the map extends as
+// the boat moves and newly-uploaded clips appear. Connects to /ws/live as
+// a presence signal; falls back to polling if the socket is unavailable.
+// ---------------------------------------------------------------------------
+
+const _LIVE_REFRESH_MS = 15000;
+let _liveInterval = null;
+let _liveWs = null;
+let _liveLastRefresh = 0;
+
+async function _liveRefreshOnce() {
+  const now = Date.now();
+  if (now - _liveLastRefresh < _LIVE_REFRESH_MS - 500) return;
+  _liveLastRefresh = now;
+  try {
+    await Promise.all([loadTrack(), loadVideos()]);
+  } catch (e) { /* non-fatal */ }
+}
+
+function _startLiveRefresh() {
+  if (_liveInterval) return;
+  _liveInterval = setInterval(_liveRefreshOnce, _LIVE_REFRESH_MS);
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _liveWs = new WebSocket(`${proto}//${location.host}/ws/live`);
+    _liveWs.onmessage = () => { _liveRefreshOnce(); };
+    _liveWs.onclose = () => { _liveWs = null; };
+  } catch (e) { /* polling covers the fallback */ }
 }
 
 // ---------------------------------------------------------------------------

@@ -398,6 +398,96 @@ async def test_nav_has_hamburger_menu(storage: Storage) -> None:
     assert 'href="/admin/boats"' in html
 
 
+# ---------------------------------------------------------------------------
+# Home routing: / redirects between control, live session, and latest completed
+# session depending on race state. See #635.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_control_renders_control_panel(storage: Storage) -> None:
+    """GET /control always renders the control-panel home template (#635)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/control")
+    assert resp.status_code == 200
+    assert 'id="setup-card"' in resp.text
+    assert "home.js" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_empty_db_falls_back_to_control_panel(storage: Storage) -> None:
+    """GET / with no races still serves the control panel (empty-state fallback, #635)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert 'id="setup-card"' in resp.text
+    assert "home.js" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_with_completed_race_renders_session(storage: Storage) -> None:
+    """GET / with a completed race renders that race's session view (#635)."""
+    start = datetime(2026, 4, 20, 19, 0, tzinfo=UTC)
+    end = datetime(2026, 4, 20, 19, 45, tzinfo=UTC)
+    race = await storage.start_race("Spring", start, "2026-04-20", 1, "spring-1")
+    await storage.end_race(race.id, end)
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    # Session template markers
+    assert "session.js" in resp.text
+    assert f'data-session-id="{race.id}"' in resp.text
+    # Not live — completed
+    assert 'data-live="1"' not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_with_in_progress_race_renders_live_session(storage: Storage) -> None:
+    """GET / with an open race renders the live session view (#635)."""
+    start = datetime(2026, 4, 21, 19, 0, tzinfo=UTC)
+    race = await storage.start_race("Spring", start, "2026-04-21", 2, "spring-2")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert resp.status_code == 200
+    assert "session.js" in resp.text
+    assert f'data-session-id="{race.id}"' in resp.text
+    assert 'data-live="1"' in resp.text
+
+
+@pytest.mark.asyncio
+async def test_root_in_progress_takes_precedence_over_completed(storage: Storage) -> None:
+    """An in-progress race beats the most-recent-completed for / (#635)."""
+    done_start = datetime(2026, 4, 20, 19, 0, tzinfo=UTC)
+    done_end = datetime(2026, 4, 20, 19, 45, tzinfo=UTC)
+    done = await storage.start_race("Spring", done_start, "2026-04-20", 1, "spring-1")
+    await storage.end_race(done.id, done_end)
+
+    open_start = datetime(2026, 4, 21, 19, 0, tzinfo=UTC)
+    open_race = await storage.start_race("Spring", open_start, "2026-04-21", 2, "spring-2")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/")
+    assert f'data-session-id="{open_race.id}"' in resp.text
+    assert 'data-live="1"' in resp.text
+
+
 @pytest.mark.asyncio
 async def test_grafana_annotations_cors_header(storage: Storage) -> None:
     """GET /api/grafana/annotations returns Access-Control-Allow-Origin: *."""

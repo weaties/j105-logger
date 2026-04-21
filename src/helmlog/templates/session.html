@@ -87,6 +87,7 @@
   data-grafana-port="{{ grafana_port }}"
   data-grafana-uid="{{ grafana_uid }}"
   data-user-role="{{ user_role }}"
+  data-live="{{ '1' if live else '' }}"
   style="display:none"></div>
 
 <a href="/history" class="back-link">&larr; History</a>
@@ -116,6 +117,11 @@
     <div style="font-size:.72rem;color:var(--text-secondary);margin-bottom:4px">Tags</div>
     <tag-picker entity-type="session" entity-id="{{ session_id }}"></tag-picker>
   </div>
+</div>
+
+<div id="video-container" class="card" style="display:none">
+  <div id="video-switcher" style="display:flex;gap:6px;margin-bottom:8px"></div>
+  <div id="yt-player" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>
 </div>
 
 <div id="track-container" class="card" style="display:none">
@@ -241,11 +247,6 @@
     <ul id="bookmarks-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"></ul>
     <p id="bookmarks-empty" style="font-size:.78rem;color:var(--text-secondary);margin:0;display:none">No bookmarks on this session yet. Use the &#128278; Bookmark button in the replay controls to add one.</p>
   </div>
-</div>
-
-<div id="video-container" class="card" style="display:none">
-  <div id="video-switcher" style="display:flex;gap:6px;margin-bottom:8px"></div>
-  <div id="yt-player" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>
 </div>
 
 <div id="wind-field-card" class="card" style="display:none">

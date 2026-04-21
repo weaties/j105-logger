@@ -17,6 +17,7 @@
   <button id="nav-hamburger" class="nav-hamburger" aria-label="Toggle navigation" aria-expanded="false" aria-controls="nav-links" onclick="toggleNav()">&#9776;</button>
   <div id="nav-links" class="nav-links">
     <a href="/"{% if active_page == "/" %} class="active"{% endif %}>Home</a>
+    <a href="/control" class="admin-link{% if active_page == "/control" %} active{% endif %}">Control</a>
     <a href="/history"{% if active_page == "/history" %} class="active"{% endif %}>History</a>
     <a href="/maneuvers"{% if active_page == "/maneuvers" %} class="active"{% endif %}>Maneuvers</a>
     <a href="/sails"{% if active_page == "/sails" %} class="active"{% endif %}>Sails</a>

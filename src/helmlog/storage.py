@@ -3556,6 +3556,23 @@ class Storage:
         row = await cur.fetchone()
         return self._row_to_race(row) if row else None
 
+    async def get_latest_completed_race(self) -> Race | None:
+        """Return the race with the most recent ``end_utc``, or None (#635).
+
+        Used by the home page to surface the last finished race when no race
+        is currently in progress. Excludes open races (``end_utc IS NULL``)
+        so the home view never shows a "completed" race that is actually
+        still running — ``get_current_race`` handles that case.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            f"SELECT {self._RACE_COLS}"
+            " FROM races WHERE end_utc IS NOT NULL"
+            " ORDER BY end_utc DESC LIMIT 1"
+        )
+        row = await cur.fetchone()
+        return self._row_to_race(row) if row else None
+
     async def list_races_for_date(self, date_str: str) -> list[Race]:
         """Return all races for a UTC date string, ordered by start_utc ASC."""
         db = self._read_conn()
