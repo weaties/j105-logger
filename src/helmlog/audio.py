@@ -457,6 +457,7 @@ async def capture_start(
     name: str | None,
     race_id: int | None,
     session_type: str,
+    prev_capture_group_id: str | None = None,
 ) -> int:
     """Start an audio capture and persist every resulting session.
 
@@ -464,11 +465,23 @@ async def capture_start(
     ``AudioRecorder`` or a sibling-card ``AudioRecorderGroup``. Returns
     the *primary* session id (ordinal 0) so the caller can keep tracking
     the capture with a single scalar in ``session_state``.
+
+    ``prev_capture_group_id`` is the race's sibling capture group, passed at
+    debrief-start time. If set and the USB identity set we detect now differs
+    from the one the race saw, log a WARNING (#648 C5) and continue with the
+    current topology — debrief is not blocked by the change.
     """
     if isinstance(recorder, AudioRecorderGroup):
         from helmlog.usb_audio import detect_all_capture_devices
 
         devices = detect_all_capture_devices(min_channels=1)
+
+        if prev_capture_group_id is not None:
+            await _warn_if_device_set_changed(
+                storage,
+                prev_capture_group_id=prev_capture_group_id,
+                current_devices=devices,
+            )
         sessions = await recorder.start(config, devices=devices, name=name)
     else:
         sessions = [await recorder.start(config, name=name)]
@@ -528,6 +541,58 @@ async def capture_stop(
     assert completed_single.end_utc is not None
     await storage.update_audio_session_end(primary_session_id, completed_single.end_utc)
     return completed_single
+
+
+async def _warn_if_device_set_changed(
+    storage: Any,  # noqa: ANN401 — Storage
+    *,
+    prev_capture_group_id: str,
+    current_devices: list[Any],  # list[DetectedDevice]
+) -> None:
+    """Compare the USB identity set of a previous capture group to the set of
+    devices detected now. Log a WARNING when they differ (#648 C5).
+
+    Used at debrief-start to surface hot-unplug / re-enumeration between the
+    race and the debrief. Never raises — debrief must not be blocked.
+    """
+    try:
+        prev_siblings = await storage.list_capture_group_siblings(prev_capture_group_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("capture_start: sibling lookup for {} failed: {}", prev_capture_group_id, exc)
+        return
+    if not prev_siblings:
+        return
+
+    prev_identities: set[tuple[int, int, str, str]] = {
+        (
+            int(s.get("vendor_id") or 0),
+            int(s.get("product_id") or 0),
+            s.get("serial") or "",
+            s.get("usb_port_path") or "",
+        )
+        for s in prev_siblings
+    }
+    current_identities: set[tuple[int, int, str, str]] = {
+        (
+            int(getattr(d, "vendor_id", 0) or 0),
+            int(getattr(d, "product_id", 0) or 0),
+            getattr(d, "serial", "") or "",
+            getattr(d, "usb_port_path", "") or "",
+        )
+        for d in current_devices
+    }
+    if prev_identities != current_identities:
+        dropped = prev_identities - current_identities
+        added = current_identities - prev_identities
+        logger.warning(
+            "Debrief USB device set changed since race (#648 C5): "
+            "race_siblings={} detected_now={} dropped={} added={} — "
+            "recording with current topology",
+            len(prev_identities),
+            len(current_identities),
+            sorted(dropped),
+            sorted(added),
+        )
 
 
 # ---------------------------------------------------------------------------

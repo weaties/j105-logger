@@ -2950,6 +2950,23 @@ class Storage:
                 pass
         return res
 
+    async def get_race_primary_audio_session(self, race_id: int) -> dict[str, Any] | None:
+        """Return the race/practice primary audio_session row for a race, if any.
+
+        Used at debrief-start to recover the race's ``capture_group_id`` so
+        the debrief can detect whether the USB device set has changed (#648).
+        """
+        cur = await self._read_conn().execute(
+            "SELECT id, channels, channel_map, capture_group_id, capture_ordinal,"
+            " vendor_id, product_id, serial, usb_port_path"
+            " FROM audio_sessions"
+            " WHERE race_id = ? AND session_type IN ('race', 'practice')"
+            " ORDER BY capture_ordinal ASC, id ASC LIMIT 1",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
     async def list_capture_group_siblings(self, capture_group_id: str) -> list[dict[str, Any]]:
         """Return all audio_sessions rows sharing a capture_group_id, in ordinal order.
 
