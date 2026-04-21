@@ -220,6 +220,35 @@ async def test_get_current_race_none_when_all_closed(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_latest_completed_race_none_when_empty(storage: Storage) -> None:
+    """No races in DB → get_latest_completed_race returns None (#635)."""
+    assert await storage.get_latest_completed_race() is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_completed_race_ignores_in_progress(storage: Storage) -> None:
+    """Open races (end_utc IS NULL) must not be returned (#635)."""
+    await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1")
+    assert await storage.get_latest_completed_race() is None
+
+
+@pytest.mark.asyncio
+async def test_get_latest_completed_race_picks_max_end_utc(storage: Storage) -> None:
+    """Returns the race with the most recent end_utc across dates (#635)."""
+    r1 = await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1")
+    await storage.end_race(r1.id, _END1)
+    earlier_date = "2025-08-09"
+    earlier_start = datetime(2025, 8, 9, 13, 45, 0, tzinfo=UTC)
+    earlier_end = datetime(2025, 8, 9, 14, 5, 0, tzinfo=UTC)
+    r0 = await storage.start_race("BallardCup", earlier_start, earlier_date, 1, "20250809-bc-1")
+    await storage.end_race(r0.id, earlier_end)
+
+    latest = await storage.get_latest_completed_race()
+    assert latest is not None
+    assert latest.id == r1.id
+
+
+@pytest.mark.asyncio
 async def test_list_races_for_date_ordered(storage: Storage) -> None:
     await storage.start_race("BallardCup", _START1, _DATE, 1, "20250810-BallardCup-1")
     await storage.start_race("BallardCup", _START2, _DATE, 2, "20250810-BallardCup-2")

@@ -23,20 +23,47 @@ async def healthz(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
-@router.get("/", response_class=HTMLResponse, include_in_schema=False)
-async def index(request: Request) -> Response:
-    get_storage(request)
+def _render_control_panel(request: Request, active_page: str) -> Response:
+    """Render the home.html control panel (#635).
+
+    Shared by ``/control`` and by ``/`` when no races exist yet.
+    """
     return templates.TemplateResponse(
         request,
         "home.html",
         tpl_ctx(
             request,
-            "/",
+            active_page,
             grafana_port=request.app.state.race_config.grafana_port,
             grafana_uid=request.app.state.race_config.grafana_uid,
             sk_port=request.app.state.race_config.sk_port,
         ),
     )
+
+
+@router.get("/control", response_class=HTMLResponse, include_in_schema=False)
+async def control_page(request: Request) -> Response:
+    """Control panel — start/stop races, crew, sails, instruments (#635)."""
+    get_storage(request)
+    return _render_control_panel(request, "/control")
+
+
+@router.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def index(request: Request) -> Response:
+    """Home page — latest-race session view, or control panel fallback (#635).
+
+    * In-progress race (``end_utc IS NULL``) → live session view.
+    * Else most recent completed race (max ``end_utc``) → session view.
+    * Else (empty DB) → control panel, so a fresh install is usable.
+    """
+    storage = get_storage(request)
+    current = await storage.get_current_race()
+    if current is not None:
+        return await _render_session_page(request, current, live=True, active_page="/")
+    latest = await storage.get_latest_completed_race()
+    if latest is not None:
+        return await _render_session_page(request, latest, live=False, active_page="/")
+    return _render_control_panel(request, "/")
 
 
 @router.get("/history", response_class=HTMLResponse, include_in_schema=False)
@@ -63,8 +90,17 @@ def _canonical_session_url(race_id: int, slug: str | None) -> str:
 async def _render_session_page(
     request: Request,
     race: Any,  # helmlog.races.Race  # noqa: ANN401
+    *,
+    live: bool = False,
+    active_page: str = "/history",
 ) -> Response:
-    """Render the session detail template for a resolved race (#449)."""
+    """Render the session detail template for a resolved race (#449, #635).
+
+    ``live=True`` marks the page as live-updating (used when the home page
+    surfaces a race whose ``end_utc`` is still NULL). ``active_page``
+    controls the nav highlight — ``/`` when the session is served as the
+    home page, ``/history`` when it's the normal session detail URL.
+    """
     from datetime import UTC, datetime, timedelta
 
     storage = get_storage(request)
@@ -88,7 +124,7 @@ async def _render_session_page(
         "session.html",
         tpl_ctx(
             request,
-            "/history",
+            active_page,
             session_id=race.id,
             session_name=race.name,
             session_slug=race.slug,
@@ -97,6 +133,7 @@ async def _render_session_page(
             grafana_port=request.app.state.race_config.grafana_port,
             grafana_uid=request.app.state.race_config.grafana_uid,
             user_role=user_role,
+            live=live,
         ),
     )
 
@@ -208,6 +245,7 @@ async def _render_debrief_page(request: Request, debrief: dict[str, Any]) -> Res
             grafana_port=request.app.state.race_config.grafana_port,
             grafana_uid=request.app.state.race_config.grafana_uid,
             user_role=user_role,
+            live=False,
         ),
     )
 
