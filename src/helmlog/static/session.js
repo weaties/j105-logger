@@ -4209,6 +4209,9 @@ let _maneuverShowSK = true; // toggle SK-derived tracks in the overlay
 let _maneuverShowVakaros = false; // toggle Vakaros tracks in the overlay
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
 let _maneuverTickInterval = 0; // seconds between track tick marks; 0 = off
+let _maneuverLineChartsOn = false; // toggle for inline BSP/heading-rate/TWA charts (#619)
+let _maneuverLineChartsCtrl = null; // controller returned by mvInitLineCharts
+let _maneuverLineChartsFetchKey = ''; // signature of ids last fetched
 
 function _parseUtc(iso) {
   if (!iso) return null;
@@ -4344,6 +4347,62 @@ function setManeuverFilter(f) {
 function toggleManeuverOverlay() {
   _maneuverOverlay = !_maneuverOverlay;
   renderManeuverCard();
+}
+
+function toggleManeuverLineCharts() {
+  _maneuverLineChartsOn = !_maneuverLineChartsOn;
+  if (!_maneuverLineChartsOn && _maneuverLineChartsCtrl) {
+    _maneuverLineChartsCtrl.destroy();
+    _maneuverLineChartsCtrl = null;
+    _maneuverLineChartsFetchKey = '';
+  }
+  renderManeuverCard();
+}
+
+async function _paintSessionLineCharts() {
+  // Uses the same /api/maneuvers/overlay endpoint as /maneuvers/overlay
+  // so single-session and cross-session line charts share one data path.
+  const host = document.getElementById('mv-line-charts-host');
+  if (!host) return;
+  const ids = _maneuvers
+    .filter(m => typeof m.id === 'number' && (m.type === 'tack' || m.type === 'gybe'))
+    .map(m => SESSION_ID + ':' + m.id);
+  if (!ids.length) {
+    host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+      + 'No tacks or gybes in this session — line charts require a head-to-wind alignment point.'
+      + '</div>';
+    return;
+  }
+  const key = ids.join(',');
+  if (key === _maneuverLineChartsFetchKey && _maneuverLineChartsCtrl) {
+    // Same selection, same controller — no-op. Hover sync still works
+    // because the controller reads from its own state.
+    return;
+  }
+  try {
+    const r = await fetch('/api/maneuvers/overlay?ids=' + encodeURIComponent(key));
+    if (!r.ok) {
+      host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+        + 'Failed to load line charts (HTTP ' + r.status + ')</div>';
+      return;
+    }
+    const payload = await r.json();
+    if (!payload.maneuvers || !payload.maneuvers.length) {
+      host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+        + 'No maneuvers with a head-to-wind timestamp yet — try again after backfill completes.'
+        + '</div>';
+      return;
+    }
+    if (_maneuverLineChartsCtrl) _maneuverLineChartsCtrl.destroy();
+    _maneuverLineChartsCtrl = window.mvInitLineCharts(host, payload, {
+      mode: 'auto',
+      panelHeight: 130,
+    });
+    _maneuverLineChartsFetchKey = key;
+  } catch (e) {
+    host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+      + 'Failed to load line charts: ' + e + '</div>';
+  }
 }
 
 function toggleManeuverShowVakaros() {
@@ -4904,6 +4963,11 @@ function renderManeuverCard() {
         + (s === '0' ? 'off' : s + 's') + '</option>').join('')
     + '</select></label>'
     + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
+    + '<button style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+      + (_maneuverLineChartsOn ? 'var(--accent)' : 'transparent') + ';color:'
+      + (_maneuverLineChartsOn ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px"'
+      + ' onclick="toggleManeuverLineCharts()"'
+      + ' title="BSP / heading rate / TWA stacked line charts aligned at head-to-wind">line charts</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
@@ -5016,6 +5080,14 @@ function renderManeuverCard() {
     ? '<div style="margin-bottom:8px">' + _renderOverlaySvg() + '</div>'
     : '';
 
+  // Inline line charts (#619 parity) — three stacked panels aligned at
+  // head-to-wind. Host div is always present; the fetch happens on a
+  // separate tick so the table below renders immediately. Controlled
+  // by _maneuverLineChartsOn so the user can hide it when not needed.
+  const lineChartsBlock = _maneuverLineChartsOn
+    ? '<div id="mv-line-charts-host" style="margin-bottom:8px"></div>'
+    : '';
+
   const selCount = _maneuverSelected.size;
   const hasVideoInSelected = _maneuvers.some(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && m.youtube_url);
   const compareBtnStyle = 'font-size:.7rem;padding:3px 10px;border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer;border-radius:4px;margin-left:auto;font-weight:600' + (hasVideoInSelected ? '' : ';opacity:.4;pointer-events:none');
@@ -5028,7 +5100,7 @@ function renderManeuverCard() {
     + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
-  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + selectBar
+  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + lineChartsBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
     + '<th title="Include in overlay"></th>'
     + _manHeader('Type', 'type')
@@ -5042,6 +5114,10 @@ function renderManeuverCard() {
     + '<th>TWS</th><th></th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div id="maneuver-detail" style="margin-top:8px"></div>';
+
+  // Paint the line charts after the host div lands in the DOM. Cheap —
+  // cache-hit on the overlay endpoint when the id-list is unchanged.
+  if (_maneuverLineChartsOn) _paintSessionLineCharts();
 }
 
 function _renderManeuverDetail(m) {

@@ -113,6 +113,28 @@ class TestBuildManeuversOverlay:
             assert len(m["bsp"]) == 51
             assert len(m["heading_rate_deg_s"]) == 51
             assert len(m["twa"]) == 51
+            # Full-payload parity with the session page: every key
+            # the UI reads to render the wind-up track SVG or the
+            # maneuver table must be present on each maneuver.
+            for field in (
+                "track",
+                "ghost_m",
+                "twd_deg",
+                "ts",
+                "duration_sec",
+                "turn_angle_deg",
+                "distance_loss_m",
+                "loss_kts",
+                "entry_bsp",
+                "exit_bsp",
+                "min_bsp",
+                "entry_twa",
+                "entry_tws",
+                "time_to_head_to_wind_s",
+                "time_to_recover_s",
+                "youtube_url",
+            ):
+                assert field in m, f"missing {field!r} in maneuver payload"
         assert payload["excluded_ids"] == []
 
     @pytest.mark.asyncio

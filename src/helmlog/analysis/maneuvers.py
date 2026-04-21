@@ -1111,6 +1111,11 @@ async def build_maneuvers_overlay(storage: Storage, pairs: list[tuple[int, int]]
                 excluded.append(key)
                 continue
 
+            # One payload feeds three views on the overlay page (wind-up
+            # track SVG, line charts, maneuver table) and the line-chart
+            # panel on the session page. Fields are named explicitly
+            # rather than splatting the enriched dict so the API
+            # contract is discoverable from one place.
             out.append(
                 {
                     "session_id": session_id,
@@ -1121,11 +1126,40 @@ async def build_maneuvers_overlay(storage: Storage, pairs: list[tuple[int, int]]
                     "rank": m.get("rank"),
                     "loss_percentile": m.get("loss_percentile"),
                     "head_to_wind_ts": m.get("head_to_wind_ts"),
-                    "entry_twa": m.get("entry_twa"),
-                    "entry_tws": m.get("entry_tws"),
+                    # Aligned time-series for the line charts.
                     "bsp": _align_series_at_htw(bsp_by_sec, htw_ts),
                     "heading_rate_deg_s": _heading_rate_series(hdg_by_sec, htw_ts),
                     "twa": _align_series_at_htw(twa_by_sec, htw_ts),
+                    # Wind-up track + ghost reference for the overlay SVG.
+                    "track": m.get("track"),
+                    "track_vakaros": m.get("track_vakaros"),
+                    "ghost_m": m.get("ghost_m"),
+                    "twd_deg": m.get("twd_deg"),
+                    # Metrics the table columns read.
+                    "ts": m.get("ts"),
+                    "end_ts": m.get("end_ts"),
+                    "duration_sec": m.get("duration_sec"),
+                    "turn_angle_deg": m.get("turn_angle_deg"),
+                    "turn_rate_deg_s": m.get("turn_rate_deg_s"),
+                    "distance_loss_m": m.get("distance_loss_m"),
+                    "loss_kts": m.get("loss_kts"),
+                    "entry_bsp": m.get("entry_bsp"),
+                    "exit_bsp": m.get("exit_bsp"),
+                    "min_bsp": m.get("min_bsp"),
+                    "entry_twa": m.get("entry_twa"),
+                    "exit_twa": m.get("exit_twa"),
+                    "entry_tws": m.get("entry_tws"),
+                    "exit_tws": m.get("exit_tws"),
+                    "entry_sog": m.get("entry_sog"),
+                    "time_to_head_to_wind_s": m.get("time_to_head_to_wind_s"),
+                    "time_to_recover_s": m.get("time_to_recover_s"),
+                    # Row-level extras used by the table (video link,
+                    # lat/lon map marker, rounding mark classifier).
+                    "youtube_url": m.get("youtube_url"),
+                    "video_offset_s": m.get("video_offset_s"),
+                    "lat": m.get("lat"),
+                    "lon": m.get("lon"),
+                    "mark": m.get("mark"),
                 }
             )
 
