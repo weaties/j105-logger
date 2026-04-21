@@ -7236,6 +7236,8 @@ async function _loadReplayData() {
       awa: s.awa,
       hdg: s.hdg,
       cog: s.cog,
+      heel: s.heel,
+      trim: s.trim,
       set: s.set,
       drift: s.drift,
     }));
