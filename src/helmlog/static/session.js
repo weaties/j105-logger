@@ -7366,7 +7366,7 @@ function _stepEvent(direction) {
 // matches the compare page exactly.
 // ---------------------------------------------------------------------------
 
-const _VIDEO_OVERLAY_PAD_S = 5; // seconds before/after each maneuver window
+const _VIDEO_OVERLAY_PAD_S = 10; // seconds before/after each maneuver window
 const _VIDEO_OVERLAY_LS_GAUGES = 'helmlog.videoOverlay.gauges';
 const _VIDEO_OVERLAY_LS_TRACK = 'helmlog.videoOverlay.track';
 let _videoGaugesOn = false;
@@ -7722,6 +7722,8 @@ function _ensureManeuverOverlaysMounted(m) {
   const mount = _overlayMount();
   if (!mount) return;
   const mid = m.id != null ? String(m.id) : String(m.ts);
+  // Cancel any pending fade-out unmount — we're back inside a window.
+  if (_pendingUnmountTimer) { clearTimeout(_pendingUnmountTimer); _pendingUnmountTimer = null; _pendingUnmountId = null; }
   if (mid !== _videoMountedManId) {
     // Active maneuver changed — drop the old per-maneuver SVGs so the new
     // ones render with their own geometry.
@@ -7739,7 +7741,37 @@ function _ensureManeuverOverlaysMounted(m) {
   }
 }
 
-function _unmountManeuverOverlays() {
+// Fade-out the per-maneuver overlays, then remove the DOM nodes after the
+// CSS transition completes. A snapshot of the currently-mounted maneuver id
+// is captured so that if the playhead re-enters a window before the timer
+// fires, the scheduled removal can detect the swap and skip — we only tear
+// down overlays that still belong to the original maneuver.
+const _VIDEO_OVERLAY_FADE_MS = 1000;
+let _pendingUnmountId = null;
+let _pendingUnmountTimer = null;
+
+function _fadeOutAndUnmountManeuverOverlays() {
+  _hideClass('video-maneuver-overlay');
+  _hideClass('video-recovery-overlay');
+  if (_pendingUnmountTimer) clearTimeout(_pendingUnmountTimer);
+  _pendingUnmountId = _videoMountedManId;
+  _pendingUnmountTimer = setTimeout(() => {
+    _pendingUnmountTimer = null;
+    // If a new maneuver was mounted in the meantime, leave those alone.
+    if (_videoMountedManId !== _pendingUnmountId) return;
+    _removeVideoOverlay('video-maneuver-overlay');
+    _removeVideoOverlay('video-recovery-overlay');
+    _videoMountedManId = null;
+  }, _VIDEO_OVERLAY_FADE_MS);
+}
+
+function _hideClass(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('show');
+}
+
+function _unmountManeuverOverlaysImmediate() {
+  if (_pendingUnmountTimer) { clearTimeout(_pendingUnmountTimer); _pendingUnmountTimer = null; }
   _removeVideoOverlay('video-maneuver-overlay');
   _removeVideoOverlay('video-recovery-overlay');
   _videoMountedManId = null;
@@ -7797,8 +7829,8 @@ function _videoOverlayTick() {
       if (_videoGaugesOn) { rec.classList.add('show'); _updateVideoRecoveryBar(utc, m); }
       else rec.classList.remove('show');
     }
-  } else if (_videoMountedManId !== null) {
-    _unmountManeuverOverlays();
+  } else if (_videoMountedManId !== null && _pendingUnmountTimer === null) {
+    _fadeOutAndUnmountManeuverOverlays();
   }
 }
 
@@ -7807,7 +7839,7 @@ function _restartOverlayTick() {
   if (_videoOverlayTimer) { clearInterval(_videoOverlayTimer); _videoOverlayTimer = null; }
   if (!_videoGaugesOn) _removeVideoOverlay('video-gauge-overlay');
   if (!_videoTrackOn) _removeVideoOverlay('video-course-overlay');
-  if (!_videoGaugesOn && !_videoTrackOn) { _unmountManeuverOverlays(); return; }
+  if (!_videoGaugesOn && !_videoTrackOn) { _unmountManeuverOverlaysImmediate(); return; }
   _videoOverlayTick();
   _videoOverlayTimer = setInterval(_videoOverlayTick, 200);
 }
