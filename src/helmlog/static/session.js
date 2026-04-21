@@ -7349,21 +7349,21 @@ function _stepEvent(direction) {
 }
 
 // ---------------------------------------------------------------------------
-// Video overlays (#639) — gauge + track mini-SVGs painted on top of the
-// player during the 5s-padded window of each detected maneuver. Both
-// toggles default off; state persists in localStorage. Renderers and
-// tick math are ports of compare.js (#570 / #572) so the visuals match.
+// Video overlays (#639) — gauge + session-track mini-SVGs painted on top
+// of the player. Always visible while toggled on (not gated on maneuver
+// windows — the user can read the instruments / see the whole track at
+// any point in the clip). Both toggles default off; state persists in
+// localStorage. Gauge SVG is ported from compare.js (#572).
 // ---------------------------------------------------------------------------
 
-const _VIDEO_OVERLAY_PAD_S = 5;
 const _VIDEO_OVERLAY_LS_GAUGES = 'helmlog.videoOverlay.gauges';
 const _VIDEO_OVERLAY_LS_TRACK = 'helmlog.videoOverlay.track';
 let _videoGaugesOn = false;
 let _videoTrackOn = false;
-// ID (or timestamp string) of the maneuver currently mounted in the DOM —
-// used to skip rebuilding SVGs on every tick when the active maneuver
-// hasn't changed. Null when no maneuver is mounted.
-let _videoOverlayMountedManId = null;
+// Cached projection of _trackData.latLngs → mini-map coords. Rebuilt when
+// the track is re-drawn (lazy; on first track-overlay tick after _trackData
+// becomes available).
+let _videoTrackProjection = null;
 
 function _readOverlayFlag(key) {
   try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
@@ -7396,28 +7396,6 @@ function toggleVideoTrack() {
   _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
   if (!_videoTrackOn) _hideOverlay('video-track-overlay');
   _restartOverlayTick();
-}
-
-function _parseManUtcMs(iso) {
-  if (!iso) return null;
-  let s = String(iso).replace(' ', 'T');
-  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d.getTime();
-}
-
-function _findActiveManeuver(utc) {
-  if (!_maneuvers || !_maneuvers.length || !utc) return null;
-  const t = utc.getTime ? utc.getTime() : +utc;
-  for (const m of _maneuvers) {
-    const startMs = _parseManUtcMs(m.ts);
-    if (startMs == null) continue;
-    const dur = typeof m.duration_sec === 'number' ? m.duration_sec : 0;
-    const winStart = startMs - _VIDEO_OVERLAY_PAD_S * 1000;
-    const winEnd = startMs + dur * 1000 + _VIDEO_OVERLAY_PAD_S * 1000;
-    if (t >= winStart && t <= winEnd) return m;
-  }
-  return null;
 }
 
 function _renderVideoGaugeSvg() {
@@ -7473,34 +7451,50 @@ function _renderVideoGaugeSvg() {
     + '</svg>';
 }
 
-function _renderVideoTrackSvg(m) {
-  const track = m && m.track;
-  if (!track || track.length < 2) return '';
-  const size = 120, pad = 8;
+function _renderVideoTrackSvg() {
+  const proj = _videoTrackProjection || _buildVideoTrackProjection();
+  if (!proj) return '';
+  _videoTrackProjection = proj;
+  const s = proj.size;
+  return '<svg id="video-track-overlay" class="video-overlay" width="' + s + '" height="' + s + '">'
+    + '<rect width="' + s + '" height="' + s + '" rx="6" fill="rgba(0,0,0,.45)"/>'
+    + '<polyline points="' + proj.polyStr + '" fill="none" stroke="#7eb8f7" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle id="video-track-dot" cx="-10" cy="-10" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
+    + '</svg>';
+}
+
+// Build a projection of _trackData.latLngs → mini-map SVG coords using a
+// local-equirectangular approximation (fine at race scale). Cached on
+// _videoTrackProjection so the polyline is built once per session.
+function _buildVideoTrackProjection() {
+  if (!_trackData || !_trackData.latLngs || _trackData.latLngs.length < 2) return null;
+  const size = 140, pad = 8;
+  const latLngs = _trackData.latLngs;
+  const lat0 = latLngs[0][0], lng0 = latLngs[0][1];
+  const cosLat = Math.cos(lat0 * Math.PI / 180);
+  const mPerDeg = 111320;
+  const pts = latLngs.map(ll => ({
+    x: (ll[1] - lng0) * mPerDeg * cosLat,
+    y: (ll[0] - lat0) * mPerDeg,
+  }));
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of track) {
+  for (const p of pts) {
     if (p.x < minX) minX = p.x;
     if (p.x > maxX) maxX = p.x;
     if (p.y < minY) minY = p.y;
     if (p.y > maxY) maxY = p.y;
   }
-  if (!isFinite(minX)) return '';
+  if (!isFinite(minX)) return null;
   const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
-  const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
-  const sx = x => pad + (x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
-  const sy = y => (size - pad) - (y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
-  const pts = track.map(p => sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
-  const ox = sx(0), oy = sy(0);
-  const rankColors = { good: '#3db86e', bad: '#d64545', avg: '#888' };
-  const color = rankColors[m.rank] || '#7eb8f7';
-  return '<svg id="video-track-overlay" class="video-overlay" width="' + size + '" height="' + size + '">'
-    + '<rect width="' + size + '" height="' + size + '" rx="6" fill="rgba(0,0,0,.45)"/>'
-    + '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
-    + '<circle cx="' + ox + '" cy="' + oy + '" r="2.5" fill="#fff" stroke="' + color + '" stroke-width="1"/>'
-    + '<text x="' + (size - pad) + '" y="' + (pad + 6) + '" text-anchor="end" font-size="7" fill="rgba(255,255,255,.5)">&#8593; wind</text>'
-    + '<circle id="video-track-dot" cx="' + ox + '" cy="' + oy + '" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
-    + '</svg>';
+  const half = Math.max(20, Math.max(maxX - minX, maxY - minY) / 2 * 1.05);
+  const sx = x => pad + (x - (cx - half)) / (2 * half) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - (cy - half)) / (2 * half) * (size - 2 * pad);
+  const step = Math.max(1, Math.floor(pts.length / 400));
+  const poly = [];
+  for (let i = 0; i < pts.length; i += step) {
+    poly.push(sx(pts[i].x).toFixed(1) + ',' + sy(pts[i].y).toFixed(1));
+  }
+  return {size, pad, lat0, lng0, cosLat, mPerDeg, sx, sy, polyStr: poly.join(' ')};
 }
 
 function _videoSampleAt(utcMs) {
@@ -7533,47 +7527,51 @@ function _updateVideoGauge(utc) {
   if (sample.cog != null && sample.hdg != null) rot('video-gauge-cog', ((sample.cog - sample.hdg) + 360) % 360);
 }
 
-function _updateVideoTrackDot(utc, m) {
-  const track = m && m.track;
-  if (!track || track.length < 2) return;
-  const mStart = _parseManUtcMs(m.ts);
-  if (mStart == null) return;
-  const currentT = (utc.getTime() - mStart) / 1000;
-  let best = track[0], bestDt = Math.abs(track[0].t - currentT);
-  for (let i = 1; i < track.length; i++) {
-    const dt = Math.abs(track[i].t - currentT);
-    if (dt < bestDt) { bestDt = dt; best = track[i]; }
+function _updateVideoTrackDot(utc) {
+  if (!_trackData || !_trackData.timestamps || !_trackData.timestamps.length) return;
+  const proj = _videoTrackProjection;
+  if (!proj) return;
+  const tMs = utc.getTime();
+  // Binary search the session timestamps — ascending by construction.
+  const ts = _trackData.timestamps;
+  let lo = 0, hi = ts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ts[mid].getTime() <= tMs) lo = mid;
+    else hi = mid - 1;
   }
-  const size = 120, pad = 8;
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of track) {
-    if (p.x < minX) minX = p.x;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.y > maxY) maxY = p.y;
-  }
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
-  const svgX = pad + (best.x - (cx - half)) / (2 * half) * (size - 2 * pad);
-  const svgY = (size - pad) - (best.y - (cy - half)) / (2 * half) * (size - 2 * pad);
+  const ll = _trackData.latLngs[lo];
+  if (!ll) return;
+  const x = (ll[1] - proj.lng0) * proj.mPerDeg * proj.cosLat;
+  const y = (ll[0] - proj.lat0) * proj.mPerDeg;
   const dot = document.getElementById('video-track-dot');
-  if (dot) { dot.setAttribute('cx', svgX.toFixed(1)); dot.setAttribute('cy', svgY.toFixed(1)); }
+  if (!dot) return;
+  dot.setAttribute('cx', proj.sx(x).toFixed(1));
+  dot.setAttribute('cy', proj.sy(y).toFixed(1));
 }
 
-function _mountVideoOverlayFor(m) {
+// Mount the gauge + session-track SVGs inside #yt-player. Idempotent — if
+// the requested overlay already exists, it's left in place so CSS opacity
+// transitions don't restart on every tick. Re-renders the track when the
+// track projection becomes available after first load.
+function _ensureVideoOverlaysMounted() {
   const mount = document.getElementById('yt-player');
   if (!mount) return;
-  const mid = m ? (m.id != null ? String(m.id) : String(m.ts)) : '';
-  if (mid === _videoOverlayMountedManId) return;
-  _videoOverlayMountedManId = mid;
-  const oldGauge = document.getElementById('video-gauge-overlay');
-  if (oldGauge) oldGauge.remove();
-  const oldTrack = document.getElementById('video-track-overlay');
-  if (oldTrack) oldTrack.remove();
-  if (!m) return;
-  mount.insertAdjacentHTML('beforeend', _renderVideoGaugeSvg());
-  const trackSvg = _renderVideoTrackSvg(m);
-  if (trackSvg) mount.insertAdjacentHTML('beforeend', trackSvg);
+  if (_videoGaugesOn && !document.getElementById('video-gauge-overlay')) {
+    mount.insertAdjacentHTML('beforeend', _renderVideoGaugeSvg());
+  }
+  if (_videoTrackOn) {
+    const existing = document.getElementById('video-track-overlay');
+    if (!existing) {
+      const svg = _renderVideoTrackSvg();
+      if (svg) mount.insertAdjacentHTML('beforeend', svg);
+    }
+  }
+}
+
+function _removeVideoOverlay(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
 }
 
 function _initVideoOverlayButtons() {
@@ -7599,34 +7597,34 @@ function _currentVideoUtc() {
 
 function _videoOverlayTick() {
   if (!_videoGaugesOn && !_videoTrackOn) return;
+  _ensureVideoOverlaysMounted();
   const utc = _currentVideoUtc();
-  if (!utc) return;
-  const m = _findActiveManeuver(utc);
-  _mountVideoOverlayFor(m);
-  if (!m) {
-    _hideOverlay('video-gauge-overlay');
-    _hideOverlay('video-track-overlay');
-    return;
-  }
   const gauge = document.getElementById('video-gauge-overlay');
   if (gauge) {
-    if (_videoGaugesOn) { gauge.classList.add('show'); _updateVideoGauge(utc); }
-    else gauge.classList.remove('show');
+    if (_videoGaugesOn) {
+      gauge.classList.add('show');
+      if (utc) _updateVideoGauge(utc);
+    } else {
+      gauge.classList.remove('show');
+    }
   }
   const track = document.getElementById('video-track-overlay');
   if (track) {
-    if (_videoTrackOn) { track.classList.add('show'); _updateVideoTrackDot(utc, m); }
-    else track.classList.remove('show');
+    if (_videoTrackOn) {
+      track.classList.add('show');
+      if (utc) _updateVideoTrackDot(utc);
+    } else {
+      track.classList.remove('show');
+    }
   }
 }
 
 let _videoOverlayTimer = null;
 function _restartOverlayTick() {
   if (_videoOverlayTimer) { clearInterval(_videoOverlayTimer); _videoOverlayTimer = null; }
-  if (!_videoGaugesOn && !_videoTrackOn) {
-    _mountVideoOverlayFor(null);
-    return;
-  }
+  if (!_videoGaugesOn) _removeVideoOverlay('video-gauge-overlay');
+  if (!_videoTrackOn) _removeVideoOverlay('video-track-overlay');
+  if (!_videoGaugesOn && !_videoTrackOn) return;
   _videoOverlayTick();
   _videoOverlayTimer = setInterval(_videoOverlayTick, 200);
 }
