@@ -28,6 +28,24 @@ from helmlog.nmea2000 import (
 )
 from helmlog.storage import Storage, StorageConfig
 
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register custom options.
+
+    --update-golden: rewrites the expected_maneuvers.json snapshot in
+    tests/fixtures/golden_session/ from the current detect + enrich
+    output. Used when a developer is intentionally changing detector
+    constants, baseline windows, or the loss calc and wants to land
+    the snapshot diff alongside the code change (#620).
+    """
+    parser.addoption(
+        "--update-golden",
+        action="store_true",
+        default=False,
+        help="Rewrite the golden-session snapshot instead of asserting against it.",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Timestamps
 # ---------------------------------------------------------------------------

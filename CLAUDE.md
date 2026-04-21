@@ -339,6 +339,26 @@ Use `/data-license` to review code changes against the full policy.
   - `Item "None" of "datetime | None" has no attribute "isoformat"`
   - `Item "None" of "AudioRecorder | None" has no attribute "stop"` (x2)
 
+### Golden-session test (`tests/test_golden_session.py`)
+
+One real recorded session (CYC spring race 1, 13 maneuvers) lives under
+`tests/fixtures/golden_session/` as a downsampled-to-1Hz JSON dump
+(`raw_data.json.gz`) and an expected-output snapshot
+(`expected_maneuvers.json`). The test loads the raw fixture into an
+in-memory Storage, runs detect + enrich end-to-end, and asserts exact
+equality with the snapshot (within float tolerance).
+
+**Any PR that changes detector constants, baseline-window math, the
+loss calc, or the enrichment payload shape must either:**
+
+- Pass the golden test unchanged (the change does not affect real-world
+  detection / enrichment output), or
+- Update the snapshot via `uv run pytest tests/test_golden_session.py
+  --update-golden` and call out the diff in the PR body.
+
+To rebuild the raw fixture from a different session, run
+`scripts/build_golden_fixture.py` against a Pi DB.
+
 ### Integration tests (`tests/integration/`)
 
 Three-layer strategy for validating inter-Pi federation, co-op, and data licensing:
