@@ -5144,14 +5144,19 @@ function _addManeuverMarkers() {
 
 function _renderManeuverPopup(m) {
   const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const pctSuffix = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const rankBadge = m.rank
-    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '">● ' + m.rank + '</span>'
+    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '" title="loss percentile (lower = less loss)">● ' + m.rank + pctSuffix + '</span>'
     : '';
   const lines = [
     '<b style="color:' + ringColor + ';text-transform:capitalize">' + (m.type || 'event') + '</b> ' + rankBadge,
     fmtTime(m.ts),
   ];
-  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s');
+  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s total');
+  if (m.time_to_head_to_wind_s != null) {
+    lines.push('Turn ' + m.time_to_head_to_wind_s.toFixed(1) + ' s · Recovery '
+      + (m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'));
+  }
   if (m.turn_angle_deg != null) lines.push(Math.round(m.turn_angle_deg) + '° turn');
   if (m.entry_bsp != null && m.exit_bsp != null) {
     lines.push('BSP ' + m.entry_bsp.toFixed(1) + ' → ' + m.exit_bsp.toFixed(1) + ' kt');
