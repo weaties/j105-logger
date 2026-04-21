@@ -198,7 +198,12 @@ function mvRenderTrackSvg(tracks, opts) {
     let h = '';
     if (onEnterName) h += ' onmouseenter="' + onEnterName + '(event,' + JSON.stringify(tk) + ')"';
     if (onLeaveName) h += ' onmouseleave="' + onLeaveName + '()"';
-    if (onClickName) h += ' onclick="' + onClickName + '(' + JSON.stringify(tk) + ')"';
+    // stopPropagation so a trace click doesn't bubble up to the SVG
+    // background handler and immediately clear the lock the click
+    // just set (#619 follow-up).
+    if (onClickName) {
+      h += ' onclick="event.stopPropagation();' + onClickName + '(' + JSON.stringify(tk) + ')"';
+    }
     return h;
   };
 
@@ -224,7 +229,14 @@ function mvRenderTrackSvg(tracks, opts) {
 
   const scaleLabel = '<text x="' + (w - pad) + '" y="' + (h - 2) + '" text-anchor="end" font-size="9" fill="var(--text-secondary)">grid ' + gridStep + ' m</text>';
 
-  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px">'
+  // Background click handler — "click on nothing" unlocks any persistent
+  // trace highlight. Trace path clicks stopPropagation() so they don't
+  // trigger this one.
+  const bgClick = (interactive && opts.onBackgroundClickName)
+    ? ' onclick="' + opts.onBackgroundClickName + '()"'
+    : '';
+
+  return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:3px"' + bgClick + '>'
     + gridLines.join('') + ghostLines + hoverUnderlay + paths + decorations + crosshair + windLabels + scaleLabel + '</svg>';
 }
 
@@ -360,6 +372,7 @@ function mvInitLineCharts(hostEl, payload, opts) {
   const panelHeight = opts.panelHeight || 140;
   const panelPadClass = opts.panelClass || 'mv-chart-panel';
   const onHoverChange = opts.onHoverChange || null;
+  const onClickChange = opts.onClickChange || null;
 
   const state = {
     data: payload,
@@ -547,22 +560,23 @@ function mvInitLineCharts(hostEl, payload, opts) {
     state.panels.forEach(p => renderPanel(p, mode));
   }
 
-  function onHover(evt, panel) {
+  // Shared nearest-trace lookup for hover + click. Returns the id of
+  // the trace closest to (x, y) within the plot bounds, or null.
+  function nearestTraceAt(evt, panel) {
     const rect = panel.canvas.getBoundingClientRect();
     const x = evt.clientX - rect.left;
     const y = evt.clientY - rect.top;
     const bb = panel.bbox;
-    if (!bb || x < bb.padL || x > bb.padL + bb.plotW ||
-        y < bb.padT || y > bb.padT + bb.plotH) {
-      setHoverId(null);
-      return;
+    if (!bb || x < bb.padL || x > bb.padL + bb.plotW
+        || y < bb.padT || y > bb.padT + bb.plotH) {
+      return { id: null, inBounds: false };
     }
     const t = MV_AXIS_MIN + ((x - bb.padL) / bb.plotW) * (MV_AXIS_MAX - MV_AXIS_MIN);
     const idx = Math.round(t - MV_AXIS_MIN);
-    if (idx < 0 || idx >= state.data.axis_s.length) return;
+    if (idx < 0 || idx >= state.data.axis_s.length) return { id: null, inBounds: true };
     const vals = state.data.maneuvers.map(m => m[panel.channel.key]?.[idx])
       .filter(v => v !== null && v !== undefined);
-    if (!vals.length) return;
+    if (!vals.length) return { id: null, inBounds: true };
     const yMin = Math.min(...vals), yMax = Math.max(...vals);
     const range = yMax - yMin || 1;
     let best = null, bestDist = Infinity;
@@ -573,7 +587,25 @@ function mvInitLineCharts(hostEl, payload, opts) {
       const d = Math.abs(cy - y);
       if (d < bestDist) { bestDist = d; best = m; }
     });
-    setHoverId((best && bestDist < 20) ? (best.session_id + ':' + best.maneuver_id) : null);
+    const id = (best && bestDist < 20)
+      ? (best.session_id + ':' + best.maneuver_id)
+      : null;
+    return { id, inBounds: true };
+  }
+
+  function onHover(evt, panel) {
+    const { id, inBounds } = nearestTraceAt(evt, panel);
+    if (!inBounds) { setHoverId(null); return; }
+    setHoverId(id);
+  }
+
+  function onClick(evt, panel) {
+    if (!onClickChange) return;
+    const { id, inBounds } = nearestTraceAt(evt, panel);
+    if (!inBounds) return;  // ignore clicks outside the plot area
+    // id === null means "clicked inside the plot but far from any trace"
+    // — the caller treats that as an unlock signal.
+    onClickChange(id);
   }
 
   function setHoverId(id) {
@@ -591,6 +623,7 @@ function mvInitLineCharts(hostEl, payload, opts) {
   state.panels.forEach(p => {
     p.canvas.addEventListener('mousemove', evt => onHover(evt, p));
     p.canvas.addEventListener('mouseleave', () => setHoverId(null));
+    p.canvas.addEventListener('click', evt => onClick(evt, p));
   });
 
   const onResize = () => render();

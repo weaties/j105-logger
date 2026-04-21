@@ -18,15 +18,24 @@
 'use strict';
 
 const _ovState = {
-  data: null,      // full API payload — never mutated
-  hoverId: null,
+  data: null,       // full API payload — never mutated
+  hoverId: null,    // transient hover
+  lockedId: null,   // click-persisted highlight (survives mouse leave)
   chartsCtrl: null,
-  // Filter and selection are client-side concerns. The endpoint's
-  // `ids=` URL param sets the outer bound; these narrow what's
-  // *displayed* (filter) and what's *acted on* (selection).
+  chartMode: 'auto',
+  // Filter narrows what's displayed across all views. Selection narrows
+  // further — unchecked maneuvers are suppressed from track + charts
+  // but still listed in the table so the user can re-check them.
   filter: new Set(),   // active pill keys: 'tack', 'P→S', 'bad', 'tws:8-12', ...
   selected: new Set(), // "sid:mid" keys that are checked
 };
+
+function _ovHighlightId() {
+  // Lock wins over hover — once clicked the highlight persists until
+  // the user clicks blank space / the locked item / another trace, or
+  // hits Escape.
+  return _ovState.lockedId || _ovState.hoverId;
+}
 
 const _OV_TYPE_PILLS = ['tack', 'gybe', 'rounding'];
 const _OV_DIR_PILLS = ['P→S', 'S→P'];
@@ -62,8 +71,18 @@ function _ovMatchesFilter(m) {
 }
 
 function _ovFilteredManeuvers() {
+  // Pill filter only — table uses this so the user can always see and
+  // tick/untick rows regardless of current selection.
   if (!_ovState.data) return [];
   return _ovState.data.maneuvers.filter(_ovMatchesFilter);
+}
+
+function _ovVisibleManeuvers() {
+  // What the track SVG + line charts paint. Intersects filter with
+  // selection so unchecking a row hides it from the visual views.
+  return _ovFilteredManeuvers().filter(
+    m => _ovState.selected.has(m.session_id + ':' + m.maneuver_id)
+  );
 }
 
 function _ovIdsFromUrl() {
@@ -133,14 +152,15 @@ async function ovInit() {
 }
 
 function _ovRenderAll() {
-  // Filter narrows the visible set; every panel paints from the
-  // filtered subset so the user sees the same maneuvers across all
-  // three views.
-  const visible = _ovFilteredManeuvers();
-  const visiblePayload = Object.assign({}, _ovState.data, { maneuvers: visible });
+  // Track + charts paint the selected-and-filtered subset; the table
+  // shows everything matching the filter so the user can always
+  // tick/untick rows. One hover/lock state synchronizes all three.
+  const visibleForCharts = _ovVisibleManeuvers();
+  const filteredForTable = _ovFilteredManeuvers();
+  const visiblePayload = Object.assign({}, _ovState.data, { maneuvers: visibleForCharts });
 
   // 1. Wind-up track SVG (top).
-  _ovRenderTrackOverlay(visible);
+  _ovRenderTrackOverlay(visibleForCharts);
 
   // 2. Stacked line charts (middle).
   if (_ovState.chartsCtrl) _ovState.chartsCtrl.destroy();
@@ -148,18 +168,25 @@ function _ovRenderAll() {
     document.getElementById('ov-panels'),
     visiblePayload,
     {
-      mode: 'auto',
+      mode: _ovState.chartMode,
       panelHeight: 160,
       onHoverChange: id => {
         _ovState.hoverId = id;
+        // Lock wins over hover — only re-sync siblings when no lock,
+        // otherwise the hover updates would redraw unlocked items.
+        if (_ovState.lockedId) return;
         _ovSyncTableHighlight();
         _ovSyncTrackHighlight();
       },
+      onClickChange: id => _ovToggleLock(id),
     }
   );
+  // Push current highlight to the fresh controller (destroy+recreate
+  // loses any in-flight lock otherwise).
+  _ovState.chartsCtrl.setHoverId(_ovHighlightId());
 
   // 3. Maneuver table (bottom).
-  _ovRenderTable(visible);
+  _ovRenderTable(filteredForTable);
 
   // Select-bar counter + Compare button state.
   _ovUpdateSelectBar();
@@ -181,14 +208,15 @@ function _ovRenderTrackOverlay(visible) {
   const wrap = document.getElementById('ov-track-wrap');
   const host = document.getElementById('ov-track-svg');
   if (!wrap || !host || !_ovState.data) return;
-  const src = visible || _ovState.data.maneuvers;
+  const src = visible || _ovVisibleManeuvers();
   const withTracks = src.filter(m => m.track && m.track.length);
   if (!withTracks.length) { wrap.style.display = 'none'; return; }
+  const highlight = _ovHighlightId();
   const tracks = withTracks.map(m => ({
     points: m.track,
     color: _ovRankColor(m),
     label: m.type,
-    highlight: _ovState.hoverId === (m.session_id + ':' + m.maneuver_id),
+    highlight: highlight === (m.session_id + ':' + m.maneuver_id),
     traceKey: m.session_id + ':' + m.maneuver_id,
     ghost: m.ghost_m,
     durationSec: m.duration_sec,
@@ -202,32 +230,53 @@ function _ovRenderTrackOverlay(visible) {
     onTraceEnterName: 'ovOnTraceEnter',
     onTraceLeaveName: 'ovOnTraceLeave',
     onTraceClickName: 'ovOnTraceClick',
+    onBackgroundClickName: 'ovOnBackgroundClick',
   });
   wrap.style.display = '';
 }
 
 function _ovSyncTrackHighlight() {
   // Re-render the SVG so the ``highlight`` flag on tracks updates.
-  _ovRenderTrackOverlay(_ovFilteredManeuvers());
+  _ovRenderTrackOverlay(_ovVisibleManeuvers());
+}
+
+function _ovApplyHighlight() {
+  // Push the effective (locked || hover) id to every view.
+  const id = _ovHighlightId();
+  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(id);
+  _ovSyncTableHighlight();
+  _ovSyncTrackHighlight();
+}
+
+function _ovToggleLock(traceKey) {
+  // null = clear lock; matching id = clear (second click releases);
+  // new id = move the lock there.
+  if (traceKey == null || _ovState.lockedId === traceKey) {
+    _ovState.lockedId = null;
+  } else {
+    _ovState.lockedId = traceKey;
+  }
+  _ovApplyHighlight();
 }
 
 window.ovOnTraceEnter = function (evt, traceKey) {
   _ovState.hoverId = traceKey;
-  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(traceKey);
-  _ovSyncTableHighlight();
-  _ovSyncTrackHighlight();
+  // Locked state wins; don't trigger a re-render just to reflect hover
+  // when a lock is in effect.
+  if (_ovState.lockedId) return;
+  _ovApplyHighlight();
 };
 window.ovOnTraceLeave = function () {
   _ovState.hoverId = null;
-  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(null);
-  _ovSyncTableHighlight();
-  _ovSyncTrackHighlight();
+  if (_ovState.lockedId) return;
+  _ovApplyHighlight();
 };
 window.ovOnTraceClick = function (traceKey) {
-  _ovState.hoverId = traceKey;
-  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(traceKey);
-  _ovSyncTableHighlight();
-  _ovSyncTrackHighlight();
+  _ovToggleLock(traceKey);
+};
+window.ovOnBackgroundClick = function () {
+  // Click on the SVG background (not on a trace) clears any lock.
+  _ovToggleLock(null);
 };
 
 // ---------------------------------------------------------------------------
@@ -255,18 +304,15 @@ function _ovRenderTable(visible) {
 function _ovSyncTableHighlight() {
   const host = document.getElementById('ov-table');
   if (!host) return;
+  const id = _ovHighlightId();
   host.querySelectorAll('tr[data-trace-key]').forEach(tr => {
-    if (tr.getAttribute('data-trace-key') === _ovState.hoverId) tr.classList.add('highlight');
+    if (tr.getAttribute('data-trace-key') === id) tr.classList.add('highlight');
     else tr.classList.remove('highlight');
   });
 }
 
 window.ovOnTableRowClick = function (traceKey) {
-  const newId = _ovState.hoverId === traceKey ? null : traceKey;
-  _ovState.hoverId = newId;
-  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(newId);
-  _ovSyncTableHighlight();
-  _ovSyncTrackHighlight();
+  _ovToggleLock(traceKey);
 };
 
 // ---------------------------------------------------------------------------
@@ -274,12 +320,18 @@ window.ovOnTableRowClick = function (traceKey) {
 // ---------------------------------------------------------------------------
 
 function ovSetMode(mode) {
+  _ovState.chartMode = mode;
   if (_ovState.chartsCtrl) _ovState.chartsCtrl.setMode(mode);
   ['ov-mode-lines', 'ov-mode-bands', 'ov-mode-auto'].forEach(id => {
     document.getElementById(id).classList.remove('active');
   });
   document.getElementById('ov-mode-' + mode).classList.add('active');
 }
+
+// Escape releases any click-persisted highlight.
+document.addEventListener('keydown', evt => {
+  if (evt.key === 'Escape' && _ovState.lockedId) _ovToggleLock(null);
+});
 
 // ---------------------------------------------------------------------------
 // Filter pills
@@ -319,7 +371,10 @@ function _ovPaintPills() {
 window.ovOnRowCheck = function (traceKey, isChecked) {
   if (isChecked) _ovState.selected.add(traceKey);
   else _ovState.selected.delete(traceKey);
-  _ovUpdateSelectBar();
+  // Deselecting the currently-locked trace should release the lock so
+  // a hidden maneuver doesn't keep a ghost highlight.
+  if (!isChecked && _ovState.lockedId === traceKey) _ovState.lockedId = null;
+  _ovRenderAll();
 };
 
 window.ovOnCheckAll = function (isChecked) {
@@ -330,9 +385,11 @@ window.ovOnCheckAll = function (isChecked) {
     visible.forEach(m => _ovState.selected.add(m.session_id + ':' + m.maneuver_id));
   } else {
     visible.forEach(m => _ovState.selected.delete(m.session_id + ':' + m.maneuver_id));
+    if (_ovState.lockedId && !_ovState.selected.has(_ovState.lockedId)) {
+      _ovState.lockedId = null;
+    }
   }
-  _ovRenderTable(visible);
-  _ovUpdateSelectBar();
+  _ovRenderAll();
 };
 
 function ovSelectAll(mode) {
@@ -350,8 +407,10 @@ function ovSelectAll(mode) {
       _ovState.selected.add(m.session_id + ':' + m.maneuver_id);
     });
   }
-  _ovRenderTable(_ovFilteredManeuvers());
-  _ovUpdateSelectBar();
+  if (_ovState.lockedId && !_ovState.selected.has(_ovState.lockedId)) {
+    _ovState.lockedId = null;
+  }
+  _ovRenderAll();
 }
 
 function _ovUpdateSelectBar() {
