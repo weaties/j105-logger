@@ -4262,6 +4262,47 @@ async def test_session_page_has_video_overlay_buttons(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Session deep-link via ?t= (#642) — the share button + URL parser need to
+# be present in the rendered page. Dynamic seek behaviour is JS-only and is
+# covered by manual verification.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_page_has_share_button(storage: Storage) -> None:
+    """Session page renders a Share button wired to shareVideoLink() (#642)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=True
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/session/{race_id}")
+    assert resp.status_code == 200
+    assert 'id="video-share-btn"' in resp.text
+    assert "shareVideoLink" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_session_js_has_deeplink_parser(storage: Storage) -> None:
+    """session.js ships the ?t= parser + share formatter (#642).
+
+    The parser itself is JS-only, but we can at least confirm the bundled
+    file contains the hook points so a refactor that accidentally strips
+    them will fail loudly here.
+    """
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get("/static/session.js")
+    assert resp.status_code == 200
+    assert "_parseDeepLinkTime" in resp.text
+    assert "_applyDeepLink" in resp.text
+    assert "_fmtDeepLinkTime" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # Maneuver compare
 # ---------------------------------------------------------------------------
 
