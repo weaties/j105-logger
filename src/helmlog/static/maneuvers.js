@@ -331,8 +331,10 @@ function updateSelectedCount() {
   const n = state.selected.size;
   const el = document.getElementById('mv-selected-count');
   el.textContent = n ? '(' + n + ' selected)' : '';
-  const btn = document.getElementById('mv-compare-btn');
-  btn.disabled = n === 0;
+  const cmp = document.getElementById('mv-compare-btn');
+  if (cmp) cmp.disabled = n === 0;
+  const ov = document.getElementById('mv-overlay-btn');
+  if (ov) ov.disabled = n === 0;
   const all = document.getElementById('mv-check-all');
   if (all) all.checked = n > 0 && n === state.maneuvers.length;
 }
@@ -345,6 +347,22 @@ function mvOpenCompare() {
     .filter(k => state.selected.has(k));
   if (!orderedKeys.length) return;
   window.open('/compare?ids=' + orderedKeys.join(','), '_blank');
+}
+
+function mvOpenOverlay() {
+  if (!state.selected.size) return;
+  // Overlay (#619) only makes sense for maneuvers with a head-to-wind
+  // alignment point — roundings have none, so pre-filter them client
+  // side to avoid the backend returning them all in excluded_ids.
+  const orderedKeys = state.maneuvers
+    .filter(m => m.type === 'tack' || m.type === 'gybe')
+    .map(m => m.session_id + ':' + m.id)
+    .filter(k => state.selected.has(k));
+  if (!orderedKeys.length) {
+    alert('Overlay requires tack or gybe maneuvers — roundings have no head-to-wind alignment.');
+    return;
+  }
+  window.open('/maneuvers/overlay?ids=' + orderedKeys.join(','), '_blank');
 }
 
 // ---------------------------------------------------------------------------

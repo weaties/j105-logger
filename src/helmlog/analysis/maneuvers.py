@@ -988,6 +988,232 @@ async def enrich_maneuvers_for_ids(
 
 
 # ---------------------------------------------------------------------------
+# Multi-maneuver overlay series (#619)
+# ---------------------------------------------------------------------------
+
+# Window around head-to-wind (seconds). Covers the helm leading into the
+# turn plus the recovery phase for most tacks; gybes generally fit too.
+# Fixed length gives all selected maneuvers a common x-axis regardless of
+# their individual durations.
+_OVERLAY_PRE_S = 20
+_OVERLAY_POST_S = 30
+# Inclusive integer seconds from -PRE to +POST, one sample per second.
+_OVERLAY_AXIS: list[int] = list(range(-_OVERLAY_PRE_S, _OVERLAY_POST_S + 1))
+
+
+def _align_series_at_htw(series_by_sec: dict[str, float], htw_ts: datetime) -> list[float | None]:
+    """Resample a per-second series to the overlay axis relative to HTW.
+
+    ``series_by_sec`` is ``{iso_second: value}`` as built by the enrichment
+    loader (``setdefault`` keyed on ``ts.isoformat()[:19]``). For each
+    offset in the fixed overlay axis we compute the target absolute
+    second and look it up; misses are ``None``. No interpolation — the
+    detector already works on whole seconds so real data lands on the
+    grid naturally.
+    """
+    out: list[float | None] = []
+    for offset in _OVERLAY_AXIS:
+        target = (htw_ts + timedelta(seconds=offset)).isoformat()[:19]
+        v = series_by_sec.get(target)
+        out.append(float(v) if v is not None else None)
+    return out
+
+
+def _heading_rate_series(hdg_by_sec: dict[str, float], htw_ts: datetime) -> list[float | None]:
+    """First-difference of the heading series over the overlay window,
+    handling angular wrap (e.g. 359 → 1 → rate = +2°/s, not -358)."""
+    out: list[float | None] = []
+    prev: float | None = None
+    for offset in _OVERLAY_AXIS:
+        target = (htw_ts + timedelta(seconds=offset)).isoformat()[:19]
+        cur = hdg_by_sec.get(target)
+        if cur is None or prev is None:
+            out.append(None)
+        else:
+            out.append(round(_signed_heading_delta(prev, cur), 2))
+        prev = cur if cur is not None else prev
+    return out
+
+
+async def build_maneuvers_overlay(storage: Storage, pairs: list[tuple[int, int]]) -> dict[str, Any]:
+    """Build the overlay payload for ``GET /api/maneuvers/overlay``.
+
+    Returns a dict shaped for the chart UI (#619):
+
+    ``{
+        "axis_s": [-20, -19, ..., 30],
+        "channels": ["bsp", "heading_rate_deg_s", "twa"],
+        "maneuvers": [
+            {
+                "session_id": 21,
+                "maneuver_id": 392,
+                "session_name": "...",
+                "session_slug": "...",
+                "type": "tack",
+                "rank": "avg",
+                "loss_percentile": 40,
+                "head_to_wind_ts": "...",
+                "bsp": [6.0, 6.0, ...],
+                "heading_rate_deg_s": [0.1, ...],
+                "twa": [40, ...],
+            },
+            ...
+        ],
+        "excluded_ids": ["21:393"],
+    }``
+
+    Maneuvers with ``head_to_wind_ts = None`` (roundings, stalled tacks,
+    missing TWA) are excluded and their ``"<sid>:<mid>"`` string appended
+    to ``excluded_ids`` so the UI can show a notice.
+
+    Per-session instrument data is loaded via ``enrich_session_maneuvers``
+    (cached), then aligned here to the fixed overlay axis. No new
+    storage round-trips for repeat calls on the same session ids.
+    """
+    if not pairs:
+        return {"axis_s": _OVERLAY_AXIS, "channels": [], "maneuvers": [], "excluded_ids": []}
+
+    by_session: dict[int, set[int]] = {}
+    for sid, mid in pairs:
+        by_session.setdefault(sid, set()).add(mid)
+
+    out: list[dict[str, Any]] = []
+    excluded: list[str] = []
+
+    for session_id, wanted_ids in by_session.items():
+        race = await storage.get_race(session_id)
+        if race is None:
+            for mid in wanted_ids:
+                excluded.append(f"{session_id}:{mid}")
+            continue
+
+        enriched, _video = await enrich_session_maneuvers(storage, session_id)
+        session_name = race.name
+        session_slug = race.slug or ""
+
+        # Load instrument series once per session for the overlay alignment.
+        series = await _load_session_instrument_series(storage, session_id)
+        hdg_by_sec = series["hdg"]
+        bsp_by_sec = series["bsp"]
+        twa_by_sec = series["twa"]
+
+        for m in enriched:
+            if m.get("id") not in wanted_ids:
+                continue
+            key = f"{session_id}:{m.get('id')}"
+            htw_raw = m.get("head_to_wind_ts")
+            if not htw_raw:
+                excluded.append(key)
+                continue
+            try:
+                htw_ts = _parse_iso(str(htw_raw))
+            except (ValueError, TypeError):
+                excluded.append(key)
+                continue
+
+            out.append(
+                {
+                    "session_id": session_id,
+                    "maneuver_id": m.get("id"),
+                    "session_name": session_name,
+                    "session_slug": session_slug,
+                    "type": m.get("type"),
+                    "rank": m.get("rank"),
+                    "loss_percentile": m.get("loss_percentile"),
+                    "head_to_wind_ts": m.get("head_to_wind_ts"),
+                    "entry_twa": m.get("entry_twa"),
+                    "entry_tws": m.get("entry_tws"),
+                    "bsp": _align_series_at_htw(bsp_by_sec, htw_ts),
+                    "heading_rate_deg_s": _heading_rate_series(hdg_by_sec, htw_ts),
+                    "twa": _align_series_at_htw(twa_by_sec, htw_ts),
+                }
+            )
+
+    return {
+        "axis_s": _OVERLAY_AXIS,
+        "channels": ["bsp", "heading_rate_deg_s", "twa"],
+        "maneuvers": out,
+        "excluded_ids": excluded,
+    }
+
+
+async def _load_session_instrument_series(
+    storage: Storage, session_id: int
+) -> dict[str, dict[str, float]]:
+    """Load per-second hdg / bsp / twa dicts for a session, keyed by
+    ``ts.isoformat()[:19]``. Uses the same race_id-scoped-with-fallback
+    pattern as ``enrich_session_maneuvers`` and builds the folded TWA
+    the same way."""
+    db = storage._conn()
+    race_cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
+    race_row = await race_cur.fetchone()
+    if race_row is None:
+        return {"hdg": {}, "bsp": {}, "twa": {}}
+
+    start = _parse_iso(race_row["start_utc"])
+    end = _parse_iso(race_row["end_utc"]) if race_row["end_utc"] else start + timedelta(hours=24)
+    start_pad = start - timedelta(seconds=_ENRICH_PAD_S)
+    end_pad = end + timedelta(seconds=_ENRICH_PAD_S)
+
+    async def _load(table: str) -> list[dict[str, Any]]:
+        data = await storage.query_range(table, start_pad, end_pad, race_id=session_id)
+        if not data:
+            data = await storage.query_range(table, start_pad, end_pad)
+        return data
+
+    headings_raw = await _load("headings")
+    speeds_raw = await _load("speeds")
+    winds_raw = await _load("winds")
+    cogsog_raw: list[dict[str, Any]] = []
+    if not headings_raw or not speeds_raw:
+        cogsog_raw = await _load("cogsog")
+
+    def _sec(ts_str: str) -> str:
+        return str(ts_str)[:19]
+
+    hdg_by_sec: dict[str, float] = {}
+    if headings_raw:
+        for r in headings_raw:
+            hdg_by_sec.setdefault(_sec(r["ts"]), float(r["heading_deg"]))
+    elif cogsog_raw:
+        for r in cogsog_raw:
+            hdg_by_sec.setdefault(_sec(r["ts"]), float(r["cog_deg"]))
+
+    bsp_by_sec: dict[str, float] = {}
+    if speeds_raw:
+        for r in speeds_raw:
+            bsp_by_sec.setdefault(_sec(r["ts"]), float(r["speed_kts"]))
+    elif cogsog_raw:
+        for r in cogsog_raw:
+            bsp_by_sec.setdefault(_sec(r["ts"]), float(r["sog_kts"]))
+
+    twa_by_sec: dict[str, float] = {}
+    for r in winds_raw:
+        ref_raw = r.get("reference")
+        if ref_raw is None:
+            continue
+        try:
+            ref = int(ref_raw)
+        except (TypeError, ValueError):
+            continue
+        if ref not in (0, 4):
+            continue
+        sec = _sec(r["ts"])
+        if ref == 0:
+            signed = float(r["wind_angle_deg"])
+            folded = abs(signed) % 360.0
+            twa_by_sec.setdefault(sec, folded if folded <= 180.0 else 360.0 - folded)
+        else:
+            twd_val = float(r["wind_angle_deg"]) % 360.0
+            hv = hdg_by_sec.get(sec)
+            if hv is not None:
+                raw = (twd_val - hv + 360.0) % 360.0
+                twa_by_sec.setdefault(sec, raw if raw <= 180.0 else 360.0 - raw)
+
+    return {"hdg": hdg_by_sec, "bsp": bsp_by_sec, "twa": twa_by_sec}
+
+
+# ---------------------------------------------------------------------------
 # Eager backfill worker (#613)
 # ---------------------------------------------------------------------------
 
