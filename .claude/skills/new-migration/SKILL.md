@@ -9,10 +9,13 @@ disable-model-invocation: true
 ## Steps
 
 ### 0. Enter a worktree
-Call `EnterWorktree` before touching `storage.py`. Migrations bump
-`_CURRENT_VERSION`, which is especially prone to conflicts when another agent
-is simultaneously adding a migration — the isolated worktree makes the version
-collision visible at merge time instead of silently overwriting.
+Before touching `storage.py`, make sure the session is in a git worktree.
+Check `git worktree list` — reuse an existing one via
+`EnterWorktree(path=...)` if it matches this task, otherwise create a new one
+via `EnterWorktree(name=...)`. Migrations bump `_CURRENT_VERSION`, which is
+especially prone to conflicts when another agent is simultaneously adding a
+migration — the isolated worktree makes the version collision visible at
+merge time instead of silently overwriting. See CLAUDE.md for the full rule.
 
 ### 1. Check current version
 Read `_CURRENT_VERSION` in `src/logger/storage.py`. Note the current value.

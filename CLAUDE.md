@@ -148,11 +148,22 @@ branch switches reorder each other's files, and a deploy can easily pick up a
 half-finished hotfix from the wrong agent. Worktrees give each agent an
 isolated checkout on its own branch.
 
-Use the `EnterWorktree` tool at the start of any task that will touch files —
-feature work, bug fixes, migrations, doc edits, skill edits. It creates a
-worktree under `.claude/worktrees/<name>/` on a fresh branch off `HEAD`, and
-the session switches into it. When the session ends, you'll be prompted to
-keep or remove the worktree.
+**Always check for an existing worktree before creating a new one.** When
+resuming work on a PR or an issue, a worktree often already exists from the
+previous session.
+
+```bash
+git worktree list
+# Also check for leftover directories: ls .claude/worktrees/
+```
+
+If a worktree's branch matches the task (e.g., `feature/my-feature` for PR
+work, or a name containing the issue number), enter it with
+`EnterWorktree(path=<path>)` — do **not** create a second one. Only call
+`EnterWorktree(name=<name>)` to create a new worktree when none of the
+existing ones fit. The created worktree lives at `.claude/worktrees/<name>/`
+on a fresh branch off `HEAD`. When the session ends, you'll be prompted to
+keep or remove it.
 
 Read-only work (answering questions, exploring the codebase, running
 `/architecture`, `/diagnose`, `/domain`) does not need a worktree.

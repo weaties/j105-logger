@@ -9,10 +9,11 @@ Always follow this cycle when implementing new functionality or fixing bugs.
 
 ## 0. Enter a worktree
 
-Before writing any test or code, call the `EnterWorktree` tool. Multiple
-Claude Code agents may share this repo on the same machine, and TDD inevitably
-produces uncommitted test+implementation changes that cannot safely coexist in
-a shared checkout. Skip only if the session is already in a worktree.
+Before writing any test or code, make sure the session is in a git worktree.
+Check `git worktree list` — if one already exists for this task, enter it via
+`EnterWorktree(path=...)`; otherwise create a new one via
+`EnterWorktree(name=...)`. See the "Always work in a git worktree" rule in
+CLAUDE.md for the why. Skip only if already in a worktree.
 
 ## 1. Red — Write a Failing Test
 
