@@ -18,14 +18,23 @@ gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code 
 
 ```
 
-## 1. Confirm feature branch
+## 1. Confirm worktree and feature branch
 
-You must be on a feature branch, **not `main`**. All changes to `main` come
-through merged PRs.
+You must be working inside a git worktree (per CLAUDE.md) and on a feature
+branch, **not `main`**. All changes to `main` come through merged PRs.
 
 ```bash
 git branch --show-current
 # Must NOT be "main"
+git rev-parse --show-toplevel
+# Should be under .claude/worktrees/<name> or a dedicated worktree path
+```
+
+If the current branch has the default `worktree-<name>` name from
+`EnterWorktree`, rename it to a conventional `feature/<topic>` before pushing:
+
+```bash
+git branch -m feature/<topic>
 ```
 
 ## 2. Determine risk tier

@@ -11,6 +11,11 @@ for each step that involves code.
 
 ## Checklist
 
+### 0. Enter a worktree
+Call `EnterWorktree` before any file edits. Scaffolding touches `tests/`,
+`src/logger/`, `main.py`, and often `web.py` and `storage.py` — exactly the
+kind of multi-file change that collides with other agents sharing the repo.
+
 ### 1. Write tests first
 Create `tests/test_$ARGUMENTS.py` with tests for the module's public API.
 Use the `storage` fixture from `conftest.py` and mock any external I/O.
