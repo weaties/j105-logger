@@ -7348,6 +7348,260 @@ function _stepEvent(direction) {
   _updateReplayControls();
 }
 
+// ---------------------------------------------------------------------------
+// Video overlays (#639) — gauge + track mini-SVGs painted on top of the
+// player during the 5s-padded window of each detected maneuver. Both
+// toggles default off; state persists in localStorage. Renderers and
+// tick math are ports of compare.js (#570 / #572) so the visuals match.
+// ---------------------------------------------------------------------------
+
+const _VIDEO_OVERLAY_PAD_S = 5;
+const _VIDEO_OVERLAY_LS_GAUGES = 'helmlog.videoOverlay.gauges';
+const _VIDEO_OVERLAY_LS_TRACK = 'helmlog.videoOverlay.track';
+let _videoGaugesOn = false;
+let _videoTrackOn = false;
+// ID (or timestamp string) of the maneuver currently mounted in the DOM —
+// used to skip rebuilding SVGs on every tick when the active maneuver
+// hasn't changed. Null when no maneuver is mounted.
+let _videoOverlayMountedManId = null;
+
+function _readOverlayFlag(key) {
+  try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+}
+function _writeOverlayFlag(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+function _setOverlayBtnStyle(btn, on) {
+  if (!btn) return;
+  btn.style.background = on ? 'var(--accent-strong)' : 'var(--bg-input)';
+  btn.style.color = on ? 'var(--bg-primary)' : 'var(--text-secondary)';
+  btn.style.border = on ? 'none' : '1px solid var(--border)';
+}
+function _hideOverlay(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('show');
+}
+
+function toggleVideoGauges() {
+  _videoGaugesOn = !_videoGaugesOn;
+  _writeOverlayFlag(_VIDEO_OVERLAY_LS_GAUGES, _videoGaugesOn);
+  _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
+  if (!_videoGaugesOn) _hideOverlay('video-gauge-overlay');
+}
+
+function toggleVideoTrack() {
+  _videoTrackOn = !_videoTrackOn;
+  _writeOverlayFlag(_VIDEO_OVERLAY_LS_TRACK, _videoTrackOn);
+  _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
+  if (!_videoTrackOn) _hideOverlay('video-track-overlay');
+}
+
+function _parseManUtcMs(iso) {
+  if (!iso) return null;
+  let s = String(iso).replace(' ', 'T');
+  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
+function _findActiveManeuver(utc) {
+  if (!_maneuvers || !_maneuvers.length || !utc) return null;
+  const t = utc.getTime ? utc.getTime() : +utc;
+  for (const m of _maneuvers) {
+    const startMs = _parseManUtcMs(m.ts);
+    if (startMs == null) continue;
+    const dur = typeof m.duration_sec === 'number' ? m.duration_sec : 0;
+    const winStart = startMs - _VIDEO_OVERLAY_PAD_S * 1000;
+    const winEnd = startMs + dur * 1000 + _VIDEO_OVERLAY_PAD_S * 1000;
+    if (t >= winStart && t <= winEnd) return m;
+  }
+  return null;
+}
+
+function _renderVideoGaugeSvg() {
+  const s = 150, r = 62, cx = s / 2, cy = s / 2;
+  let ticks = '';
+  for (let d = 0; d < 360; d += 10) {
+    const rad = (d - 90) * Math.PI / 180;
+    const inner = d % 30 === 0 ? r - 10 : r - 5;
+    const x1 = cx + inner * Math.cos(rad), y1 = cy + inner * Math.sin(rad);
+    const x2 = cx + r * Math.cos(rad), y2 = cy + r * Math.sin(rad);
+    ticks += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1)
+      + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1)
+      + '" stroke="rgba(255,255,255,.35)" stroke-width="' + (d % 30 === 0 ? '1.2' : '0.6') + '"/>';
+  }
+  const cardinals = [{l:'N',d:0},{l:'E',d:90},{l:'S',d:180},{l:'W',d:270}];
+  let labels = '';
+  for (const c of cardinals) {
+    const rad = (c.d - 90) * Math.PI / 180;
+    const lx = cx + (r + 9) * Math.cos(rad), ly = cy + (r + 9) * Math.sin(rad);
+    labels += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1)
+      + '" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="600" fill="rgba(255,255,255,.55)">' + c.l + '</text>';
+  }
+  return '<svg id="video-gauge-overlay" class="video-overlay" width="' + s + '" height="' + s + '">'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 10) + '" fill="rgba(0,0,0,.5)"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="1"/>'
+    + ticks + labels
+    + '<g id="video-gauge-twd" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + (cy + r - 10) + '" x2="' + cx + '" y2="' + (cy - r + 12) + '" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 8) + ' ' + (cx - 4) + ',' + (cy - r + 16) + ' ' + (cx + 4) + ',' + (cy - r + 16) + '" fill="#f59e0b"/>'
+    + '</g>'
+    + '<g id="video-gauge-awa" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 18) + '" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 14) + ' ' + (cx - 3) + ',' + (cy - r + 21) + ' ' + (cx + 3) + ',' + (cy - r + 21) + '" fill="#60a5fa"/>'
+    + '</g>'
+    + '<g id="video-gauge-cog" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 6) + '" stroke="rgba(255,255,255,.6)" stroke-width="1" stroke-dasharray="3,2"/>'
+    + '</g>'
+    + '<polygon points="' + cx + ',' + (cy - 6) + ' ' + (cx - 4) + ',' + (cy + 5) + ' ' + (cx + 4) + ',' + (cy + 5) + '" fill="#fff" stroke="rgba(0,0,0,.4)" stroke-width="0.5"/>'
+    + '<rect x="' + (cx - 18) + '" y="1" width="36" height="15" rx="3" fill="rgba(0,0,0,.8)"/>'
+    + '<text id="video-gauge-hdg" x="' + cx + '" y="12" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">---</text>'
+    + '<rect x="2" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="20" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">BSP</text>'
+    + '<text id="video-gauge-bsp" x="20" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#3db86e">-.-</text>'
+    + '<rect x="' + (s - 38) + '" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="' + (s - 20) + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">SOG</text>'
+    + '<text id="video-gauge-sog" x="' + (s - 20) + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#fff">-.-</text>'
+    + '<rect x="6" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="26" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">TWS</text>'
+    + '<text id="video-gauge-tws" x="26" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#f59e0b">--</text>'
+    + '<rect x="' + (s - 46) + '" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="' + (s - 26) + '" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">AWS</text>'
+    + '<text id="video-gauge-aws" x="' + (s - 26) + '" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#60a5fa">--</text>'
+    + '</svg>';
+}
+
+function _renderVideoTrackSvg(m) {
+  const track = m && m.track;
+  if (!track || track.length < 2) return '';
+  const size = 120, pad = 8;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of track) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!isFinite(minX)) return '';
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+  const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
+  const sx = x => pad + (x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
+  const pts = track.map(p => sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
+  const ox = sx(0), oy = sy(0);
+  const rankColors = { good: '#3db86e', bad: '#d64545', avg: '#888' };
+  const color = rankColors[m.rank] || '#7eb8f7';
+  return '<svg id="video-track-overlay" class="video-overlay" width="' + size + '" height="' + size + '">'
+    + '<rect width="' + size + '" height="' + size + '" rx="6" fill="rgba(0,0,0,.45)"/>'
+    + '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle cx="' + ox + '" cy="' + oy + '" r="2.5" fill="#fff" stroke="' + color + '" stroke-width="1"/>'
+    + '<text x="' + (size - pad) + '" y="' + (pad + 6) + '" text-anchor="end" font-size="7" fill="rgba(255,255,255,.5)">&#8593; wind</text>'
+    + '<circle id="video-track-dot" cx="' + ox + '" cy="' + oy + '" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
+    + '</svg>';
+}
+
+function _videoSampleAt(utcMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+function _updateVideoGauge(utc) {
+  const sample = _videoSampleAt(utc.getTime());
+  if (!sample) return;
+  const cx = 75, cy = 75;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('video-gauge-hdg', sample.hdg != null ? Math.round(sample.hdg) : '---');
+  set('video-gauge-bsp', sample.stw != null ? sample.stw.toFixed(1) : '-.-');
+  set('video-gauge-sog', sample.sog != null ? sample.sog.toFixed(1) : '-.-');
+  set('video-gauge-tws', sample.tws != null ? sample.tws.toFixed(0) : '--');
+  set('video-gauge-aws', sample.aws != null ? sample.aws.toFixed(0) : '--');
+  const rot = (id, deg) => {
+    const g = document.getElementById(id);
+    if (g && deg != null) g.setAttribute('transform', 'rotate(' + deg.toFixed(1) + ',' + cx + ',' + cy + ')');
+  };
+  if (sample.twd != null && sample.hdg != null) rot('video-gauge-twd', ((sample.twd - sample.hdg) + 360) % 360);
+  if (sample.awa != null) rot('video-gauge-awa', sample.awa);
+  if (sample.cog != null && sample.hdg != null) rot('video-gauge-cog', ((sample.cog - sample.hdg) + 360) % 360);
+}
+
+function _updateVideoTrackDot(utc, m) {
+  const track = m && m.track;
+  if (!track || track.length < 2) return;
+  const mStart = _parseManUtcMs(m.ts);
+  if (mStart == null) return;
+  const currentT = (utc.getTime() - mStart) / 1000;
+  let best = track[0], bestDt = Math.abs(track[0].t - currentT);
+  for (let i = 1; i < track.length; i++) {
+    const dt = Math.abs(track[i].t - currentT);
+    if (dt < bestDt) { bestDt = dt; best = track[i]; }
+  }
+  const size = 120, pad = 8;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of track) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+  const svgX = pad + (best.x - (cx - half)) / (2 * half) * (size - 2 * pad);
+  const svgY = (size - pad) - (best.y - (cy - half)) / (2 * half) * (size - 2 * pad);
+  const dot = document.getElementById('video-track-dot');
+  if (dot) { dot.setAttribute('cx', svgX.toFixed(1)); dot.setAttribute('cy', svgY.toFixed(1)); }
+}
+
+function _mountVideoOverlayFor(m) {
+  const mount = document.getElementById('yt-player');
+  if (!mount) return;
+  const mid = m ? (m.id != null ? String(m.id) : String(m.ts)) : '';
+  if (mid === _videoOverlayMountedManId) return;
+  _videoOverlayMountedManId = mid;
+  const oldGauge = document.getElementById('video-gauge-overlay');
+  if (oldGauge) oldGauge.remove();
+  const oldTrack = document.getElementById('video-track-overlay');
+  if (oldTrack) oldTrack.remove();
+  if (!m) return;
+  mount.insertAdjacentHTML('beforeend', _renderVideoGaugeSvg());
+  const trackSvg = _renderVideoTrackSvg(m);
+  if (trackSvg) mount.insertAdjacentHTML('beforeend', trackSvg);
+}
+
+function _initVideoOverlayButtons() {
+  _videoGaugesOn = _readOverlayFlag(_VIDEO_OVERLAY_LS_GAUGES);
+  _videoTrackOn = _readOverlayFlag(_VIDEO_OVERLAY_LS_TRACK);
+  _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
+  _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
+}
+
+registerSurface('video-overlay', function(utc) {
+  if (!utc) return;
+  if (!_videoGaugesOn && !_videoTrackOn) {
+    _mountVideoOverlayFor(null);
+    return;
+  }
+  const m = _findActiveManeuver(utc);
+  _mountVideoOverlayFor(m);
+  if (!m) return;
+  const gauge = document.getElementById('video-gauge-overlay');
+  if (gauge) {
+    if (_videoGaugesOn) { gauge.classList.add('show'); _updateVideoGauge(utc); }
+    else gauge.classList.remove('show');
+  }
+  const track = document.getElementById('video-track-overlay');
+  if (track) {
+    if (_videoTrackOn) { track.classList.add('show'); _updateVideoTrackDot(utc, m); }
+    else track.classList.remove('show');
+  }
+});
+
 // Hook into init() path without rewriting it: kick off replay load once the
 // DOM is ready, and wire controls immediately. _loadReplayData() waits on
 // the fetch, and the track map is loaded in parallel, so the polar overlay
@@ -7357,6 +7611,7 @@ document.addEventListener('DOMContentLoaded', function() {
   _wireReplayControls();
   _loadReplayData();
   _loadCourseOverlay();
+  _initVideoOverlayButtons();
 });
 
 // ---------------------------------------------------------------------------

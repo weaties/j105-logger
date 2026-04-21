@@ -4239,6 +4239,29 @@ async def test_api_state_tolerates_date_only_start_utc(storage: Storage) -> None
 
 
 # ---------------------------------------------------------------------------
+# Session video overlays (#639) — Gauges + Track toggle buttons on the
+# session page video, overlays active only during maneuver windows.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_session_page_has_video_overlay_buttons(storage: Storage) -> None:
+    """Session page exposes Gauges and Track toggle buttons for the video (#639)."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=True
+    ) as client:
+        await _set_event(client)
+        race_id = (await client.post("/api/races/start")).json()["id"]
+        resp = await client.get(f"/session/{race_id}")
+    assert resp.status_code == 200
+    assert 'id="video-gauges-btn"' in resp.text
+    assert 'id="video-track-btn"' in resp.text
+    assert "toggleVideoGauges" in resp.text
+    assert "toggleVideoTrack" in resp.text
+
+
+# ---------------------------------------------------------------------------
 # Maneuver compare
 # ---------------------------------------------------------------------------
 
