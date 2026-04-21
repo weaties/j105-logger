@@ -2325,7 +2325,8 @@ Pluggable AI Provider** architecture:
 - **Date captured:** 2026-04-17
 - **Origin:** Conversation about expanding HelmLog into a capable pre-start tool
   that the crew actually uses on the water
-- **Status:** `raw`
+- **Status:** `promoted`
+- **Promoted to:** #644
 - **Related:** `races.py`, `triggers.py`, `sk_reader.py`, `web.py`, IDX-011
   (write derived data back to B&G), IDX-013 (mark-anchored threads),
   IDX-021 (on-device audio keyword detection), IDX-032 (ESP32 sea state),
@@ -2435,3 +2436,11 @@ make HelmLog the helm/tactician's primary start tool.
   the key differentiator vs. standalone apps like RaceQs or Sailmon — we
   can tie the start directly into the same SQLite record that owns the
   track, maneuvers, debrief audio, and thread anchors.
+- *2026-04-21:* Promoted to #644. User reaffirmed scope and added two
+  emphases folded into the issue: (1) **multi-class awareness** — app
+  should know our class plus classes starting ahead/behind us in the day's
+  sequence and roll the visible class flag forward as each start fires;
+  (2) **viewer read-only mode** — crew/shore viewers see live state on
+  the same race page but cannot mutate (countdown, pings, sync), likely
+  gated by `auth.py` role. User framed the target as a "superset of
+  RaceMaster, B&G page, and Vakaros".
