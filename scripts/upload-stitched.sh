@@ -10,8 +10,18 @@
 #
 # Skips files that:
 #   - aren't named in the X4 VID_*.mp4 / .insv pattern
-#   - are still being written (size still growing)
+#   - are still being written (size still growing, held open, or unparseable)
 #   - are already in the upload ledger
+#
+# Readiness check is defensive: the previous 30 s capped poll uploaded
+# half-rendered files whenever Insta360 Studio took longer than that to
+# finish exporting, which it always does for multi-GB 360° videos. The
+# current check waits until ALL of:
+#   1. no process holds the file open (lsof)
+#   2. size has been stable for $STABLE_WINDOW_S consecutive seconds
+#   3. ffprobe parses the container and reports a positive duration
+# before proceeding, with a generous $STABLE_MAX_WAIT_S ceiling so pathological
+# exports eventually fail loudly rather than silently uploading garbage.
 #
 # Required environment (same names as process-videos.sh):
 #   PI_API_URL              HelmLog API base URL, e.g. http://<pi-hostname>:3002
@@ -47,16 +57,116 @@ if ! [[ "$BASE" =~ ^(PRO_)?VID_([0-9]{8}_[0-9]{6}) ]]; then
 fi
 TS="${BASH_REMATCH[2]}"
 
-# Wait for the file to stop growing — Studio writes incrementally and we
-# don't want to upload a half-rendered file.
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] upload-stitched: $*"; }
+
+# ── Per-file lock ──────────────────────────────────────────────────────────
+#
+# fswatch may fire several events (Created + N × Updated + MovedTo) for one
+# export. Each fired event invokes this script, so without a lock a slow
+# readiness gate can be holding up one instance while follow-on events
+# queue up more. The lock turns those into no-ops.
+LOCKKEY=$(basename "$FILE" | tr -c 'A-Za-z0-9._-' '_')
+LOCKDIR="${TMPDIR:-/tmp}/helmlog-upload.${LOCKKEY}.lock"
+if ! mkdir "$LOCKDIR" 2>/dev/null; then
+  log "another upload-stitched.sh is already processing ${BASE} — exiting"
+  exit 0
+fi
+trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+
+# ── Wait for the export to be fully written ────────────────────────────────
+#
+# Studio writes in place and can take tens of minutes on a big 360° file.
+# Uploading before Studio finishes produces corrupted videos on YouTube and
+# — worse — once the upload "succeeds" the script moves the broken file to
+# the backup volume, so the only recovery is to re-export from scratch. The
+# pre-flight gate below is deliberately paranoid to avoid that class of bug.
+
+STABLE_WINDOW_S="${HELMLOG_STABLE_WINDOW_S:-120}"   # required quiet interval
+STABLE_POLL_S="${HELMLOG_STABLE_POLL_S:-10}"        # poll cadence
+STABLE_MAX_WAIT_S="${HELMLOG_STABLE_MAX_WAIT_S:-14400}"  # 4 h hard ceiling
+
+file_has_writer() {
+  # Check whether any process holds the file open for writing. Read-only
+  # openers (Finder preview, Spotlight) do NOT indicate an in-progress
+  # export, so we filter on access mode rather than any open handle.
+  #
+  # lsof's ``-Fan`` emits one field per line — `a` = access mode (r/w/u),
+  # `n` = name. We only need the `a` records: if any one of them reports
+  # a writer mode the file is still being written.
+  lsof -w -Fan -- "$FILE" 2>/dev/null | awk '
+    /^a/ {
+      mode = substr($0, 2)
+      if (mode ~ /[wu]/) { found = 1; exit }
+    }
+    END { exit found ? 0 : 1 }
+  '
+}
+
+ffprobe_ok() {
+  # Require ffprobe to (a) parse without error AND (b) return a positive
+  # container duration. A half-written MP4 often has a readable header but
+  # no moov atom, which makes `-show_format` fail with "Invalid data found
+  # when processing input". A fully-written file will not.
+  local dur
+  dur=$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 \
+        -- "$FILE" 2>/dev/null || true)
+  [ -n "$dur" ] && awk -v d="$dur" 'BEGIN { exit (d+0 > 0) ? 0 : 1 }'
+}
+
+if ! command -v ffprobe >/dev/null 2>&1; then
+  log "ERROR: ffprobe is required for readiness validation (brew install ffmpeg)" >&2
+  exit 1
+fi
+
+log "readiness gate: file=$FILE window=${STABLE_WINDOW_S}s max=${STABLE_MAX_WAIT_S}s"
+
+started_at=$(date +%s)
 prev_size=-1
-for _ in 1 2 3 4 5 6 7 8 9 10; do
-  cur=$(stat -f%z "$FILE" 2>/dev/null || echo 0)
-  if [ "$cur" -gt 0 ] && [ "$cur" -eq "$prev_size" ]; then
-    break
+stable_since=0
+
+while true; do
+  now=$(date +%s)
+  elapsed=$((now - started_at))
+
+  if [ "$elapsed" -ge "$STABLE_MAX_WAIT_S" ]; then
+    log "ERROR: file did not stabilize within ${STABLE_MAX_WAIT_S}s — aborting to avoid uploading a half-written export" >&2
+    exit 1
   fi
-  prev_size=$cur
-  sleep 3
+
+  if file_has_writer; then
+    [ "$((elapsed % 60))" -lt "$STABLE_POLL_S" ] && \
+      log "still being written (lsof shows a writer) — waiting… elapsed=${elapsed}s"
+    prev_size=-1
+    stable_since=0
+    sleep "$STABLE_POLL_S"
+    continue
+  fi
+
+  cur=$(stat -f%z "$FILE" 2>/dev/null || echo 0)
+  if [ "$cur" -le 0 ]; then
+    sleep "$STABLE_POLL_S"
+    continue
+  fi
+
+  if [ "$cur" = "$prev_size" ]; then
+    [ "$stable_since" = 0 ] && stable_since=$now
+    stable_for=$((now - stable_since))
+    if [ "$stable_for" -ge "$STABLE_WINDOW_S" ]; then
+      if ffprobe_ok; then
+        log "readiness gate: passed (size=${cur} stable_for=${stable_for}s)"
+        break
+      else
+        log "size stable but ffprobe rejected the container — resetting window" >&2
+        prev_size=-1
+        stable_since=0
+      fi
+    fi
+  else
+    prev_size=$cur
+    stable_since=0
+  fi
+
+  sleep "$STABLE_POLL_S"
 done
 
 # Default the camera label from the parent directory if not set explicitly,

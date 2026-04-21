@@ -14,7 +14,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -22,6 +22,9 @@ from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore[import-un
 from googleapiclient.discovery import build as _build_service  # type: ignore[import-untyped]
 from googleapiclient.http import MediaFileUpload  # type: ignore[import-untyped]
 from loguru import logger
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
@@ -102,6 +105,15 @@ class ChannelMismatchError(RuntimeError):
     """Raised when the authenticated channel does not match the expected account."""
 
 
+class UploadVerificationError(RuntimeError):
+    """Raised when YouTube rejects or fails to process an uploaded video.
+
+    The pipeline treats this as a "do not archive the local file" signal —
+    the source MP4 stays in the exports dir so the user can investigate or
+    retry without having to re-export from Insta360 Studio.
+    """
+
+
 def verify_channel(service: object, expected_account: str) -> str:
     """Confirm the loaded credentials authenticate to the expected channel.
 
@@ -141,6 +153,108 @@ def verify_channel(service: object, expected_account: str) -> str:
         )
     logger.info("YouTube channel verified: {} ({})", title, custom_url or "no handle")
     return title
+
+
+# ---------------------------------------------------------------------------
+# Post-upload verification
+# ---------------------------------------------------------------------------
+
+
+# Terminal states reported by the YouTube Data API. A video that lands in one
+# of these has either been accepted (``processed``) or unambiguously refused
+# (``rejected`` / ``failed``). Anything else — notably ``uploaded`` —
+# means YouTube is still ingesting the bytes and may yet decide either way.
+_UPLOAD_STATUS_PROCESSED = "processed"
+_UPLOAD_STATUS_REJECTED = "rejected"
+_UPLOAD_STATUS_FAILED = "failed"
+_TERMINAL_UPLOAD_STATUSES = frozenset(
+    {_UPLOAD_STATUS_PROCESSED, _UPLOAD_STATUS_REJECTED, _UPLOAD_STATUS_FAILED}
+)
+
+
+def wait_for_upload_acceptance(
+    service: object,
+    video_id: str,
+    *,
+    timeout_s: float = 1800.0,
+    poll_interval_s: float = 20.0,
+    sleep: Callable[[float], None] | None = None,
+) -> dict[str, Any]:
+    """Poll YouTube until ``uploadStatus`` transitions out of ``uploaded``.
+
+    YouTube's initial response to ``videos.insert`` returns as soon as the
+    last byte is sent; the server still has to open the container,
+    remux / validate it, and mark the video as ``processed`` (success) or
+    ``rejected`` / ``failed`` (bad upload — typically truncated or corrupt).
+    This helper blocks until one of those terminal states is reported so the
+    caller can decide whether to archive the source file or keep it for a
+    retry.
+
+    Note this waits only for *upload acceptance* — deep transcoding (the
+    ``processingDetails.processingStatus`` field) can take many hours for
+    a multi-GB 360° video and isn't a reliable signal for "was the bitstream
+    coherent". If YouTube accepted the bitstream, it will eventually finish
+    transcoding on its own.
+
+    Args:
+        service: YouTube API service from :func:`build_service`.
+        video_id: The id returned by ``videos.insert``.
+        timeout_s: Hard ceiling — raises ``UploadVerificationError`` if we
+            never see a terminal status within this window.
+        poll_interval_s: Seconds between ``videos.list`` calls.
+        sleep: Optional injectable sleeper (tests use a no-op).
+
+    Returns:
+        The raw ``status`` dict for the video once it's in a terminal state.
+
+    Raises:
+        UploadVerificationError: If YouTube rejects the upload, marks it as
+            failed, or fails to return a terminal status inside ``timeout_s``.
+    """
+    import time
+
+    if sleep is None:
+        sleep = time.sleep
+
+    deadline = time.monotonic() + timeout_s
+    last_status: str | None = None
+
+    while True:
+        response = (
+            service.videos()  # type: ignore[attr-defined]
+            .list(part="status", id=video_id)
+            .execute()
+        )
+        items = response.get("items") or []
+        if not items:
+            # Fresh uploads occasionally return an empty list before the
+            # server fully registers the id — don't treat that as fatal
+            # on its own, just keep polling until the deadline.
+            logger.debug("videos.list returned no items yet for {}", video_id)
+        else:
+            status = items[0].get("status") or {}
+            upload_status = str(status.get("uploadStatus") or "")
+            if upload_status != last_status:
+                logger.info("YouTube uploadStatus for {}: {}", video_id, upload_status)
+                last_status = upload_status
+
+            if upload_status == _UPLOAD_STATUS_PROCESSED:
+                return status
+            if upload_status == _UPLOAD_STATUS_REJECTED:
+                reason = status.get("rejectionReason") or "unknown"
+                raise UploadVerificationError(f"YouTube rejected video {video_id}: {reason}")
+            if upload_status == _UPLOAD_STATUS_FAILED:
+                reason = status.get("failureReason") or "unknown"
+                raise UploadVerificationError(
+                    f"YouTube failed to process video {video_id}: {reason}"
+                )
+
+        if time.monotonic() >= deadline:
+            raise UploadVerificationError(
+                f"YouTube upload for {video_id} did not reach a terminal state "
+                f"within {timeout_s:.0f}s (last uploadStatus={last_status!r})"
+            )
+        sleep(poll_interval_s)
 
 
 # ---------------------------------------------------------------------------
@@ -339,5 +453,20 @@ async def upload_video(
     video_id: str = await asyncio.to_thread(_do_upload)
 
     youtube_url = f"https://youtu.be/{video_id}"
-    logger.info("Upload complete: {} → {}", title, youtube_url)
+    logger.info("Upload bytes complete, verifying YouTube accepted: {} → {}", title, youtube_url)
+
+    # Block until YouTube decides whether it could actually open the file.
+    # A truncated / corrupt source (the exact failure mode we used to hit when
+    # the readiness gate was too short) lands as ``rejected`` / ``failed``
+    # here; raising lets ``upload-stitched.sh`` skip the move-to-backup step
+    # and keep the source file in the exports dir for a retry.
+    verify_timeout = float(os.environ.get("HELMLOG_YT_VERIFY_TIMEOUT_S", "1800"))
+    await asyncio.to_thread(
+        wait_for_upload_acceptance,
+        service,
+        video_id,
+        timeout_s=verify_timeout,
+    )
+
+    logger.info("Upload accepted: {} → {}", title, youtube_url)
     return UploadResult(video_id=video_id, youtube_url=youtube_url, title=title)
