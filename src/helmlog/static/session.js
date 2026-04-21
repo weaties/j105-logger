@@ -6750,7 +6750,11 @@ const _SPARK_LOOKBACK_MS = 5 * 60 * 1000;
 // and scale y to the slice's own min/max so small movements are still
 // visible. Returns without touching the canvas when the field is absent
 // so missing sensors fall back to a blank strip rather than a garbage line.
-function _drawSparkline(canvasId, field, cursorMs, color) {
+//
+// opts.zeroCentered: force the y-axis to be symmetric around 0 so signed
+// series (heel, trim) read as rail-angle gauges rather than auto-ranged
+// blobs. A faint baseline at y=0 is drawn in this mode.
+function _drawSparkline(canvasId, field, cursorMs, color, opts) {
   const c = document.getElementById(canvasId);
   if (!c || !_replaySamples || !_replaySamples.length) return;
   const ctx = c.getContext('2d');
@@ -6781,13 +6785,31 @@ function _drawSparkline(canvasId, field, cursorMs, color) {
 
   let vmin = Infinity, vmax = -Infinity;
   for (const [, v] of pts) { if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
-  // Pad the range a touch so flat series don't sit on the edges
-  if (vmax - vmin < 1e-6) { vmax = vmin + 1; }
-  const pad = (vmax - vmin) * 0.1;
-  vmin -= pad; vmax += pad;
+  if (opts && opts.zeroCentered) {
+    // Symmetric range around 0, so +12° and -12° mirror each other and
+    // the zero line sits in the middle of the strip.
+    const r = Math.max(Math.abs(vmin), Math.abs(vmax), 1);
+    vmin = -r;
+    vmax = r;
+  } else {
+    // Pad the range a touch so flat series don't sit on the edges
+    if (vmax - vmin < 1e-6) { vmax = vmin + 1; }
+    const pad = (vmax - vmin) * 0.1;
+    vmin -= pad; vmax += pad;
+  }
 
   const xFor = t => ((t - t0) / (t1 - t0)) * (w - 2) + 1;
   const yFor = v => h - 1 - ((v - vmin) / (vmax - vmin)) * (h - 2);
+
+  if (opts && opts.zeroCentered) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    const y0 = yFor(0);
+    ctx.moveTo(1, y0);
+    ctx.lineTo(w - 1, y0);
+    ctx.stroke();
+  }
 
   ctx.strokeStyle = color || 'rgba(120,180,255,0.9)';
   ctx.lineWidth = 1.2;
@@ -6821,6 +6843,15 @@ function _renderHud(utc) {
     const wrapped = ((Math.round(v) % 360) + 360) % 360;
     return wrapped + '\u00b0';
   };
+  // Signed-degree format: always shows +/- so heel and trim read as
+  // rail angle (+ = starboard down / bow up). Bare _fmtNum drops the sign
+  // for positives which would look ambiguous on a symmetric gauge.
+  const _fmtSignedDeg = (v, digits) => {
+    if (v == null || Number.isNaN(v)) return '—';
+    const rounded = Number(v).toFixed(digits);
+    const sign = Number(v) >= 0 ? '+' : '';
+    return sign + rounded + '°';
+  };
   setEl('hud-tws', _fmtNum(s && s.tws, 1));
   setEl('hud-twd', _fmtDeg(s && s.twd));
   setEl('hud-twa', _fmtDeg(s && s.twa));
@@ -6828,6 +6859,8 @@ function _renderHud(utc) {
   setEl('hud-awa', _fmtDeg(s && s.awa));
   setEl('hud-hdg', _fmtNum(s && s.hdg, 0));
   setEl('hud-cog', _fmtNum(s && s.cog, 0));
+  setEl('hud-heel', _fmtSignedDeg(s && s.heel, 1));
+  setEl('hud-trim', _fmtSignedDeg(s && s.trim, 1));
   setEl('hud-pct', g && g.pct != null ? _fmtPct(g.pct) : '—');
   setEl('hud-delta', g && g.delta != null ? (g.delta >= 0 ? '+' : '') + _fmtNum(g.delta, 2) : '—');
   setEl('hud-set', s && s.set != null && !Number.isNaN(s.set) ? _fmtDeg(s.set) : '—');
@@ -6842,6 +6875,8 @@ function _renderHud(utc) {
   _drawSparkline('spark-awa', 'awa', cursorMs, 'rgba(220,180,100,0.6)');
   _drawSparkline('spark-hdg', 'hdg', cursorMs, 'rgba(255,140,140,0.9)');
   _drawSparkline('spark-cog', 'cog', cursorMs, 'rgba(255,140,140,0.6)');
+  _drawSparkline('spark-heel', 'heel', cursorMs, 'rgba(180,140,220,0.9)', {zeroCentered: true});
+  _drawSparkline('spark-trim', 'trim', cursorMs, 'rgba(180,140,220,0.6)', {zeroCentered: true});
 }
 
 function _updateReplayControls() {

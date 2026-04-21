@@ -1205,6 +1205,7 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
     app_winds_by_s = await _wind_series("reference = 2")
     hdgs_by_s = await _series("headings", ["heading_deg"])
     cogsog_by_s = await _series("cogsog", ["cog_deg", "sog_kts"])
+    attitudes_by_s = await _series("attitudes", ["heel_deg", "trim_deg"])
 
     keys = sorted(
         set(speeds_by_s.keys())
@@ -1212,6 +1213,7 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         | set(app_winds_by_s.keys())
         | set(hdgs_by_s.keys())
         | set(cogsog_by_s.keys())
+        | set(attitudes_by_s.keys())
     )
 
     samples: list[dict[str, Any]] = []
@@ -1245,10 +1247,13 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         sp = speeds_by_s.get(k)
         cs = cogsog_by_s.get(k)
         hd = hdgs_by_s.get(k)
+        at = attitudes_by_s.get(k)
         stw_v = float(sp["speed_kts"]) if sp else None
         sog_v = float(cs["sog_kts"]) if cs else None
         cog_v = float(cs["cog_deg"]) if cs else None
         hdg_v = float(hd["heading_deg"]) if hd else None
+        heel_v = float(at["heel_deg"]) if at and at["heel_deg"] is not None else None
+        trim_v = float(at["trim_deg"]) if at and at["trim_deg"] is not None else None
         sd = compute_set_drift(sog=sog_v, cog=cog_v, stw=stw_v, hdg=hdg_v)
         set_v: float | None = sd[0] if sd is not None else None
         drift_v: float | None = sd[1] if sd is not None else None
@@ -1264,6 +1269,8 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
                 "twd": twd,
                 "aws": aws,
                 "awa": awa,
+                "heel": heel_v,
+                "trim": trim_v,
                 "set": set_v,
                 "drift": drift_v,
             }
