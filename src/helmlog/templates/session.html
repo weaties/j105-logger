@@ -214,6 +214,15 @@
         <canvas id="spark-hdg" width="300" height="26" style="width:100%;height:22px;display:block;margin-top:2px"></canvas>
         <canvas id="spark-cog" width="300" height="26" style="width:100%;height:22px;display:block"></canvas>
       </div>
+      <div class="replay-gauge" data-gauge="attitude" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
+        <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:2px">Attitude</div>
+        <div style="display:flex;gap:10px;align-items:baseline;font-family:monospace">
+          <span><span style="color:var(--text-secondary);font-size:.7rem">HEEL</span> <span id="hud-heel" style="font-size:1.1rem;color:var(--text-primary)">—</span></span>
+          <span><span style="color:var(--text-secondary);font-size:.7rem">TRIM</span> <span id="hud-trim" style="font-size:1.1rem;color:var(--text-primary)">—</span></span>
+        </div>
+        <canvas id="spark-heel" width="300" height="26" style="width:100%;height:22px;display:block;margin-top:2px"></canvas>
+        <canvas id="spark-trim" width="300" height="26" style="width:100%;height:22px;display:block"></canvas>
+      </div>
       <div class="replay-gauge" data-gauge="polar" style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:8px 10px">
         <div style="font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary);margin-bottom:2px">Polar</div>
         <div style="display:flex;gap:10px;align-items:baseline;font-family:monospace">

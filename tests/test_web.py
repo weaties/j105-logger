@@ -4161,6 +4161,92 @@ async def test_replay_endpoint_returns_twd_when_heading_present(storage: Storage
 
 
 @pytest.mark.asyncio
+async def test_replay_endpoint_returns_heel_and_trim(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attitude rows inside the session window surface as heel and trim on
+    every replay sample. Sign convention: heel positive = starboard down,
+    trim positive = bow up (see nmea2000.AttitudeRecord)."""
+    # _write_attitude rate-limits to 2 Hz by default; the test loop fires
+    # writes in microseconds so only the first would land. Disable it.
+    monkeypatch.setenv("ATTITUDE_STORAGE_HZ", "0")
+    from datetime import timedelta
+
+    from helmlog.nmea2000 import PGN_ATTITUDE, AttitudeRecord
+
+    start = datetime(2024, 8, 3, 12, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=5)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('Attitude', 'E', 1, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    race_id = int((await cur.fetchone())["id"])
+    for i in range(5):
+        ts = start + timedelta(seconds=i)
+        await storage.write(
+            AttitudeRecord(PGN_ATTITUDE, 5, ts, heel_deg=12.5 + i, trim_deg=-1.5 + i * 0.1)
+        )
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/replay")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["samples"]) == 5
+    first = data["samples"][0]
+    assert first["heel"] == pytest.approx(12.5)
+    assert first["trim"] == pytest.approx(-1.5)
+    last = data["samples"][-1]
+    assert last["heel"] == pytest.approx(16.5)
+    assert last["trim"] == pytest.approx(-1.1)
+
+
+@pytest.mark.asyncio
+async def test_replay_endpoint_heel_trim_absent_when_no_attitude_rows(storage: Storage) -> None:
+    """Sessions recorded before schema v75 (no attitudes) still return the
+    heel/trim keys, set to None — the frontend relies on the key being
+    present so it can render em-dashes rather than crashing on undefined."""
+    from datetime import timedelta
+
+    from helmlog.nmea2000 import PGN_SPEED_THROUGH_WATER, SpeedRecord
+
+    start = datetime(2024, 8, 4, 12, 0, 0, tzinfo=UTC)
+    end = start + timedelta(seconds=3)
+    db = storage._conn()
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, end_utc)"
+        " VALUES ('NoAttitude', 'E', 1, ?, ?, ?)",
+        (start.date().isoformat(), start.isoformat(), end.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT id FROM races ORDER BY id DESC LIMIT 1")
+    race_id = int((await cur.fetchone())["id"])
+    for i in range(3):
+        ts = start + timedelta(seconds=i)
+        await storage.write(SpeedRecord(PGN_SPEED_THROUGH_WATER, 5, ts, 6.0))
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        resp = await client.get(f"/api/sessions/{race_id}/replay")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["samples"]) == 3
+    for s in data["samples"]:
+        assert s["heel"] is None
+        assert s["trim"] is None
+
+
+@pytest.mark.asyncio
 async def test_course_overlay_unknown_session_returns_404(storage: Storage) -> None:
     app = create_app(storage)
     async with httpx.AsyncClient(
