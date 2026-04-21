@@ -7387,6 +7387,7 @@ function toggleVideoGauges() {
   _writeOverlayFlag(_VIDEO_OVERLAY_LS_GAUGES, _videoGaugesOn);
   _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
   if (!_videoGaugesOn) _hideOverlay('video-gauge-overlay');
+  _restartOverlayTick();
 }
 
 function toggleVideoTrack() {
@@ -7394,6 +7395,7 @@ function toggleVideoTrack() {
   _writeOverlayFlag(_VIDEO_OVERLAY_LS_TRACK, _videoTrackOn);
   _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
   if (!_videoTrackOn) _hideOverlay('video-track-overlay');
+  _restartOverlayTick();
 }
 
 function _parseManUtcMs(iso) {
@@ -7579,17 +7581,33 @@ function _initVideoOverlayButtons() {
   _videoTrackOn = _readOverlayFlag(_VIDEO_OVERLAY_LS_TRACK);
   _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
   _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
+  _restartOverlayTick();
 }
 
-registerSurface('video-overlay', function(utc) {
+function _currentVideoUtc() {
+  // Prefer the live YT player position — it keeps ticking during natural
+  // playback, unlike _playClock which only advances on scrubs + replay play.
+  // Falls back to the shared clock when no video is loaded.
+  try {
+    if (_videoSync && _videoSync.player && typeof _videoSync.player.getCurrentTime === 'function') {
+      const cur = _videoSync.player.getCurrentTime();
+      if (cur != null && !isNaN(cur)) return _videoOffsetToUtc(cur);
+    }
+  } catch (e) { /* ignore */ }
+  return _playClock.positionUtc;
+}
+
+function _videoOverlayTick() {
+  if (!_videoGaugesOn && !_videoTrackOn) return;
+  const utc = _currentVideoUtc();
   if (!utc) return;
-  if (!_videoGaugesOn && !_videoTrackOn) {
-    _mountVideoOverlayFor(null);
-    return;
-  }
   const m = _findActiveManeuver(utc);
   _mountVideoOverlayFor(m);
-  if (!m) return;
+  if (!m) {
+    _hideOverlay('video-gauge-overlay');
+    _hideOverlay('video-track-overlay');
+    return;
+  }
   const gauge = document.getElementById('video-gauge-overlay');
   if (gauge) {
     if (_videoGaugesOn) { gauge.classList.add('show'); _updateVideoGauge(utc); }
@@ -7600,7 +7618,22 @@ registerSurface('video-overlay', function(utc) {
     if (_videoTrackOn) { track.classList.add('show'); _updateVideoTrackDot(utc, m); }
     else track.classList.remove('show');
   }
-});
+}
+
+let _videoOverlayTimer = null;
+function _restartOverlayTick() {
+  if (_videoOverlayTimer) { clearInterval(_videoOverlayTimer); _videoOverlayTimer = null; }
+  if (!_videoGaugesOn && !_videoTrackOn) {
+    _mountVideoOverlayFor(null);
+    return;
+  }
+  _videoOverlayTick();
+  _videoOverlayTimer = setInterval(_videoOverlayTick, 200);
+}
+
+// Fire immediately on any producer event too, so scrubs + replay play feel
+// snappy instead of waiting up to 200ms for the poll.
+registerSurface('video-overlay', function(_utc) { _videoOverlayTick(); });
 
 // Hook into init() path without rewriting it: kick off replay load once the
 // DOM is ready, and wire controls immediately. _loadReplayData() waits on
