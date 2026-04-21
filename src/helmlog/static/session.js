@@ -301,6 +301,7 @@ async function init() {
   renderExports();
   renderDangerZone();
   if (cfg.dataset.live === '1') _startLiveRefresh();
+  _applyDeepLink();
 }
 
 // ---------------------------------------------------------------------------
@@ -1579,6 +1580,11 @@ function _onVideoReady() {
     }
     _videoSync.player.seekTo(offset, true);
   });
+  // If a deep-link was requested before the YT player was ready, re-apply
+  // it now so the video actually seeks. The scrubber / track have already
+  // been parked on the target by the earlier _applyDeepLink() call at the
+  // tail of init().
+  _applyDeepLink();
 }
 
 function switchVideo(idx) {
@@ -7847,6 +7853,128 @@ function _restartOverlayTick() {
 // Fire immediately on any producer event too, so scrubs + replay play feel
 // snappy instead of waiting up to 200ms for the poll.
 registerSurface('video-overlay', function(_utc) { _videoOverlayTick(); });
+
+// ---------------------------------------------------------------------------
+// Deep-link to a specific moment in the session via ?t= (#642).
+//
+// Accepts three formats to match YouTube share ergonomics:
+//   • seconds            ?t=125          ?t=125.5
+//   • readable           ?t=1m5s         ?t=2h10m         ?t=45s
+//   • clock              ?t=1:05         ?t=01:23:45
+//
+// Offsets are measured from the session's start_utc, not from any video's
+// own offset, since a session can have multiple linked videos. Out-of-range
+// values are clamped to the session window.
+// ---------------------------------------------------------------------------
+
+let _deepLinkTargetUtc = null;
+
+function _parseDeepLinkTime(raw) {
+  if (raw == null) return null;
+  const v = String(raw).trim();
+  if (!v) return null;
+  // Pure number → seconds
+  if (/^\d+(?:\.\d+)?$/.test(v)) return parseFloat(v);
+  // XhYmZs (any subset, at least one)
+  const readable = v.match(/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/);
+  if (readable && (readable[1] || readable[2] || readable[3])) {
+    const h = parseFloat(readable[1] || 0);
+    const mm = parseFloat(readable[2] || 0);
+    const ss = parseFloat(readable[3] || 0);
+    return h * 3600 + mm * 60 + ss;
+  }
+  // HH:MM:SS or MM:SS
+  const clock = v.match(/^(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/);
+  if (clock) {
+    const h = parseFloat(clock[1] || 0);
+    const mm = parseFloat(clock[2]);
+    const ss = parseFloat(clock[3]);
+    return h * 3600 + mm * 60 + ss;
+  }
+  return null;
+}
+
+function _fmtDeepLinkTime(totalSec) {
+  const s = Math.max(0, Math.floor(totalSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = s % 60;
+  let out = '';
+  if (h) out += h + 'h';
+  if (m || h) out += m + 'm';
+  out += ss + 's';
+  return out;
+}
+
+function _applyDeepLink() {
+  if (!_session || !_session.start_utc) return;
+  const params = new URLSearchParams(window.location.search);
+  const raw = params.get('t');
+  if (!raw) return;
+  const seconds = _parseDeepLinkTime(raw);
+  if (seconds == null) return;
+  const sessionStart = new Date(_session.start_utc).getTime();
+  const sessionEnd = _session.end_utc
+    ? new Date(_session.end_utc).getTime()
+    : Date.now();
+  let targetMs = sessionStart + seconds * 1000;
+  if (targetMs < sessionStart) targetMs = sessionStart;
+  if (targetMs > sessionEnd) targetMs = sessionEnd;
+  _deepLinkTargetUtc = new Date(targetMs);
+  _seekTo(_deepLinkTargetUtc, 'deeplink');
+}
+
+async function shareVideoLink() {
+  if (!_session || !_session.start_utc) {
+    window.alert('Session data not loaded yet — try again in a moment.');
+    return;
+  }
+  // Prefer the YT player's position while it's playing; fall back to the
+  // shared clock so a user who only scrubbed the replay scrubber still
+  // gets a useful share link.
+  let utc = null;
+  try {
+    if (_videoSync && _videoSync.player && typeof _videoSync.player.getCurrentTime === 'function') {
+      const cur = _videoSync.player.getCurrentTime();
+      if (cur != null && !isNaN(cur) && typeof _videoOffsetToUtc === 'function') {
+        utc = _videoOffsetToUtc(cur);
+      }
+    }
+  } catch (e) { /* fall through */ }
+  if (!utc) utc = _playClock.positionUtc;
+  if (!utc) {
+    window.alert('Play or scrub first so there is a timestamp to anchor the share link to.');
+    return;
+  }
+  const sessionStart = new Date(_session.start_utc).getTime();
+  const offsetSec = (utc.getTime() - sessionStart) / 1000;
+  const t = _fmtDeepLinkTime(offsetSec);
+  const url = location.origin + location.pathname + '?t=' + t;
+  const btn = document.getElementById('video-share-btn');
+  try {
+    await navigator.clipboard.writeText(url);
+    _flashShareBtn(btn, 'Copied!');
+  } catch (e) {
+    // Browsers without clipboard perms → fall back to a prompt the user
+    // can copy from manually.
+    window.prompt('Copy share link', url);
+  }
+}
+
+function _flashShareBtn(btn, msg) {
+  if (!btn) return;
+  const orig = btn.textContent;
+  const origBg = btn.style.background;
+  const origColor = btn.style.color;
+  btn.textContent = msg;
+  btn.style.background = 'var(--success)';
+  btn.style.color = 'var(--bg-primary)';
+  setTimeout(() => {
+    btn.textContent = orig;
+    btn.style.background = origBg;
+    btn.style.color = origColor;
+  }, 1500);
+}
 
 // Hook into init() path without rewriting it: kick off replay load once the
 // DOM is ready, and wire controls immediately. _loadReplayData() waits on
