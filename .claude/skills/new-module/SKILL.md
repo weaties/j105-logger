@@ -11,6 +11,14 @@ for each step that involves code.
 
 ## Checklist
 
+### 0. Enter a worktree
+Before any file edits, make sure the session is in a git worktree. Check
+`git worktree list` — reuse an existing one via `EnterWorktree(path=...)` if
+it matches this task, otherwise create a new one via `EnterWorktree(name=...)`.
+Scaffolding touches `tests/`, `src/logger/`, `main.py`, and often `web.py` and
+`storage.py` — exactly the kind of multi-file change that collides with other
+agents sharing the repo. See CLAUDE.md for the full rule.
+
 ### 1. Write tests first
 Create `tests/test_$ARGUMENTS.py` with tests for the module's public API.
 Use the `storage` fixture from `conftest.py` and mock any external I/O.

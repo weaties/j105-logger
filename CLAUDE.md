@@ -139,6 +139,35 @@ helmlog --help          # full subcommand list
 
 ## Development Workflow
 
+### Always work in a git worktree
+
+**Before making any file edits, enter a git worktree.** Multiple Claude Code
+agents frequently run in this repo on the same machine at the same time. If
+two agents share a working directory, their uncommitted changes collide,
+branch switches reorder each other's files, and a deploy can easily pick up a
+half-finished hotfix from the wrong agent. Worktrees give each agent an
+isolated checkout on its own branch.
+
+**Always check for an existing worktree before creating a new one.** When
+resuming work on a PR or an issue, a worktree often already exists from the
+previous session.
+
+```bash
+git worktree list
+# Also check for leftover directories: ls .claude/worktrees/
+```
+
+If a worktree's branch matches the task (e.g., `feature/my-feature` for PR
+work, or a name containing the issue number), enter it with
+`EnterWorktree(path=<path>)` — do **not** create a second one. Only call
+`EnterWorktree(name=<name>)` to create a new worktree when none of the
+existing ones fit. The created worktree lives at `.claude/worktrees/<name>/`
+on a fresh branch off `HEAD`. When the session ends, you'll be prompted to
+keep or remove it.
+
+Read-only work (answering questions, exploring the codebase, running
+`/architecture`, `/diagnose`, `/domain`) does not need a worktree.
+
 ### Mac setup (one time)
 
 ```bash
@@ -162,14 +191,19 @@ uv run mypy src/            # types clean
 
 When starting work on a GitHub issue:
 
-1. **Mark the issue in-progress**: apply the `in-progress` label and add a comment:
+1. **Enter a worktree first** — call `EnterWorktree` with a descriptive name
+   (e.g. `issue-332-polar-bug`) before any other setup. All subsequent steps
+   run inside the worktree.
+2. **Mark the issue in-progress**: apply the `in-progress` label and add a comment:
    ```bash
    gh issue edit <number> --add-label "in-progress"
    gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code on <hostname>)"
    ```
-2. Branch off `main`: `git checkout -b feature/my-feature main`
-3. Develop with TDD until tests + lint + types pass
-4. Push and create PR with issue linking:
+3. Rename the worktree's branch to the conventional feature name if needed
+   (`git branch -m feature/my-feature`). The branch is already off `main` /
+   `HEAD`, so no `git checkout -b` is required.
+4. Develop with TDD until tests + lint + types pass
+5. Push and create PR with issue linking:
    ```bash
    git push -u origin feature/my-feature
    gh pr create --title "..." --body "$(cat <<'EOF'
@@ -184,12 +218,12 @@ When starting work on a GitHub issue:
    ```
    The PR body **must** include `Closes #<issue>` (or `Fixes #<issue>` for bugs) so GitHub
    auto-closes the issue on merge.
-5. On merge: GitHub auto-closes the linked issue via `Closes #N`. Remove `in-progress` label if
+6. On merge: GitHub auto-closes the linked issue via `Closes #N`. Remove `in-progress` label if
    it wasn't automatically cleared:
    ```bash
    gh issue edit <number> --remove-label "in-progress"
    ```
-6. If a PR is **closed without merge**, comment on the linked issue explaining the outcome:
+7. If a PR is **closed without merge**, comment on the linked issue explaining the outcome:
    - **Superseded** — link to the replacement PR/issue
    - **Deferred** — explain why, remove `in-progress` label
    - **Won't fix** — close the issue with `wontfix` label and explanation
@@ -267,6 +301,7 @@ Use `/data-license` to review code changes against the full policy.
 ## Dos and Don'ts
 
 **Do:**
+- **Always enter a git worktree before making file edits** (via the `EnterWorktree` tool). Multiple Claude Code agents may be running against this repo on the same machine — isolated worktrees prevent them from stepping on each other's branches and uncommitted changes.
 - **All changes to `main` must come through merged PRs** — never push directly to `main`
 - **Always include `Closes #N` in PR body** when the PR resolves an issue — this auto-closes the issue on merge and keeps the tracker clean. Use `Fixes #N` for bug fixes.
 - **Apply `in-progress` label when starting work** on an issue (`gh issue edit <N> --add-label "in-progress"`); remove it when the issue closes or work is deferred
@@ -281,6 +316,7 @@ Use `/data-license` to review code changes against the full policy.
 - Log every read error and decode failure with `loguru` at `WARNING` or above
 
 **Don't:**
+- **Never edit files in the primary checkout** (`/Users/dweatbrook/src/helmlog`) — enter a worktree first. Even "one-line" edits: another agent may already be on that branch.
 - **Never push directly to `main`** — `main` is sacrosanct. Always work on a feature branch and merge via PR. If on the Pi and a hotfix is needed, create or use an existing branch, commit and push there, then merge through GitHub.
 - Don't parse NMEA 2000 PGNs manually from scratch — use `canboat` or a library; only write custom decoders when necessary
 - Don't store data in memory across long runs — flush to SQLite frequently to survive crashes/reboots
