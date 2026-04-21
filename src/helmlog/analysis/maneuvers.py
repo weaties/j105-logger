@@ -238,6 +238,7 @@ def enrich_maneuver(
     positions: list[tuple[datetime, float, float]],
     signed_twa: list[tuple[datetime, float]] | None = None,
     maneuver_type: str | None = None,
+    twd: list[tuple[datetime, float]] | None = None,
 ) -> ManeuverMetrics:
     """Compute entry/exit metrics, turn geometry, and distance loss.
 
@@ -301,31 +302,44 @@ def enrich_maneuver(
         if duration and duration > 0:
             turn_rate = abs(turn_angle) / duration
 
-    # Distance loss along the entry COG vector.
+    # Ladder loss — the single, mark-directed loss metric. Ideal: what
+    # a boat holding entry VMG for the full duration would make along
+    # the mark axis (+wind for tacks, −wind for gybes). Actual: the
+    # component of (exit_pos − entry_pos) along that same mark axis.
+    # Positive = ground lost toward the mark; negative = ground gained
+    # (rare — current push, favourable shift).
     distance_loss: float | None = None
     entry_sog = _entry_sog(positions, entry_start, entry_end)
     entry_pos = _position_at(positions, maneuver_ts)
     exit_pos = _position_at(positions, fallback_exit)
+    mean_twd = _circular_mean_deg(twd or [], entry_start, entry_end)
     if (
         entry_sog is not None
         and entry_pos is not None
         and exit_pos is not None
         and duration is not None
         and duration > 0
+        and entry_twa is not None
+        and mean_twd is not None
     ):
-        # Use the positional entry bearing for the loss projection — that's
-        # the direction the boat was actually moving, independent of any
-        # compass offset.
-        ref_bearing = _average_cog_between(positions, entry_start, entry_end)
-        if ref_bearing is not None:
-            ideal_distance_m = entry_sog * _KTS_TO_MS * duration
-            lat0, lon0 = entry_pos
-            ex_x, ex_y = _ll_to_xy(lat0, lon0, exit_pos[0], exit_pos[1])
-            # Unit vector along entry bearing (x=east, y=north).
-            br_rad = math.radians(ref_bearing)
-            ux, uy = math.sin(br_rad), math.cos(br_rad)
-            actual_forward_m = ex_x * ux + ex_y * uy
-            distance_loss = ideal_distance_m - actual_forward_m
+        travelled = entry_sog * _KTS_TO_MS * duration
+        # Folded entry_twa in [0, 180]. cos is positive for upwind,
+        # negative for downwind; |cos| is the VMG fraction.
+        twa_rad = math.radians(entry_twa)
+        ideal_toward_mark = travelled * abs(math.cos(twa_rad))
+
+        # Mark-direction unit vector in (east, north). TWD is the
+        # direction the wind is blowing FROM — same as the upwind mark
+        # bearing. For gybes the mark is downwind, so negate.
+        mark_sign = 1.0 if entry_twa < 90.0 else -1.0
+        twd_rad = math.radians(mean_twd)
+        mark_ux = mark_sign * math.sin(twd_rad)
+        mark_uy = mark_sign * math.cos(twd_rad)
+
+        lat0, lon0 = entry_pos
+        ex_x, ex_y = _ll_to_xy(lat0, lon0, exit_pos[0], exit_pos[1])
+        actual_toward_mark = ex_x * mark_ux + ex_y * mark_uy
+        distance_loss = ideal_toward_mark - actual_toward_mark
 
     # Head-to-wind timestamp (#613). Search window is [ts, exit_ts or ts+30s]
     # so slow tacks that don't fully recover still get a HTW.
@@ -483,7 +497,10 @@ _ENRICH_PAD_S = 60  # seconds of instrument data to load beyond the session wind
 #     entry_twa, entry_tws (and downstream distance_loss_m) shift.
 # v6: spread-aware ranking with new ``consistent`` label and numeric
 #     ``loss_percentile`` (#616).
-ENRICH_CACHE_VERSION = 6
+# v7: distance_loss_m switches from entry-COG projection to the single
+#     ladder-axis projection (upwind for tacks, downwind for gybes).
+#     Positive = ground lost toward the mark. (#619 follow-up.)
+ENRICH_CACHE_VERSION = 7
 
 
 def _bucket_positions_per_second(
@@ -818,6 +835,7 @@ async def enrich_session_maneuvers(
             positions=positions,
             signed_twa=signed_twa_series,
             maneuver_type=stored_type,
+            twd=twd,
         )
         md = metrics.to_dict()
         # Don't let entry_ts/exit_ts clobber the stored ts/end_ts fields.

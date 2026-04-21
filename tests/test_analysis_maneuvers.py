@@ -137,12 +137,14 @@ class TestEnrichManeuver:
         assert m.turn_rate_deg_s is not None and 7.0 <= m.turn_rate_deg_s <= 11.0
 
     def test_distance_loss_zero_for_straight_line(self) -> None:
-        # No actual turn — boat keeps going straight; entry-vector projection
-        # should show ~0 loss against the idealized path.
+        # No actual turn — boat keeps going straight at entry VMG, so
+        # ladder loss (upwind-axis projection vs ideal) is ~0.
         hdg = _const(70, 0.0)
         bsp = _const(70, 6.0)
         twa = _const(70, 40.0)
         tws = _const(70, 12.0)
+        # TWD 40° (wind from NE) matches hdg=0 on starboard tack.
+        twd = _const(70, 40.0)
         positions = _straight_positions(37.0, -122.0, 0.0, 6.0, 70)
         m = enrich_maneuver(
             maneuver_ts=_BASE_TS + timedelta(seconds=30),
@@ -152,17 +154,21 @@ class TestEnrichManeuver:
             twa=twa,
             tws=tws,
             positions=positions,
+            twd=twd,
         )
         assert m.distance_loss_m is not None
         assert abs(m.distance_loss_m) < 1.0
 
     def test_distance_loss_positive_for_real_tack(self) -> None:
-        # Pre-window: bearing 0° at 6 kt for 30s
-        # During maneuver: 10s of near-zero progress (boat stalls in tack)
-        # Exit: bearing 270° at 5 kt for 30s (ends up well off the entry line)
+        # Pre-window: heading 0°, wind from 40°, boat closing at 6 kt
+        # upwind.
+        # During maneuver: 10 s of near-zero position change (boat stalls
+        # mid-tack). Ideal upwind progress for 10 s at entry VMG is
+        # ~23.6 m; actual is ~0. Loss should show that full deficit.
+        # Exit: heading 270°, boat moving west — cross-wind, zero upwind
+        # progress.
         pre = _straight_positions(37.0, -122.0, 0.0, 6.0, 30)
         last_pre_ts, last_lat, last_lon = pre[-1]
-        # During maneuver: stall — positions barely move
         during = [(last_pre_ts + timedelta(seconds=i + 1), last_lat, last_lon) for i in range(10)]
         last_during = during[-1]
         post = _straight_positions(last_during[1], last_during[2], 270.0, 5.0, 30, offset_s=40)
@@ -172,6 +178,7 @@ class TestEnrichManeuver:
         bsp = _const(30, 6.0) + _const(10, 1.0, 30) + _const(30, 5.0, 40)
         twa = _const(70, 40.0)
         tws = _const(70, 12.0)
+        twd = _const(70, 40.0)
 
         m = enrich_maneuver(
             maneuver_ts=_BASE_TS + timedelta(seconds=30),
@@ -181,9 +188,10 @@ class TestEnrichManeuver:
             twa=twa,
             tws=tws,
             positions=positions,
+            twd=twd,
         )
         assert m.distance_loss_m is not None
-        # Boat should have lost at least ~10m of forward progress along the 0° axis.
+        # Stall gives up ~23 m of upwind progress vs ideal VMG.
         assert m.distance_loss_m > 10.0
 
     def test_missing_data_returns_none_fields_no_crash(self) -> None:

@@ -110,12 +110,22 @@ function mvRenderTrackSvg(tracks, opts) {
       out += '<line x1="' + originX + '" y1="' + projY + '" x2="' + originX + '" y2="' + gy2
         + '" stroke="' + t.color + '" stroke-width="2.5" opacity="0.9"/>';
       if (t.highlight) {
+        // Sign convention: positive = ground lost toward the mark
+        // (actual is behind the ghost), negative = ground gained
+        // (rare — favourable shift or current push). Matches the
+        // DIST LOSS column so the two numbers can be compared.
         const deltaM = t.ghost - actual.y;
+        // Tacks: ghost > 0, actual behind → deltaM > 0 → loss > 0. ✓
+        // Gybes: ghost < 0, actual less negative → deltaM < 0 but
+        // that's ALSO a loss (boat didn't make as much downwind
+        // progress as ideal) — flip so positive = loss either way.
+        const signedLoss = t.ghost >= 0 ? deltaM : -deltaM;
         const midY = (projY + gy2) / 2;
-        const label = (deltaM >= 0 ? '−' : '+') + Math.abs(deltaM).toFixed(1) + ' m';
+        const label = signedLoss.toFixed(1) + ' m';
         out += '<text x="' + (originX + 6) + '" y="' + (midY + 3) + '" font-size="10" fill="' + t.color
           + '" style="paint-order:stroke;stroke:var(--bg-secondary);stroke-width:3px;stroke-linejoin:round">'
-          + label + '</text>';
+          + label + '<title>Ladder loss — upwind ground lost vs ideal VMG. '
+          + 'Matches DIST LOSS in the table.</title></text>';
       }
     }
     return out;

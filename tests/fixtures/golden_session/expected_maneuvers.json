@@ -8,7 +8,7 @@
   },
   "maneuvers": [
     {
-      "distance_loss_m": 92.22,
+      "distance_loss_m": 59.87,
       "duration_sec": 21.0,
       "end_ts": "2026-04-09T01:30:47+00:00",
       "entry_bsp": 5.657,
@@ -21,12 +21,12 @@
       "type": "rounding"
     },
     {
-      "distance_loss_m": 77.17,
+      "distance_loss_m": -11.3,
       "duration_sec": 14.0,
       "end_ts": "2026-04-09T01:32:13+00:00",
       "entry_bsp": 7.114,
       "head_to_wind_ts": "2026-04-09T01:31:58.056000+00:00",
-      "rank": "bad",
+      "rank": "good",
       "time_to_head_to_wind_s": 0.1,
       "time_to_recover_s": 14.9,
       "ts": "2026-04-09T01:31:58+00:00",
@@ -52,7 +52,7 @@
       "end_ts": null,
       "entry_bsp": 6.59,
       "head_to_wind_ts": "2026-04-09T01:35:38.014000+00:00",
-      "rank": "good",
+      "rank": "avg",
       "time_to_head_to_wind_s": 13.0,
       "time_to_recover_s": null,
       "ts": "2026-04-09T01:35:25+00:00",
@@ -60,12 +60,12 @@
       "type": "tack"
     },
     {
-      "distance_loss_m": 1.18,
+      "distance_loss_m": 3.77,
       "duration_sec": 0.0,
       "end_ts": "2026-04-09T01:36:20+00:00",
       "entry_bsp": 4.996,
       "head_to_wind_ts": null,
-      "rank": "good",
+      "rank": "avg",
       "time_to_head_to_wind_s": null,
       "time_to_recover_s": null,
       "ts": "2026-04-09T01:36:19+00:00",
@@ -73,7 +73,7 @@
       "type": "rounding"
     },
     {
-      "distance_loss_m": 22.47,
+      "distance_loss_m": 2.98,
       "duration_sec": 5.0,
       "end_ts": "2026-04-09T01:41:47+00:00",
       "entry_bsp": 6.045,
@@ -86,7 +86,7 @@
       "type": "tack"
     },
     {
-      "distance_loss_m": 36.53,
+      "distance_loss_m": 8.83,
       "duration_sec": 8.0,
       "end_ts": "2026-04-09T01:48:28+00:00",
       "entry_bsp": 6.842,
@@ -99,12 +99,12 @@
       "type": "tack"
     },
     {
-      "distance_loss_m": 37.15,
+      "distance_loss_m": 0.63,
       "duration_sec": 10.0,
       "end_ts": "2026-04-09T01:50:08+00:00",
       "entry_bsp": 6.648,
       "head_to_wind_ts": "2026-04-09T01:49:56.011000+00:00",
-      "rank": "avg",
+      "rank": "good",
       "time_to_head_to_wind_s": 0.0,
       "time_to_recover_s": 12.0,
       "ts": "2026-04-09T01:49:56+00:00",
@@ -112,12 +112,12 @@
       "type": "tack"
     },
     {
-      "distance_loss_m": 0.61,
+      "distance_loss_m": 7.65,
       "duration_sec": 0.0,
       "end_ts": "2026-04-09T01:50:22+00:00",
       "entry_bsp": 6.045,
       "head_to_wind_ts": null,
-      "rank": "good",
+      "rank": "avg",
       "time_to_head_to_wind_s": null,
       "time_to_recover_s": null,
       "ts": "2026-04-09T01:50:20+00:00",
@@ -125,12 +125,12 @@
       "type": "rounding"
     },
     {
-      "distance_loss_m": 58.93,
+      "distance_loss_m": 16.78,
       "duration_sec": 21.0,
       "end_ts": "2026-04-09T01:54:16+00:00",
       "entry_bsp": 6.473,
       "head_to_wind_ts": "2026-04-09T01:53:50.054000+00:00",
-      "rank": "avg",
+      "rank": "bad",
       "time_to_head_to_wind_s": 1.1,
       "time_to_recover_s": 25.9,
       "ts": "2026-04-09T01:53:49+00:00",
@@ -138,7 +138,7 @@
       "type": "gybe"
     },
     {
-      "distance_loss_m": 91.6,
+      "distance_loss_m": 83.8,
       "duration_sec": 28.0,
       "end_ts": "2026-04-09T02:01:59+00:00",
       "entry_bsp": 4.801,
@@ -151,12 +151,12 @@
       "type": "rounding"
     },
     {
-      "distance_loss_m": 5.76,
+      "distance_loss_m": -0.63,
       "duration_sec": 0.0,
       "end_ts": "2026-04-09T02:02:11+00:00",
       "entry_bsp": 4.199,
       "head_to_wind_ts": "2026-04-09T02:02:07.012000+00:00",
-      "rank": "avg",
+      "rank": "good",
       "time_to_head_to_wind_s": 0.0,
       "time_to_recover_s": 4.0,
       "ts": "2026-04-09T02:02:07+00:00",
@@ -164,7 +164,7 @@
       "type": "tack"
     },
     {
-      "distance_loss_m": 30.58,
+      "distance_loss_m": 10.16,
       "duration_sec": 8.0,
       "end_ts": "2026-04-09T02:04:38+00:00",
       "entry_bsp": 6.687,
