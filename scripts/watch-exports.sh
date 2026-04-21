@@ -47,15 +47,24 @@ log "Upload script: $UPLOAD_SCRIPT"
 #               event, which is exactly what happens if you forget -E.
 #   -e          exclude regex (skip everything by default …)
 #   -i          … then include only VID_*.mp4 / .insv
-#   --event     only fire on Created / MovedTo (file appearance)
-#   --latency   small debounce
+#   --event     only fire on Created / MovedTo (file appearance). We
+#               deliberately DO NOT subscribe to Updated — during a
+#               multi-GB Studio export that event fires hundreds of times
+#               while data is still being written, and the downstream
+#               script used to get tricked into uploading a half-rendered
+#               file. Readiness is now validated inside upload-stitched.sh
+#               (lsof + size stability + ffprobe), so a single Created
+#               event is enough to kick things off.
+#   --latency   debounce window. Raised from 1 s to 10 s so a rename-on-
+#               create burst (Created immediately followed by MovedTo,
+#               which Studio does when renaming its temp export into the
+#               final path) coalesces into one event instead of two.
 fswatch \
   -0 \
   -r \
   -E \
-  --latency 1 \
+  --latency 10 \
   --event=Created \
-  --event=Updated \
   --event=MovedTo \
   -e ".*" \
   -i 'VID_[0-9]{8}_[0-9]{6}_[0-9]{2}_[0-9]+.*\.(mp4|insv)$' \
@@ -63,6 +72,8 @@ fswatch \
   while IFS= read -r -d '' f; do
     log "event: $f"
     # Run uploads sequentially — one big upload at a time keeps quota,
-    # bandwidth, and YouTube rate-limits sane.
+    # bandwidth, and YouTube rate-limits sane. upload-stitched.sh takes
+    # its own per-file lock so a follow-on event for the same export is
+    # a cheap no-op rather than a queued second attempt.
     "$UPLOAD_SCRIPT" "$f" || log "upload failed for $f"
   done
