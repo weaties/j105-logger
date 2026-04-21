@@ -37,6 +37,17 @@
 .mv-viz-table .mv-badge-gybe{color:var(--warning)}
 .mv-viz-table .mv-badge-rounding{color:var(--success)}
 .mv-viz-table tr.highlight{background:rgba(96,165,250,.12)}
+.ov-filter-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;padding:8px 10px;margin-bottom:8px;display:none}
+.ov-filter-panel.open{display:flex;gap:16px;flex-wrap:wrap;align-items:center}
+.ov-filter-group{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+.ov-filter-group .label{font-size:.7rem;color:var(--text-secondary);margin-right:4px;text-transform:uppercase;letter-spacing:.04em}
+.ov-pill{font-size:.72rem;padding:3px 9px;border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--text-secondary);cursor:pointer}
+.ov-pill.active{background:var(--accent);color:var(--bg-primary);border-color:var(--accent)}
+.ov-select-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:.72rem;color:var(--text-secondary);margin:6px 0 8px}
+.ov-select-bar button{font-size:.7rem;padding:3px 10px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px}
+.ov-select-bar button.primary{border-color:var(--accent);color:var(--accent);font-weight:600}
+.ov-select-bar button.primary:disabled{opacity:.4;pointer-events:none}
+.ov-select-bar .spacer{flex:1}
 </style>
 {% endblock %}
 
@@ -57,10 +68,37 @@
   <span class="subtitle" id="ov-subtitle"></span>
   <span class="spacer"></span>
   <div class="ov-controls">
+    <button type="button" id="ov-filter-toggle" onclick="ovToggleFilter()">Filter</button>
     <button type="button" id="ov-mode-lines" onclick="ovSetMode('lines')" class="active">Lines</button>
     <button type="button" id="ov-mode-bands" onclick="ovSetMode('bands')">Bands</button>
     <button type="button" id="ov-mode-auto" onclick="ovSetMode('auto')">Auto</button>
   </div>
+</div>
+
+<div id="ov-filter-panel" class="ov-filter-panel">
+  <div class="ov-filter-group">
+    <span class="label">Type</span>
+    <button type="button" class="ov-pill" data-filter="tack" onclick="ovTogglePill('tack')">tack</button>
+    <button type="button" class="ov-pill" data-filter="gybe" onclick="ovTogglePill('gybe')">gybe</button>
+    <button type="button" class="ov-pill" data-filter="rounding" onclick="ovTogglePill('rounding')">rounding</button>
+  </div>
+  <div class="ov-filter-group">
+    <span class="label">Dir</span>
+    <button type="button" class="ov-pill" data-filter="P→S" onclick="ovTogglePill('P→S')">P→S</button>
+    <button type="button" class="ov-pill" data-filter="S→P" onclick="ovTogglePill('S→P')">S→P</button>
+  </div>
+  <div class="ov-filter-group">
+    <span class="label">Rank</span>
+    <button type="button" class="ov-pill" data-filter="good" onclick="ovTogglePill('good')">good</button>
+    <button type="button" class="ov-pill" data-filter="bad" onclick="ovTogglePill('bad')">bad</button>
+  </div>
+  <div class="ov-filter-group">
+    <span class="label">TWS</span>
+    <button type="button" class="ov-pill" data-filter="tws:0-8" onclick="ovTogglePill('tws:0-8')">0–8</button>
+    <button type="button" class="ov-pill" data-filter="tws:8-12" onclick="ovTogglePill('tws:8-12')">8–12</button>
+    <button type="button" class="ov-pill" data-filter="tws:12+" onclick="ovTogglePill('tws:12+')">12+</button>
+  </div>
+  <button type="button" class="ov-pill" onclick="ovClearFilters()" style="margin-left:auto">Clear</button>
 </div>
 
 <div id="ov-notice" class="ov-notice" style="display:none"></div>
@@ -88,8 +126,18 @@
   <span style="margin-left:16px">t=0 = head-to-wind</span>
 </div>
 
+<!-- Selection bar -->
+<div id="ov-select-bar" class="ov-select-bar" style="display:none">
+  <span id="ov-select-count">0 selected</span>
+  <button type="button" onclick="ovSelectAll('all')">all</button>
+  <button type="button" onclick="ovSelectAll('none')">none</button>
+  <button type="button" onclick="ovSelectAll('filtered')">match filter</button>
+  <span class="spacer"></span>
+  <button type="button" id="ov-compare-btn" class="primary" onclick="ovCompareSelected()" disabled>Compare Videos</button>
+</div>
+
 <!-- Maneuver table (ported from session page) -->
-<div id="ov-table-wrap" style="display:none;margin-top:10px;max-height:300px;overflow:auto;border:1px solid var(--border);border-radius:4px">
+<div id="ov-table-wrap" style="display:none;margin-top:6px;max-height:340px;overflow:auto;border:1px solid var(--border);border-radius:4px">
   <div id="ov-table"></div>
 </div>
 

@@ -228,6 +228,15 @@ function mvTableHtml(maneuvers, opts) {
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
   const onRowClickName = opts.onRowClickName || '';
   const showSession = !!opts.showSession;
+  // Checkbox support (#619 follow-up). When `checked` is a Set of
+  // "sid:mid" keys the table gets a first-column checkbox per row and
+  // a select-all in the header; clicks route through `onCheckName` /
+  // `onCheckAllName` so the caller can manage selection state.
+  const checked = opts.checked instanceof Set ? opts.checked : null;
+  const onCheckName = opts.onCheckName || '';
+  const onCheckAllName = opts.onCheckAllName || '';
+  const allChecked = checked && maneuvers.length > 0
+    && maneuvers.every(m => checked.has(m.session_id + ':' + m.maneuver_id));
 
   const rows = maneuvers.map(m => {
     const key = m.session_id + ':' + m.maneuver_id;
@@ -252,7 +261,16 @@ function mvTableHtml(maneuvers, opts) {
     const sessionCell = showSession
       ? '<td>' + esc((m.session_name || '').slice(0, 20)) + '</td>'
       : '';
+    const checkCell = checked
+      ? '<td style="width:24px"><input type="checkbox"'
+        + (checked.has(key) ? ' checked' : '')
+        + (onCheckName
+            ? ' onclick="event.stopPropagation();' + onCheckName + '(\'' + key + '\',this.checked)"'
+            : '')
+        + '/></td>'
+      : '';
     return '<tr data-trace-key="' + key + '"' + rowAttrs + '>'
+      + checkCell
       + sessionCell
       + '<td class="' + typeCls + '">' + esc(m.type || '') + '</td>'
       + '<td>' + esc(dirTxt) + '</td>'
@@ -269,8 +287,14 @@ function mvTableHtml(maneuvers, opts) {
   }).join('');
 
   const sessionHeader = showSession ? '<th>Session</th>' : '';
+  const checkHeader = checked
+    ? '<th style="width:24px"><input type="checkbox"'
+      + (allChecked ? ' checked' : '')
+      + (onCheckAllName ? ' onclick="' + onCheckAllName + '(this.checked)"' : '')
+      + '/></th>'
+    : '';
   return '<table class="mv-viz-table">'
-    + '<thead><tr>' + sessionHeader
+    + '<thead><tr>' + checkHeader + sessionHeader
     + '<th>Type</th><th>Dir</th><th>Time</th>'
     + '<th class="mv-num">Dur</th><th class="mv-num">Turn</th>'
     + '<th>BSP in→out</th><th>BSP dip</th><th>Dist loss</th>'
