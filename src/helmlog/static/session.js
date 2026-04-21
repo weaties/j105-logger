@@ -7555,7 +7555,12 @@ function _updateVideoTrackDot(utc) {
 // transitions don't restart on every tick. Re-renders the track when the
 // track projection becomes available after first load.
 function _ensureVideoOverlaysMounted() {
-  const mount = document.getElementById('yt-player');
+  // Mount into the wrap, NOT #yt-player itself — the YT IFrame API replaces
+  // #yt-player with an <iframe>, which would wipe any children we inserted
+  // and also stack above absolutely-positioned siblings within it. Keeping
+  // the SVGs as siblings of the iframe (both inside #yt-player-wrap) makes
+  // them paint above the video with normal z-index rules.
+  const mount = document.getElementById('yt-player-wrap');
   if (!mount) return;
   if (_videoGaugesOn && !document.getElementById('video-gauge-overlay')) {
     mount.insertAdjacentHTML('beforeend', _renderVideoGaugeSvg());
