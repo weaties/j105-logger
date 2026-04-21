@@ -377,9 +377,18 @@ function mvInitLineCharts(hostEl, payload, opts) {
   const state = {
     data: payload,
     mode: opts.mode || 'auto',
-    hoverId: null,
+    hoverId: null,      // transient, from canvas mousemove or external setHoverId
+    lockedId: null,     // persistent, set by external setLockedId
     panels: [],
   };
+
+  // Effective highlight = lock wins over hover, matching the overlay
+  // page's click-to-lock UX. Render paths read this instead of hoverId
+  // directly so pushing a lock from outside pins the highlight even
+  // while the mouse keeps moving over the canvas.
+  function effectiveHoverId() {
+    return state.lockedId || state.hoverId;
+  }
 
   hostEl.innerHTML = '';
   state.panels = MV_CHANNELS.map(ch => {
@@ -493,7 +502,7 @@ function mvInitLineCharts(hostEl, payload, opts) {
       const series = m[channel.key];
       if (!series) return;
       const id = m.session_id + ':' + m.maneuver_id;
-      const hovered = state.hoverId === id;
+      const hovered = effectiveHoverId() === id;
       let color, alpha, width;
       if (hovered) { color = '#fff'; alpha = 1.0; width = 2.0; }
       else if (isBest(m)) { color = css('--success') || '#2a6'; alpha = 0.8; width = 1.8; }
@@ -595,8 +604,8 @@ function mvInitLineCharts(hostEl, payload, opts) {
 
   function onHover(evt, panel) {
     const { id, inBounds } = nearestTraceAt(evt, panel);
-    if (!inBounds) { setHoverId(null); return; }
-    setHoverId(id);
+    if (!inBounds) { setHoverId(null, true); return; }
+    setHoverId(id, true);
   }
 
   function onClick(evt, panel) {
@@ -608,11 +617,21 @@ function mvInitLineCharts(hostEl, payload, opts) {
     onClickChange(id);
   }
 
-  function setHoverId(id) {
+  // setHoverId is called both from internal mouse events (fromInternal
+  // = true, fires the onHoverChange callback to sync sibling views) and
+  // from external callers pushing a hover in (fromInternal = false, no
+  // callback — otherwise we'd loop).
+  function setHoverId(id, fromInternal) {
     if (state.hoverId === id) return;
     state.hoverId = id;
     render();
-    if (onHoverChange) onHoverChange(id);
+    if (fromInternal && onHoverChange) onHoverChange(id);
+  }
+
+  function setLockedId(id) {
+    if (state.lockedId === id) return;
+    state.lockedId = id;
+    render();
   }
 
   function setMode(mode) {
@@ -622,7 +641,7 @@ function mvInitLineCharts(hostEl, payload, opts) {
 
   state.panels.forEach(p => {
     p.canvas.addEventListener('mousemove', evt => onHover(evt, p));
-    p.canvas.addEventListener('mouseleave', () => setHoverId(null));
+    p.canvas.addEventListener('mouseleave', () => setHoverId(null, true));
     p.canvas.addEventListener('click', evt => onClick(evt, p));
   });
 
@@ -633,7 +652,8 @@ function mvInitLineCharts(hostEl, payload, opts) {
   setTimeout(render, 0);
 
   return {
-    setHoverId,
+    setHoverId: id => setHoverId(id, false),
+    setLockedId,
     setMode,
     render,
     destroy() {

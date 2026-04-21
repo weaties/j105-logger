@@ -181,9 +181,10 @@ function _ovRenderAll() {
       onClickChange: id => _ovToggleLock(id),
     }
   );
-  // Push current highlight to the fresh controller (destroy+recreate
-  // loses any in-flight lock otherwise).
-  _ovState.chartsCtrl.setHoverId(_ovHighlightId());
+  // Push current highlight state to the fresh controller — destroy +
+  // recreate otherwise resets both hover and lock.
+  _ovState.chartsCtrl.setLockedId(_ovState.lockedId);
+  _ovState.chartsCtrl.setHoverId(_ovState.hoverId);
 
   // 3. Maneuver table (bottom).
   _ovRenderTable(filteredForTable);
@@ -241,9 +242,13 @@ function _ovSyncTrackHighlight() {
 }
 
 function _ovApplyHighlight() {
-  // Push the effective (locked || hover) id to every view.
-  const id = _ovHighlightId();
-  if (_ovState.chartsCtrl) _ovState.chartsCtrl.setHoverId(id);
+  // Push lock + hover separately to the chart controller so its own
+  // mousemove doesn't wipe the lock. Table and track re-render using
+  // _ovHighlightId(), which reads the overlay's canonical state.
+  if (_ovState.chartsCtrl) {
+    _ovState.chartsCtrl.setLockedId(_ovState.lockedId);
+    _ovState.chartsCtrl.setHoverId(_ovState.hoverId);
+  }
   _ovSyncTableHighlight();
   _ovSyncTrackHighlight();
 }
