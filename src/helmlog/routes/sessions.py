@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,6 +20,7 @@ from helmlog.routes._helpers import (
     audit,
     cached_json_response,
     get_storage,
+    get_web_cache,
     limiter,
     t1_cached_json_response,
 )
@@ -1669,6 +1672,91 @@ async def api_cross_session_maneuvers_compare(
             "video_sync_by_session": {str(k): v for k, v in video_sync_by_session.items()},
         }
     )
+
+
+@router.get("/api/maneuvers/overlay")
+async def api_maneuvers_overlay(
+    request: Request,
+    ids: str = Query(..., description="Comma-separated <session_id>:<maneuver_id> pairs"),
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Time-aligned multi-maneuver overlay series (#619).
+
+    Takes ``<session_id>:<maneuver_id>`` pairs and returns per-maneuver
+    boatspeed, heading-rate, and TWA series resampled to 1 Hz over
+    ``[-20 s, +30 s]`` relative to each maneuver's ``head_to_wind_ts``
+    (#613). Maneuvers with no HTW (roundings, stalls) are excluded with
+    their ids listed in ``excluded_ids`` so the UI can show a notice.
+
+    Cached via the T2 global path (``race_id=0`` sentinel) with a
+    content-addressed ``data_hash`` that folds the sorted selection,
+    every touched session's current ``compute_race_data_hash`` (so any
+    race mutation changes the hash), and ``ENRICH_CACHE_VERSION`` (so
+    enrichment-code bumps self-invalidate). Orphaned entries age out
+    via TTL.
+    """
+    from helmlog.analysis.maneuvers import ENRICH_CACHE_VERSION, build_maneuvers_overlay
+    from helmlog.cache import resolve_race_data_hash
+
+    try:
+        parsed = _parse_cross_session_ids(ids)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="ids must be comma-separated <session_id>:<maneuver_id> pairs",
+        ) from exc
+
+    pairs: list[tuple[int, int]] = [(sid, mid) for sid, mid in parsed if isinstance(mid, int)]
+    if not pairs:
+        return JSONResponse(
+            {"axis_s": list(range(-20, 31)), "channels": [], "maneuvers": [], "excluded_ids": []}
+        )
+
+    storage = get_storage(request)
+    cache = get_web_cache(request)
+
+    sorted_pairs = sorted(pairs)
+    data_hash: str | None = None
+    if cache is not None:
+        try:
+            session_hashes: dict[int, str] = {}
+            for sid in sorted({sid for sid, _ in sorted_pairs}):
+                h = await resolve_race_data_hash(storage, sid)
+                if h:
+                    session_hashes[sid] = h
+            hash_input = json.dumps(
+                {
+                    "pairs": sorted_pairs,
+                    "session_hashes": session_hashes,
+                    "enrich_version": ENRICH_CACHE_VERSION,
+                },
+                sort_keys=True,
+            )
+            data_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+            hit = await cache.t2_get_global("maneuvers_overlay", data_hash=data_hash)
+            if hit is not None:
+                return JSONResponse(hit)
+        except Exception:  # noqa: BLE001 — cache must never fail a request
+            data_hash = None
+
+    payload = await build_maneuvers_overlay(storage, sorted_pairs)
+
+    if cache is not None and data_hash is not None:
+        # 24 h TTL — orphaned entries (from races that mutate and
+        # leave behind stale composite hashes) age out naturally.
+        # Cache writes are best-effort; any failure is logged by the
+        # cache layer and swallowed there.
+        import contextlib
+
+        with contextlib.suppress(Exception):
+            await cache.t2_put_global(
+                "maneuvers_overlay",
+                data_hash=data_hash,
+                value=payload,
+                ttl_seconds=86400,
+            )
+
+    return JSONResponse(payload)
 
 
 @router.get("/api/maneuvers/sessions")

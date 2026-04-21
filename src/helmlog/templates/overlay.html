@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Maneuver overlay — HelmLog{% endblock %}
+
+{% block extra_css %}
+<style>
+.page{max-width:100%!important;padding:4px 10px!important}
+.ov-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px;min-height:32px}
+.ov-header .back-link{font-size:.78rem;color:var(--text-secondary);text-decoration:none}
+.ov-header .back-link:hover{color:var(--accent)}
+.ov-header .title{font-size:.82rem;font-weight:600;color:var(--text-primary)}
+.ov-header .subtitle{font-size:.72rem;color:var(--text-secondary)}
+.ov-header .spacer{flex:1}
+.ov-controls{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.ov-controls button{background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border);border-radius:3px;padding:3px 8px;font-size:.75rem;cursor:pointer}
+.ov-controls button.active{background:var(--accent-strong);color:var(--bg-primary);border-color:var(--accent-strong)}
+.ov-notice{font-size:.72rem;color:var(--warning);padding:4px 6px;background:rgba(255,180,0,.1);border:1px solid var(--warning);border-radius:3px;margin-bottom:4px}
+.ov-panel{background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;margin-bottom:6px;padding:4px}
+.ov-panel h4{font-size:.72rem;margin:0 0 2px 4px;color:var(--text-secondary);font-weight:500;letter-spacing:.04em;text-transform:uppercase}
+.ov-canvas-wrap{position:relative;width:100%;height:160px}
+.ov-canvas-wrap canvas{display:block;width:100%;height:100%}
+.ov-tooltip{position:absolute;pointer-events:none;background:rgba(18,22,28,.95);color:var(--text-primary);border:1px solid var(--border);border-radius:3px;padding:4px 6px;font-size:.68rem;font-family:monospace;white-space:nowrap;z-index:5}
+.ov-legend{font-size:.68rem;color:var(--text-secondary);padding:2px 4px}
+.ov-legend .best{color:var(--success)}
+.ov-legend .worst{color:var(--error)}
+.ov-empty{padding:30px 0;text-align:center;color:var(--text-secondary)}
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="ov-config"
+  data-session-id="{{ session_id or '' }}"
+  data-session-name="{{ session_name or '' }}"
+  data-session-slug="{{ session_slug or '' }}"
+  style="display:none"></div>
+
+<div class="ov-header">
+  {% if session_id %}
+  <a href="/session/{{ session_id }}/{{ session_slug or '' }}" class="back-link">&larr; {{ session_name }}</a>
+  {% else %}
+  <a href="/maneuvers" class="back-link">&larr; Maneuvers</a>
+  {% endif %}
+  <span class="title">Overlay</span>
+  <span class="subtitle" id="ov-subtitle"></span>
+  <span class="spacer"></span>
+  <div class="ov-controls">
+    <button type="button" id="ov-mode-lines" onclick="ovSetMode('lines')" class="active">Lines</button>
+    <button type="button" id="ov-mode-bands" onclick="ovSetMode('bands')">Bands</button>
+    <button type="button" id="ov-mode-auto" onclick="ovSetMode('auto')">Auto</button>
+  </div>
+</div>
+
+<div id="ov-notice" class="ov-notice" style="display:none"></div>
+
+<div id="ov-panels"></div>
+
+<div id="ov-legend" class="ov-legend" style="display:none">
+  <span class="best">\u25cf best</span>
+  <span style="margin-left:8px">\u25cf avg / consistent</span>
+  <span class="worst" style="margin-left:8px">\u25cf worst</span>
+  <span style="margin-left:16px">t=0 = head-to-wind</span>
+</div>
+
+<div id="ov-empty" class="ov-empty" style="display:none">
+  No maneuvers selected. Pick tacks or gybes from the session detail page or the maneuvers browser and try again.
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/shared.js?v={{ git_sha }}"></script>
+<script src="/static/overlay.js?v={{ git_sha }}"></script>
+{% endblock %}

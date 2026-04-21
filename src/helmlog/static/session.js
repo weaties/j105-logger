@@ -4271,6 +4271,34 @@ function openManeuverCompare() {
   window.open('/session/' + SESSION_ID + '/compare?ids=' + ids.join(','), '_blank');
 }
 
+function openManeuverOverlay() {
+  // Overlay (#619) — defaults to every tack/gybe in the session the first
+  // time it opens, then narrows via the same filter+selection state that
+  // drives Compare. Roundings have no head-to-wind alignment, so they're
+  // excluded from the URL regardless of selection.
+  const selectedIds = _maneuverRows()
+    .filter(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m)))
+                  && typeof m.id === 'number'
+                  && (m.type === 'tack' || m.type === 'gybe'))
+    .map(m => SESSION_ID + ':' + m.id);
+  const ids = selectedIds.length
+    ? selectedIds
+    // Nothing selected (or only roundings selected) → fall back to every
+    // alignable maneuver in the session. Matches the issue's "default
+    // selection = every tack/gybe in that session" AC.
+    : _maneuvers
+        .filter(m => typeof m.id === 'number' && (m.type === 'tack' || m.type === 'gybe'))
+        .map(m => SESSION_ID + ':' + m.id);
+  if (!ids.length) {
+    alert('No tacks or gybes in this session — overlay requires a head-to-wind alignment point.');
+    return;
+  }
+  window.open(
+    '/maneuvers/overlay?session=' + SESSION_ID + '&ids=' + ids.join(','),
+    '_blank'
+  );
+}
+
 function _maneuverRows() {
   const items = _maneuvers.filter(_matchesManeuverFilter);
   const key = _maneuverSort.key, dir = _maneuverSort.dir;
@@ -4990,6 +5018,7 @@ function renderManeuverCard() {
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'none\')">none</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'filtered\')">match filter</button>'
+    + '<button style="font-size:.7rem;padding:3px 10px;border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer;border-radius:4px;font-weight:600" onclick="openManeuverOverlay()" title="Time-aligned multi-maneuver chart at head-to-wind">Overlay Chart</button>'
     + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
