@@ -77,6 +77,12 @@
 .insight-critical{color:var(--danger)}
 .ab-selector{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
 .ab-selector label{font-size:.78rem;color:var(--text-secondary);display:flex;align-items:center;gap:3px}
+.video-overlay{position:absolute;z-index:5;pointer-events:none;opacity:0;transition:opacity 1000ms ease;filter:drop-shadow(0 1px 2px rgba(0,0,0,.5))}
+.video-overlay.show{opacity:.9}
+#video-gauge-overlay{top:6px;left:6px}
+#video-recovery-overlay{top:6px;left:158px}
+#video-course-overlay{top:6px;right:6px}
+#video-maneuver-overlay{bottom:6px;left:6px}
 </style>
 {% endblock %}
 
@@ -120,8 +126,18 @@
 </div>
 
 <div id="video-container" class="card" style="display:none">
-  <div id="video-switcher" style="display:flex;gap:6px;margin-bottom:8px"></div>
-  <div id="yt-player" style="aspect-ratio:16/9;border-radius:8px;overflow:hidden"></div>
+  <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center;flex-wrap:wrap">
+    <div id="video-switcher" style="display:flex;gap:6px;flex:1;min-width:0;flex-wrap:wrap"></div>
+    <button id="video-gauges-btn" type="button" onclick="toggleVideoGauges()"
+      title="Show instrument gauge over the video during maneuvers"
+      style="background:var(--bg-input);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:4px 10px;font-size:.78rem;cursor:pointer">Gauges</button>
+    <button id="video-track-btn" type="button" onclick="toggleVideoTrack()"
+      title="Show mini maneuver track over the video during maneuvers"
+      style="background:var(--bg-input);color:var(--text-secondary);border:1px solid var(--border);border-radius:4px;padding:4px 10px;font-size:.78rem;cursor:pointer">Track</button>
+  </div>
+  <div id="yt-player-wrap" style="position:relative;aspect-ratio:16/9;border-radius:8px;overflow:hidden">
+    <div id="yt-player" style="width:100%;height:100%"></div>
+  </div>
 </div>
 
 <div id="track-container" class="card" style="display:none">

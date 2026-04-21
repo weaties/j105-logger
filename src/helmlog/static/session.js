@@ -7348,6 +7348,506 @@ function _stepEvent(direction) {
   _updateReplayControls();
 }
 
+// ---------------------------------------------------------------------------
+// Video overlays (#639) — painted on top of the player to match the
+// compare page visuals.
+//
+// Gauges toggle:
+//   • #video-gauge-overlay     top-left   — always on while toggled
+//   • #video-recovery-overlay  top-mid    — only during a maneuver window
+// Track toggle:
+//   • #video-course-overlay    top-right  — always on while toggled
+//                                           (full session lat/lng track)
+//   • #video-maneuver-overlay  bottom-left — only during a maneuver window
+//                                            (wind-up zoom of the turn)
+//
+// Both buttons default off; state persists in localStorage. SVGs are
+// ports of compare.js (#570 / #572 / #574) so the visual language
+// matches the compare page exactly.
+// ---------------------------------------------------------------------------
+
+const _VIDEO_OVERLAY_PAD_S = 10; // seconds before/after each maneuver window
+const _VIDEO_OVERLAY_LS_GAUGES = 'helmlog.videoOverlay.gauges';
+const _VIDEO_OVERLAY_LS_TRACK = 'helmlog.videoOverlay.track';
+let _videoGaugesOn = false;
+let _videoTrackOn = false;
+// Cached projection of _trackData.latLngs → mini-map coords. Rebuilt when
+// _trackData becomes available after first load.
+let _videoCourseProjection = null;
+// ID of the maneuver currently mounted for the per-maneuver overlays —
+// when it changes we rebuild those SVGs (their geometry is baked per
+// maneuver). null means no maneuver is currently mounted.
+let _videoMountedManId = null;
+
+function _readOverlayFlag(key) {
+  try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+}
+function _writeOverlayFlag(key, on) {
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+function _setOverlayBtnStyle(btn, on) {
+  if (!btn) return;
+  btn.style.background = on ? 'var(--accent-strong)' : 'var(--bg-input)';
+  btn.style.color = on ? 'var(--bg-primary)' : 'var(--text-secondary)';
+  btn.style.border = on ? 'none' : '1px solid var(--border)';
+}
+function _removeVideoOverlay(id) {
+  const el = document.getElementById(id);
+  if (el) el.remove();
+}
+
+function toggleVideoGauges() {
+  _videoGaugesOn = !_videoGaugesOn;
+  _writeOverlayFlag(_VIDEO_OVERLAY_LS_GAUGES, _videoGaugesOn);
+  _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
+  _restartOverlayTick();
+}
+
+function toggleVideoTrack() {
+  _videoTrackOn = !_videoTrackOn;
+  _writeOverlayFlag(_VIDEO_OVERLAY_LS_TRACK, _videoTrackOn);
+  _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
+  _restartOverlayTick();
+}
+
+function _parseManUtcMs(iso) {
+  if (!iso) return null;
+  let s = String(iso).replace(' ', 'T');
+  if (!s.endsWith('Z') && !s.includes('+')) s += 'Z';
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
+function _findActiveManeuver(utc) {
+  if (!_maneuvers || !_maneuvers.length || !utc) return null;
+  const t = utc.getTime ? utc.getTime() : +utc;
+  for (const m of _maneuvers) {
+    const startMs = _parseManUtcMs(m.ts);
+    if (startMs == null) continue;
+    const dur = typeof m.duration_sec === 'number' ? m.duration_sec : 0;
+    const winStart = startMs - _VIDEO_OVERLAY_PAD_S * 1000;
+    const winEnd = startMs + dur * 1000 + _VIDEO_OVERLAY_PAD_S * 1000;
+    if (t >= winStart && t <= winEnd) return m;
+  }
+  return null;
+}
+
+// ---- Gauge (always-on) -----------------------------------------------------
+
+function _renderVideoGaugeSvg() {
+  const s = 150, r = 62, cx = s / 2, cy = s / 2;
+  let ticks = '';
+  for (let d = 0; d < 360; d += 10) {
+    const rad = (d - 90) * Math.PI / 180;
+    const inner = d % 30 === 0 ? r - 10 : r - 5;
+    const x1 = cx + inner * Math.cos(rad), y1 = cy + inner * Math.sin(rad);
+    const x2 = cx + r * Math.cos(rad), y2 = cy + r * Math.sin(rad);
+    ticks += '<line x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1)
+      + '" x2="' + x2.toFixed(1) + '" y2="' + y2.toFixed(1)
+      + '" stroke="rgba(255,255,255,.35)" stroke-width="' + (d % 30 === 0 ? '1.2' : '0.6') + '"/>';
+  }
+  const cardinals = [{l:'N',d:0},{l:'E',d:90},{l:'S',d:180},{l:'W',d:270}];
+  let labels = '';
+  for (const c of cardinals) {
+    const rad = (c.d - 90) * Math.PI / 180;
+    const lx = cx + (r + 9) * Math.cos(rad), ly = cy + (r + 9) * Math.sin(rad);
+    labels += '<text x="' + lx.toFixed(1) + '" y="' + ly.toFixed(1)
+      + '" text-anchor="middle" dominant-baseline="central" font-size="9" font-weight="600" fill="rgba(255,255,255,.55)">' + c.l + '</text>';
+  }
+  return '<svg id="video-gauge-overlay" class="video-overlay" width="' + s + '" height="' + s + '">'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + (r + 10) + '" fill="rgba(0,0,0,.5)"/>'
+    + '<circle cx="' + cx + '" cy="' + cy + '" r="' + r + '" fill="none" stroke="rgba(255,255,255,.25)" stroke-width="1"/>'
+    + ticks + labels
+    + '<g id="video-gauge-twd" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + (cy + r - 10) + '" x2="' + cx + '" y2="' + (cy - r + 12) + '" stroke="#f59e0b" stroke-width="2" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 8) + ' ' + (cx - 4) + ',' + (cy - r + 16) + ' ' + (cx + 4) + ',' + (cy - r + 16) + '" fill="#f59e0b"/>'
+    + '</g>'
+    + '<g id="video-gauge-awa" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 18) + '" stroke="#60a5fa" stroke-width="1.8" stroke-linecap="round"/>'
+    + '<polygon points="' + cx + ',' + (cy - r + 14) + ' ' + (cx - 3) + ',' + (cy - r + 21) + ' ' + (cx + 3) + ',' + (cy - r + 21) + '" fill="#60a5fa"/>'
+    + '</g>'
+    + '<g id="video-gauge-cog" transform="rotate(0,' + cx + ',' + cy + ')">'
+    + '<line x1="' + cx + '" y1="' + cy + '" x2="' + cx + '" y2="' + (cy - r + 6) + '" stroke="rgba(255,255,255,.6)" stroke-width="1" stroke-dasharray="3,2"/>'
+    + '</g>'
+    + '<polygon points="' + cx + ',' + (cy - 6) + ' ' + (cx - 4) + ',' + (cy + 5) + ' ' + (cx + 4) + ',' + (cy + 5) + '" fill="#fff" stroke="rgba(0,0,0,.4)" stroke-width="0.5"/>'
+    + '<rect x="' + (cx - 18) + '" y="1" width="36" height="15" rx="3" fill="rgba(0,0,0,.8)"/>'
+    + '<text id="video-gauge-hdg" x="' + cx + '" y="12" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">---</text>'
+    + '<rect x="2" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="20" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">BSP</text>'
+    + '<text id="video-gauge-bsp" x="20" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#3db86e">-.-</text>'
+    + '<rect x="' + (s - 38) + '" y="' + (cy - 9) + '" width="36" height="24" rx="3" fill="rgba(0,0,0,.7)"/>'
+    + '<text x="' + (s - 20) + '" y="' + (cy - 1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">SOG</text>'
+    + '<text id="video-gauge-sog" x="' + (s - 20) + '" y="' + (cy + 11) + '" text-anchor="middle" font-size="12" font-weight="700" font-family="monospace" fill="#fff">-.-</text>'
+    + '<rect x="6" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="26" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">TWS</text>'
+    + '<text id="video-gauge-tws" x="26" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#f59e0b">--</text>'
+    + '<rect x="' + (s - 46) + '" y="' + (s - 28) + '" width="40" height="24" rx="3" fill="rgba(0,0,0,.75)"/>'
+    + '<text x="' + (s - 26) + '" y="' + (s - 17) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.6)">AWS</text>'
+    + '<text id="video-gauge-aws" x="' + (s - 26) + '" y="' + (s - 6) + '" text-anchor="middle" font-size="13" font-weight="700" font-family="monospace" fill="#60a5fa">--</text>'
+    + '</svg>';
+}
+
+function _videoSampleAt(utcMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  let lo = 0, hi = _replaySamples.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+function _updateVideoGauge(utc) {
+  const sample = _videoSampleAt(utc.getTime());
+  if (!sample) return;
+  const cx = 75, cy = 75;
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('video-gauge-hdg', sample.hdg != null ? Math.round(sample.hdg) : '---');
+  set('video-gauge-bsp', sample.stw != null ? sample.stw.toFixed(1) : '-.-');
+  set('video-gauge-sog', sample.sog != null ? sample.sog.toFixed(1) : '-.-');
+  set('video-gauge-tws', sample.tws != null ? sample.tws.toFixed(0) : '--');
+  set('video-gauge-aws', sample.aws != null ? sample.aws.toFixed(0) : '--');
+  const rot = (id, deg) => {
+    const g = document.getElementById(id);
+    if (g && deg != null) g.setAttribute('transform', 'rotate(' + deg.toFixed(1) + ',' + cx + ',' + cy + ')');
+  };
+  if (sample.twd != null && sample.hdg != null) rot('video-gauge-twd', ((sample.twd - sample.hdg) + 360) % 360);
+  if (sample.awa != null) rot('video-gauge-awa', sample.awa);
+  if (sample.cog != null && sample.hdg != null) rot('video-gauge-cog', ((sample.cog - sample.hdg) + 360) % 360);
+}
+
+// ---- Course overlay (always-on, full session lat/lng track) ---------------
+
+function _buildVideoCourseProjection() {
+  if (!_trackData || !_trackData.latLngs || _trackData.latLngs.length < 2) return null;
+  const size = 140, pad = 8;
+  const latLngs = _trackData.latLngs;
+  const lat0 = latLngs[0][0], lng0 = latLngs[0][1];
+  const cosLat = Math.cos(lat0 * Math.PI / 180);
+  const mPerDeg = 111320;
+  const pts = latLngs.map(ll => ({
+    x: (ll[1] - lng0) * mPerDeg * cosLat,
+    y: (ll[0] - lat0) * mPerDeg,
+  }));
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!isFinite(minX)) return null;
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(20, Math.max(maxX - minX, maxY - minY) / 2 * 1.05);
+  const sx = x => pad + (x - (cx - half)) / (2 * half) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - (cy - half)) / (2 * half) * (size - 2 * pad);
+  const step = Math.max(1, Math.floor(pts.length / 400));
+  const poly = [];
+  for (let i = 0; i < pts.length; i += step) {
+    poly.push(sx(pts[i].x).toFixed(1) + ',' + sy(pts[i].y).toFixed(1));
+  }
+  return {size, pad, lat0, lng0, cosLat, mPerDeg, sx, sy, polyStr: poly.join(' ')};
+}
+
+function _renderVideoCourseSvg() {
+  const proj = _videoCourseProjection || _buildVideoCourseProjection();
+  if (!proj) return '';
+  _videoCourseProjection = proj;
+  const s = proj.size;
+  return '<svg id="video-course-overlay" class="video-overlay" width="' + s + '" height="' + s + '">'
+    + '<rect width="' + s + '" height="' + s + '" rx="6" fill="rgba(0,0,0,.45)"/>'
+    + '<polyline points="' + proj.polyStr + '" fill="none" stroke="#7eb8f7" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle id="video-course-dot" cx="-10" cy="-10" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
+    + '</svg>';
+}
+
+function _updateVideoCourseDot(utc) {
+  if (!_trackData || !_trackData.timestamps || !_trackData.timestamps.length) return;
+  const proj = _videoCourseProjection;
+  if (!proj) return;
+  const tMs = utc.getTime();
+  const ts = _trackData.timestamps;
+  let lo = 0, hi = ts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (ts[mid].getTime() <= tMs) lo = mid;
+    else hi = mid - 1;
+  }
+  const ll = _trackData.latLngs[lo];
+  if (!ll) return;
+  const x = (ll[1] - proj.lng0) * proj.mPerDeg * proj.cosLat;
+  const y = (ll[0] - proj.lat0) * proj.mPerDeg;
+  const dot = document.getElementById('video-course-dot');
+  if (!dot) return;
+  dot.setAttribute('cx', proj.sx(x).toFixed(1));
+  dot.setAttribute('cy', proj.sy(y).toFixed(1));
+}
+
+// ---- Maneuver-zoom (per-maneuver, wind-up X/Y projection) ------------------
+
+function _renderVideoManeuverSvg(m) {
+  const track = m && m.track;
+  if (!track || track.length < 2) return '';
+  const size = 120, pad = 8;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of track) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  if (!isFinite(minX)) return '';
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+  const bMinX = cx - half, bMaxX = cx + half, bMinY = cy - half, bMaxY = cy + half;
+  const sx = x => pad + (x - bMinX) / (bMaxX - bMinX) * (size - 2 * pad);
+  const sy = y => (size - pad) - (y - bMinY) / (bMaxY - bMinY) * (size - 2 * pad);
+  const pts = track.map(p => sx(p.x).toFixed(1) + ',' + sy(p.y).toFixed(1)).join(' ');
+  const ox = sx(0), oy = sy(0);
+  const rankColors = { good: '#3db86e', bad: '#d64545', avg: '#888' };
+  const color = rankColors[m.rank] || '#7eb8f7';
+  return '<svg id="video-maneuver-overlay" class="video-overlay" width="' + size + '" height="' + size + '">'
+    + '<rect width="' + size + '" height="' + size + '" rx="6" fill="rgba(0,0,0,.45)"/>'
+    + '<polyline points="' + pts + '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>'
+    + '<circle cx="' + ox + '" cy="' + oy + '" r="2.5" fill="#fff" stroke="' + color + '" stroke-width="1"/>'
+    + '<text x="' + (size - pad) + '" y="' + (pad + 6) + '" text-anchor="end" font-size="7" fill="rgba(255,255,255,.5)">&#8593; wind</text>'
+    + '<circle id="video-maneuver-dot" cx="' + ox + '" cy="' + oy + '" r="3.5" fill="#fff" stroke="rgba(0,0,0,.6)" stroke-width="1"/>'
+    + '</svg>';
+}
+
+function _updateVideoManeuverDot(utc, m) {
+  const track = m && m.track;
+  if (!track || track.length < 2) return;
+  const mStart = _parseManUtcMs(m.ts);
+  if (mStart == null) return;
+  const currentT = (utc.getTime() - mStart) / 1000;
+  let best = track[0], bestDt = Math.abs(track[0].t - currentT);
+  for (let i = 1; i < track.length; i++) {
+    const dt = Math.abs(track[i].t - currentT);
+    if (dt < bestDt) { bestDt = dt; best = track[i]; }
+  }
+  const size = 120, pad = 8;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of track) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const half = Math.max(5, Math.max(maxX - minX, maxY - minY) / 2 + 3);
+  const svgX = pad + (best.x - (cx - half)) / (2 * half) * (size - 2 * pad);
+  const svgY = (size - pad) - (best.y - (cy - half)) / (2 * half) * (size - 2 * pad);
+  const dot = document.getElementById('video-maneuver-dot');
+  if (dot) { dot.setAttribute('cx', svgX.toFixed(1)); dot.setAttribute('cy', svgY.toFixed(1)); }
+}
+
+// ---- Recovery bar (per-maneuver, BSP% vs entry) ---------------------------
+
+function _renderVideoRecoverySvg(m) {
+  if (!m || m.entry_bsp == null || m.entry_bsp <= 0) return '';
+  const w = 28, h = 150, pad = 20, barX = 6, barW = 16;
+  const barTop = pad, barBot = h - pad, barH = barBot - barTop;
+  const maxPct = 120;
+  const pct100Y = barBot - (100 / maxPct) * barH;
+  let minMarker = '';
+  if (m.min_bsp != null) {
+    const minPct = Math.max(0, Math.min(maxPct, (m.min_bsp / m.entry_bsp) * 100));
+    const minY = barBot - (minPct / maxPct) * barH;
+    minMarker = '<line x1="' + barX + '" y1="' + minY.toFixed(1) + '" x2="' + (barX + barW) + '" y2="' + minY.toFixed(1)
+      + '" stroke="#d64545" stroke-width="1.5" stroke-dasharray="2,1"/>';
+  }
+  return '<svg id="video-recovery-overlay" class="video-overlay" width="' + w + '" height="' + h + '">'
+    + '<rect x="' + barX + '" y="' + barTop + '" width="' + barW + '" height="' + barH + '" rx="3" fill="rgba(0,0,0,.5)" stroke="rgba(255,255,255,.2)" stroke-width="0.5"/>'
+    + '<rect id="video-recovery-fill" x="' + barX + '" y="' + barBot + '" width="' + barW + '" height="0" rx="3" fill="#3db86e"/>'
+    + '<line x1="' + (barX - 2) + '" y1="' + pct100Y.toFixed(1) + '" x2="' + (barX + barW + 2) + '" y2="' + pct100Y.toFixed(1)
+    + '" stroke="#fff" stroke-width="1.5"/>'
+    + '<text x="' + (barX + barW / 2) + '" y="' + (pct100Y - 3).toFixed(1) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.7)">'
+    + m.entry_bsp.toFixed(1) + '</text>'
+    + minMarker
+    + '<text id="video-recovery-pct" x="' + (barX + barW / 2) + '" y="' + (barTop - 5) + '" text-anchor="middle" font-size="11" font-weight="700" font-family="monospace" fill="#fff">--%</text>'
+    + '<text x="' + (barX + barW / 2) + '" y="' + (barBot + 12) + '" text-anchor="middle" font-size="6" fill="rgba(255,255,255,.5)">BSP%</text>'
+    + '</svg>';
+}
+
+function _updateVideoRecoveryBar(utc, m) {
+  if (!m || m.entry_bsp == null || m.entry_bsp <= 0) return;
+  const sample = _videoSampleAt(utc.getTime());
+  if (!sample || sample.stw == null) return;
+  const pct = (sample.stw / m.entry_bsp) * 100;
+  const maxPct = 120;
+  const clampPct = Math.max(0, Math.min(maxPct, pct));
+  const pad = 20, barTop = pad, barBot = 150 - pad, barH = barBot - barTop, barX = 6;
+  const fillH = (clampPct / maxPct) * barH;
+  const fillY = barBot - fillH;
+  let color;
+  if (pct >= 100) color = '#3db86e';
+  else if (pct >= 80) color = '#f59e0b';
+  else if (pct >= 60) color = '#e87c1e';
+  else color = '#d64545';
+  const fill = document.getElementById('video-recovery-fill');
+  if (fill) {
+    fill.setAttribute('y', fillY.toFixed(1));
+    fill.setAttribute('height', fillH.toFixed(1));
+    fill.setAttribute('fill', color);
+  }
+  const pctEl = document.getElementById('video-recovery-pct');
+  if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+}
+
+// ---- Mount / unmount + tick -----------------------------------------------
+
+// The YT IFrame API replaces #yt-player with an <iframe>, so we mount our
+// SVGs as siblings of that iframe inside #yt-player-wrap (which stays put
+// and carries the position:relative). Children of #yt-player itself would
+// be wiped on player load.
+function _overlayMount() {
+  return document.getElementById('yt-player-wrap');
+}
+
+function _ensureAlwaysOnMounted() {
+  const mount = _overlayMount();
+  if (!mount) return;
+  if (_videoGaugesOn && !document.getElementById('video-gauge-overlay')) {
+    mount.insertAdjacentHTML('beforeend', _renderVideoGaugeSvg());
+  }
+  if (_videoTrackOn && !document.getElementById('video-course-overlay')) {
+    const svg = _renderVideoCourseSvg();
+    if (svg) mount.insertAdjacentHTML('beforeend', svg);
+  }
+}
+
+function _ensureManeuverOverlaysMounted(m) {
+  const mount = _overlayMount();
+  if (!mount) return;
+  const mid = m.id != null ? String(m.id) : String(m.ts);
+  // Cancel any pending fade-out unmount — we're back inside a window.
+  if (_pendingUnmountTimer) { clearTimeout(_pendingUnmountTimer); _pendingUnmountTimer = null; _pendingUnmountId = null; }
+  if (mid !== _videoMountedManId) {
+    // Active maneuver changed — drop the old per-maneuver SVGs so the new
+    // ones render with their own geometry.
+    _removeVideoOverlay('video-maneuver-overlay');
+    _removeVideoOverlay('video-recovery-overlay');
+    _videoMountedManId = mid;
+  }
+  if (_videoTrackOn && !document.getElementById('video-maneuver-overlay')) {
+    const svg = _renderVideoManeuverSvg(m);
+    if (svg) mount.insertAdjacentHTML('beforeend', svg);
+  }
+  if (_videoGaugesOn && !document.getElementById('video-recovery-overlay')) {
+    const svg = _renderVideoRecoverySvg(m);
+    if (svg) mount.insertAdjacentHTML('beforeend', svg);
+  }
+}
+
+// Fade-out the per-maneuver overlays, then remove the DOM nodes after the
+// CSS transition completes. A snapshot of the currently-mounted maneuver id
+// is captured so that if the playhead re-enters a window before the timer
+// fires, the scheduled removal can detect the swap and skip — we only tear
+// down overlays that still belong to the original maneuver.
+const _VIDEO_OVERLAY_FADE_MS = 1000;
+let _pendingUnmountId = null;
+let _pendingUnmountTimer = null;
+
+function _fadeOutAndUnmountManeuverOverlays() {
+  _hideClass('video-maneuver-overlay');
+  _hideClass('video-recovery-overlay');
+  if (_pendingUnmountTimer) clearTimeout(_pendingUnmountTimer);
+  _pendingUnmountId = _videoMountedManId;
+  _pendingUnmountTimer = setTimeout(() => {
+    _pendingUnmountTimer = null;
+    // If a new maneuver was mounted in the meantime, leave those alone.
+    if (_videoMountedManId !== _pendingUnmountId) return;
+    _removeVideoOverlay('video-maneuver-overlay');
+    _removeVideoOverlay('video-recovery-overlay');
+    _videoMountedManId = null;
+  }, _VIDEO_OVERLAY_FADE_MS);
+}
+
+function _hideClass(id) {
+  const el = document.getElementById(id);
+  if (el) el.classList.remove('show');
+}
+
+function _unmountManeuverOverlaysImmediate() {
+  if (_pendingUnmountTimer) { clearTimeout(_pendingUnmountTimer); _pendingUnmountTimer = null; }
+  _removeVideoOverlay('video-maneuver-overlay');
+  _removeVideoOverlay('video-recovery-overlay');
+  _videoMountedManId = null;
+}
+
+function _initVideoOverlayButtons() {
+  _videoGaugesOn = _readOverlayFlag(_VIDEO_OVERLAY_LS_GAUGES);
+  _videoTrackOn = _readOverlayFlag(_VIDEO_OVERLAY_LS_TRACK);
+  _setOverlayBtnStyle(document.getElementById('video-gauges-btn'), _videoGaugesOn);
+  _setOverlayBtnStyle(document.getElementById('video-track-btn'), _videoTrackOn);
+  _restartOverlayTick();
+}
+
+function _currentVideoUtc() {
+  // Prefer the live YT player position — it keeps ticking during natural
+  // playback, unlike _playClock which only advances on scrubs + replay play.
+  // Falls back to the shared clock when no video is loaded.
+  try {
+    if (_videoSync && _videoSync.player && typeof _videoSync.player.getCurrentTime === 'function') {
+      const cur = _videoSync.player.getCurrentTime();
+      if (cur != null && !isNaN(cur)) return _videoOffsetToUtc(cur);
+    }
+  } catch (e) { /* ignore */ }
+  return _playClock.positionUtc;
+}
+
+function _videoOverlayTick() {
+  if (!_videoGaugesOn && !_videoTrackOn) return;
+  _ensureAlwaysOnMounted();
+  const utc = _currentVideoUtc();
+
+  // Always-on surfaces
+  const gauge = document.getElementById('video-gauge-overlay');
+  if (gauge) {
+    if (_videoGaugesOn) { gauge.classList.add('show'); if (utc) _updateVideoGauge(utc); }
+    else gauge.classList.remove('show');
+  }
+  const course = document.getElementById('video-course-overlay');
+  if (course) {
+    if (_videoTrackOn) { course.classList.add('show'); if (utc) _updateVideoCourseDot(utc); }
+    else course.classList.remove('show');
+  }
+
+  // Per-maneuver surfaces
+  const m = utc ? _findActiveManeuver(utc) : null;
+  if (m) {
+    _ensureManeuverOverlaysMounted(m);
+    const man = document.getElementById('video-maneuver-overlay');
+    if (man) {
+      if (_videoTrackOn) { man.classList.add('show'); _updateVideoManeuverDot(utc, m); }
+      else man.classList.remove('show');
+    }
+    const rec = document.getElementById('video-recovery-overlay');
+    if (rec) {
+      if (_videoGaugesOn) { rec.classList.add('show'); _updateVideoRecoveryBar(utc, m); }
+      else rec.classList.remove('show');
+    }
+  } else if (_videoMountedManId !== null && _pendingUnmountTimer === null) {
+    _fadeOutAndUnmountManeuverOverlays();
+  }
+}
+
+let _videoOverlayTimer = null;
+function _restartOverlayTick() {
+  if (_videoOverlayTimer) { clearInterval(_videoOverlayTimer); _videoOverlayTimer = null; }
+  if (!_videoGaugesOn) _removeVideoOverlay('video-gauge-overlay');
+  if (!_videoTrackOn) _removeVideoOverlay('video-course-overlay');
+  if (!_videoGaugesOn && !_videoTrackOn) { _unmountManeuverOverlaysImmediate(); return; }
+  _videoOverlayTick();
+  _videoOverlayTimer = setInterval(_videoOverlayTick, 200);
+}
+
+// Fire immediately on any producer event too, so scrubs + replay play feel
+// snappy instead of waiting up to 200ms for the poll.
+registerSurface('video-overlay', function(_utc) { _videoOverlayTick(); });
+
 // Hook into init() path without rewriting it: kick off replay load once the
 // DOM is ready, and wire controls immediately. _loadReplayData() waits on
 // the fetch, and the track map is loaded in parallel, so the polar overlay
@@ -7357,6 +7857,7 @@ document.addEventListener('DOMContentLoaded', function() {
   _wireReplayControls();
   _loadReplayData();
   _loadCourseOverlay();
+  _initVideoOverlayButtons();
 });
 
 // ---------------------------------------------------------------------------
