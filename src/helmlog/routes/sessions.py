@@ -1048,8 +1048,12 @@ async def api_session_replay(
     async def _compute() -> dict[str, Any]:
         return await _compute_session_replay(storage, session_id)
 
+    # v2: payload schema changed (heel, trim added in #645). The cache hash
+    # tracks source-data changes but not payload-shape changes, so bump the
+    # family suffix whenever fields are added/removed to force a recompute
+    # rather than serving a stale blob that lacks the new keys.
     return await cached_json_response(
-        request, race_id=session_id, key_family="session_replay", compute=_compute
+        request, race_id=session_id, key_family="session_replay_v2", compute=_compute
     )
 
 
