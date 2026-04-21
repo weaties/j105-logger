@@ -205,6 +205,45 @@ async def maneuvers_browser_page(request: Request) -> Response:
     )
 
 
+@router.get("/maneuvers/overlay", response_class=HTMLResponse, include_in_schema=False)
+async def maneuvers_overlay_page(request: Request) -> Response:
+    """Time-aligned multi-maneuver overlay chart (#619).
+
+    One page serves both entry points. The ``ids`` query parameter
+    carries the ``<session_id>:<maneuver_id>`` pairs regardless of
+    whether the user arrived from the session detail page or the
+    cross-session maneuvers browser. A single session_id / name in
+    the URL (via a ``session`` query hint) gets rendered as a
+    breadcrumb so the user can return to the session page.
+    """
+    get_storage(request)
+    session_id_raw = request.query_params.get("session", "")
+    session_id: int | None = None
+    session_name = ""
+    session_slug = ""
+    try:
+        session_id = int(session_id_raw) if session_id_raw else None
+    except ValueError:
+        session_id = None
+    if session_id is not None:
+        storage = get_storage(request)
+        race = await storage.get_race(session_id)
+        if race is not None:
+            session_name = race.name
+            session_slug = race.slug or ""
+    return templates.TemplateResponse(
+        request,
+        "overlay.html",
+        tpl_ctx(
+            request,
+            "/maneuvers",
+            session_id=session_id,
+            session_name=session_name,
+            session_slug=session_slug,
+        ),
+    )
+
+
 @router.get(
     "/session/{session_id:int}/{slug}",
     response_class=HTMLResponse,

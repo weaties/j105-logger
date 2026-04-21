@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 75
+_CURRENT_VERSION: int = 76
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1754,6 +1754,13 @@ _MIGRATIONS: dict[int, str] = {
             trim_deg    REAL    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_attitudes_ts ON attitudes(ts);
+    """,
+    76: """
+        -- #613: store the head-to-wind timestamp per maneuver. Tacks use
+        -- the signed-TWA zero crossing. Gybes use the ±180° crossing.
+        -- Populated by enrichment (analysis/maneuvers.py), not by the
+        -- detector. Null for rounding and other types.
+        ALTER TABLE maneuvers ADD COLUMN head_to_wind_ts TEXT;
     """,
 }
 
@@ -5401,12 +5408,44 @@ class Storage:
         """Return all stored maneuvers for a session, ordered by timestamp."""
         cur = await self._read_conn().execute(
             "SELECT id, session_id, type, ts, end_ts, duration_sec, loss_kts,"
-            " vmg_loss_kts, tws_bin, twa_bin, details"
+            " vmg_loss_kts, tws_bin, twa_bin, head_to_wind_ts, details"
             " FROM maneuvers WHERE session_id = ? ORDER BY ts",
             (session_id,),
         )
         rows = await cur.fetchall()
         return [dict(r) for r in rows]
+
+    async def set_maneuver_head_to_wind_ts(
+        self, maneuver_id: int, head_to_wind_ts: str | None
+    ) -> None:
+        """Persist a computed head-to-wind timestamp onto the maneuvers row."""
+        db = self._conn()
+        await db.execute(
+            "UPDATE maneuvers SET head_to_wind_ts = ? WHERE id = ?",
+            (head_to_wind_ts, maneuver_id),
+        )
+        await db.commit()
+
+    async def session_ids_with_stale_maneuver_cache(self, current_code_version: int) -> list[int]:
+        """Return session_ids whose maneuver_cache.code_version is behind current.
+
+        Used by the eager-backfill worker (#613): any session with stored
+        maneuvers but a missing or older cached payload is re-enriched on
+        service start so downstream analysis sees the latest field shape
+        without waiting for a user to view the session.
+        """
+        cur = await self._read_conn().execute(
+            """
+            SELECT DISTINCT m.session_id AS session_id
+              FROM maneuvers m
+              LEFT JOIN maneuver_cache c ON c.session_id = m.session_id
+             WHERE c.session_id IS NULL OR c.code_version < ?
+             ORDER BY m.session_id
+            """,
+            (current_code_version,),
+        )
+        rows = await cur.fetchall()
+        return [int(r["session_id"]) for r in rows]
 
     async def get_cached_enriched_maneuvers(
         self, session_id: int, code_version: int

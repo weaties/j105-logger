@@ -4187,7 +4187,12 @@ function _setPolarHighlightSegments(grades) {
 // ---------------------------------------------------------------------------
 
 const _MANEUVER_COLORS = { tack: cssVar('--accent-strong'), gybe: cssVar('--warning'), rounding: cssVar('--success'), start: cssVar('--success') };
-const _RANK_COLORS = { good: cssVar('--success'), bad: cssVar('--error'), avg: cssVar('--text-secondary') };
+const _RANK_COLORS = {
+  good: cssVar('--success'),
+  bad: cssVar('--error'),
+  avg: cssVar('--text-secondary'),
+  consistent: cssVar('--text-secondary'),
+};
 let _maneuverSort = { key: 'ts', dir: 1 };  // ts | type | duration_sec | distance_loss_m | loss_kts | turn_angle_deg
 // Active filter pills. Multi-select: combined with AND across dimensions
 // (type, rank, time) and OR within a dimension. Empty set == "all".
@@ -4204,6 +4209,9 @@ let _maneuverShowSK = true; // toggle SK-derived tracks in the overlay
 let _maneuverShowVakaros = false; // toggle Vakaros tracks in the overlay
 let _maneuverSelected = new Set(); // ids of maneuvers selected for overlay
 let _maneuverTickInterval = 0; // seconds between track tick marks; 0 = off
+let _maneuverLineChartsOn = false; // toggle for inline BSP/heading-rate/TWA charts (#619)
+let _maneuverLineChartsCtrl = null; // controller returned by mvInitLineCharts
+let _maneuverLineChartsFetchKey = ''; // signature of ids last fetched
 
 function _parseUtc(iso) {
   if (!iso) return null;
@@ -4272,6 +4280,34 @@ function openManeuverCompare() {
   window.open('/session/' + SESSION_ID + '/compare?ids=' + ids.join(','), '_blank');
 }
 
+function openManeuverOverlay() {
+  // Overlay (#619) — defaults to every tack/gybe in the session the first
+  // time it opens, then narrows via the same filter+selection state that
+  // drives Compare. Roundings have no head-to-wind alignment, so they're
+  // excluded from the URL regardless of selection.
+  const selectedIds = _maneuverRows()
+    .filter(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m)))
+                  && typeof m.id === 'number'
+                  && (m.type === 'tack' || m.type === 'gybe'))
+    .map(m => SESSION_ID + ':' + m.id);
+  const ids = selectedIds.length
+    ? selectedIds
+    // Nothing selected (or only roundings selected) → fall back to every
+    // alignable maneuver in the session. Matches the issue's "default
+    // selection = every tack/gybe in that session" AC.
+    : _maneuvers
+        .filter(m => typeof m.id === 'number' && (m.type === 'tack' || m.type === 'gybe'))
+        .map(m => SESSION_ID + ':' + m.id);
+  if (!ids.length) {
+    alert('No tacks or gybes in this session — overlay requires a head-to-wind alignment point.');
+    return;
+  }
+  window.open(
+    '/maneuvers/overlay?session=' + SESSION_ID + '&ids=' + ids.join(','),
+    '_blank'
+  );
+}
+
 function _maneuverRows() {
   const items = _maneuvers.filter(_matchesManeuverFilter);
   const key = _maneuverSort.key, dir = _maneuverSort.dir;
@@ -4311,6 +4347,62 @@ function setManeuverFilter(f) {
 function toggleManeuverOverlay() {
   _maneuverOverlay = !_maneuverOverlay;
   renderManeuverCard();
+}
+
+function toggleManeuverLineCharts() {
+  _maneuverLineChartsOn = !_maneuverLineChartsOn;
+  if (!_maneuverLineChartsOn && _maneuverLineChartsCtrl) {
+    _maneuverLineChartsCtrl.destroy();
+    _maneuverLineChartsCtrl = null;
+    _maneuverLineChartsFetchKey = '';
+  }
+  renderManeuverCard();
+}
+
+async function _paintSessionLineCharts() {
+  // Uses the same /api/maneuvers/overlay endpoint as /maneuvers/overlay
+  // so single-session and cross-session line charts share one data path.
+  const host = document.getElementById('mv-line-charts-host');
+  if (!host) return;
+  const ids = _maneuvers
+    .filter(m => typeof m.id === 'number' && (m.type === 'tack' || m.type === 'gybe'))
+    .map(m => SESSION_ID + ':' + m.id);
+  if (!ids.length) {
+    host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+      + 'No tacks or gybes in this session — line charts require a head-to-wind alignment point.'
+      + '</div>';
+    return;
+  }
+  const key = ids.join(',');
+  if (key === _maneuverLineChartsFetchKey && _maneuverLineChartsCtrl) {
+    // Same selection, same controller — no-op. Hover sync still works
+    // because the controller reads from its own state.
+    return;
+  }
+  try {
+    const r = await fetch('/api/maneuvers/overlay?ids=' + encodeURIComponent(key));
+    if (!r.ok) {
+      host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+        + 'Failed to load line charts (HTTP ' + r.status + ')</div>';
+      return;
+    }
+    const payload = await r.json();
+    if (!payload.maneuvers || !payload.maneuvers.length) {
+      host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+        + 'No maneuvers with a head-to-wind timestamp yet — try again after backfill completes.'
+        + '</div>';
+      return;
+    }
+    if (_maneuverLineChartsCtrl) _maneuverLineChartsCtrl.destroy();
+    _maneuverLineChartsCtrl = window.mvInitLineCharts(host, payload, {
+      mode: 'auto',
+      panelHeight: 130,
+    });
+    _maneuverLineChartsFetchKey = key;
+  } catch (e) {
+    host.innerHTML = '<div style="color:var(--text-secondary);font-size:.72rem;padding:6px">'
+      + 'Failed to load line charts: ' + e + '</div>';
+  }
 }
 
 function toggleManeuverShowVakaros() {
@@ -4625,7 +4717,9 @@ function showOverlayTip(ev, idx) {
     ['Elapsed', _fmtElapsed(m.ts)],
     ['Time', fmtTime(m.ts)],
     ['Duration', m.duration_sec != null ? m.duration_sec.toFixed(1) + ' s' : '—'],
-    ['Turn', m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—'],
+    ['Turn phase', m.time_to_head_to_wind_s != null ? m.time_to_head_to_wind_s.toFixed(1) + ' s' : '—'],
+    ['Recovery', m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'],
+    ['Turn angle', m.turn_angle_deg != null ? Math.round(Math.abs(m.turn_angle_deg)) + '°' : '—'],
     ['BSP in→out', (m.entry_bsp != null ? m.entry_bsp.toFixed(1) : '—') + '→' + (m.exit_bsp != null ? m.exit_bsp.toFixed(1) : '—')],
     ['BSP dip', m.loss_kts != null ? m.loss_kts.toFixed(2) + ' kt' : '—'],
     ['Min BSP', m.min_bsp != null ? m.min_bsp.toFixed(1) + ' kt' : '—'],
@@ -4635,9 +4729,10 @@ function showOverlayTip(ev, idx) {
     ['TWS', twsStr],
     ['TWD', m.twd_deg != null ? Math.round(m.twd_deg) + '°' : '—'],
   ];
+  const rankPctStr = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const header = '<div style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;gap:6px">'
     + '<span><span style="color:' + color + ';font-weight:600">' + esc(m.type) + '</span>'
-    + (m.rank ? ' <span style="color:' + rankColor + '">●' + esc(m.rank) + '</span>' : '') + '</span>'
+    + (m.rank ? ' <span style="color:' + rankColor + '" title="loss percentile (lower = less loss)">●' + esc(m.rank) + rankPctStr + '</span>' : '') + '</span>'
     + '<span style="color:var(--text-secondary);cursor:pointer;font-size:.8rem" onclick="hideOverlayTip()" title="Close">✕</span>'
     + '</div>';
   const grid = '<div style="display:grid;grid-template-columns:auto 1fr;gap:2px 8px">'
@@ -4868,6 +4963,11 @@ function renderManeuverCard() {
         + (s === '0' ? 'off' : s + 's') + '</option>').join('')
     + '</select></label>'
     + '<button style="' + overlayBtnStyle + '" onclick="toggleManeuverOverlay()" title="Overlay all filtered tacks on one diagram">overlay</button>'
+    + '<button style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:'
+      + (_maneuverLineChartsOn ? 'var(--accent)' : 'transparent') + ';color:'
+      + (_maneuverLineChartsOn ? 'var(--bg-primary)' : 'var(--text-secondary)') + ';cursor:pointer;border-radius:3px"'
+      + ' onclick="toggleManeuverLineCharts()"'
+      + ' title="BSP / heading rate / TWA stacked line charts aligned at head-to-wind">line charts</button>'
     + '<a href="/api/sessions/' + SESSION_ID + '/maneuvers.csv" download style="color:var(--accent);text-decoration:none">CSV &#8595;</a>'
     + '</div>';
 
@@ -4980,6 +5080,14 @@ function renderManeuverCard() {
     ? '<div style="margin-bottom:8px">' + _renderOverlaySvg() + '</div>'
     : '';
 
+  // Inline line charts (#619 parity) — three stacked panels aligned at
+  // head-to-wind. Host div is always present; the fetch happens on a
+  // separate tick so the table below renders immediately. Controlled
+  // by _maneuverLineChartsOn so the user can hide it when not needed.
+  const lineChartsBlock = _maneuverLineChartsOn
+    ? '<div id="mv-line-charts-host" style="margin-bottom:8px"></div>'
+    : '';
+
   const selCount = _maneuverSelected.size;
   const hasVideoInSelected = _maneuvers.some(m => _maneuverSelected.has(_manKey(m, _maneuvers.indexOf(m))) && m.youtube_url);
   const compareBtnStyle = 'font-size:.7rem;padding:3px 10px;border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer;border-radius:4px;margin-left:auto;font-weight:600' + (hasVideoInSelected ? '' : ';opacity:.4;pointer-events:none');
@@ -4988,10 +5096,11 @@ function renderManeuverCard() {
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'all\')">all</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'none\')">none</button>'
     + '<button style="font-size:.68rem;padding:1px 6px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" onclick="setManeuverSelectAll(\'filtered\')">match filter</button>'
+    + '<button style="font-size:.7rem;padding:3px 10px;border:1px solid var(--accent);background:none;color:var(--accent);cursor:pointer;border-radius:4px;font-weight:600" onclick="openManeuverOverlay()" title="Time-aligned multi-maneuver chart at head-to-wind">Overlay Chart</button>'
     + '<button style="' + compareBtnStyle + '" onclick="openManeuverCompare()" title="Open synced video comparison for selected maneuvers">Compare Videos</button>'
     + '</div>';
 
-  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + selectBar
+  body.innerHTML = summary + filterBar + tagFilterBar + overlayBlock + lineChartsBlock + selectBar
     + '<table class="maneuver-table"><thead><tr>'
     + '<th title="Include in overlay"></th>'
     + _manHeader('Type', 'type')
@@ -5005,6 +5114,10 @@ function renderManeuverCard() {
     + '<th>TWS</th><th></th>'
     + '</tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div id="maneuver-detail" style="margin-top:8px"></div>';
+
+  // Paint the line charts after the host div lands in the DOM. Cheap —
+  // cache-hit on the overlay endpoint when the id-list is unchanged.
+  if (_maneuverLineChartsOn) _paintSessionLineCharts();
 }
 
 function _renderManeuverDetail(m) {
@@ -5142,14 +5255,19 @@ function _addManeuverMarkers() {
 
 function _renderManeuverPopup(m) {
   const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
+  const pctSuffix = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const rankBadge = m.rank
-    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '">● ' + m.rank + '</span>'
+    ? '<span style="color:' + (_RANK_COLORS[m.rank] || ringColor) + '" title="loss percentile (lower = less loss)">● ' + m.rank + pctSuffix + '</span>'
     : '';
   const lines = [
     '<b style="color:' + ringColor + ';text-transform:capitalize">' + (m.type || 'event') + '</b> ' + rankBadge,
     fmtTime(m.ts),
   ];
-  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s');
+  if (m.duration_sec != null) lines.push(m.duration_sec.toFixed(1) + ' s total');
+  if (m.time_to_head_to_wind_s != null) {
+    lines.push('Turn ' + m.time_to_head_to_wind_s.toFixed(1) + ' s · Recovery '
+      + (m.time_to_recover_s != null ? m.time_to_recover_s.toFixed(1) + ' s' : '—'));
+  }
   if (m.turn_angle_deg != null) lines.push(Math.round(m.turn_angle_deg) + '° turn');
   if (m.entry_bsp != null && m.exit_bsp != null) {
     lines.push('BSP ' + m.entry_bsp.toFixed(1) + ' → ' + m.exit_bsp.toFixed(1) + ' kt');

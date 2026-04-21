@@ -268,6 +268,10 @@ function renderResults() {
     const twsTxt = m.entry_tws != null ? m.entry_tws.toFixed(1) : '—';
     const turnTxt = m.turn_angle_deg != null ? Math.abs(m.turn_angle_deg).toFixed(0) + '\u00b0' : '—';
     const durTxt = m.duration_sec != null ? m.duration_sec.toFixed(1) + 's' : '—';
+    const turnPhaseTxt = m.time_to_head_to_wind_s != null
+      ? m.time_to_head_to_wind_s.toFixed(1) + 's' : '—';
+    const recoverPhaseTxt = m.time_to_recover_s != null
+      ? m.time_to_recover_s.toFixed(1) + 's' : '—';
     const typeCls = 'mv-badge-' + (m.type || '');
     // Annotate roundings with the mark type so users can tell weather
     // from leeward at a glance.
@@ -281,6 +285,9 @@ function renderResults() {
       ? '<span class="mv-video">&#9654;</span>'
       : '<span class="mv-no-video">\u2014</span>';
     const rank = m.rank ? m.rank : '';
+    const rankTitle = m.loss_percentile != null
+      ? 'loss percentile: ' + m.loss_percentile + ' (lower = less loss)'
+      : '';
     const tagCell = _renderRowTagChips(m.tags);
     return '<tr class="' + (sel ? 'selected' : '') + '" data-k="' + k + '" onclick="mvToggleRow(\'' + k + '\')">'
       + '<td><input type="checkbox" ' + (sel ? 'checked' : '') + ' onclick="event.stopPropagation();mvToggleRow(\'' + k + '\')"/></td>'
@@ -291,7 +298,9 @@ function renderResults() {
       + '<td class="mv-num">' + twsTxt + '</td>'
       + '<td class="mv-num">' + turnTxt + '</td>'
       + '<td class="mv-num">' + durTxt + '</td>'
-      + '<td>' + _esc(rank) + '</td>'
+      + '<td class="mv-num">' + turnPhaseTxt + '</td>'
+      + '<td class="mv-num">' + recoverPhaseTxt + '</td>'
+      + '<td' + (rankTitle ? ' title="' + _esc(rankTitle) + '"' : '') + '>' + _esc(rank) + '</td>'
       + '<td>' + video + '</td>'
       + '<td>' + tagCell + '</td>'
       + '</tr>';
@@ -322,8 +331,10 @@ function updateSelectedCount() {
   const n = state.selected.size;
   const el = document.getElementById('mv-selected-count');
   el.textContent = n ? '(' + n + ' selected)' : '';
-  const btn = document.getElementById('mv-compare-btn');
-  btn.disabled = n === 0;
+  const cmp = document.getElementById('mv-compare-btn');
+  if (cmp) cmp.disabled = n === 0;
+  const ov = document.getElementById('mv-overlay-btn');
+  if (ov) ov.disabled = n === 0;
   const all = document.getElementById('mv-check-all');
   if (all) all.checked = n > 0 && n === state.maneuvers.length;
 }
@@ -336,6 +347,22 @@ function mvOpenCompare() {
     .filter(k => state.selected.has(k));
   if (!orderedKeys.length) return;
   window.open('/compare?ids=' + orderedKeys.join(','), '_blank');
+}
+
+function mvOpenOverlay() {
+  if (!state.selected.size) return;
+  // Overlay (#619) only makes sense for maneuvers with a head-to-wind
+  // alignment point — roundings have none, so pre-filter them client
+  // side to avoid the backend returning them all in excluded_ids.
+  const orderedKeys = state.maneuvers
+    .filter(m => m.type === 'tack' || m.type === 'gybe')
+    .map(m => m.session_id + ':' + m.id)
+    .filter(k => state.selected.has(k));
+  if (!orderedKeys.length) {
+    alert('Overlay requires tack or gybe maneuvers — roundings have no head-to-wind alignment.');
+    return;
+  }
+  window.open('/maneuvers/overlay?ids=' + orderedKeys.join(','), '_blank');
 }
 
 // ---------------------------------------------------------------------------
