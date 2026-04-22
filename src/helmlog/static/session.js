@@ -304,6 +304,14 @@ let _speakerMap = {}; // speaker_map from API (crew assignments)
 async function init() {
   await initTimezone();
 
+  // Live-race strip-down (#664): toggle the body class before any loaders
+  // fire so CSS hides the non-essential cards as the page settles, rather
+  // than flashing them on screen and yanking them away.
+  if (cfg.dataset.live === '1') {
+    document.body.classList.add('live-race');
+    document.getElementById('live-instruments-card').style.display = '';
+  }
+
   const r = await fetch('/api/sessions/' + SESSION_ID + '/detail');
   if (!r.ok) {
     document.getElementById('session-name').textContent = 'Session not found';
@@ -348,22 +356,81 @@ async function init() {
 // ---------------------------------------------------------------------------
 
 const _LIVE_REFRESH_MS = 15000;
+const _LIVE_INSTRUMENT_MS = 2000;
 let _liveInterval = null;
+let _liveInstrumentInterval = null;
+let _liveInstTickInterval = null;
 let _liveWs = null;
 let _liveLastRefresh = 0;
+let _livePhotoUrl = null;
 
 async function _liveRefreshOnce() {
   const now = Date.now();
   if (now - _liveLastRefresh < _LIVE_REFRESH_MS - 500) return;
   _liveLastRefresh = now;
   try {
-    await Promise.all([loadTrack(), loadVideos()]);
+    await Promise.all([loadTrack(), loadVideos(), _refreshLivePhoto()]);
+  } catch (e) { /* non-fatal */ }
+}
+
+async function _refreshLivePhoto() {
+  const card = document.getElementById('live-photo-card');
+  if (!card) return;
+  try {
+    const r = await fetch('/api/sessions/' + SESSION_ID + '/notes');
+    if (!r.ok) { card.style.display = 'none'; return; }
+    const notes = await r.json();
+    const photos = notes.filter(n => n.note_type === 'photo' && n.photo_path);
+    if (!photos.length) {
+      card.style.display = 'none';
+      _livePhotoUrl = null;
+      return;
+    }
+    photos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const latest = photos[0];
+    const url = '/notes/' + latest.photo_path;
+    card.style.display = '';
+    if (url !== _livePhotoUrl) {
+      document.getElementById('live-photo-img').src = url;
+      document.getElementById('live-photo-link').href = url;
+      _livePhotoUrl = url;
+    }
+    document.getElementById('live-photo-ts').textContent = fmtTime(latest.ts);
+  } catch (e) { /* non-fatal */ }
+}
+
+async function _refreshLiveInstruments() {
+  try {
+    const r = await fetch('/api/instruments');
+    if (!r.ok) return;
+    const d = await r.json();
+    const set = (id, val, decimals) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
+    };
+    set('liv-sog', d.sog_kts, 1);
+    set('liv-cog', d.cog_deg, 0);
+    set('liv-hdg', d.heading_deg, 0);
+    set('liv-bsp', d.bsp_kts, 1);
+    set('liv-aws', d.aws_kts, 1);
+    set('liv-awa', d.awa_deg, 0);
+    set('liv-tws', d.tws_kts, 1);
+    set('liv-twa', d.twa_deg, 0);
+    set('liv-twd', d.twd_deg, 0);
+    set('liv-rdr', d.rudder_deg, 1);
   } catch (e) { /* non-fatal */ }
 }
 
 function _startLiveRefresh() {
   if (_liveInterval) return;
   _liveInterval = setInterval(_liveRefreshOnce, _LIVE_REFRESH_MS);
+  _liveInstrumentInterval = setInterval(_refreshLiveInstruments, _LIVE_INSTRUMENT_MS);
+  _liveInstTickInterval = setInterval(() => {
+    const el = document.getElementById('live-inst-time');
+    if (el) el.textContent = new Date().toISOString().substring(11, 19) + ' UTC';
+  }, 1000);
+  _refreshLiveInstruments();
+  _refreshLivePhoto();
   try {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     _liveWs = new WebSocket(`${proto}//${location.host}/ws/live`);
