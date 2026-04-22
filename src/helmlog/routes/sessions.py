@@ -2351,28 +2351,49 @@ async def api_grafana_annotations(
     start = datetime.fromtimestamp(from_ / 1000.0, tz=UTC)
     end = datetime.fromtimestamp(to / 1000.0, tz=UTC)
     race_id: int | None = None
-    audio_session_id: int | None = None
     if sessionId is not None:
-        race_id, audio_session_id = await _resolve_session(request, sessionId)
-    notes = await storage.list_notes_range(
-        start, end, race_id=race_id, audio_session_id=audio_session_id
+        race_id, _audio = await _resolve_session(request, sessionId)
+
+    # Query moments that fall in the requested window. If sessionId was
+    # supplied, narrow to that race.
+    db = storage._conn()
+    where = "m.anchor_t_start IS NOT NULL AND m.anchor_t_start >= ?"
+    params: list[Any] = [start.isoformat()]
+    where += " AND m.anchor_t_start <= ?"
+    params.append(end.isoformat())
+    if race_id is not None:
+        where += " AND m.session_id = ?"
+        params.append(race_id)
+    cur = await db.execute(
+        f"SELECT m.id, m.subject, m.anchor_t_start,"  # noqa: S608
+        f" (SELECT c.body FROM comments c WHERE c.moment_id = m.id"
+        f"  ORDER BY c.created_at LIMIT 1) AS first_comment,"
+        f" (SELECT ma.path FROM moment_attachments ma WHERE ma.moment_id = m.id"
+        f"  AND ma.kind = 'photo' ORDER BY ma.id LIMIT 1) AS photo_path"
+        f" FROM moments m WHERE {where}"
+        f" ORDER BY m.anchor_t_start",
+        params,
     )
+    rows = [dict(r) for r in await cur.fetchall()]
     result = []
-    for n in notes:
-        ts_ms = int(datetime.fromisoformat(n["ts"]).timestamp() * 1000)
-        text = n["body"] or ""
-        if n["note_type"] == "photo" and n.get("photo_path"):
-            photo_url = f"/notes/{n['photo_path']}"
+    for n in rows:
+        ts_ms = int(datetime.fromisoformat(n["anchor_t_start"]).timestamp() * 1000)
+        body = n["first_comment"] or n["subject"] or ""
+        photo_path = n["photo_path"]
+        title = "Photo" if photo_path else "Moment"
+        text = body
+        if photo_path:
+            photo_url = f"/attachments/{photo_path}"
             text = f'<img src="{photo_url}" style="max-width:300px"/>'
-            if n["body"]:
-                text = n["body"] + "<br/>" + text
+            if body:
+                text = body + "<br/>" + text
         result.append(
             {
                 "time": ts_ms,
                 "timeEnd": ts_ms,
-                "title": n["note_type"].capitalize(),
+                "title": title,
                 "text": text,
-                "tags": [n["note_type"]],
+                "tags": [title.lower()],
             }
         )
     return JSONResponse(result, headers={"Access-Control-Allow-Origin": "*"})

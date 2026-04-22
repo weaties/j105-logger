@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from helmlog.races import Race
     from helmlog.vakaros import VakarosSession
 
-from helmlog.anchors import Anchor, validate_anchor
+from helmlog.anchors import AnchorError
 from helmlog.nmea2000 import (
     AttitudeRecord,
     COGSOGRecord,
@@ -50,9 +50,7 @@ class AnchorScopeError(ValueError):
 
 # Valid values for entity_tags.entity_type. Extended carefully — every
 # addition needs a list_entity_ids() branch in storage plus attach UI.
-ENTITY_TYPES: frozenset[str] = frozenset(
-    {"session", "maneuver", "thread", "bookmark", "session_note"}
-)
+ENTITY_TYPES: frozenset[str] = frozenset({"session", "maneuver", "moment"})
 
 
 def _hms_from_iso(iso: str | None) -> str:
@@ -70,8 +68,8 @@ def _hms_from_iso(iso: str | None) -> str:
         return iso
 
 
-def _project_thread_anchor(row: dict[str, Any]) -> dict[str, Any]:
-    """Build a serializable `anchor` key from the four anchor_* columns."""
+def _project_moment_anchor(row: dict[str, Any]) -> dict[str, Any]:
+    """Build a serializable ``anchor`` key from the four anchor_* columns."""
     kind = row.get("anchor_kind")
     if kind is None:
         row["anchor"] = None
@@ -1936,6 +1934,23 @@ _MIGRATIONS: dict[int, str] = {
             last_read TEXT NOT NULL,
             PRIMARY KEY (user_id, moment_id)
         );
+
+        -- Notifications FK'd comment_threads via source_thread_id. Rename the
+        -- column to source_moment_id and repoint the FK at moments. The data
+        -- migration copies rows across mapping thread_id -> moment_id.
+        CREATE TABLE IF NOT EXISTS notifications_new (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            type              TEXT    NOT NULL,
+            source_moment_id  INTEGER REFERENCES moments(id) ON DELETE CASCADE,
+            source_comment_id INTEGER,
+            session_id        INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            actor_id          INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            message           TEXT,
+            created_at        TEXT NOT NULL,
+            read              INTEGER NOT NULL DEFAULT 0,
+            dismissed         INTEGER NOT NULL DEFAULT 0
+        );
     """,
 }
 
@@ -2256,6 +2271,10 @@ class Storage:
         # the next boot instead of leaving rows with NULL slugs forever.
         await self._migrate_v58_slugs()
 
+        # Post-DDL data migration for v80 (moments unification #662).
+        if current < 80:
+            await self._migrate_v80_moments()
+
         logger.debug("Schema is at version {}", _CURRENT_VERSION)
 
     async def _migrate_v38_data(self) -> None:
@@ -2569,6 +2588,280 @@ class Storage:
             )
         await db.commit()
         logger.info("v56 data migration: seeded {} categories", len(CATEGORY_ORDER))
+
+    async def _migrate_v80_moments(self) -> None:
+        """Data migration for v80 (#662): collapse bookmarks, comment_threads,
+        and session_notes into the unified ``moments`` primitive.
+
+        Idempotent: if ``moments`` already has rows, or if the old tables have
+        already been dropped, the method is a no-op. Runs with foreign keys
+        disabled so dropping comment_threads does not cascade-delete the
+        notifications we are remapping.
+        """
+        db = self._conn()
+
+        cur = await db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='comment_threads'"
+        )
+        if await cur.fetchone() is None:
+            return  # old tables already gone (re-entrant run after completion)
+
+        cur = await db.execute("SELECT COUNT(*) FROM moments")
+        row = await cur.fetchone()
+        if row is not None and row[0] > 0:
+            return  # partial prior run populated moments; abort to avoid dupes
+
+        # PRAGMA foreign_keys is a no-op inside a transaction; flush first.
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys = OFF")
+
+        # --- 1. comment_threads -> moments (build thread_id -> moment_id map) ---
+        thread_to_moment: dict[int, int] = {}
+        cur = await db.execute(
+            "SELECT id, session_id, title, anchor_kind, anchor_entity_id,"
+            " anchor_t_start, anchor_t_end, resolved, resolved_at, resolved_by,"
+            " resolution_summary, created_by, created_at, updated_at"
+            " FROM comment_threads ORDER BY id"
+        )
+        thread_rows = list(await cur.fetchall())
+        for tr in thread_rows:
+            # Threads with bookmark-kind anchors: we no longer have bookmarks.
+            # Downgrade to session-scope so the moment survives (t_start is
+            # unknown post-bookmark-drop).
+            ak = tr["anchor_kind"]
+            ae = tr["anchor_entity_id"]
+            ats = tr["anchor_t_start"]
+            ate = tr["anchor_t_end"]
+            if ak == "bookmark":
+                ak, ae, ats, ate = "session", None, None, None
+            elif ak in {"race", "start"}:
+                # race/start anchors collapse to session-scope: the moment's
+                # session_id already identifies the race.
+                ak, ae, ats, ate = "session", None, None, None
+            elif ak == "segment":
+                ak = "timestamp"  # point-or-range is the timestamp kind now
+            elif ak is None:
+                ak = "session"
+            ins = await db.execute(
+                "INSERT INTO moments"
+                " (session_id, subject, counterparty, anchor_kind, anchor_entity_id,"
+                "  anchor_t_start, anchor_t_end, resolved, resolved_at, resolved_by,"
+                "  resolution_summary, source, created_by, created_at, updated_at)"
+                " VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)",
+                (
+                    tr["session_id"],
+                    tr["title"],
+                    ak,
+                    ae,
+                    ats,
+                    ate,
+                    tr["resolved"] or 0,
+                    tr["resolved_at"],
+                    tr["resolved_by"],
+                    tr["resolution_summary"],
+                    tr["created_by"],
+                    tr["created_at"],
+                    tr["updated_at"],
+                ),
+            )
+            thread_to_moment[int(tr["id"])] = int(ins.lastrowid or 0)
+
+        # --- 2. comments -> comments_new (with thread_id remapped) ---
+        cur = await db.execute(
+            "SELECT id, thread_id, author, body, created_at, edited_at FROM comments ORDER BY id"
+        )
+        for cr in await cur.fetchall():
+            moment_id = thread_to_moment.get(int(cr["thread_id"]))
+            if moment_id is None:
+                continue  # orphan comment — thread vanished somehow, drop
+            await db.execute(
+                "INSERT INTO comments_new"
+                " (id, moment_id, author, body, created_at, edited_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    cr["id"],
+                    moment_id,
+                    cr["author"],
+                    cr["body"],
+                    cr["created_at"],
+                    cr["edited_at"],
+                ),
+            )
+
+        # --- 3. comment_read_state -> comment_read_state_new ---
+        cur = await db.execute("SELECT user_id, thread_id, last_read FROM comment_read_state")
+        for rr in await cur.fetchall():
+            moment_id = thread_to_moment.get(int(rr["thread_id"]))
+            if moment_id is None:
+                continue
+            await db.execute(
+                "INSERT OR IGNORE INTO comment_read_state_new"
+                " (user_id, moment_id, last_read) VALUES (?, ?, ?)",
+                (rr["user_id"], moment_id, rr["last_read"]),
+            )
+
+        # --- 4. notifications -> notifications_new (source_thread_id remapped) ---
+        cur = await db.execute(
+            "SELECT id, user_id, type, source_thread_id, source_comment_id,"
+            " session_id, actor_id, message, created_at, read, dismissed"
+            " FROM notifications ORDER BY id"
+        )
+        for nr in await cur.fetchall():
+            src_thread = nr["source_thread_id"]
+            src_moment = thread_to_moment.get(int(src_thread)) if src_thread is not None else None
+            await db.execute(
+                "INSERT INTO notifications_new"
+                " (id, user_id, type, source_moment_id, source_comment_id,"
+                "  session_id, actor_id, message, created_at, read, dismissed)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    nr["id"],
+                    nr["user_id"],
+                    nr["type"],
+                    src_moment,
+                    nr["source_comment_id"],
+                    nr["session_id"],
+                    nr["actor_id"],
+                    nr["message"],
+                    nr["created_at"],
+                    nr["read"],
+                    nr["dismissed"],
+                ),
+            )
+
+        # --- 5. session_notes -> moments / moment_attachments / session_settings ---
+        note_to_moment: dict[int, int] = {}
+        cur = await db.execute(
+            "SELECT id, race_id, audio_session_id, ts, note_type, body,"
+            " photo_path, created_at, user_id FROM session_notes ORDER BY id"
+        )
+        skipped_audio_only = 0
+        for nr in await cur.fetchall():
+            note_type = nr["note_type"]
+            if note_type == "settings":
+                await db.execute(
+                    "INSERT INTO session_settings"
+                    " (session_id, audio_session_id, ts, body, created_by, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        nr["race_id"],
+                        nr["audio_session_id"],
+                        nr["ts"],
+                        nr["body"] or "{}",
+                        nr["user_id"],
+                        nr["created_at"],
+                    ),
+                )
+                continue
+
+            race_id = nr["race_id"]
+            if race_id is None:
+                # Audio-only notes have no session to anchor on. Skip for now
+                # (the user confirmed this is acceptable — see #662 rationale).
+                skipped_audio_only += 1
+                continue
+
+            ts = nr["ts"]
+            ins = await db.execute(
+                "INSERT INTO moments"
+                " (session_id, subject, counterparty, anchor_kind, anchor_entity_id,"
+                "  anchor_t_start, anchor_t_end, resolved, source, created_by,"
+                "  created_at, updated_at)"
+                " VALUES (?, NULL, NULL, 'timestamp', NULL, ?, NULL, 0,"
+                "         'manual', ?, ?, ?)",
+                (race_id, ts, nr["user_id"], nr["created_at"], nr["created_at"]),
+            )
+            moment_id = int(ins.lastrowid or 0)
+            note_to_moment[int(nr["id"])] = moment_id
+
+            if note_type == "photo" or nr["photo_path"]:
+                await db.execute(
+                    "INSERT INTO moment_attachments"
+                    " (moment_id, kind, path, body, created_by, created_at)"
+                    " VALUES (?, 'photo', ?, NULL, ?, ?)",
+                    (moment_id, nr["photo_path"], nr["user_id"], nr["created_at"]),
+                )
+                # A photo note may still carry a caption in body — keep it
+                # as a comment on the moment.
+                if nr["body"]:
+                    await db.execute(
+                        "INSERT INTO comments_new"
+                        " (moment_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                        (moment_id, nr["user_id"], nr["body"], nr["created_at"]),
+                    )
+            elif nr["body"]:
+                await db.execute(
+                    "INSERT INTO comments_new"
+                    " (moment_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+                    (moment_id, nr["user_id"], nr["body"], nr["created_at"]),
+                )
+
+        # --- 6. entity_tags remap ---
+        # thread -> moment
+        cur = await db.execute(
+            "SELECT rowid, entity_id FROM entity_tags WHERE entity_type = 'thread'"
+        )
+        for er in await cur.fetchall():
+            moment_id = thread_to_moment.get(int(er["entity_id"]))
+            if moment_id is None:
+                await db.execute("DELETE FROM entity_tags WHERE rowid = ?", (er["rowid"],))
+            else:
+                await db.execute(
+                    "UPDATE entity_tags SET entity_type = 'moment', entity_id = ? WHERE rowid = ?",
+                    (moment_id, er["rowid"]),
+                )
+        # session_note -> moment
+        cur = await db.execute(
+            "SELECT rowid, entity_id FROM entity_tags WHERE entity_type = 'session_note'"
+        )
+        for er in await cur.fetchall():
+            moment_id = note_to_moment.get(int(er["entity_id"]))
+            if moment_id is None:
+                await db.execute("DELETE FROM entity_tags WHERE rowid = ?", (er["rowid"],))
+            else:
+                await db.execute(
+                    "UPDATE entity_tags SET entity_type = 'moment', entity_id = ? WHERE rowid = ?",
+                    (moment_id, er["rowid"]),
+                )
+        # bookmark -> gone
+        await db.execute("DELETE FROM entity_tags WHERE entity_type = 'bookmark'")
+
+        # --- 7. drop old tables ---
+        # Order matters only to keep dependent indexes from lingering; with
+        # foreign_keys=OFF, SQLite doesn't check FK references on DROP.
+        await db.execute("DROP TABLE IF EXISTS comment_read_state")
+        await db.execute("DROP TABLE IF EXISTS comments")
+        await db.execute("DROP TABLE IF EXISTS notifications")
+        await db.execute("DROP TABLE IF EXISTS comment_threads")
+        await db.execute("DROP TABLE IF EXISTS session_notes")
+        await db.execute("DROP TABLE IF EXISTS bookmarks")
+
+        # --- 8. rename staging tables to final names ---
+        await db.execute("ALTER TABLE comments_new RENAME TO comments")
+        await db.execute("ALTER TABLE comment_read_state_new RENAME TO comment_read_state")
+        await db.execute("ALTER TABLE notifications_new RENAME TO notifications")
+
+        # --- 9. (re)create indexes under the final table names ---
+        # idx_comments_new_moment survives the rename (it still attaches to
+        # the renamed table) but keep the tidy name too.
+        await db.execute("DROP INDEX IF EXISTS idx_comments_new_moment")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_comments_moment ON comments(moment_id)")
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notifications_session ON notifications(session_id)"
+        )
+
+        await db.commit()
+        await db.execute("PRAGMA foreign_keys = ON")
+        logger.info(
+            "v80 data migration complete: {} moments from threads, {} from notes,"
+            " {} audio-only notes skipped",
+            len(thread_to_moment),
+            len(note_to_moment),
+            skipped_audio_only,
+        )
 
     async def _migrate_v58_slugs(self) -> None:
         """Data migration for v58: backfill ``races.slug`` from ``name`` (#449).
@@ -3881,8 +4174,8 @@ class Storage:
                 f"   WHERE cd.race_id = r.id) AS has_crew,"
                 f" (SELECT COUNT(*) > 0 FROM race_sails rs"
                 f"   WHERE rs.race_id = r.id) AS has_sails,"
-                f" (SELECT COUNT(*) > 0 FROM session_notes sn"
-                f"   WHERE sn.race_id = r.id) AS has_notes,"
+                f" (SELECT COUNT(*) > 0 FROM moments m"
+                f"   WHERE m.session_id = r.id) AS has_notes,"
                 f" r.shared_name AS shared_name,"
                 f" r.match_group_id AS match_group_id,"
                 f" r.match_confirmed AS match_confirmed"
@@ -4505,115 +4798,18 @@ class Storage:
         logger.debug("Race result {} deleted", result_id)
 
     # ------------------------------------------------------------------
-    # Session notes
+    # Session settings (was note_type='settings' — migrated by v80)
     # ------------------------------------------------------------------
 
-    async def create_note(
-        self,
-        ts: str,
-        body: str | None,
-        *,
-        race_id: int | None = None,
-        audio_session_id: int | None = None,
-        note_type: str = "text",
-        photo_path: str | None = None,
-        user_id: int | None = None,
-    ) -> int:
-        """Insert a new note and return its id."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        db = self._conn()
-        now_str = _datetime.now(UTC).isoformat()
-        cur = await db.execute(
-            "INSERT INTO session_notes"
-            " (race_id, audio_session_id, ts, note_type, body, photo_path, created_at, user_id)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (race_id, audio_session_id, ts, note_type, body, photo_path, now_str, user_id),
-        )
-        await db.commit()
-        assert cur.lastrowid is not None
-        logger.debug("Note created: id={} race_id={} type={}", cur.lastrowid, race_id, note_type)
-        return cur.lastrowid
-
-    async def list_notes(
-        self,
-        race_id: int | None = None,
-        audio_session_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return notes for a session ordered by ts ASC.
-
-        Exactly one of *race_id* or *audio_session_id* must be supplied.
-        """
-        if race_id is None and audio_session_id is None:
-            raise ValueError("Either race_id or audio_session_id must be supplied")
-        db = self._conn()
-        if race_id is not None:
-            cur = await db.execute(
-                "SELECT id, race_id, audio_session_id, ts, note_type, body,"
-                " photo_path, created_at"
-                " FROM session_notes WHERE race_id = ? ORDER BY ts ASC",
-                (race_id,),
-            )
-        else:
-            cur = await db.execute(
-                "SELECT id, race_id, audio_session_id, ts, note_type, body,"
-                " photo_path, created_at"
-                " FROM session_notes WHERE audio_session_id = ? ORDER BY ts ASC",
-                (audio_session_id,),
-            )
-        rows = await cur.fetchall()
-        return [dict(row) for row in rows]
-
-    async def delete_note(self, note_id: int) -> bool:
-        """Delete a note by id.  Returns True if deleted, False if not found."""
-        db = self._conn()
-        cur = await db.execute("DELETE FROM session_notes WHERE id = ?", (note_id,))
-        await db.commit()
-        deleted = (cur.rowcount or 0) > 0
-        logger.debug("Note {} {}", note_id, "deleted" if deleted else "not found")
-        return deleted
-
-    async def list_notes_range(
-        self,
-        start: datetime,
-        end: datetime,
-        *,
-        race_id: int | None = None,
-        audio_session_id: int | None = None,
-    ) -> list[dict[str, Any]]:
-        """Return notes whose ts falls in [start, end], ordered by ts ASC.
-
-        Optionally scoped to a single race or audio session.
-        Used by the Grafana annotations endpoint.
-        """
-        db = self._conn()
-        where = "ts >= ? AND ts <= ?"
-        params: list[object] = [start.isoformat(), end.isoformat()]
-        if race_id is not None:
-            where += " AND race_id = ?"
-            params.append(race_id)
-        elif audio_session_id is not None:
-            where += " AND audio_session_id = ?"
-            params.append(audio_session_id)
-        cur = await db.execute(
-            "SELECT id, race_id, audio_session_id, ts, note_type, body,"
-            f" photo_path, created_at FROM session_notes WHERE {where} ORDER BY ts ASC",
-            params,
-        )
-        rows = await cur.fetchall()
-        return [dict(row) for row in rows]
-
     async def list_settings_keys(self) -> list[str]:
-        """Return all distinct keys used in settings notes, sorted alphabetically.
+        """Return all distinct keys used in saved session_settings, sorted.
 
-        Parses the JSON body of every saved settings note and collects the union
-        of all keys across all sessions.  Used to populate the typeahead datalist
-        on the settings note entry form.
+        Parses the JSON body of every saved config snapshot and collects the
+        union of keys. Used to populate the typeahead datalist on the
+        settings entry form.
         """
-        db = self._read_conn()
-        cur = await db.execute(
-            "SELECT body FROM session_notes WHERE note_type = 'settings' AND body IS NOT NULL"
+        cur = await self._read_conn().execute(
+            "SELECT body FROM session_settings WHERE body IS NOT NULL"
         )
         rows = await cur.fetchall()
         keys: set[str] = set()
@@ -5569,10 +5765,22 @@ class Storage:
     # ------------------------------------------------------------------
 
     async def write_maneuvers(self, session_id: int, maneuvers: list[Any]) -> None:
-        """Replace all maneuvers for a session with the new list (idempotent)."""
+        """Replace all maneuvers for a session with the new list (idempotent).
+
+        Any moments anchored to the replaced maneuvers are downgraded to
+        ``anchor_kind='timestamp'`` at their last-known t_start so they
+        survive the detector re-run.
+        """
         import json
 
         db = self._conn()
+        # Downgrade dependent moments before the FKs vanish.
+        await db.execute(
+            "UPDATE moments SET anchor_kind = 'timestamp', anchor_entity_id = NULL"
+            " WHERE anchor_kind = 'maneuver'"
+            " AND anchor_entity_id IN (SELECT id FROM maneuvers WHERE session_id = ?)",
+            (session_id,),
+        )
         await db.execute("DELETE FROM maneuvers WHERE session_id = ?", (session_id,))
         await db.execute("DELETE FROM maneuver_cache WHERE session_id = ?", (session_id,))
         for m in maneuvers:
@@ -6594,7 +6802,7 @@ class Storage:
 
     async def sessions_matching_tags(self, tag_ids: list[int], mode: str = "and") -> list[int]:
         """Return session ids whose session row OR any constituent entity
-        (maneuver / bookmark / thread) carries the given tag set.
+        (maneuver / moment) carries the given tag set.
 
         AND = every tag must appear somewhere under the session.
         OR  = at least one tag must appear somewhere under the session.
@@ -6624,23 +6832,19 @@ class Storage:
             f" JOIN maneuvers m ON m.id = et.entity_id "
             f" WHERE et.entity_type = 'maneuver' AND et.tag_id IN ({placeholders}) "
             f"UNION "
-            f"SELECT b.session_id, et.tag_id FROM entity_tags et "
-            f" JOIN bookmarks b ON b.id = et.entity_id "
-            f" WHERE et.entity_type = 'bookmark' AND et.tag_id IN ({placeholders}) "
-            f"UNION "
-            f"SELECT ct.session_id, et.tag_id FROM entity_tags et "
-            f" JOIN comment_threads ct ON ct.id = et.entity_id "
-            f" WHERE et.entity_type = 'thread' AND et.tag_id IN ({placeholders})"
+            f"SELECT mo.session_id, et.tag_id FROM entity_tags et "
+            f" JOIN moments mo ON mo.id = et.entity_id "
+            f" WHERE et.entity_type = 'moment' AND et.tag_id IN ({placeholders})"
         )
         if mode == "and":
             sql = (
                 f"SELECT session_id FROM ({union}) "  # noqa: S608
                 f"GROUP BY session_id HAVING COUNT(DISTINCT tag_id) = ?"
             )
-            params = (*filtered, *filtered, *filtered, *filtered, len(filtered))
+            params = (*filtered, *filtered, *filtered, len(filtered))
         else:
             sql = f"SELECT DISTINCT session_id FROM ({union})"  # noqa: S608
-            params = (*filtered, *filtered, *filtered, *filtered)
+            params = (*filtered, *filtered, *filtered)
         cur = await self._read_conn().execute(sql, params)
         return [r["session_id"] for r in await cur.fetchall()]
 
@@ -6665,13 +6869,9 @@ class Storage:
             f" FROM entity_tags et JOIN maneuvers m ON m.id = et.entity_id "
             f" WHERE et.entity_type = 'maneuver' AND m.session_id IN ({placeholders}) "
             f"UNION ALL "
-            f"SELECT et.tag_id, 'bookmark' AS et_type, b.session_id "
-            f" FROM entity_tags et JOIN bookmarks b ON b.id = et.entity_id "
-            f" WHERE et.entity_type = 'bookmark' AND b.session_id IN ({placeholders}) "
-            f"UNION ALL "
-            f"SELECT et.tag_id, 'thread' AS et_type, ct.session_id "
-            f" FROM entity_tags et JOIN comment_threads ct ON ct.id = et.entity_id "
-            f" WHERE et.entity_type = 'thread' AND ct.session_id IN ({placeholders})"
+            f"SELECT et.tag_id, 'moment' AS et_type, mo.session_id "
+            f" FROM entity_tags et JOIN moments mo ON mo.id = et.entity_id "
+            f" WHERE et.entity_type = 'moment' AND mo.session_id IN ({placeholders})"
         )
         sql = (
             f"SELECT u.session_id, u.tag_id, u.et_type, COUNT(*) AS n, "  # noqa: S608
@@ -6680,7 +6880,7 @@ class Storage:
             f" GROUP BY u.session_id, u.tag_id, u.et_type "
             f" ORDER BY t.name, u.et_type"
         )
-        params = (*session_ids, *session_ids, *session_ids, *session_ids)
+        params = (*session_ids, *session_ids, *session_ids)
         cur = await self._read_conn().execute(sql, params)
         for r in await cur.fetchall():
             out.setdefault(r["session_id"], []).append(
@@ -6822,9 +7022,7 @@ class Storage:
         table_col = {
             "session": ("races", "id"),
             "maneuver": ("maneuvers", "id"),
-            "thread": ("comment_threads", "id"),
-            "bookmark": ("bookmarks", "id"),
-            "session_note": ("session_notes", "id"),
+            "moment": ("moments", "id"),
         }[entity_type]
         table, col = table_col
         cur = await self._read_conn().execute(
@@ -6926,96 +7124,366 @@ class Storage:
         return changed
 
     # ------------------------------------------------------------------
-    # Bookmarks (#477 / #588 slice 1)
+    # Moments, attachments, comments, read state (#662 moments unification)
     # ------------------------------------------------------------------
 
-    async def create_bookmark(
+    _MOMENT_COLS_Q = (
+        "m.id, m.session_id, m.subject, m.counterparty, m.anchor_kind,"
+        " m.anchor_entity_id, m.anchor_t_start, m.anchor_t_end, m.resolved,"
+        " m.resolved_at, m.resolved_by, m.resolution_summary, m.source,"
+        " m.confirmed_at, m.confirmed_by, m.created_by, m.created_at,"
+        " m.updated_at"
+    )
+    _MOMENT_COLS = (
+        "id, session_id, subject, counterparty, anchor_kind, anchor_entity_id,"
+        " anchor_t_start, anchor_t_end, resolved, resolved_at, resolved_by,"
+        " resolution_summary, source, confirmed_at, confirmed_by,"
+        " created_by, created_at, updated_at"
+    )
+    _MOMENT_ANCHOR_KINDS: frozenset[str] = frozenset(
+        {"session", "timestamp", "maneuver", "transcript_segment"}
+    )
+
+    async def create_moment(
         self,
         *,
         session_id: int,
-        user_id: int | None,
-        name: str,
-        note: str | None,
-        t_start: str,
+        anchor_kind: str,
+        anchor_entity_id: int | None = None,
+        anchor_t_start: str | None = None,
+        anchor_t_end: str | None = None,
+        subject: str | None = None,
+        counterparty: str | None = None,
+        user_id: int | None = None,
+        source: str = "manual",
     ) -> int:
-        """Create a timestamp-kind bookmark on a session. Returns new id."""
+        """Create a moment on *session_id*. Returns the new id.
+
+        Raises AnchorError for an anchor shape that doesn't satisfy
+        ``{session, timestamp, maneuver, transcript_segment}`` rules.
+        """
+        if anchor_kind not in self._MOMENT_ANCHOR_KINDS:
+            raise AnchorError(f"unknown anchor_kind {anchor_kind!r}")
+        if anchor_kind == "session":
+            if (
+                anchor_entity_id is not None
+                or anchor_t_start is not None
+                or anchor_t_end is not None
+            ):
+                raise AnchorError("session anchor must not set entity_id or times")
+        elif anchor_kind == "timestamp":
+            if anchor_t_start is None:
+                raise AnchorError("timestamp anchor requires anchor_t_start")
+            if anchor_entity_id is not None:
+                raise AnchorError("timestamp anchor must not set anchor_entity_id")
+            if anchor_t_end is not None and anchor_t_end <= anchor_t_start:
+                raise AnchorError("anchor_t_end must be after anchor_t_start")
+        else:  # maneuver | transcript_segment
+            if anchor_entity_id is None:
+                raise AnchorError(f"{anchor_kind} anchor requires anchor_entity_id")
+
         now = datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
-            "INSERT INTO bookmarks "
-            "(session_id, created_by, name, note, anchor_kind, anchor_t_start, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'timestamp', ?, ?, ?)",
-            (session_id, user_id, name, note, t_start, now, now),
+            "INSERT INTO moments"
+            " (session_id, subject, counterparty, anchor_kind, anchor_entity_id,"
+            "  anchor_t_start, anchor_t_end, resolved, source, created_by,"
+            "  created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+            (
+                session_id,
+                subject,
+                counterparty,
+                anchor_kind,
+                anchor_entity_id,
+                anchor_t_start,
+                anchor_t_end,
+                source,
+                user_id,
+                now,
+                now,
+            ),
         )
         await db.commit()
         assert cur.lastrowid is not None
         return int(cur.lastrowid)
 
-    async def get_bookmark(self, bookmark_id: int) -> dict[str, Any] | None:
-        """Return a single bookmark row as a dict, or None if not found."""
-        cur = await self._read_conn().execute(
-            "SELECT id, session_id, created_by, name, note, anchor_kind, "
-            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
-            "FROM bookmarks WHERE id = ?",
-            (bookmark_id,),
-        )
-        row = await cur.fetchone()
-        return dict(row) if row else None
+    async def _resolve_moment_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        """Derive t_start/t_end for maneuver / transcript_segment anchors.
 
-    async def list_bookmarks_for_session(self, session_id: int) -> list[dict[str, Any]]:
-        """Return all bookmarks on a session, ordered by anchor_t_start."""
-        cur = await self._read_conn().execute(
-            "SELECT id, session_id, created_by, name, note, anchor_kind, "
-            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
-            "FROM bookmarks WHERE session_id = ? "
-            "ORDER BY anchor_t_start, id",
-            (session_id,),
-        )
-        return [dict(r) for r in await cur.fetchall()]
-
-    async def update_bookmark(
-        self,
-        bookmark_id: int,
-        *,
-        name: str | None = None,
-        note: str | None = None,
-        clear_note: bool = False,
-    ) -> bool:
-        """Update bookmark name and/or note.
-
-        Pass `clear_note=True` to explicitly set note to NULL; otherwise a
-        `note=None` argument is treated as "don't change note".
+        If the referenced entity is gone, downgrade to anchor_kind='timestamp'
+        at the last-known t_start (persisted) so nothing is lost.
         """
-        parts: list[str] = []
-        params: list[Any] = []
-        if name is not None:
-            parts.append("name = ?")
-            params.append(name)
-        if clear_note:
-            parts.append("note = NULL")
-        elif note is not None:
-            parts.append("note = ?")
-            params.append(note)
-        if not parts:
-            return await self.get_bookmark(bookmark_id) is not None
-        parts.append("updated_at = ?")
-        params.append(datetime.now(UTC).isoformat())
-        params.append(bookmark_id)
+        kind = row.get("anchor_kind")
+        ent = row.get("anchor_entity_id")
+        if kind not in {"maneuver", "transcript_segment"} or ent is None:
+            return row
+
+        db = self._conn()
+        if kind == "maneuver":
+            cur = await db.execute("SELECT ts, end_ts FROM maneuvers WHERE id = ?", (ent,))
+            m = await cur.fetchone()
+            if m is not None:
+                row["anchor_t_start"] = m["ts"]
+                row["anchor_t_end"] = m["end_ts"]
+                return row
+        else:  # transcript_segment
+            cur = await db.execute(
+                "SELECT start_time, end_time FROM transcript_segments WHERE id = ?",
+                (ent,),
+            )
+            seg = await cur.fetchone()
+            if seg is not None:
+                row["anchor_t_start"] = seg["start_time"]
+                row["anchor_t_end"] = seg["end_time"]
+                return row
+
+        # Underlying entity is gone — downgrade so the moment survives.
+        await db.execute(
+            "UPDATE moments SET anchor_kind = 'timestamp', anchor_entity_id = NULL WHERE id = ?",
+            (row["id"],),
+        )
+        await db.commit()
+        row["anchor_kind"] = "timestamp"
+        row["anchor_entity_id"] = None
+        return row
+
+    async def get_moment(self, moment_id: int) -> dict[str, Any] | None:
+        """Return a moment with anchor times resolved + embedded comments and
+        attachments. ``None`` if not found."""
         db = self._conn()
         cur = await db.execute(
-            f"UPDATE bookmarks SET {', '.join(parts)} WHERE id = ?",  # noqa: S608
+            f"SELECT {self._MOMENT_COLS} FROM moments WHERE id = ?",  # noqa: S608
+            (moment_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        m = await self._resolve_moment_row(dict(row))
+        m = _project_moment_anchor(m)
+        cur = await db.execute(
+            "SELECT c.id, c.moment_id, c.author, c.body, c.created_at, c.edited_at,"
+            " u.name AS author_name, u.email AS author_email"
+            " FROM comments c LEFT JOIN users u ON c.author = u.id"
+            " WHERE c.moment_id = ? ORDER BY c.created_at",
+            (moment_id,),
+        )
+        m["comments"] = [dict(r) for r in await cur.fetchall()]
+        cur = await db.execute(
+            "SELECT id, moment_id, kind, path, body, created_by, created_at"
+            " FROM moment_attachments WHERE moment_id = ? ORDER BY id",
+            (moment_id,),
+        )
+        m["attachments"] = [dict(r) for r in await cur.fetchall()]
+        return m
+
+    async def list_moments_for_session(
+        self, session_id: int, *, include_unconfirmed: bool = False
+    ) -> list[dict[str, Any]]:
+        """Return moments on a session with anchors resolved + comment/unread
+        counts. Auto-sourced unconfirmed moments are hidden unless caller asks."""
+        db = self._conn()
+        where = "WHERE m.session_id = ?"
+        params: tuple[Any, ...] = (session_id,)
+        if not include_unconfirmed:
+            where += " AND (m.source = 'manual' OR m.confirmed_at IS NOT NULL)"
+        cur = await db.execute(
+            f"SELECT {self._MOMENT_COLS_Q},"  # noqa: S608
+            f" u.name AS author_name, u.email AS author_email,"
+            f" (SELECT COUNT(*) FROM comments c WHERE c.moment_id = m.id)"
+            f"    AS comment_count,"
+            f" (SELECT c.body FROM comments c WHERE c.moment_id = m.id"
+            f"    ORDER BY c.created_at LIMIT 1) AS first_comment_body"
+            f" FROM moments m LEFT JOIN users u ON m.created_by = u.id"
+            f" {where} ORDER BY COALESCE(m.anchor_t_start, m.created_at), m.id",
+            params,
+        )
+        rows = [dict(r) for r in await cur.fetchall()]
+        resolved = [await self._resolve_moment_row(r) for r in rows]
+        return [_project_moment_anchor(r) for r in resolved]
+
+    async def update_moment(
+        self,
+        moment_id: int,
+        *,
+        subject: str | None = None,
+        counterparty: str | None = None,
+        clear_subject: bool = False,
+        clear_counterparty: bool = False,
+    ) -> bool:
+        parts: list[str] = []
+        params: list[Any] = []
+        if clear_subject:
+            parts.append("subject = NULL")
+        elif subject is not None:
+            parts.append("subject = ?")
+            params.append(subject)
+        if clear_counterparty:
+            parts.append("counterparty = NULL")
+        elif counterparty is not None:
+            parts.append("counterparty = ?")
+            params.append(counterparty)
+        if not parts:
+            cur = await self._conn().execute("SELECT 1 FROM moments WHERE id = ?", (moment_id,))
+            return await cur.fetchone() is not None
+        parts.append("updated_at = ?")
+        params.append(datetime.now(UTC).isoformat())
+        params.append(moment_id)
+        db = self._conn()
+        cur = await db.execute(
+            f"UPDATE moments SET {', '.join(parts)} WHERE id = ?",  # noqa: S608
             params,
         )
         await db.commit()
         return cur.rowcount > 0
 
-    async def delete_bookmark(self, bookmark_id: int) -> bool:
-        """Delete a bookmark. Returns True if found."""
+    async def delete_moment(self, moment_id: int) -> bool:
         db = self._conn()
-        cur = await db.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+        cur = await db.execute("DELETE FROM moments WHERE id = ?", (moment_id,))
         await db.commit()
         return cur.rowcount > 0
+
+    async def resolve_moment(
+        self,
+        moment_id: int,
+        user_id: int,
+        resolution_summary: str | None = None,
+    ) -> bool:
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE moments SET resolved = 1, resolved_at = ?, resolved_by = ?,"
+            " resolution_summary = ?, updated_at = ? WHERE id = ?",
+            (now, user_id, resolution_summary, now, moment_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def unresolve_moment(self, moment_id: int) -> bool:
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE moments SET resolved = 0, resolved_at = NULL, resolved_by = NULL,"
+            " resolution_summary = NULL, updated_at = ? WHERE id = ?",
+            (now, moment_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def confirm_moment(self, moment_id: int, user_id: int) -> bool:
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE moments SET confirmed_at = ?, confirmed_by = ?, updated_at = ? WHERE id = ?",
+            (now, user_id, now, moment_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def list_moment_counterparties(self) -> list[str]:
+        """Distinct, non-null moment counterparties for typeahead."""
+        cur = await self._read_conn().execute(
+            "SELECT DISTINCT counterparty FROM moments"
+            " WHERE counterparty IS NOT NULL AND counterparty != ''"
+            " ORDER BY counterparty"
+        )
+        return [r["counterparty"] for r in await cur.fetchall()]
+
+    async def downgrade_moments_anchored_to_maneuver(self, maneuver_id: int) -> int:
+        """When a maneuver is deleted, anchor its moments to 'timestamp' at
+        the last-known t_start instead of orphaning them. Returns count."""
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE moments SET anchor_kind = 'timestamp',"
+            " anchor_entity_id = NULL"
+            " WHERE anchor_kind = 'maneuver' AND anchor_entity_id = ?",
+            (maneuver_id,),
+        )
+        await db.commit()
+        return cur.rowcount or 0
+
+    # ------------------------------------------------------------------
+    # Moment attachments
+    # ------------------------------------------------------------------
+
+    async def create_attachment(
+        self,
+        *,
+        moment_id: int,
+        kind: str,
+        path: str | None = None,
+        body: str | None = None,
+        user_id: int | None = None,
+    ) -> int:
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO moment_attachments"
+            " (moment_id, kind, path, body, created_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (moment_id, kind, path, body, user_id, now),
+        )
+        await db.commit()
+        return int(cur.lastrowid or 0)
+
+    async def list_attachments_for_moment(self, moment_id: int) -> list[dict[str, Any]]:
+        cur = await self._read_conn().execute(
+            "SELECT id, moment_id, kind, path, body, created_by, created_at"
+            " FROM moment_attachments WHERE moment_id = ? ORDER BY id",
+            (moment_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
+
+    async def delete_attachment(self, attachment_id: int) -> bool:
+        db = self._conn()
+        cur = await db.execute("DELETE FROM moment_attachments WHERE id = ?", (attachment_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+    async def delete_attachment_with_file(self, attachment_id: int) -> tuple[bool, str | None]:
+        """Delete an attachment and return (found, path) for disk cleanup."""
+        db = self._conn()
+        cur = await db.execute("SELECT path FROM moment_attachments WHERE id = ?", (attachment_id,))
+        row = await cur.fetchone()
+        if row is None:
+            return False, None
+        path = row["path"]
+        await db.execute("DELETE FROM moment_attachments WHERE id = ?", (attachment_id,))
+        await db.commit()
+        return True, path
+
+    # ------------------------------------------------------------------
+    # Session settings (config snapshots, was note_type='settings')
+    # ------------------------------------------------------------------
+
+    async def create_session_setting(
+        self,
+        *,
+        session_id: int | None,
+        body: str,
+        user_id: int | None = None,
+        audio_session_id: int | None = None,
+        ts: str | None = None,
+    ) -> int:
+        now = datetime.now(UTC).isoformat()
+        stamp = ts or now
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO session_settings"
+            " (session_id, audio_session_id, ts, body, created_by, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, audio_session_id, stamp, body, user_id, now),
+        )
+        await db.commit()
+        return int(cur.lastrowid or 0)
+
+    async def list_session_settings(self, session_id: int) -> list[dict[str, Any]]:
+        cur = await self._read_conn().execute(
+            "SELECT id, session_id, audio_session_id, ts, body, created_by, created_at"
+            " FROM session_settings WHERE session_id = ? ORDER BY ts",
+            (session_id,),
+        )
+        return [dict(r) for r in await cur.fetchall()]
 
     # ------------------------------------------------------------------
     # Anchor picker data source (#478 / #588 slice 2)
@@ -7025,8 +7493,12 @@ class Storage:
         """Return pickable anchors for a session.
 
         Each entry is a dict with keys: kind, entity_id, label, t_start.
-        Ordered by t_start so the anchor-picker can render a timeline-ordered
-        list. Consumed by `GET /api/sessions/{id}/anchors`.
+        ``kind`` is one of the moment anchor-kinds — ``session`` (session-wide),
+        ``timestamp`` (e.g. the start line), or ``maneuver``.
+        ``transcript_segment`` anchors are created from the transcript UI
+        directly rather than surfaced through this picker.
+        Moments themselves are NOT pickable (a moment cannot anchor to
+        another moment).
         """
         race = await self.get_race(session_id)
         if race is None:
@@ -7037,19 +7509,21 @@ class Storage:
 
         out: list[dict[str, Any]] = []
         if start_utc is not None:
+            # Session-wide anchor (everything about this race).
             out.append(
                 {
-                    "kind": "race",
+                    "kind": "session",
                     "entity_id": session_id,
                     "label": race_label,
                     "t_start": start_utc,
                 }
             )
+            # Start-line timestamp anchor.
             out.append(
                 {
-                    "kind": "start",
-                    "entity_id": session_id,
-                    "label": "Start sequence",
+                    "kind": "timestamp",
+                    "entity_id": None,
+                    "label": f"Start sequence · {_hms_from_iso(start_utc)}",
                     "t_start": start_utc,
                 }
             )
@@ -7061,16 +7535,6 @@ class Storage:
                     "entity_id": mv["id"],
                     "label": f"{(mv['type'] or 'Maneuver').title()} · {_hms_from_iso(mv['ts'])}",
                     "t_start": mv["ts"],
-                }
-            )
-
-        for bm in await self.list_bookmarks_for_session(session_id):
-            out.append(
-                {
-                    "kind": "bookmark",
-                    "entity_id": bm["id"],
-                    "label": f"Bookmark: {bm['name']} · {_hms_from_iso(bm['anchor_t_start'])}",
-                    "t_start": bm["anchor_t_start"],
                 }
             )
 
@@ -7315,17 +7779,19 @@ class Storage:
             if row["file_path"]:
                 files.append(row["file_path"])
 
-        # Collect photo file paths from notes
+        # Collect attachment file paths (photos, clips) from moments on this session
         cur = await db.execute(
-            "SELECT photo_path FROM session_notes WHERE race_id = ? AND photo_path IS NOT NULL",
+            "SELECT ma.path FROM moment_attachments ma"
+            " JOIN moments m ON m.id = ma.moment_id"
+            " WHERE m.session_id = ? AND ma.path IS NOT NULL",
             (session_id,),
         )
         for row in await cur.fetchall():
-            if row["photo_path"]:
-                files.append(row["photo_path"])
+            if row["path"]:
+                files.append(row["path"])
 
         # Cascade delete handles: race_crew, race_results, race_sails,
-        # race_videos, session_notes, session_tags, etc.
+        # race_videos, moments (and their attachments/comments), etc.
         # Tables below lack ON DELETE CASCADE and must be deleted manually.
 
         # extraction_runs → transcripts → audio_sessions: neither FK has CASCADE,
@@ -7654,22 +8120,6 @@ class Storage:
         )
         r = await cur.fetchone()
         return r["position_name"] if r else None
-
-    # ------------------------------------------------------------------
-    # Photo cleanup on note deletion (#205)
-    # ------------------------------------------------------------------
-
-    async def delete_note_with_file(self, note_id: int) -> tuple[bool, str | None]:
-        """Delete a note and return (found, photo_path) for disk cleanup."""
-        db = self._conn()
-        cur = await db.execute("SELECT photo_path FROM session_notes WHERE id = ?", (note_id,))
-        row = await cur.fetchone()
-        if row is None:
-            return False, None
-        photo_path: str | None = row["photo_path"]
-        await db.execute("DELETE FROM session_notes WHERE id = ?", (note_id,))
-        await db.commit()
-        return True, photo_path
 
     # ------------------------------------------------------------------
     # User deletion (#195)
@@ -8435,189 +8885,63 @@ class Storage:
         return cur.rowcount
 
     # ------------------------------------------------------------------
-    # Threaded comments (#282)
+    # Comments + read state on moments (#662, was threaded comments #282)
     # ------------------------------------------------------------------
 
-    async def create_comment_thread(
-        self,
-        session_id: int,
-        created_by: int,
-        *,
-        anchor: Anchor | None = None,
-        title: str | None = None,
-    ) -> int:
-        """Create a comment thread anchored to a session.
-
-        If `anchor` is supplied, it is validated structurally and entity-ref
-        kinds are scoped to this session (the maneuver / bookmark must
-        belong to `session_id`, the race / start entity_id must *equal*
-        `session_id`). Raises `AnchorScopeError` on violation.
-
-        Returns the new thread ID.
-        """
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        if anchor is not None:
-            validate_anchor(anchor)
-            await self._assert_anchor_in_session(anchor, session_id)
-
-        now = _datetime.now(UTC).isoformat()
-        db = self._conn()
-        cur = await db.execute(
-            "INSERT INTO comment_threads"
-            " (session_id, anchor_kind, anchor_entity_id, anchor_t_start, anchor_t_end,"
-            "  title, created_by, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                session_id,
-                anchor.kind if anchor else None,
-                anchor.entity_id if anchor else None,
-                anchor.t_start if anchor else None,
-                anchor.t_end if anchor else None,
-                title,
-                created_by,
-                now,
-                now,
-            ),
-        )
-        await db.commit()
-        return cur.lastrowid or 0
-
-    async def _assert_anchor_in_session(self, anchor: Anchor, session_id: int) -> None:
-        """Entity-ref anchor kinds must scope to the thread's session.
-
-        Raises AnchorScopeError on violation. No-op for timestamp / segment
-        kinds (no entity to scope).
-        """
-        kind = anchor.kind
-        ent = anchor.entity_id
-        if ent is None or kind in {"timestamp", "segment"}:
+    async def _assert_moment_anchor_in_session(
+        self, anchor_kind: str, anchor_entity_id: int | None, session_id: int
+    ) -> None:
+        """Entity-ref anchor kinds must scope to the moment's session."""
+        if anchor_entity_id is None or anchor_kind in {"session", "timestamp"}:
             return
-
-        if kind == "maneuver":
+        if anchor_kind == "maneuver":
             cur = await self._read_conn().execute(
                 "SELECT 1 FROM maneuvers WHERE id = ? AND session_id = ?",
-                (ent, session_id),
+                (anchor_entity_id, session_id),
             )
             if await cur.fetchone() is None:
-                raise AnchorScopeError(f"maneuver {ent} is not part of session {session_id}")
-            return
-
-        if kind == "bookmark":
-            cur = await self._read_conn().execute(
-                "SELECT 1 FROM bookmarks WHERE id = ? AND session_id = ?",
-                (ent, session_id),
-            )
-            if await cur.fetchone() is None:
-                raise AnchorScopeError(f"bookmark {ent} is not part of session {session_id}")
-            return
-
-        if kind in {"race", "start"}:
-            # For helmlog, a session *is* a race — entity_id must equal session_id.
-            if ent != session_id:
                 raise AnchorScopeError(
-                    f"{kind} anchor entity_id {ent} must equal session_id {session_id}"
+                    f"maneuver {anchor_entity_id} is not part of session {session_id}"
+                )
+            return
+        if anchor_kind == "transcript_segment":
+            cur = await self._read_conn().execute(
+                "SELECT ts.id FROM transcript_segments ts"
+                " JOIN transcripts t ON ts.transcript_id = t.id"
+                " JOIN audio_sessions a ON t.audio_session_id = a.id"
+                " WHERE ts.id = ? AND a.race_id = ?",
+                (anchor_entity_id, session_id),
+            )
+            if await cur.fetchone() is None:
+                raise AnchorScopeError(
+                    f"transcript_segment {anchor_entity_id} is not part of session {session_id}"
                 )
             return
 
-        if kind == "rounding":
-            raise AnchorScopeError(
-                "anchor kind 'rounding' is not yet supported (no rounding entity)"
-            )
-
-    async def list_comment_threads(
-        self,
-        session_id: int,
-        user_id: int,
-    ) -> list[dict[str, Any]]:
-        """Return threads for a session with unread counts per user."""
-        db = self._conn()
-        cur = await db.execute(
-            "SELECT t.id, t.session_id,"
-            "   t.anchor_kind, t.anchor_entity_id, t.anchor_t_start, t.anchor_t_end,"
-            "   t.title, t.created_by, t.created_at, t.updated_at,"
-            "   t.resolved, t.resolved_at, t.resolved_by, t.resolution_summary,"
-            "   u.name AS author_name, u.email AS author_email,"
-            "   (SELECT COUNT(*) FROM comments c WHERE c.thread_id = t.id) AS comment_count,"
-            "   (SELECT COUNT(*) FROM comments c WHERE c.thread_id = t.id"
-            "     AND c.created_at > COALESCE("
-            "       (SELECT rs.last_read FROM comment_read_state rs"
-            "         WHERE rs.user_id = ? AND rs.thread_id = t.id), '')) AS unread_count,"
-            "   (SELECT c.body FROM comments c WHERE c.thread_id = t.id"
-            "     ORDER BY c.created_at LIMIT 1) AS first_comment_body"
-            " FROM comment_threads t"
-            " LEFT JOIN users u ON t.created_by = u.id"
-            " WHERE t.session_id = ?"
-            " ORDER BY t.created_at",
-            (user_id, session_id),
-        )
-        rows = await cur.fetchall()
-        return [_project_thread_anchor(dict(r)) for r in rows]
-
-    async def get_comment_thread(
-        self,
-        thread_id: int,
-    ) -> dict[str, Any] | None:
-        """Return a single thread with its comments."""
-        db = self._conn()
-        cur = await db.execute(
-            "SELECT t.*, u.name AS author_name, u.email AS author_email"
-            " FROM comment_threads t"
-            " LEFT JOIN users u ON t.created_by = u.id"
-            " WHERE t.id = ?",
-            (thread_id,),
-        )
-        row = await cur.fetchone()
-        if row is None:
-            return None
-        thread = _project_thread_anchor(dict(row))
-        cur = await db.execute(
-            "SELECT c.id, c.thread_id, c.author, c.body, c.created_at, c.edited_at,"
-            "   u.name AS author_name, u.email AS author_email"
-            " FROM comments c"
-            " LEFT JOIN users u ON c.author = u.id"
-            " WHERE c.thread_id = ?"
-            " ORDER BY c.created_at",
-            (thread_id,),
-        )
-        thread["comments"] = [dict(r) for r in await cur.fetchall()]
-        return thread
-
     async def create_comment(
         self,
-        thread_id: int,
+        moment_id: int,
         author: int,
         body: str,
     ) -> int:
-        """Add a comment to a thread. Returns the comment ID."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
+        """Add a comment to a moment. Returns the comment ID."""
+        now = datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
-            "INSERT INTO comments (thread_id, author, body, created_at) VALUES (?, ?, ?, ?)",
-            (thread_id, author, body, now),
+            "INSERT INTO comments (moment_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+            (moment_id, author, body, now),
         )
-        # Touch thread updated_at
+        # Touch moment updated_at
         await db.execute(
-            "UPDATE comment_threads SET updated_at = ? WHERE id = ?",
-            (now, thread_id),
+            "UPDATE moments SET updated_at = ? WHERE id = ?",
+            (now, moment_id),
         )
         await db.commit()
         return cur.lastrowid or 0
 
-    async def update_comment(
-        self,
-        comment_id: int,
-        body: str,
-    ) -> bool:
+    async def update_comment(self, comment_id: int, body: str) -> bool:
         """Edit a comment body. Returns True if found."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
+        now = datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
             "UPDATE comments SET body = ?, edited_at = ? WHERE id = ?",
@@ -8635,65 +8959,22 @@ class Storage:
 
     async def get_comment(self, comment_id: int) -> dict[str, Any] | None:
         """Return a single comment row."""
-        db = self._read_conn()
-        cur = await db.execute(
-            "SELECT id, thread_id, author, body, created_at, edited_at FROM comments WHERE id = ?",
+        cur = await self._read_conn().execute(
+            "SELECT id, moment_id, author, body, created_at, edited_at FROM comments WHERE id = ?",
             (comment_id,),
         )
         row = await cur.fetchone()
         return dict(row) if row else None
 
-    async def resolve_comment_thread(
-        self,
-        thread_id: int,
-        user_id: int,
-        resolution_summary: str | None = None,
-    ) -> bool:
-        """Mark a thread as resolved. Returns True if found."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
-        db = self._conn()
-        cur = await db.execute(
-            "UPDATE comment_threads"
-            " SET resolved = 1, resolved_at = ?, resolved_by = ?,"
-            "     resolution_summary = ?, updated_at = ?"
-            " WHERE id = ?",
-            (now, user_id, resolution_summary, now, thread_id),
-        )
-        await db.commit()
-        return cur.rowcount > 0
-
-    async def unresolve_comment_thread(self, thread_id: int) -> bool:
-        """Mark a thread as unresolved. Returns True if found."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
-        db = self._conn()
-        cur = await db.execute(
-            "UPDATE comment_threads"
-            " SET resolved = 0, resolved_at = NULL, resolved_by = NULL,"
-            "     resolution_summary = NULL, updated_at = ?"
-            " WHERE id = ?",
-            (now, thread_id),
-        )
-        await db.commit()
-        return cur.rowcount > 0
-
-    async def mark_thread_read(self, thread_id: int, user_id: int) -> None:
-        """Update the read-state for a user on a thread."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
+    async def mark_moment_read(self, moment_id: int, user_id: int) -> None:
+        """Update the read-state for a user on a moment."""
+        now = datetime.now(UTC).isoformat()
         db = self._conn()
         await db.execute(
-            "INSERT INTO comment_read_state (user_id, thread_id, last_read)"
+            "INSERT INTO comment_read_state (user_id, moment_id, last_read)"
             " VALUES (?, ?, ?)"
-            " ON CONFLICT(user_id, thread_id) DO UPDATE SET last_read = excluded.last_read",
-            (user_id, thread_id, now),
+            " ON CONFLICT(user_id, moment_id) DO UPDATE SET last_read = excluded.last_read",
+            (user_id, moment_id, now),
         )
         await db.commit()
 
@@ -8710,13 +8991,6 @@ class Storage:
         )
         await db.commit()
         return cur.rowcount
-
-    async def delete_comment_thread(self, thread_id: int) -> bool:
-        """Delete a thread and all its comments (cascade). Returns True if found."""
-        db = self._conn()
-        cur = await db.execute("DELETE FROM comment_threads WHERE id = ?", (thread_id,))
-        await db.commit()
-        return cur.rowcount > 0
 
     # ------------------------------------------------------------------
     # Analysis cache (#283)
@@ -9053,27 +9327,24 @@ class Storage:
         user_id: int,
         type: str,
         *,
-        source_thread_id: int | None = None,
+        source_moment_id: int | None = None,
         source_comment_id: int | None = None,
         session_id: int | None = None,
         actor_id: int | None = None,
         message: str | None = None,
     ) -> int:
         """Insert a notification. Returns the row id."""
-        from datetime import UTC
-        from datetime import datetime as _datetime
-
-        now = _datetime.now(UTC).isoformat()
+        now = datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
             "INSERT INTO notifications"
-            " (user_id, type, source_thread_id, source_comment_id,"
+            " (user_id, type, source_moment_id, source_comment_id,"
             "  session_id, actor_id, message, created_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 type,
-                source_thread_id,
+                source_moment_id,
                 source_comment_id,
                 session_id,
                 actor_id,
@@ -9097,17 +9368,17 @@ class Storage:
         if unread_only:
             where += " AND n.read = 0"
         cur = await db.execute(
-            f"SELECT n.id, n.user_id, n.type, n.source_thread_id, n.source_comment_id,"
+            f"SELECT n.id, n.user_id, n.type, n.source_moment_id, n.source_comment_id,"
             f" n.session_id, n.actor_id, n.message, n.created_at, n.read, n.dismissed,"
             f" u.name AS actor_name, u.email AS actor_email,"
             f" r.name AS session_name,"
             f" c.body AS comment_body,"
-            f" t.title AS thread_title"
+            f" m.subject AS moment_subject"
             f" FROM notifications n"
             f" LEFT JOIN users u ON n.actor_id = u.id"
             f" LEFT JOIN races r ON n.session_id = r.id"
             f" LEFT JOIN comments c ON n.source_comment_id = c.id"
-            f" LEFT JOIN comment_threads t ON n.source_thread_id = t.id"
+            f" LEFT JOIN moments m ON n.source_moment_id = m.id"
             f" {where}"
             f" ORDER BY n.created_at DESC LIMIT ?",
             (user_id, limit),

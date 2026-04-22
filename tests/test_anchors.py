@@ -12,7 +12,6 @@ Decision table (from /spec on #477):
 | rounding    | required           | null             | null       | yes    |
 | start       | required (race id) | null             | null       | yes    |
 | race        | required (race id) | null             | null       | yes    |
-| bookmark    | required           | null             | null       | yes    |
 | known kind  | missing field      | ...              | ...        | no     |
 | unknown     | any                | any              | any        | no     |
 """
@@ -76,24 +75,24 @@ def test_segment_rejects_entity_id() -> None:
         validate_anchor(Anchor(kind="segment", entity_id=1, t_start=_T0, t_end=_T1))
 
 
-@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race", "bookmark"])
+@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race"])
 def test_entity_ref_kinds_valid(kind: str) -> None:
     validate_anchor(Anchor(kind=kind, entity_id=42))
 
 
-@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race", "bookmark"])
+@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race"])
 def test_entity_ref_kinds_require_entity_id(kind: str) -> None:
     with pytest.raises(AnchorError, match="entity_id"):
         validate_anchor(Anchor(kind=kind))
 
 
-@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race", "bookmark"])
+@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race"])
 def test_entity_ref_kinds_reject_t_start(kind: str) -> None:
     with pytest.raises(AnchorError, match="t_start"):
         validate_anchor(Anchor(kind=kind, entity_id=1, t_start=_T0))
 
 
-@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race", "bookmark"])
+@pytest.mark.parametrize("kind", ["maneuver", "rounding", "start", "race"])
 def test_entity_ref_kinds_reject_t_end(kind: str) -> None:
     with pytest.raises(AnchorError, match="t_end"):
         validate_anchor(Anchor(kind=kind, entity_id=1, t_end=_T1))
@@ -137,6 +136,5 @@ def test_anchor_known_kinds_constant() -> None:
     from helmlog.anchors import KNOWN_KINDS
 
     assert (
-        frozenset({"timestamp", "segment", "maneuver", "rounding", "start", "race", "bookmark"})
-        == KNOWN_KINDS
+        frozenset({"timestamp", "segment", "maneuver", "rounding", "start", "race"}) == KNOWN_KINDS
     )

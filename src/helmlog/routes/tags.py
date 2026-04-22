@@ -294,49 +294,5 @@ async def api_get_session_tags(
     return JSONResponse(tags)
 
 
-@router.post("/api/notes/{note_id}/tags", status_code=201)
-async def api_add_note_tag(
-    request: Request,
-    note_id: int,
-    body: dict[str, Any],
-    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
-    tag_id = body.get("tag_id")
-    tag_name = body.get("tag_name") or body.get("name")
-    if tag_id is None and not tag_name:
-        raise HTTPException(status_code=422, detail="tag_id or tag_name is required")
-    if tag_id is None:
-        assert isinstance(tag_name, str)
-        tag_id = await storage.get_or_create_tag(tag_name)
-    await storage.attach_tag("session_note", note_id, int(tag_id), user_id=user.get("id"))
-    await audit(request, "note.tag.add", detail=f"note={note_id} tag={tag_id}", user=user)
-    return JSONResponse({"note_id": note_id, "tag_id": tag_id}, status_code=201)
-
-
-@router.delete("/api/notes/{note_id}/tags/{tag_id}", status_code=204)
-async def api_remove_note_tag(
-    request: Request,
-    note_id: int,
-    tag_id: int,
-    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> None:
-    storage = get_storage(request)
-    await storage.detach_tag("session_note", note_id, tag_id)
-    await audit(
-        request,
-        "note.tag.remove",
-        detail=f"note={note_id} tag={tag_id}",
-        user=user,
-    )
-
-
-@router.get("/api/notes/{note_id}/tags")
-async def api_get_note_tags(
-    request: Request,
-    note_id: int,
-    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
-    tags = await storage.list_tags_for_entity("session_note", note_id)
-    return JSONResponse(tags)
+# Note tag endpoints are gone with session_notes in #662. Callers should use
+# /api/entities/moment/{id}/tags on the new moments primitive instead.
