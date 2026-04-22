@@ -776,6 +776,20 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
     )
     has_wind_field = await wf_cur.fetchone() is not None
 
+    # #648: hint the session page whether to stream audio via <audio> elements
+    # instead of decoding each sibling into a memory buffer. Long multi-sibling
+    # sessions (>~45 min × 2 siblings) blow Chrome's per-tab memory budget when
+    # decodeAudioData expands PCM s16 into Float32 per channel.
+    import os as _os
+
+    try:
+        threshold_min = int(_os.environ.get("AUDIO_STREAM_THRESHOLD_MINUTES", "45"))
+    except ValueError:
+        threshold_min = 45
+    use_streaming_audio = bool(
+        audio_siblings and duration_s is not None and duration_s >= threshold_min * 60
+    )
+
     return {
         "id": row["id"],
         "type": row["session_type"],
@@ -797,6 +811,7 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
             len(audio_siblings) if audio_siblings else (arow["channels"] if arow else None)
         ),
         "audio_siblings": audio_siblings,
+        "use_streaming_audio": use_streaming_audio,
         "debrief_audio": debrief_audio,
         "peer_fingerprint": row["peer_fingerprint"],
         "has_wind_field": has_wind_field,

@@ -2871,8 +2871,20 @@ let _mcBuffers = [];
 let _mcSources = [];
 let _mcSticky = false;
 let _mcRafHandle = null;
+// Streaming mode (#648): for sessions over AUDIO_STREAM_THRESHOLD_MINUTES we
+// play each sibling through an HTMLAudioElement + MediaElementAudioSourceNode
+// instead of decodeAudioData, so memory stays flat regardless of session
+// length. Sync is approximate (browser nudges, not sample-accurate), which is
+// fine for lavalier mic audio but would be wrong for music.
+let _mcStreamMode = false;
+let _mcAudioEls = [];
+let _mcMediaSources = [];
 
 function _mcCurrentTime() {
+  if (_mcStreamMode) {
+    const el = _mcAudioEls[0];
+    return el ? el.currentTime : _mcStartOffset;
+  }
   if (!_mcCtx || !_mcBuffer) return 0;
   if (!_mcIsPlaying) return _mcStartOffset;
   return _mcStartOffset + (_mcCtx.currentTime - _mcStartTime);
@@ -2901,6 +2913,22 @@ function _mcClearTimer() {
 }
 
 function _mcRebuildSource(offsetSeconds) {
+  // Streaming mode (#648): seek every <audio> element and start playback
+  // on all. Drift correction happens in the progress tick.
+  if (_mcStreamMode) {
+    _mcAudioEls.forEach(el => {
+      try { el.currentTime = offsetSeconds; } catch (e) { /* not seekable yet */ }
+    });
+    _mcAudioEls.forEach(el => {
+      const p = el.play();
+      if (p && typeof p.catch === 'function') p.catch(() => { /* autoplay blocked */ });
+    });
+    _mcStartOffset = offsetSeconds;
+    _mcIsPlaying = true;
+    _mcUpdateButtons();
+    return;
+  }
+
   // Sibling-card mode: rebuild N BufferSources in parallel, started at the
   // same AudioContext time so all receivers stay sample-aligned (#509).
   if (_mcSiblings) {
@@ -2967,6 +2995,14 @@ function _mcPlay() {
 
 function _mcPause() {
   if (!_mcIsPlaying) return;
+  if (_mcStreamMode) {
+    _mcStartOffset = _mcCurrentTime();
+    _mcAudioEls.forEach(el => { try { el.pause(); } catch (e) { /* swallow */ } });
+    _mcIsPlaying = false;
+    _mcUpdateButtons();
+    _mcStopProgressTick();
+    return;
+  }
   if (_mcSiblings) {
     _mcStartOffset = _mcCurrentTime();
     _mcSources.forEach(s => { try { s.stop(); } catch (e) { /* swallow */ } });
@@ -2986,6 +3022,14 @@ function _mcPause() {
 function _mcSeek(toSeconds) {
   if (!_mcCtx || !_mcBuffer) return;
   const clamped = Math.max(0, Math.min(_mcBuffer.duration, toSeconds));
+  if (_mcStreamMode) {
+    _mcAudioEls.forEach(el => {
+      try { el.currentTime = clamped; } catch (e) { /* not seekable yet */ }
+    });
+    if (!_mcIsPlaying) _mcStartOffset = clamped;
+    _mcUpdateProgress();
+    return;
+  }
   if (_mcIsPlaying) {
     _mcRebuildSource(clamped);
   } else {
@@ -3010,15 +3054,30 @@ function _mcUpdateProgress() {
 }
 
 let _mcFanoutLast = 0;
+let _mcDriftCheckLast = 0;
 function _mcStartProgressTick() {
   _mcStopProgressTick();
   const tick = () => {
     _mcUpdateProgress();
+    // Streaming-mode drift correction (#648): HTMLAudioElements don't stay
+    // sample-accurate across siblings; nudge non-primary elements back in
+    // line with primary every 500 ms if drift exceeds 150 ms.
+    const now = _clockNowMs();
+    if (_mcStreamMode && _mcIsPlaying && _mcAudioEls.length > 1
+        && now - _mcDriftCheckLast >= 500) {
+      _mcDriftCheckLast = now;
+      const primaryT = _mcAudioEls[0].currentTime;
+      for (let i = 1; i < _mcAudioEls.length; i++) {
+        const el = _mcAudioEls[i];
+        if (Math.abs(el.currentTime - primaryT) > 0.15) {
+          try { el.currentTime = primaryT; } catch (e) { /* swallow */ }
+        }
+      }
+    }
     // Throttled producer fanout: while mc is playing, push the current
     // playhead out as a source='mc' update so the map cursor, gauges, and
     // replay scrubber track along. 150 ms matches the existing audio
     // fanout cadence.
-    const now = _clockNowMs();
     if (_mcIsPlaying && now - _mcFanoutLast >= 150) {
       _mcFanoutLast = now;
       const anchor = _mcSessionStart();
@@ -3056,6 +3115,10 @@ async function loadMultiChannelAudio() {
     '</div>' +
     '<div id="mc-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:4px">Loading audio…</div>';
 
+  // Render the debrief player up front so a stuck / failed race-audio decode
+  // never hides a perfectly good debrief (#648).
+  _renderDebriefPlayer();
+
   try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) {
@@ -3065,9 +3128,61 @@ async function loadMultiChannelAudio() {
     }
     _mcCtx = new Ctx();
 
+    const siblings = _session && _session.audio_siblings;
+
+    // Streaming path (#648): for sessions at/above the server-configured
+    // threshold (AUDIO_STREAM_THRESHOLD_MINUTES), play each sibling through
+    // an HTMLAudioElement + MediaElementAudioSourceNode instead of
+    // decodeAudioData. Memory stays flat; seeking is byte-range-driven.
+    if (_session && _session.use_streaming_audio && siblings && siblings.length > 1) {
+      _mcStreamMode = true;
+      _mcSiblings = true;
+      _mcAudioEls = siblings.map(s => {
+        const el = new Audio();
+        el.preload = 'auto';
+        el.src = s.stream_url;
+        return el;
+      });
+      _mcMerger = _mcCtx.createChannelMerger(1);
+      _mcGains = _mcAudioEls.map(() => {
+        const g = _mcCtx.createGain();
+        g.gain.value = 1;
+        g.connect(_mcMerger, 0, 0);
+        return g;
+      });
+      _mcMerger.connect(_mcCtx.destination);
+      _mcMediaSources = _mcAudioEls.map((el, i) => {
+        const src = _mcCtx.createMediaElementSource(el);
+        src.connect(_mcGains[i]);
+        return src;
+      });
+      // Wait for metadata so we know the longest duration for the seek bar.
+      const durations = await Promise.all(_mcAudioEls.map(el => new Promise((resolve, reject) => {
+        if (el.readyState >= 1 && isFinite(el.duration)) return resolve(el.duration);
+        el.addEventListener('loadedmetadata', () => resolve(el.duration), {once: true});
+        el.addEventListener('error', () => reject(new Error('metadata load failed')), {once: true});
+      })));
+      const longest = durations.reduce((a, b) => (b > a ? b : a), 0);
+      _mcBuffer = {duration: longest};
+      // End detection on primary — mirrors the buffer-path ended handler.
+      _mcAudioEls[0].addEventListener('ended', () => {
+        if (!_mcIsPlaying) return;
+        if (_mcCurrentTime() >= _mcBuffer.duration - 0.1) {
+          _mcIsPlaying = false;
+          _mcStartOffset = 0;
+          _mcUpdateButtons();
+          _mcStopProgressTick();
+        }
+      });
+      const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`).join(', ');
+      document.getElementById('mc-status').textContent =
+        `${siblings.length} receivers (${labels}) — streaming mode — click a transcript segment to isolate that mic.`;
+      _mcUpdateProgress();
+      return;
+    }
+
     // Sibling-card capture (#509): N mono WAVs, one BufferSource per
     // receiver, routed through per-source gains to a common mono merger.
-    const siblings = _session && _session.audio_siblings;
     if (siblings && siblings.length > 1) {
       _mcSiblings = true;
       const decoded = await Promise.all(siblings.map(async s => {
@@ -3094,7 +3209,6 @@ async function loadMultiChannelAudio() {
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
-      _renderDebriefPlayer();
       return;
     }
 
@@ -3120,7 +3234,6 @@ async function loadMultiChannelAudio() {
     document.getElementById('mc-status').textContent =
       `${channels}-channel session — click a transcript segment to isolate that channel.`;
     _mcUpdateProgress();
-    _renderDebriefPlayer();
   } catch (e) {
     console.error('multi-channel audio load failed', e);
     document.getElementById('mc-status').textContent = 'Error: ' + e.message;
