@@ -2976,8 +2976,33 @@ async function _loadDebriefTranscript(audioSessionId) {
     html = '<span style="color:var(--text-secondary)">(empty)</span>';
   }
   body.innerHTML =
-    '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:4px">'
+    + '<button class="btn-export" style="font-size:.7rem" '
+    + 'onclick="retranscribeDebrief(' + audioSessionId + ')" '
+    + 'title="Re-run transcription with diarization so crew sharing a mic get separate speaker labels">'
+    + '&#8635; Retranscribe with diarization</button>'
+    + '</div>'
+    + '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
     + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
+}
+
+async function retranscribeDebrief(audioSessionId) {
+  if (!confirm(
+    'Re-run transcription with diarization? The existing debrief transcript will be replaced. '
+    + 'This takes a few minutes on the remote worker.'
+  )) return;
+  const body = document.getElementById('debrief-transcript-body');
+  if (body) {
+    body.innerHTML = '<span style="color:var(--warning)">Starting retranscription…</span>';
+  }
+  const r = await fetch('/api/audio/' + audioSessionId + '/retranscribe', { method: 'POST' });
+  if (!r.ok) {
+    if (body) {
+      body.innerHTML = '<span style="color:var(--danger)">Failed to start retranscription</span>';
+    }
+    return;
+  }
+  _loadDebriefTranscript(audioSessionId);
 }
 
 async function startDebriefTranscript(audioSessionId) {
