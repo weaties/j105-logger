@@ -60,8 +60,9 @@ async def test_v75_attitudes_ts_index_exists() -> None:
 
 
 @pytest.mark.asyncio
-async def test_schema_version_is_76_on_fresh_db() -> None:
-    from helmlog.storage import Storage, StorageConfig
+async def test_schema_version_is_current_on_fresh_db() -> None:
+    """Fresh DB reaches the module's _CURRENT_VERSION after migrate()."""
+    from helmlog.storage import _CURRENT_VERSION, Storage, StorageConfig
 
     s = Storage(StorageConfig(db_path=":memory:"))
     await s.connect()
@@ -70,6 +71,6 @@ async def test_schema_version_is_76_on_fresh_db() -> None:
         async with s._db.execute("SELECT MAX(version) FROM schema_version") as cur:
             row = await cur.fetchone()
         assert row is not None
-        assert row[0] == 76
+        assert row[0] == _CURRENT_VERSION
     finally:
         await s.close()
