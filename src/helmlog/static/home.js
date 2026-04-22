@@ -11,6 +11,19 @@ let debriefStartMs = null;
 let lastInstrumentDataMs = 0;
 let scheduleCountdownInterval = null;
 
+// --- Race-mode track + latest photo (#664) ---
+// The home page collapses to track + instruments + setup + notes while a race
+// is active. _raceMap is the Leaflet instance, lazily created on first use
+// and torn down when the race ends. _raceMapRaceId guards against races
+// switching under us. _racePhotoUrl dedupes photo updates so we only swap
+// the <img src> when the latest photo actually changes.
+let _raceMap = null;
+let _raceMapRaceId = null;
+let _raceTrackLine = null;
+let _raceTrackFitted = false;
+let _racePhotoUrl = null;
+let _raceAssetsLoadingForRaceId = null;
+
 async function loadState() {
   try {
     const r = await fetch('/api/state?_t=' + Date.now());
@@ -161,6 +174,24 @@ function render(s) {
   instCard.classList.toggle('hidden', !isRacing);
   // --- Controls: hidden during debrief ---
   controlsDiv.classList.toggle('hidden', isDebrief);
+
+  // --- Race-mode strip-down (#664) ---
+  // During a race, hide cards that aren't useful mid-race (crew, sails)
+  // and surface the live track + most recent photo note instead.
+  const crewCard = document.getElementById('crew-card');
+  const sailsCard = document.getElementById('sails-card');
+  const racePhotoCard = document.getElementById('race-photo-card');
+  const raceTrackCard = document.getElementById('race-track-card');
+  if (crewCard) crewCard.classList.toggle('hidden', isRacing);
+  if (sailsCard) sailsCard.classList.toggle('hidden', isRacing);
+  if (raceTrackCard) raceTrackCard.classList.toggle('hidden', !isRacing);
+  if (!isRacing && racePhotoCard) racePhotoCard.classList.add('hidden');
+  if (isRacing && cur) {
+    refreshRaceTrack(cur.id);
+    refreshRacePhoto(cur.id);
+  } else {
+    _teardownRaceMap();
+  }
 
   // --- Synthesize button: visible when idle and user has developer flag ---
   btnSynth.classList.toggle('hidden', !isIdle || !_isDeveloper);
@@ -2300,6 +2331,92 @@ async function runSynthesize() {
     _importedStartUtc = null;
     _importedPeerTracks = null;
     _importedPeerInfo = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Race-mode live track + latest photo (#664)
+// ---------------------------------------------------------------------------
+
+async function refreshRaceTrack(raceId) {
+  if (_raceAssetsLoadingForRaceId === raceId) return;
+  _raceAssetsLoadingForRaceId = raceId;
+  try {
+    const r = await fetch('/api/sessions/' + raceId + '/track');
+    if (!r.ok) return;
+    const geojson = await r.json();
+    const feat = geojson.features && geojson.features[0];
+    const coords = feat && feat.geometry && feat.geometry.coordinates;
+    if (!coords || !coords.length) return;
+    const latLngs = coords.map(c => [c[1], c[0]]);
+
+    if (!_raceMap || _raceMapRaceId !== raceId) {
+      _teardownRaceMap();
+      _raceMap = L.map('race-track-map');
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap', maxZoom: 18,
+      }).addTo(_raceMap);
+      _raceTrackLine = L.polyline(latLngs, {
+        color: '#fbbf24', weight: 3, opacity: 0.9,
+        lineCap: 'butt', lineJoin: 'miter', dashArray: '2, 4',
+      }).addTo(_raceMap);
+      _raceMapRaceId = raceId;
+      _raceTrackFitted = false;
+    } else {
+      _raceTrackLine.setLatLngs(latLngs);
+    }
+
+    // Fit bounds once on first load; after that, keep the current view so the
+    // user can pan/zoom without us yanking the viewport on each poll. Leaflet
+    // also needs invalidateSize() whenever the container is unhidden.
+    _raceMap.invalidateSize();
+    if (!_raceTrackFitted) {
+      _raceMap.fitBounds(_raceTrackLine.getBounds(), {padding: [20, 20]});
+      _raceTrackFitted = true;
+    }
+  } catch (e) {
+    console.error('race track refresh failed', e);
+  } finally {
+    _raceAssetsLoadingForRaceId = null;
+  }
+}
+
+function _teardownRaceMap() {
+  if (_raceMap) {
+    _raceMap.remove();
+    _raceMap = null;
+    _raceTrackLine = null;
+    _raceMapRaceId = null;
+    _raceTrackFitted = false;
+  }
+}
+
+async function refreshRacePhoto(raceId) {
+  const card = document.getElementById('race-photo-card');
+  if (!card) return;
+  try {
+    const r = await fetch('/api/sessions/' + raceId + '/notes');
+    if (!r.ok) { card.classList.add('hidden'); return; }
+    const notes = await r.json();
+    const photoNotes = notes.filter(n => n.note_type === 'photo' && n.photo_path);
+    if (!photoNotes.length) {
+      card.classList.add('hidden');
+      _racePhotoUrl = null;
+      return;
+    }
+    // Notes come back oldest-first; pick the most recent by ts.
+    photoNotes.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const latest = photoNotes[0];
+    const url = '/notes/' + latest.photo_path;
+    card.classList.remove('hidden');
+    if (url !== _racePhotoUrl) {
+      document.getElementById('race-photo-img').src = url;
+      document.getElementById('race-photo-link').href = url;
+      _racePhotoUrl = url;
+    }
+    document.getElementById('race-photo-ts').textContent = fmtTime(latest.ts);
+  } catch (e) {
+    console.error('race photo refresh failed', e);
   }
 }
 

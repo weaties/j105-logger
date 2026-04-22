@@ -77,6 +77,20 @@
   <button class="btn btn-danger" style="margin-top:12px" onclick="stopDebrief()">STOP DEBRIEF</button>
 </div>
 
+<div class="card hidden" id="race-photo-card" style="padding:0;overflow:hidden">
+  <a id="race-photo-link" href="#" target="_blank" style="display:block">
+    <img id="race-photo-img" alt="Latest photo note" style="display:block;width:100%;height:auto"/>
+  </a>
+  <div style="padding:6px 10px;font-size:.75rem;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center">
+    <span>Latest photo note</span>
+    <span id="race-photo-ts"></span>
+  </div>
+</div>
+
+<div class="card hidden" id="race-track-card" style="padding:0;overflow:hidden">
+  <div id="race-track-map" style="width:100%;height:260px"></div>
+</div>
+
 <div class="card" id="setup-card">
   <div class="crew-header" onclick="toggleSetup()">
     <span class="label" style="margin-bottom:0">Boat Setup</span>
