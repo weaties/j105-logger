@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 76
+_CURRENT_VERSION: int = 77
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1534,7 +1534,8 @@ _MIGRATIONS: dict[int, str] = {
             text          TEXT    NOT NULL,
             speaker       TEXT,
             channel_index INTEGER,
-            position_name TEXT
+            position_name TEXT,
+            override_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_segments_transcript
             ON transcript_segments(transcript_id);
@@ -1761,6 +1762,15 @@ _MIGRATIONS: dict[int, str] = {
         -- Populated by enrichment (analysis/maneuvers.py), not by the
         -- detector. Null for rounding and other types.
         ALTER TABLE maneuvers ADD COLUMN head_to_wind_ts TEXT;
+    """,
+    77: """
+        -- #648: per-segment speaker override. Label-wide assignments via
+        -- speaker_map re-label every segment that shares the label. This
+        -- column lets a single segment point at a different crew member
+        -- without mutating the label or touching other segments. Null
+        -- means "use the label-wide speaker_map lookup".
+        ALTER TABLE transcript_segments ADD COLUMN override_user_id INTEGER
+            REFERENCES users(id) ON DELETE SET NULL;
     """,
 }
 
@@ -6120,12 +6130,58 @@ class Storage:
         """Return relational transcript segments for a transcript, ordered."""
         cur = await self._read_conn().execute(
             "SELECT id, transcript_id, segment_index, start_time, end_time,"
-            " text, speaker, channel_index, position_name"
+            " text, speaker, channel_index, position_name, override_user_id"
             " FROM transcript_segments WHERE transcript_id=?"
             " ORDER BY segment_index",
             (transcript_id,),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def set_segment_speaker_override(
+        self, transcript_id: int, segment_index: int, user_id: int | None
+    ) -> tuple[bool, str | None]:
+        """Set or clear the per-segment speaker override (#648).
+
+        Returns ``(found, name)`` — ``found`` is True if a segment row was
+        matched; ``name`` is the user's display name if ``user_id`` is set and
+        valid, else None (clearing the override). Passing ``user_id=None``
+        clears the override.
+        """
+        db = self._conn()
+        name: str | None = None
+        if user_id is not None:
+            ucur = await db.execute("SELECT name FROM users WHERE id = ?", (user_id,))
+            urow = await ucur.fetchone()
+            if urow is None:
+                return (False, None)
+            name = urow["name"] or f"User {user_id}"
+        cur = await db.execute(
+            "UPDATE transcript_segments SET override_user_id = ?"
+            " WHERE transcript_id = ? AND segment_index = ?",
+            (user_id, transcript_id, segment_index),
+        )
+        await db.commit()
+        return ((cur.rowcount or 0) > 0, name)
+
+    async def get_segment_overrides(self, transcript_id: int) -> dict[int, dict[str, Any]]:
+        """Return {segment_index: {"user_id", "name"}} for every segment in a
+        transcript that has an override set. Used by the transcript endpoint
+        to attach override info to the merged response (#648).
+        """
+        cur = await self._read_conn().execute(
+            "SELECT ts.segment_index, ts.override_user_id, u.name"
+            " FROM transcript_segments ts"
+            " LEFT JOIN users u ON u.id = ts.override_user_id"
+            " WHERE ts.transcript_id = ? AND ts.override_user_id IS NOT NULL",
+            (transcript_id,),
+        )
+        result: dict[int, dict[str, Any]] = {}
+        for r in await cur.fetchall():
+            result[int(r["segment_index"])] = {
+                "user_id": int(r["override_user_id"]),
+                "name": r["name"] or f"User {r['override_user_id']}",
+            }
+        return result
 
     async def log_voice_consent_ack(
         self,

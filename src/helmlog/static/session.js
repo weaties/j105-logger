@@ -2426,14 +2426,28 @@ function _renderDiarizedTranscript(body, t) {
   const blocks = [];
   for (const seg of t.segments) {
     const last = blocks[blocks.length - 1];
-    // Group by both speaker and channel so multi-channel sessions don't
-    // collapse adjacent same-speaker utterances from different mics.
+    // Group by speaker, channel, AND override status so a single segment
+    // override (#648) visually breaks out of its block instead of being
+    // hidden under the parent speaker's label.
     const sameBlock = last
       && last.speaker === seg.speaker
-      && last.channel_index === seg.channel_index;
+      && last.channel_index === seg.channel_index
+      && (last.override_user_id || null) === (seg.override_user_id || null);
     if (sameBlock) {
-      last.text += ' ' + seg.text; last.end = seg.end;
-    } else { blocks.push({...seg}); }
+      last.text += ' ' + seg.text;
+      last.end = seg.end;
+      last._segRefs.push({
+        audio_session_id: seg.audio_session_id,
+        segment_index: seg.segment_index,
+      });
+    } else {
+      const block = {...seg};
+      block._segRefs = [{
+        audio_session_id: seg.audio_session_id,
+        segment_index: seg.segment_index,
+      }];
+      blocks.push(block);
+    }
   }
   _transcriptBlocks = blocks;
   const rawSpeakers = [...new Set(t.segments.map(s => s.speaker))];
@@ -2462,13 +2476,32 @@ function _renderDiarizedTranscript(body, t) {
     + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
     + '</div>'
     + '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
-    + blocks.map((b, i) =>
-      '<div class="transcript-seg" data-idx="' + i + '" style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
-      + '<span class="transcript-speaker" data-speaker="' + esc(b.speaker) + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" title="Click to assign crew">' + esc(displayName(b.speaker)) + '</span>'
-      + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">[' + fmt(b.start) + ']</span>'
-      + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">' + esc(b.text.trim()) + '</div>'
-      + '</div>'
-    ).join('')
+    + blocks.map((b, i) => {
+      const speakerHtml = b.override_user_id
+        ? '<span class="transcript-speaker" data-speaker="' + esc(b.speaker)
+          + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;'
+          + 'font-style:italic" title="Overridden from ' + esc(displayName(b.speaker))
+          + ' — click ✎ to change">'
+          + esc(b.override_name || '') + '</span>'
+        : '<span class="transcript-speaker" data-speaker="' + esc(b.speaker)
+          + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;'
+          + 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" '
+          + 'onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" '
+          + 'title="Click to assign crew">'
+          + esc(displayName(b.speaker)) + '</span>';
+      return '<div class="transcript-seg" data-idx="' + i + '" '
+        + 'style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;'
+        + 'transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
+        + speakerHtml
+        + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">['
+        + fmt(b.start) + ']</span>'
+        + ' <span class="transcript-seg-override" title="Override this segment only" '
+        + 'style="font-size:.7rem;cursor:pointer;color:var(--text-secondary);margin-left:4px" '
+        + 'onclick="event.stopPropagation();openSegmentOverridePicker(' + i + ')">&#9998;</span>'
+        + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">'
+        + esc(b.text.trim()) + '</div>'
+        + '</div>';
+    }).join('')
     + '</div>';
 
   // Register the diarized transcript as a playback-clock surface so it
@@ -2567,6 +2600,104 @@ function playTranscriptSegment(idx) {
     audioEl.currentTime = b.start;
     audioEl.play();
   }
+}
+
+// Open a picker to override the speaker for just this one block — covers
+// every underlying transcript_segments row in the block (#648). Called from
+// the ✎ pencil icon on each race transcript block.
+async function openSegmentOverridePicker(blockIdx) {
+  const block = _transcriptBlocks[blockIdx];
+  if (!block || !Array.isArray(block._segRefs) || !block._segRefs.length) return;
+  let users;
+  try {
+    const r = await fetch('/api/crew/users');
+    if (!r.ok) return;
+    users = (await r.json()).users || [];
+  } catch { return; }
+
+  const old = document.getElementById('speaker-picker');
+  if (old) old.remove();
+
+  const picker = document.createElement('div');
+  picker.id = 'speaker-picker';
+  picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);'
+    + 'background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;'
+    + 'padding:16px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:220px;'
+    + 'max-height:320px;overflow-y:auto';
+  let html =
+    '<div style="font-weight:600;margin-bottom:4px;font-size:.85rem">'
+    + 'Override speaker for this segment</div>'
+    + '<div style="color:var(--text-secondary);font-size:.72rem;margin-bottom:8px">'
+    + 'Only this one utterance — other segments with the same speaker are unchanged.'
+    + '</div>';
+  if (!users || !users.length) {
+    html += '<div style="color:var(--text-secondary);font-size:.8rem">No crew members found</div>';
+  } else {
+    for (const u of users) {
+      html += '<div class="speaker-pick-option" '
+        + 'style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" '
+        + 'onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" '
+        + 'onmouseout="this.style.background=\'\'" '
+        + 'onclick="applySegmentOverride(' + blockIdx + ',' + u.id + ')">'
+        + esc(u.name || u.email) + '</div>';
+    }
+  }
+  html += '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">'
+    + '<button class="btn-export" style="font-size:.72rem" '
+    + 'onclick="applySegmentOverride(' + blockIdx + ',null)">Clear override</button>'
+    + '<button class="btn-export" style="font-size:.72rem" '
+    + 'onclick="document.getElementById(\'speaker-picker\').remove();'
+    + 'document.getElementById(\'speaker-picker-backdrop\').remove()">Cancel</button>'
+    + '</div>';
+  picker.innerHTML = html;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'speaker-picker-backdrop';
+  backdrop.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;'
+    + 'background:rgba(0,0,0,0.4);z-index:999';
+  backdrop.onclick = () => { picker.remove(); backdrop.remove(); };
+  document.body.appendChild(backdrop);
+  document.body.appendChild(picker);
+}
+
+async function applySegmentOverride(blockIdx, userId) {
+  const block = _transcriptBlocks[blockIdx];
+  if (!block || !Array.isArray(block._segRefs)) return;
+  const picker = document.getElementById('speaker-picker');
+  const backdrop = document.getElementById('speaker-picker-backdrop');
+  if (picker) picker.remove();
+  if (backdrop) backdrop.remove();
+
+  // Fire one POST per underlying segment. Same response on every call.
+  let lastName = null;
+  for (const ref of block._segRefs) {
+    try {
+      const r = await fetch(
+        '/api/audio/' + ref.audio_session_id
+        + '/transcript/segments/' + ref.segment_index + '/speaker-override',
+        {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({user_id: userId}),
+        },
+      );
+      if (r.ok) {
+        const data = await r.json();
+        lastName = data && data.name;
+      }
+    } catch (e) { /* keep going */ }
+  }
+  // Update block state in place so render reflects without a full reload.
+  if (userId === null) {
+    delete block.override_user_id;
+    delete block.override_name;
+  } else {
+    block.override_user_id = userId;
+    block.override_name = lastName;
+  }
+  // Cheap path — re-run the transcript loader so the block splits update
+  // correctly (override status is part of the grouping key).
+  loadTranscript();
 }
 
 async function openSpeakerPicker(speakerLabel, audioSessionId) {
@@ -2963,16 +3094,33 @@ async function _loadDebriefTranscript(audioSessionId) {
     html = segs.map(s => {
       const start = Number(s.start) || 0;
       const ch = chOf(s);
-      // Speaker name is clickable — opens the crew picker and routes the
-      // eventual POST to the debrief's audio_session_id (#648).
-      const who = s.speaker
-        ? '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
+      // Override (#648): if a per-segment override is set, show that name
+      // italicized instead of the label's crew assignment; otherwise the
+      // speaker name opens the crew picker (label-wide) like before.
+      let who = '';
+      if (s.override_user_id && s.override_name) {
+        who = '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
+          + '" style="color:var(--accent);font-style:italic" '
+          + 'title="Overridden from ' + esc(displayName(s.speaker))
+          + ' — click ✎ to change">'
+          + esc(s.override_name) + ':</span> ';
+      } else if (s.speaker) {
+        who = '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
           + '" style="color:var(--accent);cursor:pointer;text-decoration:underline dotted;'
           + 'text-underline-offset:2px" '
           + 'onclick="event.stopPropagation();openSpeakerPicker(\''
           + esc(s.speaker) + '\',' + audioSessionId + ')" '
           + 'title="Click to assign crew">'
-          + esc(displayName(s.speaker)) + ':</span> '
+          + esc(displayName(s.speaker)) + ':</span> ';
+      }
+      const ovAsid = s.audio_session_id || audioSessionId;
+      const ovIdx = (s.segment_index !== undefined && s.segment_index !== null)
+        ? s.segment_index : -1;
+      const pencil = ovIdx >= 0
+        ? ' <span class="transcript-seg-override" title="Override this segment only" '
+          + 'style="font-size:.7rem;cursor:pointer;color:var(--text-secondary);margin-left:4px" '
+          + 'onclick="event.stopPropagation();'
+          + 'openDebriefSegmentOverridePicker(' + ovAsid + ',' + ovIdx + ')">&#9998;</span>'
         : '';
       return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
         + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
@@ -2980,7 +3128,7 @@ async function _loadDebriefTranscript(audioSessionId) {
         + 'title="Click to play from here">'
         + '<span style="color:var(--text-secondary);font-family:monospace">['
         + fmt(start) + ']</span> '
-        + who + esc(s.text || '') + '</div>';
+        + who + esc(s.text || '') + pencil + '</div>';
     }).join('');
   } else if (segs.length) {
     html = segs.map(s => {
@@ -3007,6 +3155,84 @@ async function _loadDebriefTranscript(audioSessionId) {
     + '</div>'
     + '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
     + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
+}
+
+// Debrief-transcript per-segment override picker (#648). Same flow as the
+// race-transcript openSegmentOverridePicker but targets one debrief segment
+// directly (debrief renders per-segment, no grouping).
+async function openDebriefSegmentOverridePicker(audioSessionId, segmentIndex) {
+  let users;
+  try {
+    const r = await fetch('/api/crew/users');
+    if (!r.ok) return;
+    users = (await r.json()).users || [];
+  } catch { return; }
+
+  const old = document.getElementById('speaker-picker');
+  if (old) old.remove();
+
+  const picker = document.createElement('div');
+  picker.id = 'speaker-picker';
+  picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);'
+    + 'background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;'
+    + 'padding:16px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:220px;'
+    + 'max-height:320px;overflow-y:auto';
+  let html =
+    '<div style="font-weight:600;margin-bottom:4px;font-size:.85rem">'
+    + 'Override speaker for this segment</div>'
+    + '<div style="color:var(--text-secondary);font-size:.72rem;margin-bottom:8px">'
+    + 'Only this one utterance — other segments with the same speaker are unchanged.'
+    + '</div>';
+  if (!users || !users.length) {
+    html += '<div style="color:var(--text-secondary);font-size:.8rem">No crew members found</div>';
+  } else {
+    for (const u of users) {
+      html += '<div class="speaker-pick-option" '
+        + 'style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" '
+        + 'onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" '
+        + 'onmouseout="this.style.background=\'\'" '
+        + 'onclick="applyDebriefSegmentOverride('
+        + audioSessionId + ',' + segmentIndex + ',' + u.id + ')">'
+        + esc(u.name || u.email) + '</div>';
+    }
+  }
+  html += '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">'
+    + '<button class="btn-export" style="font-size:.72rem" '
+    + 'onclick="applyDebriefSegmentOverride('
+    + audioSessionId + ',' + segmentIndex + ',null)">Clear override</button>'
+    + '<button class="btn-export" style="font-size:.72rem" '
+    + 'onclick="document.getElementById(\'speaker-picker\').remove();'
+    + 'document.getElementById(\'speaker-picker-backdrop\').remove()">Cancel</button>'
+    + '</div>';
+  picker.innerHTML = html;
+
+  const backdrop = document.createElement('div');
+  backdrop.id = 'speaker-picker-backdrop';
+  backdrop.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;'
+    + 'background:rgba(0,0,0,0.4);z-index:999';
+  backdrop.onclick = () => { picker.remove(); backdrop.remove(); };
+  document.body.appendChild(backdrop);
+  document.body.appendChild(picker);
+}
+
+async function applyDebriefSegmentOverride(audioSessionId, segmentIndex, userId) {
+  const picker = document.getElementById('speaker-picker');
+  const backdrop = document.getElementById('speaker-picker-backdrop');
+  if (picker) picker.remove();
+  if (backdrop) backdrop.remove();
+  try {
+    await fetch(
+      '/api/audio/' + audioSessionId
+      + '/transcript/segments/' + segmentIndex + '/speaker-override',
+      {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({user_id: userId}),
+      },
+    );
+  } catch (e) { /* swallow */ }
+  const deb = _session && _session.debrief_audio;
+  if (deb) _loadDebriefTranscript(deb.audio_session_id);
 }
 
 async function retranscribeDebrief(audioSessionId) {

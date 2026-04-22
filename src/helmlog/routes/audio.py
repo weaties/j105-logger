@@ -227,18 +227,38 @@ async def api_get_transcript(
     row = await storage.get_audio_session_row(session_id)
     group_id = row.get("capture_group_id") if row else None
     merged_speaker_map: dict[str, Any] = {}
+
+    # Collect per-segment overrides keyed on (audio_session_id, segment_index)
+    # so the merged response can carry override metadata for each segment.
+    # Stored in transcript_segments.override_user_id (#648).
+    override_maps: dict[int, dict[int, dict[str, Any]]] = {}
+
+    def _tag_segments(asid: int, segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ov = override_maps.get(asid, {})
+        for idx, seg in enumerate(segs):
+            seg["audio_session_id"] = asid
+            seg["segment_index"] = idx
+            hit = ov.get(idx)
+            if hit:
+                seg["override_user_id"] = hit["user_id"]
+                seg["override_name"] = hit["name"]
+        return segs
+
     if group_id:
         merged: list[dict[str, Any]] = []
         siblings = await storage.list_capture_group_siblings(str(group_id))
         for sr in siblings:
-            st = await storage.get_transcript_with_anon(int(sr["id"]))
+            sid = int(sr["id"])
+            st = await storage.get_transcript_with_anon(sid)
             if st is None:
                 continue
+            if st.get("id") is not None:
+                override_maps[sid] = await storage.get_segment_overrides(int(st["id"]))
             sj = st.get("segments_json")
             if sj:
                 try:
                     segs = _json.loads(sj)
-                    merged.extend(segs)
+                    merged.extend(_tag_segments(sid, segs))
                 except (_json.JSONDecodeError, TypeError):
                     pass
             sm = st.get("speaker_map")
@@ -250,7 +270,12 @@ async def api_get_transcript(
         merged.sort(key=lambda s: float(s.get("start", 0.0)))
         t["segments"] = merged
     elif t.get("segments_json"):
-        t["segments"] = _json.loads(t["segments_json"])
+        overrides = (
+            await storage.get_segment_overrides(int(t["id"])) if t.get("id") is not None else {}
+        )
+        override_maps[session_id] = overrides
+        segs = _json.loads(t["segments_json"])
+        t["segments"] = _tag_segments(session_id, segs)
     t.pop("segments_json", None)
     # Remove internal anon map from response
     t.pop("speaker_anon_map", None)
@@ -339,6 +364,52 @@ async def api_assign_speaker(
 
     asyncio.create_task(maybe_build_voice_profile(storage, user_id))
     return JSONResponse({"speaker_label": speaker_label, "user_id": user_id, "name": name})
+
+
+@router.post(
+    "/api/audio/{session_id}/transcript/segments/{segment_index}/speaker-override",
+    status_code=200,
+)
+@limiter.limit("60/minute")
+async def api_override_segment_speaker(
+    request: Request,
+    session_id: int,
+    segment_index: int,
+    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+) -> JSONResponse:
+    """Override the speaker for a single transcript segment (#648).
+
+    Unlike ``/transcript/assign-speaker`` (label-wide), this updates just
+    one segment so a misattributed utterance can be corrected without
+    re-labelling every other segment that shares the label. Pass
+    ``{"user_id": null}`` to clear the override.
+    """
+    storage = get_storage(request)
+    body = await request.json()
+    user_id = body.get("user_id")
+    if user_id is not None and not isinstance(user_id, int):
+        raise HTTPException(status_code=422, detail="user_id must be an integer or null")
+
+    t = await storage.get_transcript(session_id)
+    if t is None:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    found, name = await storage.set_segment_speaker_override(int(t["id"]), segment_index, user_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    await audit(
+        request,
+        "transcript.override_segment_speaker",
+        detail=f"session={session_id} segment={segment_index} user={user_id}",
+        user=_user,
+    )
+    return JSONResponse(
+        {
+            "audio_session_id": session_id,
+            "segment_index": segment_index,
+            "user_id": user_id,
+            "name": name,
+        }
+    )
 
 
 @router.post("/api/audio/{session_id}/transcript/anonymize-speaker", status_code=200)

@@ -2933,7 +2933,11 @@ async def test_transcript_done_with_segments(
     segs = data["segments"]
     assert isinstance(segs, list)
     assert len(segs) == 2
-    assert set(segs[0].keys()) == {"start", "end", "speaker", "text"}
+    # #648: every segment now carries audio_session_id + segment_index so the
+    # client can address it for per-segment speaker-override POSTs.
+    assert {"start", "end", "speaker", "text", "audio_session_id", "segment_index"} <= set(
+        segs[0].keys()
+    )
     assert segs[0]["speaker"] == "SPEAKER_00"
     assert segs[1]["speaker"] == "SPEAKER_01"
 
