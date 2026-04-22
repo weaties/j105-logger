@@ -160,9 +160,11 @@ async def test_debrief_sibling_preserves_diarized_speaker(storage: Storage, tmp_
 
     rows = await storage.list_transcript_segments(tid)
     assert len(rows) == 2
-    assert [r["speaker"] for r in rows] == ["sib0:SPEAKER_01", "sib0:SPEAKER_02"]
+    # #648: R1 is the 1-indexed, user-friendly fallback name for receiver 1
+    # (ordinal 0). Used when no admin channel_map is configured.
+    assert [r["speaker"] for r in rows] == ["R1:SPEAKER_01", "R1:SPEAKER_02"]
     assert all(r["channel_index"] == 0 for r in rows)
-    assert all(r["position_name"] == "sib0" for r in rows)
+    assert all(r["position_name"] == "R1" for r in rows)
 
 
 async def test_race_sibling_also_preserves_diarized_speaker(
@@ -205,14 +207,15 @@ async def test_race_sibling_also_preserves_diarized_speaker(
 
     rows = await storage.list_transcript_segments(tid)
     # Race siblings get the same prefixed diarization now (no more collapse).
-    assert [r["speaker"] for r in rows] == ["sib1:SPEAKER_00", "sib1:SPEAKER_01"]
-    assert all(r["position_name"] == "sib1" for r in rows)
+    # R2 is the 1-indexed label for receiver 2 (ordinal 1).
+    assert [r["speaker"] for r in rows] == ["R2:SPEAKER_00", "R2:SPEAKER_01"]
+    assert all(r["position_name"] == "R2" for r in rows)
 
 
-async def test_transcribe_session_sibling_falls_back_to_sibN_when_unmapped(
+async def test_transcribe_session_sibling_falls_back_to_RN_when_unmapped(
     storage: Storage, tmp_path: Path
 ) -> None:
-    """No channel_map entry → fall back to sib{ordinal} label."""
+    """No channel_map entry → fall back to R{ordinal + 1} label (#648)."""
     wav = tmp_path / "loose.wav"
     wav.write_bytes(b"RIFF0000WAVEfmt ")
     session = AudioSession(
@@ -232,7 +235,7 @@ async def test_transcribe_session_sibling_falls_back_to_sibN_when_unmapped(
 
         await transcribe_session(storage, sid, tid, model_size="base")
     rows = await storage.list_transcript_segments(tid)
-    assert rows[0]["position_name"] == "sib3"
+    assert rows[0]["position_name"] == "R4"  # ordinal 3 → R4 (1-indexed)
     assert rows[0]["channel_index"] == 3
 
 

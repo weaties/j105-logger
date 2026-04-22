@@ -750,7 +750,7 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
         group_rows = await storage.list_capture_group_siblings(str(arow["capture_group_id"]))
         for sr in group_rows:
             cmap = await storage.get_channel_map_for_audio_session(int(sr["id"]))
-            position_name = cmap.get(0, f"sib{sr['capture_ordinal']}")
+            position_name = cmap.get(0, f"R{int(sr['capture_ordinal']) + 1}")
             audio_siblings.append(
                 {
                     "audio_session_id": int(sr["id"]),
@@ -789,7 +789,7 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
             )
             for sr in debrief_group_rows:
                 cmap = await storage.get_channel_map_for_audio_session(int(sr["id"]))
-                position_name = cmap.get(0, f"sib{sr['capture_ordinal']}")
+                position_name = cmap.get(0, f"R{int(sr['capture_ordinal']) + 1}")
                 debrief_siblings.append(
                     {
                         "audio_session_id": int(sr["id"]),

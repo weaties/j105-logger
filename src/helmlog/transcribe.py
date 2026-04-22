@@ -283,8 +283,12 @@ async def transcribe_session(
     num_speakers_hint: int | None = None
     if row.get("capture_group_id") and channels == 1:
         cmap = await storage.get_channel_map_for_audio_session(audio_session_id)
-        position = cmap.get(0, f"sib{row.get('capture_ordinal', 0)}")
-        sibling_tag = (int(row.get("capture_ordinal") or 0), position)
+        # Fallback label (#648): user-facing "R1" / "R2" etc. when no admin
+        # channel_map is configured. Maps to the receiver number from the
+        # common 2-mic-per-receiver setup, 1-indexed for humans.
+        ordinal = int(row.get("capture_ordinal") or 0)
+        position = cmap.get(0, f"R{ordinal + 1}")
+        sibling_tag = (ordinal, position)
         # #648: common sibling-mode setup has multiple crew sharing one
         # wireless receiver (2 mics → one mono WAV). Tell pyannote how many
         # voices to expect so it doesn't over-split noisy race audio into

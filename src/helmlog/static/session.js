@@ -196,28 +196,42 @@ function _vakarosBoatIcon(color, opacity) {
   return L.divIcon({className: 'vakaros-boat', html: html, iconSize: [28, 22], iconAnchor: [14, 12]});
 }
 
-// Transcript auto-follow state. The transcript container scrolls itself to
-// keep the active segment visible, but if the user scrolls manually we
-// disable that until they click a segment (which re-anchors).
-let _transcriptFollow = true;
-let _lastTranscriptProgrammaticScrollAt = 0;
-
-// Scroll the transcript container so the active segment is visible — without
-// ever calling scrollIntoView() (which can jerk the whole page when the
-// container itself isn't fully in view). Returns true if a scroll happened.
+// Per-pane transcript state (#648). Both race and debrief transcripts use
+// the same rendering pipeline; each pane gets its own slot so follow state,
+// active-segment highlight, and block storage stay isolated.
 //
-// Uses getBoundingClientRect (#648) instead of offsetTop because offsetTop is
-// relative to the nearest *positioned* ancestor, which is not always the
-// scroll container — when it isn't, assigning the raw offsetTop to
-// container.scrollTop lands at a wildly wrong position (the symptom the user
-// reported as "transcript jumps to god only knows where").
-function _scrollTranscriptSegmentIntoView(container, el) {
-  if (!_transcriptFollow) return false;
+//   _transcriptPanes[paneKey] = {
+//     containerId, followBtnId, surfaceName,
+//     audioSessionId,      // primary audio_session_id for this pane
+//     audioStartUtc,       // Date anchor for clock math
+//     onPlay(block),       // click-to-play handler
+//     onOpenOverride(block), // pencil-click handler
+//     speakerMap,          // label → crew entry
+//     blocks,              // merged display blocks
+//     follow,              // auto-scroll enabled
+//     lastActiveIdx,       // last-rendered active block
+//     surfaceRegistered,   // registerSurface called once per pane
+//     lastProgrammaticScrollAt,  // timestamp of our last scroll — used to
+//                                // ignore our own scroll events
+//   }
+const _transcriptPanes = {};
+
+// Back-compat alias so legacy code keeps working until all call sites move
+// off the global (#648).
+let _transcriptFollow = true;
+
+function _scrollTranscriptSegmentIntoView(container, el, paneKey) {
+  // Uses getBoundingClientRect (#648) instead of offsetTop because offsetTop
+  // is relative to the nearest *positioned* ancestor, which is not always
+  // the scroll container — when it isn't, assigning the raw offsetTop to
+  // container.scrollTop lands at a wildly wrong position (the symptom the
+  // user reported as "transcript jumps to god only knows where").
+  const pane = paneKey ? _transcriptPanes[paneKey] : null;
+  const follow = pane ? pane.follow : _transcriptFollow;
+  if (!follow) return false;
   const margin = 4;
   const cRect = container.getBoundingClientRect();
   const eRect = el.getBoundingClientRect();
-  // Position of the segment relative to the container's *content*, regardless
-  // of offsetParent topology.
   const relTop = eRect.top - cRect.top + container.scrollTop;
   const relBottom = relTop + el.offsetHeight;
   const top = relTop - margin;
@@ -229,29 +243,35 @@ function _scrollTranscriptSegmentIntoView(container, el) {
     target = bottom - container.clientHeight;
   }
   if (target == null) return false;
-  _lastTranscriptProgrammaticScrollAt = Date.now();
+  const now = Date.now();
+  if (pane) pane.lastProgrammaticScrollAt = now;
   container.scrollTop = Math.max(0, target);
   return true;
 }
 
-function _wireTranscriptScrollListener() {
-  const container = document.getElementById('transcript-segments');
+function _wireTranscriptScrollListener(paneKey) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane) return;
+  const container = document.getElementById(pane.containerId);
   if (!container || container._scrollWired) return;
   container._scrollWired = true;
   container.addEventListener('scroll', function() {
-    // Ignore the scroll events we triggered ourselves.
-    if (Date.now() - _lastTranscriptProgrammaticScrollAt < 400) return;
-    if (_transcriptFollow) {
-      _transcriptFollow = false;
-      _renderTranscriptFollowBadge();
+    // Ignore the scroll events we triggered ourselves (400 ms window).
+    if (Date.now() - (pane.lastProgrammaticScrollAt || 0) < 400) return;
+    if (pane.follow) {
+      pane.follow = false;
+      if (paneKey === 'race') _transcriptFollow = false;
+      _renderTranscriptFollowBadge(paneKey);
     }
   });
 }
 
-function _renderTranscriptFollowBadge() {
-  const btn = document.getElementById('transcript-follow-btn');
+function _renderTranscriptFollowBadge(paneKey) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane) return;
+  const btn = document.getElementById(pane.followBtnId);
   if (!btn) return;
-  if (_transcriptFollow) {
+  if (pane.follow) {
     btn.textContent = '\u25C9 Follow';
     btn.style.opacity = '1';
     btn.title = 'Auto-scrolling to active segment. Click to pause.';
@@ -262,9 +282,13 @@ function _renderTranscriptFollowBadge() {
   }
 }
 
-function toggleTranscriptFollow() {
-  _transcriptFollow = !_transcriptFollow;
-  _renderTranscriptFollowBadge();
+function toggleTranscriptFollow(paneKey) {
+  const key = paneKey || 'race';
+  const pane = _transcriptPanes[key];
+  if (!pane) return;
+  pane.follow = !pane.follow;
+  if (key === 'race') _transcriptFollow = pane.follow;
+  _renderTranscriptFollowBadge(key);
 }
 let _transcriptId = null; // transcript ID for tuning extraction
 let _tuningSegmentAudio = null; // shared <audio> for segment playback
@@ -2422,7 +2446,46 @@ async function loadTranscript() {
   }
 }
 
+// Race transcript entry point — thin trampoline into the shared pane
+// renderer (#648). Both race and debrief go through _renderTranscriptPane
+// so layout, follow button, pencils, and auto-scroll behave identically.
 function _renderDiarizedTranscript(body, t) {
+  _renderTranscriptPane('race', body, t, {
+    containerId: 'transcript-segments',
+    followBtnId: 'transcript-follow-btn',
+    surfaceName: 'transcript',
+    segClass: 'transcript-seg',
+    speakerClass: 'transcript-speaker',
+    audioStartUtcRaw: _session && _session.audio_start_utc,
+    onClickSegment: 'playTranscriptSegment',
+    onClickSpeaker: (escLabel) => "openSpeakerPicker('" + escLabel + "')",
+    onClickOverride: 'openSegmentOverridePicker',
+    onToggleFollow: "toggleTranscriptFollow('race')",
+    speakerMap: _speakerMap,
+  });
+}
+
+// Shared renderer driven by pane state (#648). Keeps race + debrief in
+// lock-step on layout, click affordances, follow behaviour, and scroll
+// math. Pane state lives in _transcriptPanes[paneKey] so multiple panes
+// can coexist on the same page without trampling each other.
+function _renderTranscriptPane(paneKey, body, t, opts) {
+  const prev = _transcriptPanes[paneKey] || {};
+  const pane = _transcriptPanes[paneKey] = {
+    ...prev,
+    containerId: opts.containerId,
+    followBtnId: opts.followBtnId,
+    surfaceName: opts.surfaceName,
+    audioStartUtcRaw: opts.audioStartUtcRaw,
+    segClass: opts.segClass,
+    speakerMap: opts.speakerMap || {},
+    blocks: [],
+    follow: prev.follow !== undefined ? prev.follow : true,
+    lastActiveIdx: -1,
+    surfaceRegistered: prev.surfaceRegistered || false,
+    lastProgrammaticScrollAt: prev.lastProgrammaticScrollAt || 0,
+  };
+
   const blocks = [];
   for (const seg of t.segments) {
     const last = blocks[blocks.length - 1];
@@ -2449,16 +2512,21 @@ function _renderDiarizedTranscript(body, t) {
       blocks.push(block);
     }
   }
-  _transcriptBlocks = blocks;
+  pane.blocks = blocks;
+  // Keep legacy race-only globals in sync until every call site migrates.
+  if (paneKey === 'race') {
+    _transcriptBlocks = blocks;
+    _speakerMap = pane.speakerMap;
+  }
+
   const rawSpeakers = [...new Set(t.segments.map(s => s.speaker))];
   const speakers = [...new Set(blocks.map(b => b.speaker))];
   const palette = [cssVar('--accent'), cssVar('--success'), cssVar('--warning'), cssVar('--danger'), '#c4b5fd', '#f9a8d4'];
   const color = s => palette[rawSpeakers.indexOf(s) >= 0 ? rawSpeakers.indexOf(s) % palette.length : speakers.indexOf(s) % palette.length];
   const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
 
-  // Display name for a speaker (crew name from speaker_map, or raw label)
   const displayName = (rawLabel) => {
-    const entry = _speakerMap[rawLabel];
+    const entry = pane.speakerMap[rawLabel];
     if (entry && entry.name) {
       if (entry.type === 'auto' && entry.confidence != null) {
         return entry.name + ' (' + Math.round(entry.confidence * 100) + '%)';
@@ -2470,60 +2538,63 @@ function _renderDiarizedTranscript(body, t) {
 
   body.innerHTML = ''
     + '<div style="display:flex;justify-content:flex-end;align-items:center;margin-bottom:6px;gap:8px">'
-    + (_session.audio_channels > 1 ? _renderIsolationToggle() : '')
-    + '<button id="transcript-follow-btn" type="button" onclick="toggleTranscriptFollow()" '
+    + '<button id="' + opts.followBtnId + '" type="button" '
+    + 'onclick="' + opts.onToggleFollow + '" '
     + 'style="font-size:.7rem;padding:2px 8px;border:1px solid var(--border);background:transparent;color:var(--text-secondary);cursor:pointer;border-radius:3px" '
     + 'title="Auto-scrolling to active segment. Click to pause.">\u25C9 Follow</button>'
     + '</div>'
-    + '<div id="transcript-segments" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
+    + '<div id="' + opts.containerId + '" style="max-height:400px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">'
     + blocks.map((b, i) => {
       const speakerHtml = b.override_user_id
-        ? '<span class="transcript-speaker" data-speaker="' + esc(b.speaker)
+        ? '<span class="' + opts.speakerClass + '" data-speaker="' + esc(b.speaker)
           + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;'
           + 'font-style:italic" title="Overridden from ' + esc(displayName(b.speaker))
           + ' — click ✎ to change">'
           + esc(b.override_name || '') + '</span>'
-        : '<span class="transcript-speaker" data-speaker="' + esc(b.speaker)
+        : '<span class="' + opts.speakerClass + '" data-speaker="' + esc(b.speaker)
           + '" style="color:' + color(b.speaker) + ';font-weight:600;font-size:.75rem;'
           + 'cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px" '
-          + 'onclick="event.stopPropagation();openSpeakerPicker(\'' + esc(b.speaker) + '\')" '
+          + 'onclick="event.stopPropagation();' + opts.onClickSpeaker(esc(b.speaker)) + '" '
           + 'title="Click to assign crew">'
           + esc(displayName(b.speaker)) + '</span>';
-      return '<div class="transcript-seg" data-idx="' + i + '" '
+      return '<div class="' + opts.segClass + '" data-idx="' + i + '" '
         + 'style="margin-bottom:8px;padding:4px 6px;border-radius:4px;cursor:pointer;'
-        + 'transition:background .15s" onclick="playTranscriptSegment(' + i + ')">'
+        + 'transition:background .15s" onclick="' + opts.onClickSegment + '(' + i + ')">'
         + speakerHtml
         + '<span style="color:var(--text-secondary);font-size:.7rem;margin-left:4px">['
         + fmt(b.start) + ']</span>'
         + ' <span class="transcript-seg-override" title="Override this segment only" '
         + 'style="font-size:.7rem;cursor:pointer;color:var(--text-secondary);margin-left:4px" '
-        + 'onclick="event.stopPropagation();openSegmentOverridePicker(' + i + ')">&#9998;</span>'
+        + 'onclick="event.stopPropagation();' + opts.onClickOverride + '(' + i + ')">&#9998;</span>'
         + '<div style="color:var(--text-primary);font-size:.8rem;margin-top:2px">'
         + esc(b.text.trim()) + '</div>'
         + '</div>';
     }).join('')
     + '</div>';
 
-  // Register the diarized transcript as a playback-clock surface so it
-  // highlights the active segment in sync with audio/video/map (#446).
-  _registerTranscriptSurface();
-  _wireTranscriptScrollListener();
-  _renderTranscriptFollowBadge();
+  _registerTranscriptSurface(paneKey);
+  _wireTranscriptScrollListener(paneKey);
+  _renderTranscriptFollowBadge(paneKey);
 }
 
+// Legacy back-compat globals. Race pane now lives in _transcriptPanes.race,
+// but some older code still reads/writes these. Kept until full migration.
 let _transcriptSurfaceRegistered = false;
 let _lastActiveTranscriptIdx = -1;
-function _registerTranscriptSurface() {
-  if (!_session || !_session.audio_start_utc) return;
-  if (_transcriptSurfaceRegistered) return; // idempotent — transcript may re-render on poll
-  _transcriptSurfaceRegistered = true;
+
+function _registerTranscriptSurface(paneKey) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane || !pane.audioStartUtcRaw) return;
+  if (pane.surfaceRegistered) return;  // idempotent — transcript polls every 3s
+  pane.surfaceRegistered = true;
+  if (paneKey === 'race') _transcriptSurfaceRegistered = true;
+  const raw = pane.audioStartUtcRaw;
   const audioStart = new Date(
-    _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
-      ? _session.audio_start_utc
-      : _session.audio_start_utc + 'Z'
+    raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
   );
-  registerSurface('transcript', function(utc) {
-    if (!_transcriptBlocks.length) return;
+  registerSurface(pane.surfaceName, function(utc) {
+    const p = _transcriptPanes[paneKey];
+    if (!p || !p.blocks.length) return;
     const local = (utc.getTime() - audioStart.getTime()) / 1000;
 
     // Pick a single best-match block (#648): with merged sibling transcripts
@@ -2534,15 +2605,16 @@ function _registerTranscriptSurface() {
     // recently — what a listener would expect to see in the auto-follow view.
     let activeIdx = -1;
     let bestStart = -Infinity;
-    for (let i = 0; i < _transcriptBlocks.length; i++) {
-      const b = _transcriptBlocks[i];
+    for (let i = 0; i < p.blocks.length; i++) {
+      const b = p.blocks[i];
       if (local >= b.start && local <= b.end && b.start > bestStart) {
         activeIdx = i;
         bestStart = b.start;
       }
     }
 
-    const segs = document.querySelectorAll('.transcript-seg');
+    const container = document.getElementById(p.containerId);
+    const segs = container ? container.querySelectorAll('.' + p.segClass) : [];
     for (let i = 0; i < segs.length; i++) {
       const el = segs[i];
       if (!el) continue;
@@ -2555,41 +2627,50 @@ function _registerTranscriptSurface() {
     // tick while the same block is playing caused the "transcript drifts away
     // from playhead" jitter, because co-active blocks flipped the scroll
     // target back and forth between their DOM positions.
-    if (activeIdx !== -1 && activeIdx !== _lastActiveTranscriptIdx) {
-      _lastActiveTranscriptIdx = activeIdx;
-      const container = document.getElementById('transcript-segments');
+    if (activeIdx !== -1 && activeIdx !== p.lastActiveIdx) {
+      p.lastActiveIdx = activeIdx;
+      if (paneKey === 'race') _lastActiveTranscriptIdx = activeIdx;
       const el = segs[activeIdx];
-      if (container && el) _scrollTranscriptSegmentIntoView(container, el);
+      if (container && el) _scrollTranscriptSegmentIntoView(container, el, paneKey);
     } else if (activeIdx === -1) {
-      _lastActiveTranscriptIdx = -1;
+      p.lastActiveIdx = -1;
+      if (paneKey === 'race') _lastActiveTranscriptIdx = -1;
     }
   });
 }
 
-function playTranscriptSegment(idx) {
-  const b = _transcriptBlocks[idx];
+// Click-to-play for a transcript block. Re-enables auto-scroll, seeks the
+// playback clock (video/map follow), and dispatches to the right audio
+// player based on the pane (#648). Race pane drives the race mc player;
+// debrief pane drives the debrief dmc player.
+function _playTranscriptBlock(paneKey, idx) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane) return;
+  const b = pane.blocks[idx];
   if (!b) return;
   // Clicking a segment is a strong "I want to follow this" signal —
   // re-enable auto-scroll if the user had paused it.
-  if (!_transcriptFollow) {
-    _transcriptFollow = true;
-    _renderTranscriptFollowBadge();
+  if (!pane.follow) {
+    pane.follow = true;
+    if (paneKey === 'race') _transcriptFollow = true;
+    _renderTranscriptFollowBadge(paneKey);
   }
-  // Route through the playback clock so video and map follow too.
-  if (_session && _session.audio_start_utc) {
+  if (pane.audioStartUtcRaw) {
+    const raw = pane.audioStartUtcRaw;
     const audioStart = new Date(
-      _session.audio_start_utc.endsWith('Z') || _session.audio_start_utc.includes('+')
-        ? _session.audio_start_utc
-        : _session.audio_start_utc + 'Z'
+      raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
     );
-    setPosition(new Date(audioStart.getTime() + b.start * 1000), {source: 'transcript'});
+    setPosition(new Date(audioStart.getTime() + b.start * 1000), {source: pane.surfaceName});
   }
-  // Multi-channel sessions use the Web Audio path; route the click through
-  // _mcOnSegmentClick so the listener gets channel isolation for the segment.
+  const ch = (b.channel_index !== undefined && b.channel_index !== null)
+    ? b.channel_index : null;
+  if (paneKey === 'debrief') {
+    _dmcOnSegmentClick(ch === null ? -1 : ch, b.start, b.end);
+    return;
+  }
+  // Race pane — multi-channel via mc player if configured, else fall back
+  // to the legacy single-<audio> element.
   if ((_session.audio_channels || 1) > 1) {
-    const ch = (b.channel_index !== undefined && b.channel_index !== null)
-      ? b.channel_index
-      : null;
     _mcOnSegmentClick(ch, b.start, b.end);
     return;
   }
@@ -2602,11 +2683,17 @@ function playTranscriptSegment(idx) {
   }
 }
 
+// Back-compat thin trampolines — keep old inline onclicks resolving.
+function playTranscriptSegment(idx) { _playTranscriptBlock('race', idx); }
+function playDebriefTranscriptSegment(idx) { _playTranscriptBlock('debrief', idx); }
+
 // Open a picker to override the speaker for just this one block — covers
-// every underlying transcript_segments row in the block (#648). Called from
-// the ✎ pencil icon on each race transcript block.
-async function openSegmentOverridePicker(blockIdx) {
-  const block = _transcriptBlocks[blockIdx];
+// every underlying transcript_segments row in the block (#648). Pane-aware
+// so the race pencil and the debrief pencil both use this one picker.
+async function _openBlockOverridePicker(paneKey, blockIdx) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane) return;
+  const block = pane.blocks[blockIdx];
   if (!block || !Array.isArray(block._segRefs) || !block._segRefs.length) return;
   let users;
   try {
@@ -2638,13 +2725,13 @@ async function openSegmentOverridePicker(blockIdx) {
         + 'style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" '
         + 'onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" '
         + 'onmouseout="this.style.background=\'\'" '
-        + 'onclick="applySegmentOverride(' + blockIdx + ',' + u.id + ')">'
+        + 'onclick="_applyBlockOverride(\'' + paneKey + '\',' + blockIdx + ',' + u.id + ')">'
         + esc(u.name || u.email) + '</div>';
     }
   }
   html += '<div style="display:flex;gap:6px;justify-content:flex-end;margin-top:8px">'
     + '<button class="btn-export" style="font-size:.72rem" '
-    + 'onclick="applySegmentOverride(' + blockIdx + ',null)">Clear override</button>'
+    + 'onclick="_applyBlockOverride(\'' + paneKey + '\',' + blockIdx + ',null)">Clear override</button>'
     + '<button class="btn-export" style="font-size:.72rem" '
     + 'onclick="document.getElementById(\'speaker-picker\').remove();'
     + 'document.getElementById(\'speaker-picker-backdrop\').remove()">Cancel</button>'
@@ -2660,8 +2747,14 @@ async function openSegmentOverridePicker(blockIdx) {
   document.body.appendChild(picker);
 }
 
-async function applySegmentOverride(blockIdx, userId) {
-  const block = _transcriptBlocks[blockIdx];
+// Back-compat trampolines for inline onclick handlers on existing segments.
+function openSegmentOverridePicker(idx) { return _openBlockOverridePicker('race', idx); }
+function openDebriefBlockOverridePicker(idx) { return _openBlockOverridePicker('debrief', idx); }
+
+async function _applyBlockOverride(paneKey, blockIdx, userId) {
+  const pane = _transcriptPanes[paneKey];
+  if (!pane) return;
+  const block = pane.blocks[blockIdx];
   if (!block || !Array.isArray(block._segRefs)) return;
   const picker = document.getElementById('speaker-picker');
   const backdrop = document.getElementById('speaker-picker-backdrop');
@@ -2697,7 +2790,17 @@ async function applySegmentOverride(blockIdx, userId) {
   }
   // Cheap path — re-run the transcript loader so the block splits update
   // correctly (override status is part of the grouping key).
-  loadTranscript();
+  if (paneKey === 'race') {
+    loadTranscript();
+  } else {
+    const deb = _session && _session.debrief_audio;
+    if (deb) _loadDebriefTranscript(deb.audio_session_id);
+  }
+}
+
+// Back-compat trampoline for the previous global name.
+function applySegmentOverride(blockIdx, userId) {
+  return _applyBlockOverride('race', blockIdx, userId);
 }
 
 async function openSpeakerPicker(speakerLabel, audioSessionId) {
@@ -2855,7 +2958,7 @@ function _renderDebriefMultiChannel(wrap, deb, siblings) {
   _dmcIsolated = null;
   _dmcSticky = false;
   _dmcDurationS = 0;
-  const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`);
+  const labels = siblings.map(s => s.position_name || `R${(Number(s.ordinal) || 0) + 1}`);
   const downloadHref = '/api/audio/' + deb.audio_session_id + '/download';
   wrap.innerHTML =
     '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
@@ -2914,12 +3017,35 @@ function _dmcInit() {
   const primary = _dmcEls[0];
   if (!primary._dmcPrimaryWired) {
     primary._dmcPrimaryWired = true;
+    let dmcFanoutLast = 0;
     primary.addEventListener('timeupdate', () => {
       _dmcUpdateProgress();
       const t = primary.currentTime;
       for (let i = 1; i < _dmcEls.length; i++) {
         if (Math.abs(_dmcEls[i].currentTime - t) > 0.2) {
           try { _dmcEls[i].currentTime = t; } catch (e) { /* swallow */ }
+        }
+      }
+      // Fan out to the playback clock so the debrief transcript's auto-scroll
+      // (and any other consumer) keeps up with playback (#648). Throttle to
+      // 5 Hz — matches the existing audio fanout cadence. Uses source
+      // 'debrief-mc' so the debrief transcript consumer is NOT the one we
+      // skip in setPosition's same-source filter.
+      const deb = _session && _session.debrief_audio;
+      if (deb && deb.start_utc) {
+        const now = (typeof _clockNowMs === 'function') ? _clockNowMs() : Date.now();
+        if (now - dmcFanoutLast >= 200) {
+          dmcFanoutLast = now;
+          const raw = deb.start_utc;
+          const startUtc = new Date(
+            raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z'
+          );
+          if (!isNaN(startUtc.getTime())) {
+            setPosition(
+              new Date(startUtc.getTime() + t * 1000),
+              {source: 'debrief-mc'},
+            );
+          }
         }
       }
     });
@@ -2974,7 +3100,7 @@ function _dmcSetIsolation(idx) {
     if (idx === null) {
       ind.textContent = 'mixed';
     } else {
-      const label = (_dmcSiblings[idx] && _dmcSiblings[idx].position_name) || `sib${idx}`;
+      const label = (_dmcSiblings[idx] && _dmcSiblings[idx].position_name) || `R${idx + 1}`;
       ind.textContent = 'isolated: ' + label;
     }
   }
@@ -3070,70 +3196,46 @@ async function _loadDebriefTranscript(audioSessionId) {
     return;
   }
   const segs = Array.isArray(t.segments) ? t.segments : [];
-  const fmt = s => {
-    const m = Math.floor(s / 60);
-    return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
-  };
-  const speakerMap = t.speaker_map || {};
-  const displayName = raw => {
-    const entry = speakerMap[raw];
-    if (entry && entry.name) return entry.name;
-    return raw || '';
-  };
-  // Segments are clickable — clicking seeks the debrief <audio> element to
-  // the segment start and starts playback. Use inline onclick with the raw
-  // start seconds so the handler stays self-contained.
-  const segStyle =
-    'margin-bottom:3px;cursor:pointer;padding:2px 4px;border-radius:3px';
-  let html = '';
-  // Resolve the per-segment channel index (#648) so transcript clicks can
-  // isolate the right mic on the multi-sibling debrief player.
-  const chOf = s => (s.channel_index !== undefined && s.channel_index !== null)
-    ? Number(s.channel_index) : -1;
-  if (segs.length && segs.some(s => s.speaker)) {
-    html = segs.map(s => {
-      const start = Number(s.start) || 0;
-      const ch = chOf(s);
-      // Override (#648): if a per-segment override is set, show that name
-      // italicized instead of the label's crew assignment; otherwise the
-      // speaker name opens the crew picker (label-wide) like before.
-      let who = '';
-      if (s.override_user_id && s.override_name) {
-        who = '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
-          + '" style="color:var(--accent);font-style:italic" '
-          + 'title="Overridden from ' + esc(displayName(s.speaker))
-          + ' — click ✎ to change">'
-          + esc(s.override_name) + ':</span> ';
-      } else if (s.speaker) {
-        who = '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
-          + '" style="color:var(--accent);cursor:pointer;text-decoration:underline dotted;'
-          + 'text-underline-offset:2px" '
-          + 'onclick="event.stopPropagation();openSpeakerPicker(\''
-          + esc(s.speaker) + '\',' + audioSessionId + ')" '
-          + 'title="Click to assign crew">'
-          + esc(displayName(s.speaker)) + ':</span> ';
-      }
-      const ovAsid = s.audio_session_id || audioSessionId;
-      const ovIdx = (s.segment_index !== undefined && s.segment_index !== null)
-        ? s.segment_index : -1;
-      const pencil = ovIdx >= 0
-        ? ' <span class="transcript-seg-override" title="Override this segment only" '
-          + 'style="font-size:.7rem;cursor:pointer;color:var(--text-secondary);margin-left:4px" '
-          + 'onclick="event.stopPropagation();'
-          + 'openDebriefSegmentOverridePicker(' + ovAsid + ',' + ovIdx + ')">&#9998;</span>'
-        : '';
-      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
-        + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
-        + 'onmouseout="this.style.background=\'transparent\'" '
-        + 'title="Click to play from here">'
-        + '<span style="color:var(--text-secondary);font-family:monospace">['
-        + fmt(start) + ']</span> '
-        + who + esc(s.text || '') + pencil + '</div>';
-    }).join('');
+  const hasDiarized = segs.length > 0 && segs.some(s => s.speaker);
+
+  // #648: debrief transcript now uses the same shared renderer as the race
+  // transcript — block grouping, follow button, per-segment override pencil,
+  // speaker-click crew picker, auto-scroll synced to the debrief player.
+  // Non-diarized fallback keeps the simple text view + retranscribe button.
+  if (hasDiarized) {
+    // Retranscribe button sits above the shared render; the shared renderer
+    // owns everything from the follow button down.
+    body.innerHTML =
+      '<div style="display:flex;justify-content:flex-end;margin-bottom:4px">'
+      + '<button class="btn-export" style="font-size:.7rem" '
+      + 'onclick="retranscribeDebrief(' + audioSessionId + ')" '
+      + 'title="Re-run transcription with diarization so crew sharing a mic get separate speaker labels">'
+      + '&#8635; Retranscribe with diarization</button>'
+      + '</div>'
+      + '<div id="debrief-transcript-shared"></div>';
+    const shared = document.getElementById('debrief-transcript-shared');
+    const debAudio = _session && _session.debrief_audio;
+    _renderTranscriptPane('debrief', shared, t, {
+      containerId: 'debrief-transcript-segments',
+      followBtnId: 'debrief-transcript-follow-btn',
+      surfaceName: 'debrief-transcript',
+      segClass: 'debrief-transcript-seg',
+      speakerClass: 'debrief-transcript-speaker',
+      audioStartUtcRaw: debAudio && debAudio.start_utc,
+      onClickSegment: 'playDebriefTranscriptSegment',
+      onClickSpeaker: (escLabel) => "openSpeakerPicker('" + escLabel + "'," + audioSessionId + ")",
+      onClickOverride: 'openDebriefBlockOverridePicker',
+      onToggleFollow: "toggleTranscriptFollow('debrief')",
+      speakerMap: t.speaker_map || {},
+    });
   } else if (segs.length) {
-    html = segs.map(s => {
+    // Non-diarized fallback — short untimed list + retranscribe CTA.
+    const fmt = s => { const m = Math.floor(s / 60); return m + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
+    const segStyle = 'margin-bottom:3px;cursor:pointer;padding:2px 4px;border-radius:3px';
+    const html = segs.map(s => {
       const start = Number(s.start) || 0;
-      const ch = chOf(s);
+      const ch = (s.channel_index !== undefined && s.channel_index !== null)
+        ? Number(s.channel_index) : -1;
       return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
         + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
         + 'onmouseout="this.style.background=\'transparent\'" '
@@ -3141,20 +3243,19 @@ async function _loadDebriefTranscript(audioSessionId) {
         + '<span style="color:var(--text-secondary);font-family:monospace">['
         + fmt(start) + ']</span> ' + esc(s.text || '') + '</div>';
     }).join('');
+    body.innerHTML =
+      '<div style="display:flex;justify-content:flex-end;margin-bottom:4px">'
+      + '<button class="btn-export" style="font-size:.7rem" '
+      + 'onclick="retranscribeDebrief(' + audioSessionId + ')">'
+      + '&#8635; Retranscribe with diarization</button>'
+      + '</div>'
+      + '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
+      + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
   } else if (t.text) {
-    html = '<div style="white-space:pre-wrap">' + esc(t.text) + '</div>';
+    body.innerHTML = '<div style="white-space:pre-wrap">' + esc(t.text) + '</div>';
   } else {
-    html = '<span style="color:var(--text-secondary)">(empty)</span>';
+    body.innerHTML = '<span style="color:var(--text-secondary)">(empty)</span>';
   }
-  body.innerHTML =
-    '<div style="display:flex;justify-content:flex-end;margin-bottom:4px">'
-    + '<button class="btn-export" style="font-size:.7rem" '
-    + 'onclick="retranscribeDebrief(' + audioSessionId + ')" '
-    + 'title="Re-run transcription with diarization so crew sharing a mic get separate speaker labels">'
-    + '&#8635; Retranscribe with diarization</button>'
-    + '</div>'
-    + '<div style="max-height:260px;overflow-y:auto;background:var(--bg-secondary);'
-    + 'border-radius:6px;padding:8px;color:var(--text-primary)">' + html + '</div>';
 }
 
 // Debrief-transcript per-segment override picker (#648). Same flow as the
@@ -3721,7 +3822,7 @@ async function loadMultiChannelAudio() {
           _mcStopProgressTick();
         }
       });
-      const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`).join(', ');
+      const labels = siblings.map(s => s.position_name || `R${(Number(s.ordinal) || 0) + 1}`).join(', ');
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — streaming mode — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
@@ -3752,7 +3853,7 @@ async function loadMultiChannelAudio() {
         return g;
       });
       _mcMerger.connect(_mcCtx.destination);
-      const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`).join(', ');
+      const labels = siblings.map(s => s.position_name || `R${(Number(s.ordinal) || 0) + 1}`).join(', ');
       document.getElementById('mc-status').textContent =
         `${siblings.length} receivers (${labels}) — click a transcript segment to isolate that mic.`;
       _mcUpdateProgress();
