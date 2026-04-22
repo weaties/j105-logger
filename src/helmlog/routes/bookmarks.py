@@ -29,6 +29,7 @@ def _serialize(bm: dict[str, Any]) -> dict[str, Any]:
         "t_start": bm["anchor_t_start"],
         "created_at": bm["created_at"],
         "updated_at": bm["updated_at"],
+        "counterparty": bm.get("counterparty"),
     }
 
 
@@ -49,6 +50,10 @@ async def api_create_bookmark(
     note_raw = body.get("note")
     note = note_raw.strip() if isinstance(note_raw, str) and note_raw.strip() else None
     t_start = body.get("t_start")
+    cp_raw = body.get("counterparty")
+    # Blank strings collapse to NULL so the SELECT DISTINCT typeahead
+    # doesn't end up with empty-string entries from casual form input.
+    counterparty = cp_raw.strip() if isinstance(cp_raw, str) and cp_raw.strip() else None
 
     if not name:
         raise HTTPException(status_code=422, detail="name is required")
@@ -66,6 +71,7 @@ async def api_create_bookmark(
         name=name,
         note=note,
         t_start=t_start,
+        counterparty=counterparty,
     )
     await audit(
         request,
@@ -159,6 +165,7 @@ async def api_update_bookmark(
     body = await request.json()
     name_in = body.get("name")
     note_in = body.get("note", ...)  # sentinel: absent vs. explicit None
+    cp_in = body.get("counterparty", ...)  # same sentinel pattern
 
     name = name_in.strip() if isinstance(name_in, str) else None
     if name is not None and not name:
@@ -178,7 +185,28 @@ async def api_update_bookmark(
         else:
             raise HTTPException(status_code=422, detail="note must be a string or null")
 
-    await storage.update_bookmark(bookmark_id, name=name, note=note, clear_note=clear_note)
+    clear_counterparty = False
+    counterparty: str | None = None
+    if cp_in is not ...:
+        if cp_in is None:
+            clear_counterparty = True
+        elif isinstance(cp_in, str):
+            stripped_cp = cp_in.strip()
+            if not stripped_cp:
+                clear_counterparty = True
+            else:
+                counterparty = stripped_cp
+        else:
+            raise HTTPException(status_code=422, detail="counterparty must be a string or null")
+
+    await storage.update_bookmark(
+        bookmark_id,
+        name=name,
+        note=note,
+        clear_note=clear_note,
+        counterparty=counterparty,
+        clear_counterparty=clear_counterparty,
+    )
     await audit(
         request,
         "bookmark.update",
@@ -188,6 +216,23 @@ async def api_update_bookmark(
     updated = await storage.get_bookmark(bookmark_id)
     assert updated is not None
     return JSONResponse(_serialize(updated))
+
+
+@router.get("/api/bookmarks/counterparties")
+async def api_list_bookmark_counterparties(
+    request: Request,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return distinct counterparty values for typeahead suggestions.
+
+    Returns a plain sorted list of strings; the UI is free to filter it
+    client-side. Free-text entry is still accepted in create/patch —
+    this endpoint just seeds the dropdown with values that already
+    exist so spelling stays consistent.
+    """
+    storage = get_storage(request)
+    values = await storage.list_bookmark_counterparties()
+    return JSONResponse(values)
 
 
 @router.delete("/api/bookmarks/{bookmark_id}", status_code=204)

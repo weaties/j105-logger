@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 79
+_CURRENT_VERSION: int = 80
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1828,6 +1828,24 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE entity_tags ADD COLUMN confirmed_at TEXT;
         ALTER TABLE entity_tags ADD COLUMN confirmed_by INTEGER REFERENCES users(id);
         CREATE INDEX IF NOT EXISTS idx_entity_tags_source ON entity_tags(source);
+    """,
+    80: """
+        -- #651: which OTHER boat was involved in a bookmarked moment
+        -- (close crossing with Absolutely, got rolled by Zephyr, etc.).
+        -- Free-text for now. A typeahead driven by SELECT DISTINCT keeps
+        -- spelling drift manageable without forcing a controlled
+        -- vocabulary or introducing a competitors table prematurely.
+        --
+        -- Elevating to a real competitor entity is tracked in #656 and
+        -- should wait until we have real usage signal showing
+        -- typeahead-level dedup is insufficient.
+        --
+        -- Partial index keeps the common "no counterparty" rows out of
+        -- the index entirely, so the index only materialises entries
+        -- for rows that can actually be looked up.
+        ALTER TABLE bookmarks ADD COLUMN counterparty TEXT;
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_counterparty
+            ON bookmarks(counterparty) WHERE counterparty IS NOT NULL;
     """,
 }
 
@@ -6829,16 +6847,23 @@ class Storage:
         name: str,
         note: str | None,
         t_start: str,
+        counterparty: str | None = None,
     ) -> int:
-        """Create a timestamp-kind bookmark on a session. Returns new id."""
+        """Create a timestamp-kind bookmark on a session. Returns new id.
+
+        ``counterparty`` is the *other* boat involved in the moment (close
+        crossing with Absolutely, got rolled by Zephyr). Free-text; a
+        typeahead over ``list_bookmark_counterparties`` keeps spelling
+        consistent without a controlled vocabulary.
+        """
         now = datetime.now(UTC).isoformat()
         db = self._conn()
         cur = await db.execute(
             "INSERT INTO bookmarks "
             "(session_id, created_by, name, note, anchor_kind, anchor_t_start, "
-            "created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, 'timestamp', ?, ?, ?)",
-            (session_id, user_id, name, note, t_start, now, now),
+            "created_at, updated_at, counterparty) "
+            "VALUES (?, ?, ?, ?, 'timestamp', ?, ?, ?, ?)",
+            (session_id, user_id, name, note, t_start, now, now, counterparty),
         )
         await db.commit()
         assert cur.lastrowid is not None
@@ -6848,7 +6873,8 @@ class Storage:
         """Return a single bookmark row as a dict, or None if not found."""
         cur = await self._read_conn().execute(
             "SELECT id, session_id, created_by, name, note, anchor_kind, "
-            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
+            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, "
+            "updated_at, counterparty "
             "FROM bookmarks WHERE id = ?",
             (bookmark_id,),
         )
@@ -6859,12 +6885,27 @@ class Storage:
         """Return all bookmarks on a session, ordered by anchor_t_start."""
         cur = await self._read_conn().execute(
             "SELECT id, session_id, created_by, name, note, anchor_kind, "
-            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, updated_at "
+            "anchor_entity_id, anchor_t_start, anchor_t_end, created_at, "
+            "updated_at, counterparty "
             "FROM bookmarks WHERE session_id = ? "
             "ORDER BY anchor_t_start, id",
             (session_id,),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def list_bookmark_counterparties(self) -> list[str]:
+        """Return distinct non-null counterparties, alphabetically sorted.
+
+        Used by the typeahead so users type once and pick again; also the
+        only shape needed to see drift in the free-text field before
+        elevating to a competitor entity (#656).
+        """
+        cur = await self._read_conn().execute(
+            "SELECT DISTINCT counterparty FROM bookmarks"
+            " WHERE counterparty IS NOT NULL"
+            " ORDER BY counterparty"
+        )
+        return [r[0] for r in await cur.fetchall()]
 
     async def update_bookmark(
         self,
@@ -6873,11 +6914,15 @@ class Storage:
         name: str | None = None,
         note: str | None = None,
         clear_note: bool = False,
+        counterparty: str | None = None,
+        clear_counterparty: bool = False,
     ) -> bool:
-        """Update bookmark name and/or note.
+        """Update bookmark name, note, and/or counterparty.
 
-        Pass `clear_note=True` to explicitly set note to NULL; otherwise a
-        `note=None` argument is treated as "don't change note".
+        Pass ``clear_note=True`` / ``clear_counterparty=True`` to set the
+        field to NULL; otherwise a ``None`` kwarg is treated as "don't
+        change this field", so callers that only touch one field don't
+        clobber the others.
         """
         parts: list[str] = []
         params: list[Any] = []
@@ -6889,6 +6934,11 @@ class Storage:
         elif note is not None:
             parts.append("note = ?")
             params.append(note)
+        if clear_counterparty:
+            parts.append("counterparty = NULL")
+        elif counterparty is not None:
+            parts.append("counterparty = ?")
+            params.append(counterparty)
         if not parts:
             return await self.get_bookmark(bookmark_id) is not None
         parts.append("updated_at = ?")
