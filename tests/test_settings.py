@@ -185,6 +185,36 @@ async def test_monitor_interval_setting_exists(client: httpx.AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
+async def test_audio_stream_threshold_setting_exists(client: httpx.AsyncClient) -> None:
+    """AUDIO_STREAM_THRESHOLD_MINUTES is listed with default 45 and number input."""
+    resp = await client.get("/api/settings")
+    settings = {s["key"]: s for s in resp.json()["settings"]}
+    assert "AUDIO_STREAM_THRESHOLD_MINUTES" in settings
+    s = settings["AUDIO_STREAM_THRESHOLD_MINUTES"]
+    assert s["effective_value"] == "45"
+    assert s["input_type"] == "number"
+
+
+@pytest.mark.asyncio
+async def test_audio_stream_threshold_roundtrip(client: httpx.AsyncClient) -> None:
+    """PUT overrides the default; subsequent GET returns the override.
+
+    The PUT endpoint also writes to ``os.environ`` so running code picks up
+    the change without restart — pop the env var in a finally so that global
+    side-effect doesn't leak into sibling tests.
+    """
+    import os
+
+    try:
+        await client.put("/api/settings", json={"AUDIO_STREAM_THRESHOLD_MINUTES": "20"})
+        resp = await client.get("/api/settings")
+        settings = {s["key"]: s for s in resp.json()["settings"]}
+        assert settings["AUDIO_STREAM_THRESHOLD_MINUTES"]["effective_value"] == "20"
+    finally:
+        os.environ.pop("AUDIO_STREAM_THRESHOLD_MINUTES", None)
+
+
+@pytest.mark.asyncio
 async def test_settings_page_returns_200(client: httpx.AsyncClient) -> None:
     """GET /admin/settings returns the HTML page."""
     resp = await client.get("/admin/settings")

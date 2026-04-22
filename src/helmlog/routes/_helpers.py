@@ -400,6 +400,19 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
         default="pit",
         help_text="Crew position assigned to audio channel 4.",
     ),
+    SettingDef(
+        key="AUDIO_STREAM_THRESHOLD_MINUTES",
+        label="Audio streaming threshold (minutes)",
+        input_type="number",
+        default="45",
+        help_text=(
+            "Sibling-mode sessions at or above this length stream audio via HTTP "
+            "range requests on the session page instead of decoding the whole WAV "
+            "into memory. Lower this if long sessions hang on ‘Loading audio…’; "
+            "raise it if sample-accurate scrubbing matters more than memory. "
+            "Takes effect on the next session page load."
+        ),
+    ),
 )
 
 SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}
