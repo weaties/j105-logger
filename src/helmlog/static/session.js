@@ -205,11 +205,23 @@ let _lastTranscriptProgrammaticScrollAt = 0;
 // Scroll the transcript container so the active segment is visible — without
 // ever calling scrollIntoView() (which can jerk the whole page when the
 // container itself isn't fully in view). Returns true if a scroll happened.
+//
+// Uses getBoundingClientRect (#648) instead of offsetTop because offsetTop is
+// relative to the nearest *positioned* ancestor, which is not always the
+// scroll container — when it isn't, assigning the raw offsetTop to
+// container.scrollTop lands at a wildly wrong position (the symptom the user
+// reported as "transcript jumps to god only knows where").
 function _scrollTranscriptSegmentIntoView(container, el) {
   if (!_transcriptFollow) return false;
   const margin = 4;
-  const top = el.offsetTop - margin;
-  const bottom = el.offsetTop + el.offsetHeight + margin;
+  const cRect = container.getBoundingClientRect();
+  const eRect = el.getBoundingClientRect();
+  // Position of the segment relative to the container's *content*, regardless
+  // of offsetParent topology.
+  const relTop = eRect.top - cRect.top + container.scrollTop;
+  const relBottom = relTop + el.offsetHeight;
+  const top = relTop - margin;
+  const bottom = relBottom + margin;
   let target = null;
   if (top < container.scrollTop) {
     target = top;
@@ -2651,28 +2663,230 @@ function _renderDebriefPlayer() {
   const wrap = document.createElement('div');
   wrap.id = 'debrief-player';
   wrap.style.marginTop = '10px';
+  const siblings = Array.isArray(deb.siblings) ? deb.siblings : [];
+  if (siblings.length > 1) {
+    _renderDebriefMultiChannel(wrap, deb, siblings);
+  } else {
+    wrap.innerHTML =
+      '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
+      + 'Debrief</div>'
+      + '<div style="display:flex;align-items:center;gap:8px">'
+      + '<audio id="debrief-audio" controls preload="metadata" style="flex:1;min-width:0">'
+      + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
+      + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
+      + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
+      + '</div>'
+      + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
+      + 'onclick="toggleSection(\'debrief-transcript\')">'
+      + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
+      + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
+      + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
+      + '</div>';
+  }
+  card.appendChild(wrap);
+  _loadDebriefTranscript(deb.audio_session_id);
+}
+
+// ---------------------------------------------------------------------------
+// Debrief multi-channel player (#648)
+//
+// Mirrors the race multi-channel player but uses plain <audio> elements
+// (one per sibling) + .muted for isolation, instead of the Web Audio
+// decodeAudioData path. Plenty for the debrief UX -- sticky isolation +
+// channel mixing -- and works for any length without memory ballooning.
+// ---------------------------------------------------------------------------
+
+let _dmcEls = [];
+let _dmcIsolated = null;
+let _dmcSticky = false;
+let _dmcIsolationTimer = null;
+let _dmcDurationS = 0;
+let _dmcSiblings = [];
+
+function _renderDebriefMultiChannel(wrap, deb, siblings) {
+  _dmcSiblings = siblings;
+  _dmcEls = [];
+  _dmcIsolated = null;
+  _dmcSticky = false;
+  _dmcDurationS = 0;
+  const labels = siblings.map(s => s.position_name || `sib${s.ordinal}`);
+  const downloadHref = '/api/audio/' + deb.audio_session_id + '/download';
   wrap.innerHTML =
     '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
-    + 'Debrief</div>'
-    + '<div style="display:flex;align-items:center;gap:8px">'
-    + '<audio id="debrief-audio" controls preload="metadata" style="flex:1;min-width:0">'
-    + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
-    + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
-    + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
+    + 'Debrief \u2014 ' + siblings.length + ' receivers (' + labels.map(esc).join(', ') + ')'
     + '</div>'
+    + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    + '<button id="dmc-playpause" class="btn-sm" onclick="_dmcTogglePlay()" '
+    + 'style="font-size:1.1rem;padding:4px 12px">&#9654;</button>'
+    + '<input id="dmc-seek" type="range" min="0" max="1000" value="0" '
+    + 'style="flex:1;min-width:160px" oninput="_dmcSeekFromSlider(this.value)">'
+    + '<span id="dmc-time" style="font-size:.78rem;color:var(--text-secondary);'
+    + 'min-width:80px;text-align:right">0:00 / 0:00</span>'
+    + '<a class="btn-sm" href="' + downloadHref + '" '
+    + 'style="font-size:.72rem;text-decoration:none" title="Download debrief primary WAV">&#8595;</a>'
+    + '</div>'
+    + '<div style="display:flex;align-items:center;gap:10px;margin-top:6px;'
+    + 'font-size:.78rem;color:var(--text-secondary);flex-wrap:wrap">'
+    + '<label><input id="dmc-sticky" type="checkbox" onchange="_dmcToggleSticky(this.checked)"> '
+    + 'Sticky isolation</label>'
+    + '<button class="btn-sm" onclick="_dmcSetIsolation(null)">All channels</button>'
+    + siblings.map((s, i) =>
+      '<button class="btn-sm" onclick="_dmcSetIsolation(' + i + ')">' + esc(labels[i]) + '</button>'
+    ).join('')
+    + '<span id="dmc-isolation-indicator">mixed</span>'
+    + '</div>'
+    // Hidden <audio> elements, one per sibling -- driven in parallel.
+    + siblings.map(s =>
+      '<audio id="dmc-sib-' + s.ordinal + '" preload="metadata" src="' + esc(s.stream_url)
+      + '" style="display:none"></audio>'
+    ).join('')
     + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
     + 'onclick="toggleSection(\'debrief-transcript\')">'
     + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
     + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
     + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
     + '</div>';
-  card.appendChild(wrap);
-  _loadDebriefTranscript(deb.audio_session_id);
 }
 
-// Seek the debrief <audio> element to `t` seconds and start playback.
-// Used as the onclick target for transcript segments in the debrief panel.
-function seekDebriefAudio(t) {
+function _dmcInit() {
+  // Resolve element handles + wire listeners. Safe to re-call; each element
+  // is wired at most once via a property flag. Returns true when all
+  // siblings have been resolved in the DOM.
+  if (!_dmcSiblings.length) return false;
+  _dmcEls = _dmcSiblings.map(s => document.getElementById('dmc-sib-' + s.ordinal));
+  if (_dmcEls.some(e => !e)) return false;
+  _dmcEls.forEach(el => {
+    if (el._dmcWired) return;
+    el._dmcWired = true;
+    el.addEventListener('loadedmetadata', () => {
+      if (isFinite(el.duration) && el.duration > _dmcDurationS) {
+        _dmcDurationS = el.duration;
+        _dmcUpdateProgress();
+      }
+    });
+  });
+  const primary = _dmcEls[0];
+  if (!primary._dmcPrimaryWired) {
+    primary._dmcPrimaryWired = true;
+    primary.addEventListener('timeupdate', () => {
+      _dmcUpdateProgress();
+      const t = primary.currentTime;
+      for (let i = 1; i < _dmcEls.length; i++) {
+        if (Math.abs(_dmcEls[i].currentTime - t) > 0.2) {
+          try { _dmcEls[i].currentTime = t; } catch (e) { /* swallow */ }
+        }
+      }
+    });
+    primary.addEventListener('ended', () => {
+      _dmcEls.forEach(el => { try { el.pause(); } catch (e) { /* swallow */ } });
+      const btn = document.getElementById('dmc-playpause');
+      if (btn) btn.innerHTML = '&#9654;';
+    });
+  }
+  return true;
+}
+
+function _dmcTogglePlay() {
+  if (!_dmcInit()) return;
+  const btn = document.getElementById('dmc-playpause');
+  if (_dmcEls[0].paused) {
+    _dmcEls.forEach(el => {
+      const p = el.play();
+      if (p && typeof p.catch === 'function') p.catch(() => { /* autoplay blocked */ });
+    });
+    if (btn) btn.innerHTML = '&#9208;';
+  } else {
+    _dmcEls.forEach(el => { try { el.pause(); } catch (e) { /* swallow */ } });
+    if (btn) btn.innerHTML = '&#9654;';
+  }
+}
+
+function _dmcSeekFromSlider(val) {
+  if (!_dmcInit() || !_dmcDurationS) return;
+  const t = (Number(val) / 1000) * _dmcDurationS;
+  _dmcEls.forEach(el => { try { el.currentTime = t; } catch (e) { /* swallow */ } });
+}
+
+function _dmcUpdateProgress() {
+  const seek = document.getElementById('dmc-seek');
+  const time = document.getElementById('dmc-time');
+  if (!seek || !time || !_dmcEls.length) return;
+  const t = _dmcEls[0].currentTime || 0;
+  if (_dmcDurationS > 0) seek.value = String((t / _dmcDurationS) * 1000);
+  const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+  time.textContent = `${fmt(t)} / ${fmt(_dmcDurationS)}`;
+}
+
+function _dmcSetIsolation(idx) {
+  if (!_dmcInit()) return;
+  _dmcIsolated = idx;
+  _dmcEls.forEach((el, i) => {
+    el.muted = idx !== null && i !== idx;
+  });
+  const ind = document.getElementById('dmc-isolation-indicator');
+  if (ind) {
+    if (idx === null) {
+      ind.textContent = 'mixed';
+    } else {
+      const label = (_dmcSiblings[idx] && _dmcSiblings[idx].position_name) || `sib${idx}`;
+      ind.textContent = 'isolated: ' + label;
+    }
+  }
+}
+
+function _dmcToggleSticky(on) {
+  _dmcSticky = !!on;
+  if (!_dmcSticky) {
+    if (_dmcIsolationTimer) {
+      clearTimeout(_dmcIsolationTimer);
+      _dmcIsolationTimer = null;
+    }
+    _dmcSetIsolation(null);
+  }
+}
+
+// Called by debrief transcript segment clicks -- seeks all <audio> els to
+// startSec, starts playback, optionally isolates a channel for the segment's
+// duration (or permanently when sticky).
+function _dmcOnSegmentClick(channelIdx, startSec, endSec) {
+  if (!_dmcInit()) return;
+  const t = Math.max(0, Number(startSec) || 0);
+  _dmcEls.forEach(el => { try { el.currentTime = t; } catch (e) { /* swallow */ } });
+  _dmcEls.forEach(el => {
+    const p = el.play();
+    if (p && typeof p.catch === 'function') p.catch(() => { /* swallow */ });
+  });
+  const btn = document.getElementById('dmc-playpause');
+  if (btn) btn.innerHTML = '&#9208;';
+  if (typeof channelIdx === 'number' && channelIdx >= 0) {
+    if (_dmcIsolationTimer) {
+      clearTimeout(_dmcIsolationTimer);
+      _dmcIsolationTimer = null;
+    }
+    _dmcSetIsolation(channelIdx);
+    if (!_dmcSticky) {
+      const durMs = Math.max(500, ((Number(endSec) || 0) - t) * 1000);
+      _dmcIsolationTimer = setTimeout(() => {
+        _dmcSetIsolation(null);
+        _dmcIsolationTimer = null;
+      }, durMs);
+    }
+  }
+}
+
+// Seek the debrief audio to `t` seconds and start playback. When the debrief
+// is multi-sibling (#648), hand off to the sibling coordinator so isolation +
+// sticky apply on transcript clicks. Single-stream debriefs drop through to
+// the plain <audio> element.
+function seekDebriefAudio(t, channelIdx) {
+  if (_dmcSiblings && _dmcSiblings.length > 1) {
+    _dmcOnSegmentClick(
+      typeof channelIdx === 'number' ? channelIdx : -1,
+      t,
+      t,
+    );
+    return;
+  }
   const el = document.getElementById('debrief-audio');
   if (!el) return;
   try {
@@ -2726,13 +2940,18 @@ async function _loadDebriefTranscript(audioSessionId) {
   const segStyle =
     'margin-bottom:3px;cursor:pointer;padding:2px 4px;border-radius:3px';
   let html = '';
+  // Resolve the per-segment channel index (#648) so transcript clicks can
+  // isolate the right mic on the multi-sibling debrief player.
+  const chOf = s => (s.channel_index !== undefined && s.channel_index !== null)
+    ? Number(s.channel_index) : -1;
   if (segs.length && segs.some(s => s.speaker)) {
     html = segs.map(s => {
       const start = Number(s.start) || 0;
+      const ch = chOf(s);
       const who = s.speaker
         ? '<span style="color:var(--accent)">' + esc(displayName(s.speaker)) + ':</span> '
         : '';
-      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
         + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
         + 'onmouseout="this.style.background=\'transparent\'" '
         + 'title="Click to play from here">'
@@ -2743,7 +2962,8 @@ async function _loadDebriefTranscript(audioSessionId) {
   } else if (segs.length) {
     html = segs.map(s => {
       const start = Number(s.start) || 0;
-      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ')" '
+      const ch = chOf(s);
+      return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
         + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
         + 'onmouseout="this.style.background=\'transparent\'" '
         + 'title="Click to play from here">'
@@ -2905,9 +3125,27 @@ let _mcRafHandle = null;
 let _mcStreamMode = false;
 let _mcAudioEls = [];
 let _mcMediaSources = [];
+// Target of a just-issued seek in streaming mode. Reads of
+// _mcAudioEls[0].currentTime can be briefly stale during the Chrome seek
+// cycle (we've seen reads return the pre-seek time for ~50 ms after a click),
+// which shipped the transcript consumer a stale `local` and caused the
+// auto-scroll to jump to the wrong place. While a seek is in flight we hand
+// out the authoritative target instead.
+let _mcPendingSeekTarget = null;
+let _mcPendingSeekClearAt = 0;
 
 function _mcCurrentTime() {
   if (_mcStreamMode) {
+    // During an in-flight seek, primary.currentTime can briefly report stale
+    // values — prefer the pending target so the transcript scroll lands at
+    // the clicked segment instead of the pre-click playhead (#648).
+    if (_mcPendingSeekTarget !== null) {
+      if (_clockNowMs() >= _mcPendingSeekClearAt) {
+        _mcPendingSeekTarget = null;
+      } else {
+        return _mcPendingSeekTarget;
+      }
+    }
     const el = _mcAudioEls[0];
     return el ? el.currentTime : _mcStartOffset;
   }
@@ -2942,6 +3180,8 @@ function _mcRebuildSource(offsetSeconds) {
   // Streaming mode (#648): seek every <audio> element and start playback
   // on all. Drift correction happens in the progress tick.
   if (_mcStreamMode) {
+    _mcPendingSeekTarget = offsetSeconds;
+    _mcPendingSeekClearAt = _clockNowMs() + 500;
     _mcAudioEls.forEach(el => {
       try { el.currentTime = offsetSeconds; } catch (e) { /* not seekable yet */ }
     });
@@ -3049,11 +3289,17 @@ function _mcSeek(toSeconds) {
   if (!_mcCtx || !_mcBuffer) return;
   const clamped = Math.max(0, Math.min(_mcBuffer.duration, toSeconds));
   if (_mcStreamMode) {
+    _mcPendingSeekTarget = clamped;
+    _mcPendingSeekClearAt = _clockNowMs() + 500;  // clear within one RAF batch
     _mcAudioEls.forEach(el => {
       try { el.currentTime = clamped; } catch (e) { /* not seekable yet */ }
     });
     if (!_mcIsPlaying) _mcStartOffset = clamped;
     _mcUpdateProgress();
+    // Force the transcript consumer to re-pick an active block on the next
+    // tick, even if we happen to pick the same DOM index — guarantees the
+    // scroll lands at the clicked target.
+    _lastActiveTranscriptIdx = -1;
     return;
   }
   if (_mcIsPlaying) {
@@ -3062,6 +3308,7 @@ function _mcSeek(toSeconds) {
     _mcStartOffset = clamped;
   }
   _mcUpdateProgress();
+  _lastActiveTranscriptIdx = -1;
 }
 
 function _mcUpdateButtons() {

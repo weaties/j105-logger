@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -698,6 +699,15 @@ async def api_session_detail(
     )
 
 
+def _audio_stream_threshold_minutes() -> int:
+    """Minutes of session length at/above which the session page streams audio
+    instead of decoding (#648). Tunable via the admin settings page or env."""
+    try:
+        return int(os.environ.get("AUDIO_STREAM_THRESHOLD_MINUTES", "45"))
+    except ValueError:
+        return 45
+
+
 async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str, Any]:
     db = storage._conn()
     cur = await db.execute(
@@ -756,9 +766,10 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
     # block the session page can render alongside the main audio card.
     debrief_audio: dict[str, Any] | None = None
     dcur = await db.execute(
-        "SELECT id, start_utc FROM audio_sessions"
+        "SELECT id, start_utc, end_utc, capture_group_id, capture_ordinal"
+        " FROM audio_sessions"
         " WHERE race_id = ? AND session_type = 'debrief'"
-        " ORDER BY id ASC LIMIT 1",
+        " ORDER BY capture_ordinal ASC, id ASC LIMIT 1",
         (session_id,),
     )
     drow = await dcur.fetchone()
@@ -768,6 +779,40 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
             "start_utc": datetime.fromisoformat(drow["start_utc"]).isoformat(),
             "stream_url": f"/api/audio/{int(drow['id'])}/stream",
         }
+        # #648: surface debrief siblings so the session page can render a
+        # multi-sibling player (sticky isolation + channel mixing) for
+        # debriefs, just like the race player.
+        debrief_siblings: list[dict[str, Any]] = []
+        if drow["capture_group_id"]:
+            debrief_group_rows = await storage.list_capture_group_siblings(
+                str(drow["capture_group_id"])
+            )
+            for sr in debrief_group_rows:
+                cmap = await storage.get_channel_map_for_audio_session(int(sr["id"]))
+                position_name = cmap.get(0, f"sib{sr['capture_ordinal']}")
+                debrief_siblings.append(
+                    {
+                        "audio_session_id": int(sr["id"]),
+                        "ordinal": int(sr["capture_ordinal"]),
+                        "position_name": position_name,
+                        "stream_url": f"/api/audio/{int(sr['id'])}/stream",
+                    }
+                )
+        debrief_audio["siblings"] = debrief_siblings
+        # Decide streaming vs decode for the debrief based on its own duration.
+        debrief_duration_s: float | None = None
+        if drow["end_utc"]:
+            try:
+                deb_start = datetime.fromisoformat(drow["start_utc"])
+                deb_end = datetime.fromisoformat(drow["end_utc"])
+                debrief_duration_s = (deb_end - deb_start).total_seconds()
+            except (TypeError, ValueError):
+                debrief_duration_s = None
+        debrief_audio["use_streaming_audio"] = bool(
+            len(debrief_siblings) > 1
+            and debrief_duration_s is not None
+            and debrief_duration_s >= _audio_stream_threshold_minutes() * 60
+        )
 
     # Check for wind field params (synthesized sessions)
     wf_cur = await db.execute(
@@ -780,14 +825,10 @@ async def _compute_session_detail(storage: Storage, session_id: int) -> dict[str
     # instead of decoding each sibling into a memory buffer. Long multi-sibling
     # sessions (>~45 min × 2 siblings) blow Chrome's per-tab memory budget when
     # decodeAudioData expands PCM s16 into Float32 per channel.
-    import os as _os
-
-    try:
-        threshold_min = int(_os.environ.get("AUDIO_STREAM_THRESHOLD_MINUTES", "45"))
-    except ValueError:
-        threshold_min = 45
     use_streaming_audio = bool(
-        audio_siblings and duration_s is not None and duration_s >= threshold_min * 60
+        audio_siblings
+        and duration_s is not None
+        and duration_s >= _audio_stream_threshold_minutes() * 60
     )
 
     return {
