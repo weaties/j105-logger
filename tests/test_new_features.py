@@ -55,12 +55,14 @@ async def test_audit_log_limit_offset(storage: Storage) -> None:
 
 @pytest.mark.asyncio
 async def test_create_and_list_tags(storage: Storage) -> None:
+    # Fresh DBs now include a seeded racing-event vocabulary (#652), so this
+    # test looks for its own tag by name rather than asserting total count.
     tag_id = await storage.create_tag("protest", "#e53e3e")
     tags = await storage.list_tags()
-    assert len(tags) == 1
-    assert tags[0]["name"] == "protest"
-    assert tags[0]["color"] == "#e53e3e"
-    assert tags[0]["id"] == tag_id
+    by_name = {t["name"]: t for t in tags}
+    assert "protest" in by_name
+    assert by_name["protest"]["color"] == "#e53e3e"
+    assert by_name["protest"]["id"] == tag_id
 
 
 @pytest.mark.asyncio

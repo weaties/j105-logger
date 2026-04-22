@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 77
+_CURRENT_VERSION: int = 78
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1771,6 +1771,46 @@ _MIGRATIONS: dict[int, str] = {
         -- means "use the label-wide speaker_map lookup".
         ALTER TABLE transcript_segments ADD COLUMN override_user_id INTEGER
             REFERENCES users(id) ON DELETE SET NULL;
+    """,
+    78: """
+        -- #652: seed starter tag vocabulary for human-judgment racing
+        -- moments (close crossings, protests, places gained/lost, etc.).
+        -- Conditions like light/heavy air are NOT seeded — they are
+        -- queries against wind data, not tags.
+        --
+        -- Color convention, load-bearing for UX:
+        --   green  (#16a34a) — us-good outcome
+        --   red    (#b91c1c) — us-bad outcome
+        --   amber  (#eab308 / #f59e0b) — severity (close-crossing / near-miss)
+        --   red    (#dc2626) — severe incident (collision, hit-mark, ocs)
+        --   purple (#7c3aed) — rules bucket
+        --   grey   (#6b7280) — gear/crew incident
+        --
+        -- Directional pairs (rolled-them / got-rolled, etc.) are kept
+        -- SEPARATE on purpose — collapsing them would destroy the
+        -- "every moment we got rolled" query. Do not merge in admin UI.
+        INSERT OR IGNORE INTO tags (name, color, created_at) VALUES
+            ('close-crossing',  '#eab308', datetime('now')),
+            ('collision',       '#dc2626', datetime('now')),
+            ('near-miss',       '#f59e0b', datetime('now')),
+            ('rolled-them',     '#16a34a', datetime('now')),
+            ('got-rolled',      '#b91c1c', datetime('now')),
+            ('lee-bowed-them',  '#16a34a', datetime('now')),
+            ('got-lee-bowed',   '#b91c1c', datetime('now')),
+            ('pinned-them',     '#16a34a', datetime('now')),
+            ('got-pinned',      '#b91c1c', datetime('now')),
+            ('places-gained',   '#16a34a', datetime('now')),
+            ('places-lost',     '#b91c1c', datetime('now')),
+            ('passed-boat',     '#16a34a', datetime('now')),
+            ('got-passed',      '#b91c1c', datetime('now')),
+            ('we-protested',    '#7c3aed', datetime('now')),
+            ('got-protested',   '#7c3aed', datetime('now')),
+            ('took-penalty',    '#7c3aed', datetime('now')),
+            ('hit-mark',        '#dc2626', datetime('now')),
+            ('ocs',             '#dc2626', datetime('now')),
+            ('gear-failure',    '#6b7280', datetime('now')),
+            ('crew-incident',   '#6b7280', datetime('now')),
+            ('grounded',        '#6b7280', datetime('now'));
     """,
 }
 

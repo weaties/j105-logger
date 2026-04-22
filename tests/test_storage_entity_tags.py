@@ -155,10 +155,13 @@ async def test_attach_idempotent_does_not_double_count(storage: Storage) -> None
 
 @pytest.mark.asyncio
 async def test_list_tags_order_by_name(storage: Storage) -> None:
+    # Fresh DBs include seeded tags (#652), so filter to the names this test
+    # actually created before asserting relative order.
     await storage.create_tag("zebra")
     await storage.create_tag("alpha")
     await storage.create_tag("mongoose")
-    names = [t["name"] for t in await storage.list_tags(order_by="name")]
+    own = {"alpha", "mongoose", "zebra"}
+    names = [t["name"] for t in await storage.list_tags(order_by="name") if t["name"] in own]
     assert names == ["alpha", "mongoose", "zebra"]
 
 
@@ -174,7 +177,10 @@ async def test_list_tags_order_by_usage(storage: Storage) -> None:
     sid2 = await _session(storage, 2)
     await storage.attach_tag("session", sid2, t_hot, user_id=None)
 
-    names = [t["name"] for t in await storage.list_tags(order_by="usage")]
+    # Seeded tags (#652) have 0 usage, same as "cold" — filter to this test's
+    # own tags to make the ordering assertion meaningful.
+    own = {"hot", "warm", "cold"}
+    names = [t["name"] for t in await storage.list_tags(order_by="usage") if t["name"] in own]
     # hot (2) comes first, warm (1), cold (0)
     assert names[:2] == ["hot", "warm"]
     assert names[-1] == "cold"
