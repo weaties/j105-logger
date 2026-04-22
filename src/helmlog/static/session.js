@@ -2438,7 +2438,18 @@ async function loadTranscript() {
   const hasDiarizedSegments = t.segments && t.segments.length > 0
     && t.segments.some(s => s.speaker);
   if (hasDiarizedSegments) {
-    _renderDiarizedTranscript(body, t);
+    // #648: render the retranscribe button above the shared pane render so
+    // the race transcript gets the same affordance the debrief has —
+    // there's always a way to re-run diarization from the transcript view.
+    body.innerHTML =
+      '<div style="display:flex;justify-content:flex-end;margin-bottom:4px">'
+      + '<button class="btn-export" style="font-size:.7rem" onclick="retranscribe()" '
+      + 'title="Re-run transcription with diarization so crew sharing a mic get separate speaker labels">'
+      + '&#8635; Retranscribe with diarization</button>'
+      + '</div>'
+      + '<div id="race-transcript-shared"></div>';
+    const shared = document.getElementById('race-transcript-shared');
+    _renderDiarizedTranscript(shared, t);
   } else {
     const text = t.text ? esc(t.text) : '(empty)';
     body.innerHTML = '<div style="font-size:.8rem;color:var(--text-primary);white-space:pre-wrap;max-height:300px;overflow-y:auto;background:var(--bg-secondary);border-radius:6px;padding:8px">' + text + '</div>'
