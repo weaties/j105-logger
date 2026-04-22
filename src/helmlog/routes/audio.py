@@ -220,9 +220,13 @@ async def api_get_transcript(
         raise HTTPException(status_code=404, detail="No transcript job found for this session")
 
     # Sibling merge: if this session has a capture_group_id, union the
-    # segments from every sibling's transcript into a single sorted array.
+    # segments from every sibling's transcript into a single sorted array,
+    # AND union their speaker_maps (#648) so assignments on any sibling are
+    # visible in the merged view. Labels are globally unique because we
+    # prefix with position_name in _persist_sibling_segments.
     row = await storage.get_audio_session_row(session_id)
     group_id = row.get("capture_group_id") if row else None
+    merged_speaker_map: dict[str, Any] = {}
     if group_id:
         merged: list[dict[str, Any]] = []
         siblings = await storage.list_capture_group_siblings(str(group_id))
@@ -231,13 +235,18 @@ async def api_get_transcript(
             if st is None:
                 continue
             sj = st.get("segments_json")
-            if not sj:
-                continue
-            try:
-                segs = _json.loads(sj)
-            except (_json.JSONDecodeError, TypeError):
-                continue
-            merged.extend(segs)
+            if sj:
+                try:
+                    segs = _json.loads(sj)
+                    merged.extend(segs)
+                except (_json.JSONDecodeError, TypeError):
+                    pass
+            sm = st.get("speaker_map")
+            if sm:
+                import contextlib
+
+                with contextlib.suppress(_json.JSONDecodeError, TypeError):
+                    merged_speaker_map.update(_json.loads(sm))
         merged.sort(key=lambda s: float(s.get("start", 0.0)))
         t["segments"] = merged
     elif t.get("segments_json"):
@@ -247,7 +256,10 @@ async def api_get_transcript(
     t.pop("speaker_anon_map", None)
     # Expose speaker_map for UI (crew labels, auto-match info)
     raw_map = t.pop("speaker_map", None)
-    t["speaker_map"] = _json.loads(raw_map) if raw_map else {}
+    if group_id:
+        t["speaker_map"] = merged_speaker_map
+    else:
+        t["speaker_map"] = _json.loads(raw_map) if raw_map else {}
     return JSONResponse(t)
 
 
@@ -295,8 +307,26 @@ async def api_assign_speaker(
     if row is None:
         raise HTTPException(status_code=404, detail="User not found")
     name = row["name"] or f"User {user_id}"
-    found = await storage.assign_speaker_crew(t["id"], speaker_label, user_id, name)
-    if not found:
+    # #648: fan out across siblings so the merged transcript's speaker_map
+    # gets updated regardless of which sibling's primary we POSTed against.
+    # Speaker labels are globally unique (prefixed with position_name) so
+    # writing the same label across every sibling's speaker_map is safe.
+    asession = await storage.get_audio_session_row(session_id)
+    group_id = asession.get("capture_group_id") if asession else None
+    targets: list[int] = []
+    if group_id:
+        siblings = await storage.list_capture_group_siblings(str(group_id))
+        for sr in siblings:
+            st = await storage.get_transcript(int(sr["id"]))
+            if st is not None:
+                targets.append(int(st["id"]))
+    if not targets:
+        targets = [int(t["id"])]
+    any_found = False
+    for tid in targets:
+        if await storage.assign_speaker_crew(tid, speaker_label, user_id, name):
+            any_found = True
+    if not any_found:
         raise HTTPException(status_code=404, detail="Transcript not found")
     await audit(
         request,

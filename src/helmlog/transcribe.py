@@ -186,7 +186,6 @@ async def _persist_sibling_segments(
     *,
     ordinal: int,
     position_name: str,
-    preserve_diarized_speaker: bool = False,
 ) -> None:
     """Tag mono-sibling segments with channel_index/position and persist relationally.
 
@@ -195,20 +194,22 @@ async def _persist_sibling_segments(
     needs the same ``channel_index``/``position_name``/``speaker`` tags that
     pt.4's multi-channel path provides, so we annotate and bulk-insert here.
 
-    When ``preserve_diarized_speaker=True`` (debrief audio, #648), keep the
-    pyannote-assigned speaker label (SPEAKER_01, …) instead of overriding it
-    with the mic's ``position_name``. The race-audio default relies on
-    hardware isolation (one mic per person) which breaks during debrief when
-    crew gather around and share mics.
+    Speaker labels (#648): always keep the pyannote-diarized label when one
+    was emitted so cross-mic speakers are distinguishable — the hardware-
+    isolation "one mic = one person" shortcut breaks both in debrief (crew
+    share mics) and in the race itself (someone talks into a neighbor's mic
+    during a maneuver). We prefix each label with ``position_name`` so
+    ``sib0:SPEAKER_00`` stays distinct from ``sib1:SPEAKER_00`` (pyannote
+    labels are per-WAV, not correlated across siblings). Segments without a
+    speaker fall back to the bare ``position_name``.
     """
     if not segments:
         return
     for seg in segments:
         seg["channel_index"] = ordinal
         seg["position_name"] = position_name
-        if not preserve_diarized_speaker or not seg.get("speaker"):
-            # Race default, or fallback when pyannote didn't emit a speaker.
-            seg["speaker"] = position_name
+        raw_speaker = seg.get("speaker")
+        seg["speaker"] = f"{position_name}:{raw_speaker}" if raw_speaker else position_name
     relational = [
         {
             "segment_index": idx,
@@ -258,11 +259,6 @@ async def transcribe_session(
     await storage.update_transcript(transcript_id, status="running")
     file_path: str = row["file_path"]
     channels: int = row.get("channels", 1)
-    # Debrief audio breaks the "one mic == one person" hardware-isolation
-    # assumption that lets race audio collapse speaker labels onto the mic's
-    # position_name. For debriefs, keep the pyannote-diarized speaker labels
-    # so people who share a mic are still distinguishable (#648).
-    preserve_diarized_speaker: bool = row.get("session_type") == "debrief"
 
     # Sibling-card capture (#509): when the session is one of N parallel
     # mono USB cards, tag its segments with the ordinal + configured
@@ -334,7 +330,6 @@ async def transcribe_session(
                     segments,
                     ordinal=sibling_tag[0],
                     position_name=sibling_tag[1],
-                    preserve_diarized_speaker=preserve_diarized_speaker,
                 )
             segments_json_str = json.dumps(segments) if segments else None
             await storage.update_transcript(

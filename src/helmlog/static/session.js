@@ -2569,7 +2569,9 @@ function playTranscriptSegment(idx) {
   }
 }
 
-async function openSpeakerPicker(speakerLabel) {
+async function openSpeakerPicker(speakerLabel, audioSessionId) {
+  // audioSessionId routes the eventual POST to the right transcript when
+  // clicking on a debrief segment (#648). Omitted → defaults to the race.
   // Fetch crew list for the picker
   let users;
   try {
@@ -2587,12 +2589,13 @@ async function openSpeakerPicker(speakerLabel) {
   picker.id = 'speaker-picker';
   picker.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;padding:16px;z-index:1000;box-shadow:0 4px 20px rgba(0,0,0,0.3);min-width:200px;max-height:300px;overflow-y:auto';
 
+  const sidArg = audioSessionId ? (',' + audioSessionId) : '';
   let html = '<div style="font-weight:600;margin-bottom:8px;font-size:.85rem">Assign ' + esc(speakerLabel) + ' to:</div>';
   if (!users || !users.length) {
     html += '<div style="color:var(--text-secondary);font-size:.8rem">No crew members found</div>';
   } else {
     for (const u of users) {
-      html += '<div class="speaker-pick-option" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" onmouseout="this.style.background=\'\'" onclick="assignSpeaker(\'' + esc(speakerLabel) + '\',' + u.id + ')">' + esc(u.name || u.email) + '</div>';
+      html += '<div class="speaker-pick-option" style="padding:6px 8px;cursor:pointer;border-radius:4px;font-size:.8rem" onmouseover="this.style.background=\'var(--bg-hover, rgba(255,255,255,0.08))\'" onmouseout="this.style.background=\'\'" onclick="assignSpeaker(\'' + esc(speakerLabel) + '\',' + u.id + sidArg + ')">' + esc(u.name || u.email) + '</div>';
     }
   }
   html += '<div style="text-align:right;margin-top:8px"><button class="btn-export" style="font-size:.75rem" onclick="document.getElementById(\'speaker-picker\').remove()">Cancel</button></div>';
@@ -2607,8 +2610,11 @@ async function openSpeakerPicker(speakerLabel) {
   document.body.appendChild(picker);
 }
 
-async function assignSpeaker(speakerLabel, userId) {
-  const r = await fetch('/api/audio/' + _session.audio_session_id + '/transcript/assign-speaker', {
+async function assignSpeaker(speakerLabel, userId, audioSessionId) {
+  // audioSessionId defaults to the race primary so existing race-transcript
+  // calls keep working; the debrief transcript passes its own id (#648).
+  const sid = audioSessionId || _session.audio_session_id;
+  const r = await fetch('/api/audio/' + sid + '/transcript/assign-speaker', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({speaker_label: speakerLabel, user_id: userId})
@@ -2623,10 +2629,19 @@ async function assignSpeaker(speakerLabel, userId) {
   const data = await r.json();
   // Update speaker_map locally and re-render labels
   _speakerMap[speakerLabel] = {type: 'crew', user_id: data.user_id, name: data.name};
-  // Update all speaker labels in the transcript
-  document.querySelectorAll('.transcript-speaker[data-speaker="' + speakerLabel + '"]').forEach(el => {
+  // Update all speaker labels in the transcript(s). The race transcript uses
+  // .transcript-speaker spans; the debrief uses .debrief-transcript-speaker.
+  document.querySelectorAll(
+    '.transcript-speaker[data-speaker="' + speakerLabel + '"],' +
+    ' .debrief-transcript-speaker[data-speaker="' + speakerLabel + '"]'
+  ).forEach(el => {
     el.textContent = data.name;
   });
+  // Reload the debrief transcript so its own speakerMap updates too.
+  const debAudio = _session && _session.debrief_audio;
+  if (debAudio && typeof _loadDebriefTranscript === 'function') {
+    _loadDebriefTranscript(debAudio.audio_session_id);
+  }
 }
 
 async function startTranscript() {
@@ -2948,8 +2963,16 @@ async function _loadDebriefTranscript(audioSessionId) {
     html = segs.map(s => {
       const start = Number(s.start) || 0;
       const ch = chOf(s);
+      // Speaker name is clickable — opens the crew picker and routes the
+      // eventual POST to the debrief's audio_session_id (#648).
       const who = s.speaker
-        ? '<span style="color:var(--accent)">' + esc(displayName(s.speaker)) + ':</span> '
+        ? '<span class="debrief-transcript-speaker" data-speaker="' + esc(s.speaker)
+          + '" style="color:var(--accent);cursor:pointer;text-decoration:underline dotted;'
+          + 'text-underline-offset:2px" '
+          + 'onclick="event.stopPropagation();openSpeakerPicker(\''
+          + esc(s.speaker) + '\',' + audioSessionId + ')" '
+          + 'title="Click to assign crew">'
+          + esc(displayName(s.speaker)) + ':</span> '
         : '';
       return '<div style="' + segStyle + '" onclick="seekDebriefAudio(' + start + ',' + ch + ')" '
         + 'onmouseover="this.style.background=\'var(--bg-primary)\'" '
