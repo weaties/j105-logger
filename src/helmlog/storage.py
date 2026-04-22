@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 78
+_CURRENT_VERSION: int = 79
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1811,6 +1811,23 @@ _MIGRATIONS: dict[int, str] = {
             ('gear-failure',    '#6b7280', datetime('now')),
             ('crew-incident',   '#6b7280', datetime('now')),
             ('grounded',        '#6b7280', datetime('now'));
+    """,
+    79: """
+        -- #650: provenance for auto-tagged moments. Future auto-taggers
+        -- (transcript keyword match, detector heuristics) write entity_tag
+        -- rows with source='auto:transcript' / 'auto:detector' and
+        -- confirmed_at=NULL. A human reviewer then accepts the tag, which
+        -- stamps confirmed_at / confirmed_by. Source is preserved forever
+        -- so we can always distinguish "a person put this here" from
+        -- "a machine guessed and a person accepted".
+        --
+        -- Default list queries hide unconfirmed auto-tags so they don't
+        -- pollute aggregation ("all collisions this season"). Explicit
+        -- review flows pass include_unconfirmed=True.
+        ALTER TABLE entity_tags ADD COLUMN source TEXT NOT NULL DEFAULT 'manual';
+        ALTER TABLE entity_tags ADD COLUMN confirmed_at TEXT;
+        ALTER TABLE entity_tags ADD COLUMN confirmed_by INTEGER REFERENCES users(id);
+        CREATE INDEX IF NOT EXISTS idx_entity_tags_source ON entity_tags(source);
     """,
 }
 
@@ -6382,11 +6399,17 @@ class Storage:
         tag_id: int,
         *,
         user_id: int | None,
+        source: str = "manual",
     ) -> None:
         """Attach a tag to an entity. Idempotent; duplicate call is a no-op.
 
         On a new attachment, increments tags.usage_count and stamps
         tags.last_used_at to the current UTC time.
+
+        ``source`` records provenance. ``'manual'`` (default) for human
+        action; ``'auto:transcript'`` or ``'auto:detector'`` for machine
+        inference. Auto-sourced rows are hidden from the default list
+        queries until ``confirm_tag_attachment`` is called.
         """
         if entity_type not in ENTITY_TYPES:
             raise ValueError(
@@ -6396,9 +6419,9 @@ class Storage:
         db = self._conn()
         cur = await db.execute(
             "INSERT OR IGNORE INTO entity_tags "
-            "(tag_id, entity_type, entity_id, created_at, created_by) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (tag_id, entity_type, entity_id, now, user_id),
+            "(tag_id, entity_type, entity_id, created_at, created_by, source) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (tag_id, entity_type, entity_id, now, user_id, source),
         )
         changed = cur.rowcount > 0
         if changed:
@@ -6409,6 +6432,35 @@ class Storage:
         await db.commit()
         if changed:
             self._invalidate_sessions_list_cache()
+
+    async def confirm_tag_attachment(
+        self,
+        entity_type: str,
+        entity_id: int,
+        tag_id: int,
+        *,
+        user_id: int | None,
+    ) -> bool:
+        """Accept an auto-generated tag. Returns True if a row was updated.
+
+        Sets confirmed_at / confirmed_by. Preserves source — provenance is
+        forever, so we can distinguish "manually tagged" from "auto-tagged
+        and confirmed" long after the fact. No-op (returns False) if no
+        matching attachment exists.
+        """
+        if entity_type not in ENTITY_TYPES:
+            raise ValueError(
+                f"unknown entity_type {entity_type!r} (allowed: {sorted(ENTITY_TYPES)})"
+            )
+        now = datetime.now(UTC).isoformat()
+        db = self._conn()
+        cur = await db.execute(
+            "UPDATE entity_tags SET confirmed_at = ?, confirmed_by = ?"
+            " WHERE tag_id = ? AND entity_type = ? AND entity_id = ?",
+            (now, user_id, tag_id, entity_type, entity_id),
+        )
+        await db.commit()
+        return cur.rowcount > 0
 
     async def detach_tag(self, entity_type: str, entity_id: int, tag_id: int) -> bool:
         """Remove a tag from an entity. Returns True if a row was removed."""
@@ -6535,13 +6587,21 @@ class Storage:
         return out
 
     async def list_tags_for_entities(
-        self, entity_type: str, entity_ids: list[int]
+        self,
+        entity_type: str,
+        entity_ids: list[int],
+        *,
+        include_unconfirmed: bool = False,
     ) -> dict[int, list[dict[str, Any]]]:
         """Return a {entity_id: [tag, ...]} map for the given ids in one query.
 
         Missing ids resolve to an empty list. Callers commonly pass "all
         maneuvers in session X" and want each row enriched with its tags
         without issuing N separate queries.
+
+        Unconfirmed auto-tags (source LIKE 'auto:%' AND confirmed_at IS
+        NULL) are hidden by default so they don't leak into normal UI
+        surfaces. Review-queue callers pass ``include_unconfirmed=True``.
         """
         if entity_type not in ENTITY_TYPES:
             raise ValueError(f"unknown entity_type {entity_type!r}")
@@ -6549,27 +6609,56 @@ class Storage:
         if not entity_ids:
             return out
         placeholders = ",".join("?" * len(entity_ids))
+        confirm_filter = (
+            ""
+            if include_unconfirmed
+            else " AND (et.source = 'manual' OR et.confirmed_at IS NOT NULL)"
+        )
         cur = await self._read_conn().execute(
-            f"SELECT et.entity_id, t.id, t.name, t.color"  # noqa: S608
+            f"SELECT et.entity_id, t.id, t.name, t.color,"  # noqa: S608
+            f" et.source, et.confirmed_at"
             f" FROM entity_tags et JOIN tags t ON et.tag_id = t.id"
             f" WHERE et.entity_type = ? AND et.entity_id IN ({placeholders})"
+            f"{confirm_filter}"
             f" ORDER BY t.name",
             (entity_type, *entity_ids),
         )
         for r in await cur.fetchall():
             out.setdefault(r["entity_id"], []).append(
-                {"id": r["id"], "name": r["name"], "color": r["color"]}
+                {
+                    "id": r["id"],
+                    "name": r["name"],
+                    "color": r["color"],
+                    "source": r["source"],
+                    "confirmed_at": r["confirmed_at"],
+                }
             )
         return out
 
-    async def list_tags_for_entity(self, entity_type: str, entity_id: int) -> list[dict[str, Any]]:
-        """Return tags attached to a specific entity, ordered by name."""
+    async def list_tags_for_entity(
+        self,
+        entity_type: str,
+        entity_id: int,
+        *,
+        include_unconfirmed: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Return tags attached to a specific entity, ordered by name.
+
+        Unconfirmed auto-tags are hidden by default; see
+        ``list_tags_for_entities`` for the shared contract.
+        """
         if entity_type not in ENTITY_TYPES:
             raise ValueError(f"unknown entity_type {entity_type!r}")
+        confirm_filter = (
+            ""
+            if include_unconfirmed
+            else " AND (et.source = 'manual' OR et.confirmed_at IS NOT NULL)"
+        )
         cur = await self._read_conn().execute(
-            "SELECT t.id, t.name, t.color FROM tags t"
+            "SELECT t.id, t.name, t.color, et.source, et.confirmed_at FROM tags t"
             " JOIN entity_tags et ON t.id = et.tag_id"
             " WHERE et.entity_type = ? AND et.entity_id = ?"
+            f"{confirm_filter}"
             " ORDER BY t.name",
             (entity_type, entity_id),
         )

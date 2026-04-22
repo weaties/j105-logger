@@ -140,11 +140,14 @@ async def api_list_entity_tags(
     request: Request,
     entity_type: str,
     entity_id: int,
+    include_unconfirmed: bool = False,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
     _validate_entity_type(entity_type)
     storage = get_storage(request)
-    tags = await storage.list_tags_for_entity(entity_type, entity_id)
+    tags = await storage.list_tags_for_entity(
+        entity_type, entity_id, include_unconfirmed=include_unconfirmed
+    )
     return JSONResponse(tags)
 
 
@@ -156,7 +159,13 @@ async def api_attach_entity_tag(
     body: dict[str, Any],
     user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """Attach a tag. Body: {tag_id} OR {name} for inline-create-and-attach."""
+    """Attach a tag. Body: {tag_id} OR {name} for inline-create-and-attach.
+
+    Source is always ``'manual'`` on this HTTP path. Auto sources
+    (``'auto:transcript'`` / ``'auto:detector'``) come from backend
+    code paths that call ``storage.attach_tag`` directly — never from
+    untrusted body input.
+    """
     _validate_entity_type(entity_type)
     storage = get_storage(request)
     tag_id = body.get("tag_id")
@@ -176,6 +185,38 @@ async def api_attach_entity_tag(
     return JSONResponse(
         {"entity_type": entity_type, "entity_id": entity_id, "tag_id": tag_id},
         status_code=201,
+    )
+
+
+@router.post("/api/entities/{entity_type}/{entity_id}/tags/{tag_id}/confirm", status_code=200)
+async def api_confirm_entity_tag(
+    request: Request,
+    entity_type: str,
+    entity_id: int,
+    tag_id: int,
+    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Accept an auto-generated tag. Stamps confirmed_at / confirmed_by.
+
+    No-op for manual tags (they're already "confirmed" by definition,
+    but calling this still records a review timestamp, which is fine).
+    Returns 404 if no matching attachment exists.
+    """
+    _validate_entity_type(entity_type)
+    storage = get_storage(request)
+    ok = await storage.confirm_tag_attachment(
+        entity_type, entity_id, tag_id, user_id=user.get("id")
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tag attachment not found")
+    await audit(
+        request,
+        "tag.confirm",
+        detail=f"{entity_type}={entity_id} tag={tag_id}",
+        user=user,
+    )
+    return JSONResponse(
+        {"entity_type": entity_type, "entity_id": entity_id, "tag_id": tag_id, "confirmed": True}
     )
 
 

@@ -270,9 +270,16 @@ async def test_merge_moves_entities_to_target(storage: Storage) -> None:
 
     await storage.merge_tags(src, tgt)
 
-    assert await storage.list_tags_for_entity("session", sid) == [
-        {"id": tgt, "name": "tgt", "color": None}
-    ]
+    # list_tags_for_entity now also returns source / confirmed_at for
+    # provenance (#650). Merged rows inherit the attach_tag defaults
+    # since merge reassigns rather than re-inserts.
+    result = await storage.list_tags_for_entity("session", sid)
+    assert len(result) == 1
+    assert result[0]["id"] == tgt
+    assert result[0]["name"] == "tgt"
+    assert result[0]["color"] is None
+    assert result[0]["source"] == "manual"
+    assert result[0]["confirmed_at"] is None
     assert storage._db is not None
     async with storage._db.execute("SELECT id FROM tags WHERE id=?", (src,)) as cur:
         row = await cur.fetchone()
