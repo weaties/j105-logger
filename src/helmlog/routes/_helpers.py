@@ -413,6 +413,19 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
             "Takes effect on the next session page load."
         ),
     ),
+    SettingDef(
+        key="AUDIO_SPEAKERS_PER_CHANNEL",
+        label="Expected speakers per sibling mic",
+        input_type="number",
+        default="2",
+        help_text=(
+            "Number of crew voices sharing each sibling-mode mono WAV (one USB "
+            "receiver mixing N mics into one stream). Passed to pyannote as a "
+            "num_speakers hint so it doesn't over-split noisy audio into 5–9 "
+            "spurious labels. 0 lets pyannote pick the count automatically. "
+            "Only used for sibling captures; takes effect on retranscribe."
+        ),
+    ),
 )
 
 SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}

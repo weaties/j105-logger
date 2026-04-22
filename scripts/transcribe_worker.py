@@ -33,8 +33,15 @@ async def transcribe(
     file: UploadFile,
     model_size: str = Query(default="base"),
     diarize: str = Query(default="true"),
+    num_speakers: int | None = Query(default=None),
 ) -> JSONResponse:
-    """Accept a WAV upload, run whisper + optional diarisation, return JSON."""
+    """Accept a WAV upload, run whisper + optional diarisation, return JSON.
+
+    ``num_speakers`` (optional) constrains pyannote to exactly N speakers —
+    useful when the caller knows each mono WAV has a fixed number of voices
+    (e.g. a wireless receiver mixing 2 mics into 1 mono stream). Unset lets
+    pyannote pick the count, which can over-split on noisy race audio.
+    """
     want_diarize = diarize.lower() in {"true", "1", "yes"}
 
     # Save the uploaded WAV to a temp file (whisper needs a file path)
@@ -46,11 +53,12 @@ async def transcribe(
 
     try:
         logger.info(
-            "Transcribing: {} ({:.1f} MB) model={} diarize={}",
+            "Transcribing: {} ({:.1f} MB) model={} diarize={} num_speakers={}",
             file.filename,
             len(content) / 1_048_576,
             model_size,
             want_diarize,
+            num_speakers,
         )
 
         from helmlog.transcribe import (
@@ -72,7 +80,7 @@ async def transcribe(
 
         if use_diarize:
             text, segments_json_str = _run_with_diarization(
-                file_path=tmp_path, model_size=model_size
+                file_path=tmp_path, model_size=model_size, num_speakers=num_speakers
             )
             segments: list[dict[str, Any]] = json.loads(segments_json_str)
         else:
