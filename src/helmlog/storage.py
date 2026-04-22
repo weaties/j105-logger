@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 79
+_CURRENT_VERSION: int = 80
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1828,6 +1828,114 @@ _MIGRATIONS: dict[int, str] = {
         ALTER TABLE entity_tags ADD COLUMN confirmed_at TEXT;
         ALTER TABLE entity_tags ADD COLUMN confirmed_by INTEGER REFERENCES users(id);
         CREATE INDEX IF NOT EXISTS idx_entity_tags_source ON entity_tags(source);
+    """,
+    80: """
+        -- #662: moments unification. Collapses bookmarks, comment_threads,
+        -- and session_notes into one primitive -- a moment -- that is a
+        -- time range on a session with optional subject, tags, comments,
+        -- and attachments.
+        --
+        -- This migration creates the new tables. The DATA copy and DROP
+        -- of old tables happens in _migrate_v80_moments so the old
+        -- tables remain readable while the data is being migrated.
+        --
+        -- anchor_kind: 'session' | 'timestamp' | 'maneuver' | 'transcript_segment'.
+        -- For session anchors, t_start is NULL (moment is session-scope).
+        -- For maneuver / transcript_segment anchors, t_start / t_end are
+        -- derived from the referenced entity at read time -- annotations
+        -- follow the event across detector re-runs. If the underlying
+        -- entity disappears, storage downgrades the anchor to 'timestamp'
+        -- at the last-known t_start so nothing is ever lost.
+        --
+        -- source / confirmed_at / confirmed_by mirror the entity_tags
+        -- provenance so auto-tagger-created moments can be reviewed
+        -- before counting toward aggregation queries.
+        CREATE TABLE IF NOT EXISTS moments (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id         INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            subject            TEXT,
+            counterparty       TEXT,
+            anchor_kind        TEXT NOT NULL,
+            anchor_entity_id   INTEGER,
+            anchor_t_start     TEXT,
+            anchor_t_end       TEXT,
+            resolved           INTEGER NOT NULL DEFAULT 0,
+            resolved_at        TEXT,
+            resolved_by        INTEGER REFERENCES users(id),
+            resolution_summary TEXT,
+            source             TEXT NOT NULL DEFAULT 'manual',
+            confirmed_at       TEXT,
+            confirmed_by       INTEGER REFERENCES users(id),
+            created_by         INTEGER REFERENCES users(id),
+            created_at         TEXT NOT NULL,
+            updated_at         TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_moments_session_ts
+            ON moments(session_id, anchor_t_start);
+        CREATE INDEX IF NOT EXISTS idx_moments_session_kind
+            ON moments(session_id, anchor_kind);
+        CREATE INDEX IF NOT EXISTS idx_moments_counterparty
+            ON moments(counterparty) WHERE counterparty IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_moments_source
+            ON moments(source);
+        CREATE INDEX IF NOT EXISTS idx_moments_open
+            ON moments(session_id) WHERE resolved = 0;
+
+        -- Attachments table: 1:many with moments. 'kind' is open-ended so
+        -- future extractors (audio clips, LLM-generated transcript
+        -- summaries, etc.) plug in without a schema change. 'path' is
+        -- for filesystem artifacts (photos, extracted audio). 'body' is
+        -- for inline text (transcript snippets, LLM output).
+        CREATE TABLE IF NOT EXISTS moment_attachments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            moment_id  INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+            kind       TEXT NOT NULL,
+            path       TEXT,
+            body       TEXT,
+            created_by INTEGER REFERENCES users(id),
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_moment_attachments_moment
+            ON moment_attachments(moment_id);
+
+        -- Rescue note_type='settings' from the collapsing session_notes
+        -- table. These rows are config snapshots (JSON objects), not
+        -- human notes, and belong in their own table. list_settings_keys
+        -- now scans here.
+        CREATE TABLE IF NOT EXISTS session_settings (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id       INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            audio_session_id INTEGER REFERENCES audio_sessions(id) ON DELETE CASCADE,
+            ts               TEXT NOT NULL,
+            body             TEXT NOT NULL,
+            created_by       INTEGER REFERENCES users(id),
+            created_at       TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_session_settings_session
+            ON session_settings(session_id);
+
+        -- Staging tables for the rename. _migrate_v80_moments copies data
+        -- from the old comments / comment_read_state into these (with
+        -- thread_id remapped to moment_id), then drops the old tables
+        -- and renames these. Created here so the DDL is visible in the
+        -- migration string rather than hidden in Python.
+        CREATE TABLE IF NOT EXISTS comments_new (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            moment_id  INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+            author     INTEGER REFERENCES users(id),
+            body       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            edited_at  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_comments_new_moment
+            ON comments_new(moment_id);
+
+        CREATE TABLE IF NOT EXISTS comment_read_state_new (
+            user_id   INTEGER REFERENCES users(id) ON DELETE CASCADE,
+            moment_id INTEGER NOT NULL REFERENCES moments(id) ON DELETE CASCADE,
+            last_read TEXT NOT NULL,
+            PRIMARY KEY (user_id, moment_id)
+        );
     """,
 }
 
