@@ -2914,36 +2914,46 @@ function _renderDebriefPlayer() {
   const deb = _session && _session.debrief_audio;
   if (!deb) return;
   // Anchor to #audio-card (not #audio-body) so the debrief subsection lands
-  // after the race transcript that now lives inside the same card. Otherwise
-  // the debrief gets sandwiched between the race player and its transcript.
+  // after the race transcript that now lives inside the same card.
   const card = document.getElementById('audio-card');
   if (!card) return;
   const existing = document.getElementById('debrief-player');
   if (existing) existing.remove();
   const wrap = document.createElement('div');
   wrap.id = 'debrief-player';
-  wrap.style.marginTop = '10px';
+
+  // #648: collapsible "Debrief Audio" header matches the "Race Audio" section
+  // above so the two audio blocks read as peer sections at the same visual
+  // weight. Player + transcript both live inside the body so they collapse
+  // together.
+  wrap.innerHTML =
+    '<div class="section-title" style="margin-top:14px;cursor:pointer" '
+    + 'onclick="toggleSection(\'debrief-audio\')">'
+    + 'Debrief Audio <span id="debrief-audio-toggle">&#9660;</span></div>'
+    + '<div class="section-body" id="debrief-audio-body">'
+    + '<div id="debrief-audio-inner"></div>'
+    + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
+    + 'onclick="toggleSection(\'debrief-transcript\')">'
+    + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
+    + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
+    + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
+    + '</div>'
+    + '</div>';
+  card.appendChild(wrap);
+
+  const inner = document.getElementById('debrief-audio-inner');
   const siblings = Array.isArray(deb.siblings) ? deb.siblings : [];
   if (siblings.length > 1) {
-    _renderDebriefMultiChannel(wrap, deb, siblings);
+    _renderDebriefMultiChannel(inner, deb, siblings);
   } else {
-    wrap.innerHTML =
-      '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
-      + 'Debrief</div>'
-      + '<div style="display:flex;align-items:center;gap:8px">'
+    inner.innerHTML =
+      '<div style="display:flex;align-items:center;gap:8px">'
       + '<audio id="debrief-audio" controls preload="metadata" style="flex:1;min-width:0">'
       + '<source src="' + deb.stream_url + '" type="audio/wav"></audio>'
       + '<a class="btn-sm" href="/api/audio/' + deb.audio_session_id + '/download" '
       + 'style="font-size:.72rem;text-decoration:none" title="Download debrief WAV">&#8595;</a>'
-      + '</div>'
-      + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
-      + 'onclick="toggleSection(\'debrief-transcript\')">'
-      + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
-      + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
-      + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
       + '</div>';
   }
-  card.appendChild(wrap);
   _loadDebriefTranscript(deb.audio_session_id);
 }
 
@@ -2972,10 +2982,7 @@ function _renderDebriefMultiChannel(wrap, deb, siblings) {
   const labels = siblings.map(s => s.position_name || `R${(Number(s.ordinal) || 0) + 1}`);
   const downloadHref = '/api/audio/' + deb.audio_session_id + '/download';
   wrap.innerHTML =
-    '<div style="font-size:.78rem;color:var(--text-secondary);margin-bottom:4px">'
-    + 'Debrief \u2014 ' + siblings.length + ' receivers (' + labels.map(esc).join(', ') + ')'
-    + '</div>'
-    + '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
     + '<button id="dmc-playpause" class="btn-sm" onclick="_dmcTogglePlay()" '
     + 'style="font-size:1.1rem;padding:4px 12px">&#9654;</button>'
     + '<input id="dmc-seek" type="range" min="0" max="1000" value="0" '
@@ -2999,13 +3006,7 @@ function _renderDebriefMultiChannel(wrap, deb, siblings) {
     + siblings.map(s =>
       '<audio id="dmc-sib-' + s.ordinal + '" preload="metadata" src="' + esc(s.stream_url)
       + '" style="display:none"></audio>'
-    ).join('')
-    + '<div class="section-title" style="margin-top:12px;cursor:pointer" '
-    + 'onclick="toggleSection(\'debrief-transcript\')">'
-    + 'Transcript <span id="debrief-transcript-toggle">&#9660;</span></div>'
-    + '<div class="section-body" id="debrief-transcript-body" style="font-size:.78rem">'
-    + '<span style="color:var(--text-secondary)">Loading transcript\u2026</span>'
-    + '</div>';
+    ).join('');
 }
 
 function _dmcInit() {
@@ -3549,9 +3550,17 @@ function _mcSetIsolation(channelIndex) {
   });
   const ind = document.getElementById('mc-isolation-indicator');
   if (ind) {
-    ind.textContent = channelIndex === null
-      ? 'mixed'
-      : `isolated: CH${channelIndex}`;
+    if (channelIndex === null) {
+      ind.textContent = 'mixed';
+    } else {
+      // Prefer the configured position_name (R1 / R2 / "helm pair" / …) —
+      // matches the debrief's isolation indicator format (#648).
+      const sib = _session
+        && Array.isArray(_session.audio_siblings)
+        && _session.audio_siblings[channelIndex];
+      const label = (sib && sib.position_name) || ('R' + (channelIndex + 1));
+      ind.textContent = 'isolated: ' + label;
+    }
   }
 }
 
@@ -3770,6 +3779,12 @@ async function loadMultiChannelAudio() {
     '<div style="display:flex;align-items:center;gap:10px;margin-top:6px;font-size:.78rem;color:var(--text-secondary)">' +
     '<label><input id="mc-sticky" type="checkbox" onchange="_mcToggleSticky(this.checked)"> Sticky isolation</label>' +
     '<button class="btn-sm" onclick="_mcSetIsolation(null)">All channels</button>' +
+    ((_session && Array.isArray(_session.audio_siblings) && _session.audio_siblings.length > 1)
+      ? _session.audio_siblings.map((s, i) =>
+          '<button class="btn-sm" onclick="_mcSetIsolation(' + i + ')">'
+          + esc(s.position_name || ('R' + (i + 1))) + '</button>'
+        ).join('')
+      : '') +
     '<span id="mc-isolation-indicator">mixed</span>' +
     '</div>' +
     '<div id="mc-status" style="font-size:.78rem;color:var(--text-secondary);margin-top:4px">Loading audio…</div>';
