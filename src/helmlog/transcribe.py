@@ -48,11 +48,16 @@ async def _try_remote_transcribe(
     diarize: bool,
     *,
     transcribe_url: str = "",
+    num_speakers: int | None = None,
 ) -> tuple[str, list[dict[str, object]]] | None:
     """POST the WAV file to a remote worker and return (text, segments).
 
     *transcribe_url* is the base URL of the worker (e.g. ``http://mac:8321``).
     Falls back to ``TRANSCRIBE_URL`` env var if not provided.
+
+    *num_speakers* optionally constrains pyannote to exactly N speakers —
+    important for sibling captures that mix 2 people onto one mono WAV.
+    Unset = pyannote picks automatically (may over-split on noisy audio).
 
     Returns *None* when no URL is configured or the remote is unreachable,
     signalling the caller to fall back to local processing.
@@ -73,13 +78,16 @@ async def _try_remote_transcribe(
 
     endpoint = f"{url}/transcribe"
     logger.info("Remote transcribe: uploading {} to {}", file_path, endpoint)
+    params: dict[str, str] = {"model_size": model_size, "diarize": str(diarize).lower()}
+    if num_speakers is not None:
+        params["num_speakers"] = str(int(num_speakers))
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(_REMOTE_TIMEOUT_S)) as client:
             with open(file_path, "rb") as f:
                 resp = await client.post(
                     endpoint,
                     files={"file": ("audio.wav", f, "audio/wav")},
-                    params={"model_size": model_size, "diarize": str(diarize).lower()},
+                    params=params,
                 )
             resp.raise_for_status()
         data = resp.json()
@@ -98,11 +106,16 @@ async def _transcribe_one_channel(
     diarize: bool,
     *,
     transcribe_url: str = "",
+    num_speakers: int | None = None,
 ) -> tuple[str, list[dict[str, object]]]:
     """Helper: transcribe a single channel (local or remote)."""
     # 1. Try remote
     remote = await _try_remote_transcribe(
-        file_path, model_size, diarize, transcribe_url=transcribe_url
+        file_path,
+        model_size,
+        diarize,
+        transcribe_url=transcribe_url,
+        num_speakers=num_speakers,
     )
     if remote is not None:
         return remote
@@ -110,7 +123,10 @@ async def _transcribe_one_channel(
     # 2. Try local
     if diarize and _pyannote_available() and bool(os.environ.get("HF_TOKEN")):
         text, segments_json_str = await asyncio.to_thread(
-            _run_with_diarization, file_path=file_path, model_size=model_size
+            _run_with_diarization,
+            file_path=file_path,
+            model_size=model_size,
+            num_speakers=num_speakers,
         )
         return text, json.loads(segments_json_str)
     else:
@@ -193,20 +209,30 @@ async def _persist_sibling_segments(
     WAV is already a single-channel file — but the downstream merge (chunk 3)
     needs the same ``channel_index``/``position_name``/``speaker`` tags that
     pt.4's multi-channel path provides, so we annotate and bulk-insert here.
+
+    Speaker labels (#648): always keep the pyannote-diarized label when one
+    was emitted so cross-mic speakers are distinguishable — the hardware-
+    isolation "one mic = one person" shortcut breaks both in debrief (crew
+    share mics) and in the race itself (someone talks into a neighbor's mic
+    during a maneuver). We prefix each label with ``position_name`` so
+    ``sib0:SPEAKER_00`` stays distinct from ``sib1:SPEAKER_00`` (pyannote
+    labels are per-WAV, not correlated across siblings). Segments without a
+    speaker fall back to the bare ``position_name``.
     """
     if not segments:
         return
     for seg in segments:
         seg["channel_index"] = ordinal
         seg["position_name"] = position_name
-        seg["speaker"] = position_name
+        raw_speaker = seg.get("speaker")
+        seg["speaker"] = f"{position_name}:{raw_speaker}" if raw_speaker else position_name
     relational = [
         {
             "segment_index": idx,
             "start_time": float(seg.get("start", 0.0)),  # type: ignore[arg-type]
             "end_time": float(seg.get("end", 0.0)),  # type: ignore[arg-type]
             "text": str(seg.get("text", "")),
-            "speaker": position_name,
+            "speaker": str(seg.get("speaker") or position_name),
             "channel_index": ordinal,
             "position_name": position_name,
         }
@@ -254,10 +280,25 @@ async def transcribe_session(
     # mono USB cards, tag its segments with the ordinal + configured
     # position_name so the downstream merge can stitch them back together.
     sibling_tag: tuple[int, str] | None = None
+    num_speakers_hint: int | None = None
     if row.get("capture_group_id") and channels == 1:
         cmap = await storage.get_channel_map_for_audio_session(audio_session_id)
-        position = cmap.get(0, f"sib{row.get('capture_ordinal', 0)}")
-        sibling_tag = (int(row.get("capture_ordinal") or 0), position)
+        # Fallback label (#648): user-facing "R1" / "R2" etc. when no admin
+        # channel_map is configured. Maps to the receiver number from the
+        # common 2-mic-per-receiver setup, 1-indexed for humans.
+        ordinal = int(row.get("capture_ordinal") or 0)
+        position = cmap.get(0, f"R{ordinal + 1}")
+        sibling_tag = (ordinal, position)
+        # #648: common sibling-mode setup has multiple crew sharing one
+        # wireless receiver (2 mics → one mono WAV). Tell pyannote how many
+        # voices to expect so it doesn't over-split noisy race audio into
+        # 5–9 spurious labels. Configurable via env; default 2.
+        try:
+            num_speakers_hint = int(os.environ.get("AUDIO_SPEAKERS_PER_CHANNEL", "2"))
+        except ValueError:
+            num_speakers_hint = 2
+        if num_speakers_hint <= 0:
+            num_speakers_hint = None
 
     segments_json_str: str | None = None
     try:
@@ -309,7 +350,11 @@ async def transcribe_session(
 
         # ----- Remote offload (preferred when TRANSCRIBE_URL is set) -----
         remote = await _try_remote_transcribe(
-            file_path, model_size, diarize, transcribe_url=transcribe_url
+            file_path,
+            model_size,
+            diarize,
+            transcribe_url=transcribe_url,
+            num_speakers=num_speakers_hint,
         )
         if remote is not None:
             text, segments = remote
@@ -339,7 +384,10 @@ async def transcribe_session(
         # ----- Local processing (fallback) -----
         if use_diarize:
             text, segments_json_str = await asyncio.to_thread(
-                _run_with_diarization, file_path=file_path, model_size=model_size
+                _run_with_diarization,
+                file_path=file_path,
+                model_size=model_size,
+                num_speakers=num_speakers_hint,
             )
             await storage.update_transcript(
                 transcript_id, status="done", text=text, segments_json=segments_json_str
@@ -467,12 +515,18 @@ def _run_whisper_segments(*, file_path: str, model_size: str) -> list[tuple[floa
     return [(s.start, s.end, s.text) for s in segments]
 
 
-def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
+def _run_diarizer(
+    file_path: str, *, num_speakers: int | None = None
+) -> list[tuple[float, float, str]]:
     """Return [(start, end, speaker_label)] from pyannote diarisation.
 
     Audio is pre-loaded via soundfile and converted to a torch tensor to bypass
     pyannote's built-in audio decoder which depends on torchcodec (unavailable
     on aarch64).
+
+    *num_speakers* (optional) constrains pyannote to exactly N speakers —
+    critical for sibling captures that mix 2 crew onto one mono WAV, where
+    otherwise pyannote over-splits into 5–9 labels on noisy race audio.
     """
     import soundfile as sf
     import torch
@@ -494,7 +548,10 @@ def _run_diarizer(file_path: str) -> list[tuple[float, float, str]]:
     data, sample_rate = sf.read(file_path, dtype="float32")
     waveform = torch.from_numpy(data).unsqueeze(0) if data.ndim == 1 else torch.from_numpy(data).T
     audio_input: dict[str, object] = {"waveform": waveform, "sample_rate": sample_rate}
-    result = pipeline(audio_input)
+    if num_speakers is not None and num_speakers > 0:
+        result = pipeline(audio_input, num_speakers=int(num_speakers))
+    else:
+        result = pipeline(audio_input)
 
     # pyannote 4.x returns DiarizeOutput; 3.x returns Annotation directly.
     annotation = getattr(result, "speaker_diarization", result)
@@ -532,10 +589,12 @@ def _merge(
     ]
 
 
-def _run_with_diarization(*, file_path: str, model_size: str) -> tuple[str, str]:
+def _run_with_diarization(
+    *, file_path: str, model_size: str, num_speakers: int | None = None
+) -> tuple[str, str]:
     """Run whisper + diarisation and return (plain_text, segments_json)."""
     whisper_segs = _run_whisper_segments(file_path=file_path, model_size=model_size)
-    diar_segs = _run_diarizer(file_path)
+    diar_segs = _run_diarizer(file_path, num_speakers=num_speakers)
     segments = _merge(whisper_segs, diar_segs)
     plain = "\n".join(f"{seg['speaker']}: {str(seg['text']).strip()}" for seg in segments)
     return plain, json.dumps(segments)
@@ -586,8 +645,11 @@ def _extract_speaker_embeddings(
     Uses the pyannote embedding model to compute a centroid embedding for each
     speaker by averaging embeddings across their segments.
 
-    Returns a dict mapping normalised speaker labels (SPEAKER_00, etc.) to
-    serialised float32 embedding bytes.
+    Returns a dict mapping raw speaker labels (whatever the caller passed —
+    e.g. ``sib0:SPEAKER_00`` for sibling captures, #648) to serialised
+    float32 embedding bytes. The labels are preserved end-to-end so
+    cross-session auto-match can key on the same globally-unique label the
+    segments store.
     """
     try:
         import numpy as np
@@ -616,18 +678,11 @@ def _extract_speaker_embeddings(
     if data.ndim == 1:
         data = data.reshape(-1, 1)
 
-    # Normalise speaker labels same as _merge
-    unique: list[str] = []
-    for _, _, label in diar_segs:
-        if label not in unique:
-            unique.append(label)
-    label_map = {lbl: f"SPEAKER_{i:02d}" for i, lbl in enumerate(unique)}
-
-    # Group segments by speaker
+    # Group segments by raw speaker label — no renumbering, so the keys
+    # match what's stored in transcript_segments.speaker (#648).
     speaker_segs: dict[str, list[tuple[float, float]]] = {}
     for s, e, lbl in diar_segs:
-        norm = label_map[lbl]
-        speaker_segs.setdefault(norm, []).append((s, e))
+        speaker_segs.setdefault(lbl, []).append((s, e))
 
     embeddings: dict[str, bytes] = {}
     for speaker, segs in speaker_segs.items():

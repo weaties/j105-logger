@@ -200,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 76
+_CURRENT_VERSION: int = 77
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1534,7 +1534,8 @@ _MIGRATIONS: dict[int, str] = {
             text          TEXT    NOT NULL,
             speaker       TEXT,
             channel_index INTEGER,
-            position_name TEXT
+            position_name TEXT,
+            override_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
         );
         CREATE INDEX IF NOT EXISTS idx_transcript_segments_transcript
             ON transcript_segments(transcript_id);
@@ -1761,6 +1762,15 @@ _MIGRATIONS: dict[int, str] = {
         -- Populated by enrichment (analysis/maneuvers.py), not by the
         -- detector. Null for rounding and other types.
         ALTER TABLE maneuvers ADD COLUMN head_to_wind_ts TEXT;
+    """,
+    77: """
+        -- #648: per-segment speaker override. Label-wide assignments via
+        -- speaker_map re-label every segment that shares the label. This
+        -- column lets a single segment point at a different crew member
+        -- without mutating the label or touching other segments. Null
+        -- means "use the label-wide speaker_map lookup".
+        ALTER TABLE transcript_segments ADD COLUMN override_user_id INTEGER
+            REFERENCES users(id) ON DELETE SET NULL;
     """,
 }
 
@@ -2949,6 +2959,23 @@ class Storage:
             except (json.JSONDecodeError, ValueError):
                 pass
         return res
+
+    async def get_race_primary_audio_session(self, race_id: int) -> dict[str, Any] | None:
+        """Return the race/practice primary audio_session row for a race, if any.
+
+        Used at debrief-start to recover the race's ``capture_group_id`` so
+        the debrief can detect whether the USB device set has changed (#648).
+        """
+        cur = await self._read_conn().execute(
+            "SELECT id, channels, channel_map, capture_group_id, capture_ordinal,"
+            " vendor_id, product_id, serial, usb_port_path"
+            " FROM audio_sessions"
+            " WHERE race_id = ? AND session_type IN ('race', 'practice')"
+            " ORDER BY capture_ordinal ASC, id ASC LIMIT 1",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
 
     async def list_capture_group_siblings(self, capture_group_id: str) -> list[dict[str, Any]]:
         """Return all audio_sessions rows sharing a capture_group_id, in ordinal order.
@@ -6103,12 +6130,58 @@ class Storage:
         """Return relational transcript segments for a transcript, ordered."""
         cur = await self._read_conn().execute(
             "SELECT id, transcript_id, segment_index, start_time, end_time,"
-            " text, speaker, channel_index, position_name"
+            " text, speaker, channel_index, position_name, override_user_id"
             " FROM transcript_segments WHERE transcript_id=?"
             " ORDER BY segment_index",
             (transcript_id,),
         )
         return [dict(r) for r in await cur.fetchall()]
+
+    async def set_segment_speaker_override(
+        self, transcript_id: int, segment_index: int, user_id: int | None
+    ) -> tuple[bool, str | None]:
+        """Set or clear the per-segment speaker override (#648).
+
+        Returns ``(found, name)`` — ``found`` is True if a segment row was
+        matched; ``name`` is the user's display name if ``user_id`` is set and
+        valid, else None (clearing the override). Passing ``user_id=None``
+        clears the override.
+        """
+        db = self._conn()
+        name: str | None = None
+        if user_id is not None:
+            ucur = await db.execute("SELECT name FROM users WHERE id = ?", (user_id,))
+            urow = await ucur.fetchone()
+            if urow is None:
+                return (False, None)
+            name = urow["name"] or f"User {user_id}"
+        cur = await db.execute(
+            "UPDATE transcript_segments SET override_user_id = ?"
+            " WHERE transcript_id = ? AND segment_index = ?",
+            (user_id, transcript_id, segment_index),
+        )
+        await db.commit()
+        return ((cur.rowcount or 0) > 0, name)
+
+    async def get_segment_overrides(self, transcript_id: int) -> dict[int, dict[str, Any]]:
+        """Return {segment_index: {"user_id", "name"}} for every segment in a
+        transcript that has an override set. Used by the transcript endpoint
+        to attach override info to the merged response (#648).
+        """
+        cur = await self._read_conn().execute(
+            "SELECT ts.segment_index, ts.override_user_id, u.name"
+            " FROM transcript_segments ts"
+            " LEFT JOIN users u ON u.id = ts.override_user_id"
+            " WHERE ts.transcript_id = ? AND ts.override_user_id IS NOT NULL",
+            (transcript_id,),
+        )
+        result: dict[int, dict[str, Any]] = {}
+        for r in await cur.fetchall():
+            result[int(r["segment_index"])] = {
+                "user_id": int(r["override_user_id"]),
+                "name": r["name"] or f"User {r['override_user_id']}",
+            }
+        return result
 
     async def log_voice_consent_ack(
         self,
@@ -7413,30 +7486,30 @@ class Storage:
         return True
 
     async def get_transcript_with_anon(self, audio_session_id: int) -> dict[str, Any] | None:
-        """Get transcript with speaker_map and anonymization applied to segments.
+        """Get transcript with anonymization applied to segments.
 
-        Priority: anonymization (speaker_anon_map) > crew assignment (speaker_map).
+        Anonymization rewrites the raw speaker label + redacts text for
+        consent-revoked crew (PII concern). Crew-name substitution is
+        *NOT* applied here — it happens client-side via the speaker_map
+        the client already receives, so the server can keep the raw
+        ``sib0:SPEAKER_01``-style labels visible. That lets click-to-
+        assign round-trip cleanly: the label the UI posts back is the
+        same key the speaker_map is stored under (#648).
         """
         t = await self.get_transcript(audio_session_id)
         if t is None:
             return None
         anon_map: dict[str, str] = json.loads(t.get("speaker_anon_map") or "{}")
-        crew_map: dict[str, Any] = json.loads(t.get("speaker_map") or "{}")
-        if (anon_map or crew_map) and t.get("segments_json"):
+        if anon_map and t.get("segments_json"):
             segments = json.loads(t["segments_json"])
             for seg in segments:
                 speaker = seg.get("speaker", "")
                 if speaker in anon_map:
-                    # Anonymization takes priority
                     seg["speaker"] = anon_map[speaker]
                     seg["text"] = "[REDACTED]"
-                elif speaker in crew_map:
-                    entry = crew_map[speaker]
-                    if isinstance(entry, dict):
-                        seg["speaker"] = entry.get("name", speaker)
             t["segments_json"] = json.dumps(segments)
             # Also redact the plain text for anonymized speakers
-            if t.get("text") and anon_map:
+            if t.get("text"):
                 lines = t["text"].split("\n")
                 redacted_lines = []
                 for line in lines:

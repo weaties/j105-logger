@@ -98,7 +98,11 @@ async def _make_sibling_pair(storage: Storage, tmp_path: Path) -> tuple[int, int
 
 
 async def test_transcribe_session_tags_sibling_segments(storage: Storage, tmp_path: Path) -> None:
-    """A mono sibling gets channel_index=capture_ordinal and position from channel_map."""
+    """A mono sibling gets channel_index=capture_ordinal and position from channel_map.
+
+    When whisper runs without diarization, segments have no speaker field, so
+    we fall back to the bare position_name as the speaker label.
+    """
     primary_id, secondary_id, _ = await _make_sibling_pair(storage, tmp_path)
     transcript_id = await storage.create_transcript_job(secondary_id, "base")
 
@@ -114,13 +118,104 @@ async def test_transcribe_session_tags_sibling_segments(storage: Storage, tmp_pa
     # Ordinal 1 → virtual channel index 1.
     assert all(r["channel_index"] == 1 for r in rows)
     assert all(r["position_name"] == "Bow pair" for r in rows)
+    # No pyannote labels from the plain whisper path → fall back to position.
     assert all(r["speaker"] == "Bow pair" for r in rows)
 
 
-async def test_transcribe_session_sibling_falls_back_to_sibN_when_unmapped(
+async def test_debrief_sibling_preserves_diarized_speaker(storage: Storage, tmp_path: Path) -> None:
+    """#648: debrief siblings prefix pyannote labels with the mic's position
+    name so sib0:SPEAKER_01 stays distinct from sib1:SPEAKER_01 (pyannote
+    labels are per-WAV, not correlated across siblings).
+    """
+    wav = tmp_path / "debrief-sib0.wav"
+    wav.write_bytes(b"RIFF0000WAVEfmt ")
+    session = AudioSession(
+        file_path=str(wav),
+        device_name="Jieli card 0",
+        start_utc=datetime(2026, 4, 12, 17, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 12, 17, 5, 0, tzinfo=UTC),
+        sample_rate=48000,
+        channels=1,
+        capture_group_id="grp-debrief",
+        capture_ordinal=0,
+    )
+    sid = await storage.write_audio_session(session, session_type="debrief", name="dbg-debrief")
+    tid = await storage.create_transcript_job(sid, "base")
+
+    fake_remote = (
+        "helm: go go go. tactician: gybe now.",
+        [
+            {"start": 0.0, "end": 2.0, "text": "go go go", "speaker": "SPEAKER_01"},
+            {"start": 2.0, "end": 4.0, "text": "gybe now", "speaker": "SPEAKER_02"},
+        ],
+    )
+    from unittest.mock import AsyncMock
+
+    with patch("helmlog.transcribe._try_remote_transcribe", AsyncMock(return_value=fake_remote)):
+        from helmlog.transcribe import transcribe_session
+
+        await transcribe_session(
+            storage, sid, tid, model_size="base", diarize=True, transcribe_url="http://fake"
+        )
+
+    rows = await storage.list_transcript_segments(tid)
+    assert len(rows) == 2
+    # #648: R1 is the 1-indexed, user-friendly fallback name for receiver 1
+    # (ordinal 0). Used when no admin channel_map is configured.
+    assert [r["speaker"] for r in rows] == ["R1:SPEAKER_01", "R1:SPEAKER_02"]
+    assert all(r["channel_index"] == 0 for r in rows)
+    assert all(r["position_name"] == "R1" for r in rows)
+
+
+async def test_race_sibling_also_preserves_diarized_speaker(
     storage: Storage, tmp_path: Path
 ) -> None:
-    """No channel_map entry → fall back to sib{ordinal} label."""
+    """#648 (follow-up): race audio also keeps pyannote labels now — the
+    hardware-isolation shortcut ("one mic = one person") breaks even during
+    the race when someone talks into a neighbor's mic during a maneuver.
+    """
+    wav = tmp_path / "race-sib1.wav"
+    wav.write_bytes(b"RIFF0000WAVEfmt ")
+    session = AudioSession(
+        file_path=str(wav),
+        device_name="Jieli card 1",
+        start_utc=datetime(2026, 4, 12, 17, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 12, 17, 5, 0, tzinfo=UTC),
+        sample_rate=48000,
+        channels=1,
+        capture_group_id="grp-race",
+        capture_ordinal=1,
+    )
+    sid = await storage.write_audio_session(session, session_type="race", name="race-test")
+    tid = await storage.create_transcript_job(sid, "base")
+
+    fake_remote = (
+        "go go go. alex shouting.",
+        [
+            {"start": 0.0, "end": 2.0, "text": "go go go", "speaker": "SPEAKER_00"},
+            {"start": 2.0, "end": 4.0, "text": "alex shouting", "speaker": "SPEAKER_01"},
+        ],
+    )
+    from unittest.mock import AsyncMock
+
+    with patch("helmlog.transcribe._try_remote_transcribe", AsyncMock(return_value=fake_remote)):
+        from helmlog.transcribe import transcribe_session
+
+        await transcribe_session(
+            storage, sid, tid, model_size="base", diarize=True, transcribe_url="http://fake"
+        )
+
+    rows = await storage.list_transcript_segments(tid)
+    # Race siblings get the same prefixed diarization now (no more collapse).
+    # R2 is the 1-indexed label for receiver 2 (ordinal 1).
+    assert [r["speaker"] for r in rows] == ["R2:SPEAKER_00", "R2:SPEAKER_01"]
+    assert all(r["position_name"] == "R2" for r in rows)
+
+
+async def test_transcribe_session_sibling_falls_back_to_RN_when_unmapped(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """No channel_map entry → fall back to R{ordinal + 1} label (#648)."""
     wav = tmp_path / "loose.wav"
     wav.write_bytes(b"RIFF0000WAVEfmt ")
     session = AudioSession(
@@ -140,7 +235,7 @@ async def test_transcribe_session_sibling_falls_back_to_sibN_when_unmapped(
 
         await transcribe_session(storage, sid, tid, model_size="base")
     rows = await storage.list_transcript_segments(tid)
-    assert rows[0]["position_name"] == "sib3"
+    assert rows[0]["position_name"] == "R4"  # ordinal 3 → R4 (1-indexed)
     assert rows[0]["channel_index"] == 3
 
 

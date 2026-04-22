@@ -570,6 +570,10 @@ async def api_start_debrief(
 
     debrief_name = f"{row['name']}-debrief"
     now = datetime.now(UTC)
+    # Hand capture_start the race's sibling group so it can warn when the USB
+    # device set has changed between race-end and debrief-start (#648 C5).
+    prev_audio = await storage.get_race_primary_audio_session(race_id)
+    prev_group_id = prev_audio["capture_group_id"] if prev_audio else None
     ss.debrief_audio_session_id = await capture_start(
         request.app.state.recorder,
         request.app.state.audio_config,
@@ -577,6 +581,7 @@ async def api_start_debrief(
         name=debrief_name,
         race_id=race_id,
         session_type="debrief",
+        prev_capture_group_id=prev_group_id,
     )
     ss.debrief_race_id = race_id
     ss.debrief_race_name = row["name"]

@@ -170,33 +170,38 @@ async def test_assign_speaker_crew_overwrite(storage: Storage, tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_speaker_map_coexists_with_anon(storage: Storage, tmp_path: Path) -> None:
-    """speaker_map crew entries and speaker_anon_map redactions coexist."""
+    """speaker_anon_map redacts; speaker_map crew assignments leave the raw
+    label intact (display substitution is now a client concern, #648)."""
     audio_id = await _create_audio_session(storage, tmp_path)
     tid = await _create_transcript_with_segments(storage, audio_id)
     uid = await _create_user(storage, "dave@boat.com", "Dave")
 
-    # Assign speaker 0 to crew
+    # Assign speaker 0 to crew (affects speaker_map, NOT segment speaker)
     await storage.assign_speaker_crew(tid, "SPEAKER_00", uid, "Dave")
-    # Anonymize speaker 1
+    # Anonymize speaker 1 (rewrites segment speaker for PII)
     await storage.anonymize_speaker(tid, "SPEAKER_01")
 
     t = await storage.get_transcript_with_anon(audio_id)
     assert t is not None
     segs = json.loads(t["segments_json"])
-    # SPEAKER_00 should show as Dave (crew mapping)
-    assert segs[0]["speaker"] == "Dave"
-    # SPEAKER_01 should be redacted (anonymization takes priority)
+    # SPEAKER_00 stays raw — the frontend resolves it via speaker_map.
+    assert segs[0]["speaker"] == "SPEAKER_00"
+    # SPEAKER_01 is redacted (anonymization rewrites).
     assert segs[1]["speaker"] == "REDACTED"
     assert segs[1]["text"] == "[REDACTED]"
-    # SPEAKER_00 in third segment should also show as Dave
-    assert segs[2]["speaker"] == "Dave"
+    # SPEAKER_00 in third segment also stays raw.
+    assert segs[2]["speaker"] == "SPEAKER_00"
+    # And speaker_map carries the crew assignment for the client to resolve.
+    sm = json.loads(t["speaker_map"])
+    assert sm["SPEAKER_00"]["name"] == "Dave"
 
 
 @pytest.mark.asyncio
-async def test_get_transcript_with_anon_applies_speaker_map(
+async def test_get_transcript_with_anon_preserves_raw_labels(
     storage: Storage, tmp_path: Path
 ) -> None:
-    """get_transcript_with_anon replaces speaker labels with crew names from speaker_map."""
+    """#648: raw speaker labels stay in the segments so click-to-assign
+    round-trips cleanly. Crew-name substitution is a client concern."""
     audio_id = await _create_audio_session(storage, tmp_path)
     tid = await _create_transcript_with_segments(storage, audio_id)
     uid = await _create_user(storage, "dave@boat.com", "Dave")
@@ -206,10 +211,10 @@ async def test_get_transcript_with_anon_applies_speaker_map(
     t = await storage.get_transcript_with_anon(audio_id)
     assert t is not None
     segs = json.loads(t["segments_json"])
-    assert segs[0]["speaker"] == "Dave"
-    assert segs[2]["speaker"] == "Dave"
-    # Unmapped speaker stays as-is
+    # Raw labels preserved — client displays Dave via speaker_map lookup.
+    assert segs[0]["speaker"] == "SPEAKER_00"
     assert segs[1]["speaker"] == "SPEAKER_01"
+    assert segs[2]["speaker"] == "SPEAKER_00"
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ data/*.sqlite
 data/*.csv
 data/audio/
 data/notes/
+data/vakaros-inbox/
 
 # Claude Code project directory (except shared skills and evals)
 .claude/*

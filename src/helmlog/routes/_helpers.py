@@ -400,6 +400,32 @@ SETTINGS_DEFS: tuple[SettingDef, ...] = (
         default="pit",
         help_text="Crew position assigned to audio channel 4.",
     ),
+    SettingDef(
+        key="AUDIO_STREAM_THRESHOLD_MINUTES",
+        label="Audio streaming threshold (minutes)",
+        input_type="number",
+        default="45",
+        help_text=(
+            "Sibling-mode sessions at or above this length stream audio via HTTP "
+            "range requests on the session page instead of decoding the whole WAV "
+            "into memory. Lower this if long sessions hang on ‘Loading audio…’; "
+            "raise it if sample-accurate scrubbing matters more than memory. "
+            "Takes effect on the next session page load."
+        ),
+    ),
+    SettingDef(
+        key="AUDIO_SPEAKERS_PER_CHANNEL",
+        label="Expected speakers per sibling mic",
+        input_type="number",
+        default="2",
+        help_text=(
+            "Number of crew voices sharing each sibling-mode mono WAV (one USB "
+            "receiver mixing N mics into one stream). Passed to pyannote as a "
+            "num_speakers hint so it doesn't over-split noisy audio into 5–9 "
+            "spurious labels. 0 lets pyannote pick the count automatically. "
+            "Only used for sibling captures; takes effect on retranscribe."
+        ),
+    ),
 )
 
 SETTINGS_BY_KEY: dict[str, SettingDef] = {s.key: s for s in SETTINGS_DEFS}
