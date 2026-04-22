@@ -2467,6 +2467,7 @@ function _renderDiarizedTranscript(body, t) {
 }
 
 let _transcriptSurfaceRegistered = false;
+let _lastActiveTranscriptIdx = -1;
 function _registerTranscriptSurface() {
   if (!_session || !_session.audio_start_utc) return;
   if (_transcriptSurfaceRegistered) return; // idempotent — transcript may re-render on poll
@@ -2479,18 +2480,43 @@ function _registerTranscriptSurface() {
   registerSurface('transcript', function(utc) {
     if (!_transcriptBlocks.length) return;
     const local = (utc.getTime() - audioStart.getTime()) / 1000;
-    const segs = document.querySelectorAll('.transcript-seg');
+
+    // Pick a single best-match block (#648): with merged sibling transcripts
+    // multiple blocks can cover the same instant, and highlighting + scrolling
+    // to every match yanked the scroll position to whichever one ran last in
+    // the loop. The "most recently started block that contains local" is
+    // stable and follows the speaker whose utterance actually started most
+    // recently — what a listener would expect to see in the auto-follow view.
+    let activeIdx = -1;
+    let bestStart = -Infinity;
     for (let i = 0; i < _transcriptBlocks.length; i++) {
       const b = _transcriptBlocks[i];
+      if (local >= b.start && local <= b.end && b.start > bestStart) {
+        activeIdx = i;
+        bestStart = b.start;
+      }
+    }
+
+    const segs = document.querySelectorAll('.transcript-seg');
+    for (let i = 0; i < segs.length; i++) {
       const el = segs[i];
       if (!el) continue;
-      if (local >= b.start && local <= b.end) {
-        el.style.background = 'var(--bg-hover, rgba(255,255,255,0.08))';
-        const container = document.getElementById('transcript-segments');
-        if (container) _scrollTranscriptSegmentIntoView(container, el);
-      } else {
-        el.style.background = '';
-      }
+      el.style.background = i === activeIdx
+        ? 'var(--bg-hover, rgba(255,255,255,0.08))'
+        : '';
+    }
+
+    // Only scroll when the active segment actually changes — scrolling every
+    // tick while the same block is playing caused the "transcript drifts away
+    // from playhead" jitter, because co-active blocks flipped the scroll
+    // target back and forth between their DOM positions.
+    if (activeIdx !== -1 && activeIdx !== _lastActiveTranscriptIdx) {
+      _lastActiveTranscriptIdx = activeIdx;
+      const container = document.getElementById('transcript-segments');
+      const el = segs[activeIdx];
+      if (container && el) _scrollTranscriptSegmentIntoView(container, el);
+    } else if (activeIdx === -1) {
+      _lastActiveTranscriptIdx = -1;
     }
   });
 }

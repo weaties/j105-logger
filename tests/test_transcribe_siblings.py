@@ -117,6 +117,96 @@ async def test_transcribe_session_tags_sibling_segments(storage: Storage, tmp_pa
     assert all(r["speaker"] == "Bow pair" for r in rows)
 
 
+async def test_debrief_sibling_preserves_diarized_speaker(storage: Storage, tmp_path: Path) -> None:
+    """#648: debrief siblings keep pyannote speaker labels instead of position_name.
+
+    Race audio relies on hardware isolation (one mic per crew member) so
+    race siblings collapse speaker to position_name. Debrief audio breaks
+    that assumption — multiple crew share mics — so we must keep the real
+    diarized labels.
+    """
+    wav = tmp_path / "debrief-sib0.wav"
+    wav.write_bytes(b"RIFF0000WAVEfmt ")
+    session = AudioSession(
+        file_path=str(wav),
+        device_name="Jieli card 0",
+        start_utc=datetime(2026, 4, 12, 17, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 12, 17, 5, 0, tzinfo=UTC),
+        sample_rate=48000,
+        channels=1,
+        capture_group_id="grp-debrief",
+        capture_ordinal=0,
+    )
+    sid = await storage.write_audio_session(session, session_type="debrief", name="dbg-debrief")
+    tid = await storage.create_transcript_job(sid, "base")
+
+    # Simulate a remote worker response with real diarization — the kind of
+    # payload the Mac-side transcribe_worker sends back when pyannote ran.
+    fake_remote = (
+        "helm: go go go. tactician: gybe now.",
+        [
+            {"start": 0.0, "end": 2.0, "text": "go go go", "speaker": "SPEAKER_01"},
+            {"start": 2.0, "end": 4.0, "text": "gybe now", "speaker": "SPEAKER_02"},
+        ],
+    )
+    from unittest.mock import AsyncMock
+
+    with patch("helmlog.transcribe._try_remote_transcribe", AsyncMock(return_value=fake_remote)):
+        from helmlog.transcribe import transcribe_session
+
+        await transcribe_session(
+            storage, sid, tid, model_size="base", diarize=True, transcribe_url="http://fake"
+        )
+
+    rows = await storage.list_transcript_segments(tid)
+    assert len(rows) == 2
+    # Pyannote speaker labels preserved, NOT collapsed to "sib0".
+    assert [r["speaker"] for r in rows] == ["SPEAKER_01", "SPEAKER_02"]
+    # But mic assignment hints still recorded so the UI can show "sib0" badges.
+    assert all(r["channel_index"] == 0 for r in rows)
+    assert all(r["position_name"] == "sib0" for r in rows)
+
+
+async def test_race_sibling_still_collapses_speaker_to_position(
+    storage: Storage, tmp_path: Path
+) -> None:
+    """Regression guard: race siblings keep the existing position_name override."""
+    wav = tmp_path / "race-sib0.wav"
+    wav.write_bytes(b"RIFF0000WAVEfmt ")
+    session = AudioSession(
+        file_path=str(wav),
+        device_name="Jieli card 0",
+        start_utc=datetime(2026, 4, 12, 17, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 4, 12, 17, 5, 0, tzinfo=UTC),
+        sample_rate=48000,
+        channels=1,
+        capture_group_id="grp-race",
+        capture_ordinal=0,
+    )
+    sid = await storage.write_audio_session(session, session_type="race", name="race-test")
+    tid = await storage.create_transcript_job(sid, "base")
+
+    fake_remote = (
+        "go go go. gybe now.",
+        [
+            {"start": 0.0, "end": 2.0, "text": "go go go", "speaker": "SPEAKER_01"},
+            {"start": 2.0, "end": 4.0, "text": "gybe now", "speaker": "SPEAKER_02"},
+        ],
+    )
+    from unittest.mock import AsyncMock
+
+    with patch("helmlog.transcribe._try_remote_transcribe", AsyncMock(return_value=fake_remote)):
+        from helmlog.transcribe import transcribe_session
+
+        await transcribe_session(
+            storage, sid, tid, model_size="base", diarize=True, transcribe_url="http://fake"
+        )
+
+    rows = await storage.list_transcript_segments(tid)
+    # Race path — speaker is collapsed to the mic's position_name.
+    assert all(r["speaker"] == "sib0" for r in rows)
+
+
 async def test_transcribe_session_sibling_falls_back_to_sibN_when_unmapped(
     storage: Storage, tmp_path: Path
 ) -> None:
