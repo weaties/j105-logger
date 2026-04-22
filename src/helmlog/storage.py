@@ -7430,30 +7430,30 @@ class Storage:
         return True
 
     async def get_transcript_with_anon(self, audio_session_id: int) -> dict[str, Any] | None:
-        """Get transcript with speaker_map and anonymization applied to segments.
+        """Get transcript with anonymization applied to segments.
 
-        Priority: anonymization (speaker_anon_map) > crew assignment (speaker_map).
+        Anonymization rewrites the raw speaker label + redacts text for
+        consent-revoked crew (PII concern). Crew-name substitution is
+        *NOT* applied here — it happens client-side via the speaker_map
+        the client already receives, so the server can keep the raw
+        ``sib0:SPEAKER_01``-style labels visible. That lets click-to-
+        assign round-trip cleanly: the label the UI posts back is the
+        same key the speaker_map is stored under (#648).
         """
         t = await self.get_transcript(audio_session_id)
         if t is None:
             return None
         anon_map: dict[str, str] = json.loads(t.get("speaker_anon_map") or "{}")
-        crew_map: dict[str, Any] = json.loads(t.get("speaker_map") or "{}")
-        if (anon_map or crew_map) and t.get("segments_json"):
+        if anon_map and t.get("segments_json"):
             segments = json.loads(t["segments_json"])
             for seg in segments:
                 speaker = seg.get("speaker", "")
                 if speaker in anon_map:
-                    # Anonymization takes priority
                     seg["speaker"] = anon_map[speaker]
                     seg["text"] = "[REDACTED]"
-                elif speaker in crew_map:
-                    entry = crew_map[speaker]
-                    if isinstance(entry, dict):
-                        seg["speaker"] = entry.get("name", speaker)
             t["segments_json"] = json.dumps(segments)
             # Also redact the plain text for anonymized speakers
-            if t.get("text") and anon_map:
+            if t.get("text"):
                 lines = t["text"].split("\n")
                 redacted_lines = []
                 for line in lines:
