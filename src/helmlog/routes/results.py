@@ -370,8 +370,27 @@ async def api_rematch_regatta(
     row = await cur.fetchone()
     races_checked = int(row[0]) if row else 0
 
-    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
+    linked, touched_sessions = await _link_regatta_races_to_local_sessions(
+        db, regatta_id, force=True
+    )
+
+    # Drop cached session_summary blobs for every live session we rewrote
+    # the link of (old link and new link) plus the imported race rows
+    # themselves — see #666.
+    invalidation_ids: set[int] = set(touched_sessions)
+    cur = await db.execute(
+        "SELECT id, local_session_id FROM races WHERE regatta_id = ?",
+        (regatta_id,),
+    )
+    for row in await cur.fetchall():
+        invalidation_ids.add(row[0])
+        if row[1] is not None:
+            invalidation_ids.add(row[1])
+
     await db.commit()
+
+    for rid in invalidation_ids:
+        await storage._invalidate_race_cache(rid)
 
     await audit(
         request,

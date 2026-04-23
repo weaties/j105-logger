@@ -91,7 +91,7 @@ async def import_results(
 
         counts["races_upserted"] += 1
 
-    await _link_regatta_races_to_local_sessions(db, regatta_id)
+    _linked, touched_sessions = await _link_regatta_races_to_local_sessions(db, regatta_id)
 
     for standing in results.standings:
         boat_id = await _upsert_boat_minimal(db, standing.sail_number, boat_cache)
@@ -104,7 +104,27 @@ async def import_results(
     )
 
     counts["boats_upserted"] = len(boat_cache)
+
+    # Collect every race id touched by this import (imported rows and any
+    # live sessions now linked to them) so we can drop stale cached
+    # session_summary blobs after the commit lands. Without this, a
+    # pre-import summary fetch that populated the cache with
+    # ``results: []`` survives the import and the /history card never
+    # reflects the imported results (#666).
+    invalidation_ids: set[int] = set(touched_sessions)
+    cur = await db.execute(
+        "SELECT id, local_session_id FROM races WHERE regatta_id = ?",
+        (regatta_id,),
+    )
+    for row in await cur.fetchall():
+        invalidation_ids.add(row[0])
+        if row[1] is not None:
+            invalidation_ids.add(row[1])
+
     await db.commit()
+
+    for rid in invalidation_ids:
+        await storage._invalidate_race_cache(rid)
 
     await storage.log_action(
         "results_import",
@@ -152,7 +172,7 @@ async def _link_regatta_races_to_local_sessions(
     regatta_id: int,
     *,
     force: bool = False,
-) -> int:
+) -> tuple[int, set[int]]:
     """Link imported races to local race sessions on the same date.
 
     When the number of local race-type sessions on a date is greater
@@ -172,7 +192,10 @@ async def _link_regatta_races_to_local_sessions(
     endpoint to fix up data that was linked before zip-in-order was
     implemented.
 
-    Returns the number of links written.
+    Returns ``(count_linked, touched_local_session_ids)`` — the second
+    value is the union of every local session id written as a new link
+    plus every prior link replaced by ``force=True``. Callers use it to
+    drop cached session_summary blobs keyed on those session ids (#666).
     """
     cur = await db.execute(
         "SELECT id, date, race_num, local_session_id FROM races"
@@ -182,7 +205,7 @@ async def _link_regatta_races_to_local_sessions(
     )
     imported_rows = await cur.fetchall()
     if not imported_rows:
-        return 0
+        return 0, set()
 
     by_date: dict[date, list[tuple[int, int | None, int | None]]] = {}
     for r in imported_rows:
@@ -193,6 +216,7 @@ async def _link_regatta_races_to_local_sessions(
         by_date.setdefault(d, []).append((r[0], r[2], r[3]))
 
     linked_count = 0
+    touched: set[int] = set()
     for d, imported in by_date.items():
         local_sessions = await _list_local_race_sessions_on_date(db, d)
         if not local_sessions:
@@ -213,6 +237,9 @@ async def _link_regatta_races_to_local_sessions(
                 "UPDATE races SET local_session_id = ? WHERE id = ?",
                 (local_id, imp_id),
             )
+            if existing_link is not None:
+                touched.add(existing_link)
+            touched.add(local_id)
             logger.debug(
                 "Linked imported race {} → local session {} (date {})",
                 imp_id,
@@ -220,7 +247,7 @@ async def _link_regatta_races_to_local_sessions(
                 d.isoformat(),
             )
             linked_count += 1
-    return linked_count
+    return linked_count, touched
 
 
 async def _list_local_race_sessions_on_date(
