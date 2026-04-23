@@ -306,3 +306,94 @@ and assertions will pass on truthiness (`assert <coroutine>` is truthy).
 **Fixture scope** — all fixtures default to function scope. If you need
 a shared expensive fixture (rare), use `scope="session"` or `scope="module"`,
 but be careful about test isolation.
+
+---
+
+## Federation integration tests — three layers
+
+Validates inter-Pi federation, co-op auth, embargo enforcement, and data
+licensing. Pick the layer that matches the change. The `/integration-test`
+skill picks for you.
+
+### Layer 1 — In-process pytest (CI, ~5s)
+
+Two boats with real Ed25519 keypairs and in-memory SQLite, communicating
+via `httpx.ASGITransport`. No mocking of crypto or auth — real signing,
+verification, and nonce replay protection. Covers co-op lifecycle, request
+auth (valid/tampered/forged/replayed/non-member), embargo, data licensing
+(field allowlist, PII exclusion, audit).
+
+```bash
+uv run pytest tests/integration/ -v
+```
+
+Run this for any PR touching `federation.py`, `peer_api.py`, `peer_auth.py`,
+`peer_client.py`, or federation-related storage code. CI runs it
+automatically.
+
+### Layer 2 — Pi test harness (Mac → two real Pis over Tailscale)
+
+`scripts/pi_harness.py` drives identity init, co-op setup, data seeding,
+smoke tests, and teardown on two real Pis. Validates Tailscale, systemd,
+nginx, NTP, and the real federation API end-to-end.
+
+One-time SSH key setup per Pi (replace `<ssh-user>` with the login account
+on the Pi, not the helmlog service account):
+
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/helmlog-harness
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-a>
+ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-b>
+```
+
+Full lifecycle (setup → seed → test → teardown):
+
+```bash
+uv run python scripts/pi_harness.py \
+    --pi-a <pi-a-ip> --pi-b <pi-b-ip> \
+    --ssh-user <ssh-user> \
+    --ssh-key ~/.ssh/helmlog-harness
+```
+
+Iterative modes:
+
+```bash
+uv run python scripts/pi_harness.py --setup-only ...    # leave federation in place
+uv run python scripts/pi_harness.py --test-only ...     # re-run tests against existing setup
+uv run python scripts/pi_harness.py --teardown-only ... # remove AUTH_DISABLED, restart
+uv run python scripts/pi_harness.py ... --issue 281     # post results to a GitHub issue
+```
+
+Run Layer 2 before merging federation PRs as manual validation.
+
+### Layer 3 — Docker compose (two containers on Mac, arm64 capable)
+
+Two real helmlog instances on an isolated Docker network. Useful for
+testing process isolation, network failure scenarios, and a Pi-matching
+architecture without physical Pis.
+
+```bash
+docker compose -f tests/integration/docker-compose.yml up --build --abort-on-container-exit
+```
+
+---
+
+## Golden-session test
+
+`tests/test_golden_session.py` loads one real recorded session (CYC spring
+race 1, 13 maneuvers) from `tests/fixtures/golden_session/` — a 1 Hz
+downsampled `raw_data.json.gz` and an `expected_maneuvers.json` snapshot.
+The test runs detect + enrich end-to-end and asserts exact equality
+(within float tolerance).
+
+Any PR that changes detector constants, baseline-window math, the loss
+calc, or the enrichment payload shape must either:
+
+- Pass the golden test unchanged (the change does not affect real-world
+  detection / enrichment output), or
+- Update the snapshot via
+  `uv run pytest tests/test_golden_session.py --update-golden` and call
+  out the diff in the PR body.
+
+Rebuild the raw fixture from a different session with
+`scripts/build_golden_fixture.py` against a Pi DB.
