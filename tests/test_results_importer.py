@@ -447,7 +447,7 @@ async def test_force_relinks_existing_wrong_links(storage: Storage) -> None:
     )
     (regatta_id,) = await cur.fetchone()  # type: ignore[misc]
 
-    linked = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
+    linked, _touched = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
     await db.commit()
     # Race 1 was already pointing at a_id, so only race 2 needs rewriting.
     assert linked == 1, "race 2 should be moved off the earliest session"
@@ -500,6 +500,115 @@ async def test_reimport_backfills_null_local_session(storage: Storage) -> None:
     assert rows
     for row in rows:
         assert row["local_session_id"] == local_id
+
+
+class _RecordingCache:
+    """Minimal stand-in that records invalidate() calls."""
+
+    def __init__(self) -> None:
+        self.invalidations: list[int] = []
+
+    async def invalidate(self, race_id: int) -> None:
+        self.invalidations.append(race_id)
+
+
+@pytest.mark.asyncio
+async def test_import_invalidates_cache_for_linked_live_session(
+    storage: Storage,
+) -> None:
+    """Regression for #666: results import must invalidate the cached
+    session_summary blob for every live session it links imported races to.
+
+    Scenario: the live session's summary was computed (and cached with
+    ``results: []``) before the importer ran. After import, the importer
+    upserts race_results and links them to the live session's id — but
+    the cache entry keyed to that live session id still carries the
+    stale empty results. Subsequent /history requests return the stale
+    blob and the imported results never surface.
+    """
+    from datetime import datetime
+
+    recorder = _RecordingCache()
+    storage.bind_race_cache(recorder)  # type: ignore[arg-type]
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    start = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Local live session", "Local", 1, race_date, start.isoformat()),
+    )
+    await db.commit()
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (local_id,) = await cur.fetchone()  # type: ignore[misc]
+
+    # Reset recorder so only the importer's invalidations are counted.
+    recorder.invalidations.clear()
+
+    await import_results(storage, results)
+
+    assert local_id in recorder.invalidations, (
+        f"expected import to invalidate live session {local_id}, got {recorder.invalidations!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_force_rematch_invalidates_old_and_new_live_sessions(
+    storage: Storage,
+) -> None:
+    """Regression for #666: the admin rematch (force=True) path must
+    invalidate the OLD live session id when an imported race is moved
+    off it, not just the new target."""
+    from datetime import datetime
+
+    from helmlog.results.importer import _link_regatta_races_to_local_sessions
+
+    recorder = _RecordingCache()
+    storage.bind_race_cache(recorder)  # type: ignore[arg-type]
+
+    db = storage._conn()
+    results = await _fetch_results()
+    race_date = results.races[0].date
+    a = datetime.fromisoformat(race_date + "T18:00:00+00:00")
+    b = datetime.fromisoformat(race_date + "T19:10:00+00:00")
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Race 1", "Local", 1, race_date, a.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (a_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.execute(
+        "INSERT INTO races (name, event, race_num, date, start_utc, session_type)"
+        " VALUES (?, ?, ?, ?, ?, 'race')",
+        ("Race 2", "Local", 2, race_date, b.isoformat()),
+    )
+    cur = await db.execute("SELECT last_insert_rowid()")
+    (b_id,) = await cur.fetchone()  # type: ignore[misc]
+    await db.commit()
+
+    await import_results(storage, results)
+
+    # Simulate pre-#550 state: both imported races pinned to session A.
+    await db.execute(
+        "UPDATE races SET local_session_id = ? WHERE source = 'clubspot' AND date = ?",
+        (a_id, race_date),
+    )
+    await db.commit()
+
+    cur = await db.execute(
+        "SELECT regatta_id FROM races WHERE source = 'clubspot' LIMIT 1",
+    )
+    (regatta_id,) = await cur.fetchone()  # type: ignore[misc]
+
+    recorder.invalidations.clear()
+    _linked, touched = await _link_regatta_races_to_local_sessions(db, regatta_id, force=True)
+    await db.commit()
+
+    assert a_id in touched, "old link (session A) must be reported as touched"
+    assert b_id in touched, "new link (session B) must be reported as touched"
 
 
 @pytest.mark.asyncio
