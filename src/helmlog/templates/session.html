@@ -338,6 +338,14 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
   </div>
 </div>
 
+<div class="card" id="moments-card" style="display:none">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('moments')">Moments <span id="moments-badge" style="font-size:.7rem;color:var(--accent)"></span> <span id="moments-toggle">&#9660;</span></div>
+    <button onclick="showNewMomentForm()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.82rem;padding:2px 0">+ New Moment</button>
+  </div>
+  <div class="section-body" id="moments-body" style="margin-top:6px"></div>
+</div>
+
 <div id="polar-card" class="card" style="display:none">
   <div class="section-title" onclick="toggleSection('polar')">Polar Performance <span id="polar-toggle">&#9660;</span></div>
   <div class="section-body" id="polar-body">
@@ -429,14 +437,6 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
 <div class="card" id="boat-settings-card" style="display:none">
   <div class="section-title" onclick="toggleSection('boat-settings')">Boat Setup <span id="boat-settings-toggle">&#9654;</span></div>
   <div class="section-body" id="boat-settings-body" style="display:none"></div>
-</div>
-
-<div class="card" id="moments-card" style="display:none">
-  <div style="display:flex;align-items:center;justify-content:space-between">
-    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('moments')">Moments <span id="moments-badge" style="font-size:.7rem;color:var(--accent)"></span> <span id="moments-toggle">&#9660;</span></div>
-    <button onclick="showNewMomentForm()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.82rem;padding:2px 0">+ New Moment</button>
-  </div>
-  <div class="section-body" id="moments-body" style="margin-top:6px"></div>
 </div>
 
 <div id="audio-card" class="card" style="display:none">
