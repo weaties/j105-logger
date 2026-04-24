@@ -312,6 +312,13 @@ async function init() {
     document.getElementById('live-instruments-card').style.display = '';
   }
 
+  // If a deep-link query string targets a specific moment, start opening
+  // it immediately so the user sees the moment detail without waiting for
+  // the rest of the session page (track, video, polar, etc.) to finish
+  // loading. The moments card shows a spinner; loadMoments() runs later
+  // alongside everything else and seeds _threads / map markers.
+  _maybeOpenDeepLinkMoment();
+
   const r = await fetch('/api/sessions/' + SESSION_ID + '/detail');
   if (!r.ok) {
     document.getElementById('session-name').textContent = 'Session not found';
@@ -330,7 +337,6 @@ async function init() {
     loadCrew();
     loadSails();
     loadBoatSettings();
-    loadNotes();
     if (_session.end_utc) loadPolar();
     loadAnalysis();
   }
@@ -338,14 +344,36 @@ async function init() {
     loadTranscript();
     loadAudio();
   }
-  await loadDiscussion();
-  _checkThreadHash();
+  // When a deep-link moment is in flight, skip the list body render so
+  // openThread()'s detail view (already rendering in parallel) isn't
+  // clobbered. The moment list still gets populated (_threads, anchor
+  // index, map markers) so the back-button can repaint instantly.
+  await loadMoments({renderList: !_deepLinkMomentInFlight});
+  if (!_deepLinkMomentInFlight) _checkThreadHash();
   loadSharing();
   loadMatch();
   renderExports();
   renderDangerZone();
   if (cfg.dataset.live === '1') _startLiveRefresh();
   _applyDeepLink();
+}
+
+let _deepLinkMomentInFlight = false;
+
+function _maybeOpenDeepLinkMoment() {
+  const params = new URLSearchParams(window.location.search);
+  const momentParam = params.get('moment') || params.get('thread');
+  if (!momentParam) return;
+  const momentId = parseInt(momentParam, 10);
+  if (isNaN(momentId)) return;
+  const commentParam = params.get('comment');
+  const commentId = commentParam ? parseInt(commentParam, 10) : null;
+  const card = document.getElementById('moments-card');
+  if (card) card.style.display = '';
+  _deepLinkMomentInFlight = true;
+  // openThread is async — fire it and let it render while init() continues
+  // its other work in parallel.
+  openThread(momentId, commentId && !isNaN(commentId) ? commentId : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -626,13 +654,12 @@ async function loadTrack() {
     const utc = _utcForIndex(idx);
     if (utc) {
       _moveCursorToIndex(idx);
-      showNewThreadForm(utc.toISOString());
-      document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+      showNewMomentForm(utc.toISOString());
     }
   });
 
   _map.fitBounds(line.getBounds(), {padding: [20, 20]});
-  document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a discussion at that point';
+  document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a moment at that point';
 
   // #458 — if a matched Vakaros session exists, overlay start line, line pings,
   // and race-start marker on top of the SK track.
@@ -2425,47 +2452,6 @@ async function loadSailChangeTimeline() {
     html += '</div>';
     container.innerHTML = html;
   } catch (e) { console.error('sail changes timeline error', e); }
-}
-
-// ---------------------------------------------------------------------------
-// Notes
-// ---------------------------------------------------------------------------
-
-async function loadNotes() {
-  const card = document.getElementById('notes-card');
-  card.style.display = '';
-  const body = document.getElementById('notes-body');
-  const r = await fetch('/api/sessions/' + SESSION_ID + '/moments');
-  const notes = await r.json();
-  if (notes.length) {
-    body.innerHTML = notes.map(n => {
-      const t = fmtTime(n.ts);
-      let content = '';
-      if (n.note_type === 'photo' && n.photo_path) {
-        const src = '/attachments/' + n.photo_path;
-        content = '<img src="' + src + '" loading="lazy" style="max-width:100px;max-height:80px;border-radius:4px;cursor:pointer;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '"/>';
-      } else if (n.note_type === 'settings' && n.body) {
-        try {
-          const obj = JSON.parse(n.body);
-          content = Object.entries(obj).map(([k, v]) =>
-            '<span style="color:var(--text-secondary)">' + esc(k) + ':</span> ' + esc(v)
-          ).join(' &middot; ');
-        } catch { content = esc(n.body); }
-      } else {
-        content = esc(n.body);
-      }
-      const del = '<button onclick="deleteNote(' + n.id + ')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;padding:0 4px;float:right">&#10005;</button>';
-      return '<div style="padding:4px 0;border-bottom:1px solid ' + cssVar('--border') + ';overflow:hidden">'
-        + del + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>' + content + '</div>';
-    }).join('');
-  } else {
-    body.innerHTML = '<span style="color:var(--text-secondary)">No notes</span>';
-  }
-}
-
-async function deleteNote(noteId) {
-  await fetch('/api/moments/' + noteId, {method: 'DELETE'});
-  loadNotes();
 }
 
 // ---------------------------------------------------------------------------
@@ -5912,6 +5898,14 @@ function renderManeuverCard() {
     const yt = m.youtube_url
       ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
       : '';
+    // "+ Moment" action — open the Moments panel's new-moment form anchored
+    // to this maneuver. Inline in the actions column alongside the YouTube
+    // link so there's no new column churn.
+    const momentBtn = m.id != null
+      ? '<a href="#" title="Create a moment anchored to this maneuver" '
+        + 'onclick="event.preventDefault();event.stopPropagation();createMomentFromManeuver(' + idx + ')" '
+        + 'style="color:var(--accent);text-decoration:none;margin-left:6px;font-size:.9em" aria-label="Create moment here">+</a>'
+      : '';
     return '<tr id="mrow-' + idx + '" style="cursor:pointer"'
       + ' onclick="highlightManeuver(' + idx + ')"'
       + ' onmouseenter="_highlightOverlayTrack(' + idx + ',true)"'
@@ -5926,7 +5920,7 @@ function renderManeuverCard() {
       + '<td title="BSP dip from pre-maneuver baseline to minimum BSP during the turn. Not exit−entry.">' + bspDip + '</td>'
       + '<td>' + distLoss + '</td>'
       + '<td>' + esc(cond) + '</td>'
-      + '<td>' + yt + '</td>'
+      + '<td style="white-space:nowrap">' + yt + momentBtn + '</td>'
       + '</tr>';
   }).join('');
 
@@ -6097,7 +6091,7 @@ function _addManeuverMarkers() {
       fillOpacity: 0.9,
       weight: 2,
     });
-    marker.bindPopup(_renderManeuverPopup(m));
+    marker.bindPopup(_renderManeuverPopup(m, idx));
     // Map marker clicks keep the focus on the track — they highlight the
     // maneuver and seek the replay, but do NOT scroll the page down to the
     // maneuvers card (which yanks the user away from the map).
@@ -6107,7 +6101,7 @@ function _addManeuverMarkers() {
   });
 }
 
-function _renderManeuverPopup(m) {
+function _renderManeuverPopup(m, idx) {
   const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
   const pctSuffix = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const rankBadge = m.rank
@@ -6128,7 +6122,17 @@ function _renderManeuverPopup(m) {
   }
   if (m.loss_kts != null) lines.push(m.loss_kts.toFixed(2) + ' kt loss');
   if (m.distance_loss_m != null) lines.push(Math.round(m.distance_loss_m) + ' m loss');
-  return lines.join('<br>');
+  const body = lines.join('<br>');
+  // "+ Create moment" action — opens the Moments panel's new-moment form
+  // anchored to this maneuver. Only rendered when the maneuver has a stable
+  // id (all detected maneuvers do; defensive against any unusual rows).
+  const createMoment = (idx != null && m.id != null)
+    ? '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px">'
+      + '<a href="#" onclick="event.preventDefault();createMomentFromManeuver(' + idx + ')" '
+      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">+ Create moment here &rarr;</a>'
+      + '</div>'
+    : '';
+  return body + createMoment;
 }
 
 let _showManeuverMarkers = true;
@@ -6723,6 +6727,16 @@ function _updateBoatSettingsForUtc(utcDate) {
 
 let _threads = [];
 let _discussionMarkers = [];
+// Currently-focused moment (open in the detail view). Renders as a larger,
+// pulsing marker on the map so the user can see at a glance where on the
+// track the moment they're reading is anchored. Null when the panel is
+// showing the list view.
+let _focusedMomentId = null;
+function _setFocusedMoment(id) {
+  if (_focusedMomentId === id) return;
+  _focusedMomentId = id;
+  if (_threads && _threads.length) _addDiscussionMarkers();
+}
 
 function _threadTitle(t) {
   if (t.title) return esc(t.title);
@@ -6736,10 +6750,11 @@ const _threadTagFilter = new Set();
 let _threadTagMode = 'and';
 let _threadAvailableTags = [];
 
-async function loadDiscussion() {
-  const card = document.getElementById('discussion-card');
+async function loadMoments(opts) {
+  const renderList = !opts || opts.renderList !== false;
+  const card = document.getElementById('moments-card');
   card.style.display = '';
-  const body = document.getElementById('discussion-body');
+  const body = document.getElementById('moments-body');
   // Fetch anchor index in parallel so entity-ref chips can resolve labels
   _anchorIndex = null;
   const params = new URLSearchParams();
@@ -6753,7 +6768,10 @@ async function loadDiscussion() {
     fetch(threadsUrl),
     _ensureAnchorIndex(),
   ]);
-  if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
+  if (!threadsResp.ok) {
+    if (renderList) body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>';
+    return;
+  }
   const data = await threadsResp.json();
   // The list endpoint now returns `moments`. Map each moment to the
   // thread-ish shape the existing discussion UI expects (title = subject,
@@ -6779,15 +6797,23 @@ async function loadDiscussion() {
   }));
   _threadAvailableTags = data.available_tags || [];
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
-  const badge = document.getElementById('discussion-badge');
+  const badge = document.getElementById('moments-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
+  // List render → user is back to overview; drop the focus highlight.
+  // (renderList:false is the deep-link init path, where openThread is in
+  // flight and has set the focus — leave it alone.)
+  if (renderList) _focusedMomentId = null;
   _addDiscussionMarkers();
+  // When called with renderList:false (deep-link init), we've populated
+  // _threads, _anchorIndex, the badge, and the map markers — but skip
+  // body.innerHTML so the openThread() detail render isn't clobbered.
+  if (!renderList) return;
 
   const filterBar = _renderThreadTagFilterRow();
   if (!_threads.length) {
     const emptyMsg = _threadTagFilter.size
-      ? '<span style="color:var(--text-secondary)">No discussions match the current tag filter.</span>'
-      : '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+      ? '<span style="color:var(--text-secondary)">No moments match the current tag filter.</span>'
+      : '<span style="color:var(--text-secondary)">No moments on this session yet. Use + New Moment or the &#128278; Bookmark button while replaying.</span>';
     body.innerHTML = filterBar + emptyMsg;
     return;
   }
@@ -6847,10 +6873,10 @@ function _renderThreadTagFilterRow() {
 function _toggleThreadTagFilter(id) {
   if (_threadTagFilter.has(id)) _threadTagFilter.delete(id);
   else _threadTagFilter.add(id);
-  loadDiscussion();
+  loadMoments();
 }
-function _setThreadTagMode(m) { _threadTagMode = m; loadDiscussion(); }
-function _clearThreadTagFilter() { _threadTagFilter.clear(); loadDiscussion(); }
+function _setThreadTagMode(m) { _threadTagMode = m; loadMoments(); }
+function _clearThreadTagFilter() { _threadTagFilter.clear(); loadMoments(); }
 
 function _renderRowTagChipsInline(tags) {
   if (!tags || !tags.length) return '';
@@ -6974,16 +7000,17 @@ function _refreshThreadHighlights(utc) {
 registerSurface('threads', function(utc) { _refreshThreadHighlights(utc); });
 
 function _checkThreadHash() {
-  // Prefer query params (?thread=<id>&comment=<id>) — survive Slack unfurls.
+  // Prefer query params (?moment=<id>&comment=<id>) — survive Slack unfurls.
+  // ?thread= is accepted as a legacy alias from links generated before #663.
   // Fallback to #thread-<id> fragment for backwards compat.
   const params = new URLSearchParams(window.location.search);
-  const threadParam = params.get('thread');
+  const momentParam = params.get('moment') || params.get('thread');
   const commentParam = params.get('comment');
-  if (threadParam) {
-    const threadId = parseInt(threadParam, 10);
-    if (!isNaN(threadId)) {
+  if (momentParam) {
+    const momentId = parseInt(momentParam, 10);
+    if (!isNaN(momentId)) {
       const commentId = commentParam ? parseInt(commentParam, 10) : null;
-      openThread(threadId, commentId && !isNaN(commentId) ? commentId : null);
+      openThread(momentId, commentId && !isNaN(commentId) ? commentId : null);
       return;
     }
   }
@@ -6999,8 +7026,9 @@ function _threadShareUrl(threadId, commentId) {
   const url = new URL(window.location.href);
   url.hash = '';
   url.searchParams.delete('thread');
+  url.searchParams.delete('moment');
   url.searchParams.delete('comment');
-  url.searchParams.set('thread', String(threadId));
+  url.searchParams.set('moment', String(threadId));
   if (commentId) url.searchParams.set('comment', String(commentId));
   return url.toString();
 }
@@ -7057,7 +7085,7 @@ function _addDiscussionMarkers() {
       + '<div id="discussion-marker-preview-' + t.id + '">'
       + '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">Loading\u2026</div></div>'
       + '<div style="margin-top:6px"><a href="#" data-open-thread="' + t.id + '" '
-      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
+      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">Open moment &rarr;</a></div>'
       + '</div>';
 
     const hasUnread = t.unread_count > 0;
@@ -7066,11 +7094,14 @@ function _addDiscussionMarkers() {
     const markerStyle = t.resolved
       ? 'width:14px;height:14px;background:transparent;border:2px solid ' + cssVar('--success') + ';border-radius:50%'
       : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid ' + bgPrimary + ';border-radius:50%;box-shadow:0 0 4px ' + markerColor;
+    const isFocused = (t.id === _focusedMomentId);
     const icon = L.divIcon({
-      className: 'discussion-marker',
-      html: '<div style="' + markerStyle + '"></div>',
-      iconSize: [14, 14],
-      iconAnchor: [7, 7],
+      className: isFocused ? 'discussion-marker focused' : 'discussion-marker',
+      html: isFocused
+        ? '<div class="moment-marker-focused-dot"></div>'
+        : '<div style="' + markerStyle + '"></div>',
+      iconSize: isFocused ? [22, 22] : [14, 14],
+      iconAnchor: isFocused ? [11, 11] : [7, 7],
     });
     const threadId = t.id;
     const marker = L.marker(latLng, {icon: icon})
@@ -7087,7 +7118,7 @@ function _addDiscussionMarkers() {
             ev.preventDefault();
             marker.closePopup();
             openThread(threadId);
-            document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+            document.getElementById('moments-card').scrollIntoView({behavior: 'smooth', block: 'start'});
           });
         }
       }
@@ -7116,15 +7147,27 @@ async function _loadMarkerPreview(threadId) {
   }).join('');
 }
 
-function showNewThreadForm(anchorTimestamp) {
-  const body = document.getElementById('discussion-body');
+// Open the New Moment form in the Moments panel. `prefill` may be:
+//   - a string ISO timestamp \u2192 preselect as a timestamp anchor
+//   - an anchor object {kind, entity_id?, t_start?, label?} \u2192 preselect verbatim
+//   - falsy \u2192 no preselection (user picks in the picker)
+function showNewMomentForm(prefill) {
+  // Make sure the Moments card is visible and the page scrolls to it so the
+  // user always sees the form they just opened (important when creation was
+  // triggered from the map popup or the maneuvers table far below).
+  const card = document.getElementById('moments-card');
+  if (card) {
+    card.style.display = '';
+    card.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
+  const body = document.getElementById('moments-body');
   const form = document.createElement('div');
   form.className = 'thread-form';
   form.style.marginBottom = '10px';
   const cursor = _playClock.positionUtc ? _playClock.positionUtc.toISOString() : null;
   form.innerHTML = ''
     + '<div style="display:flex;gap:6px;margin-bottom:6px">'
-    + '<input id="new-thread-title" placeholder="Thread title (optional)" style="flex:1"/>'
+    + '<input id="new-thread-title" placeholder="Moment title (optional)" style="flex:1"/>'
     + '</div>'
     + '<div style="margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">'
     + 'Anchor (optional):'
@@ -7132,21 +7175,32 @@ function showNewThreadForm(anchorTimestamp) {
     + '<anchor-picker id="new-thread-anchor-picker" session-id="' + esc(SESSION_ID) + '"></anchor-picker>'
     + '<textarea id="new-thread-body" placeholder="First comment\u2026" style="margin-top:8px"></textarea>'
     + '<div style="margin-top:6px;display:flex;gap:6px">'
-    + '<button class="btn-thread" onclick="submitNewThread()">Create Thread</button>'
-    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadDiscussion()">Cancel</button>'
+    + '<button class="btn-thread" onclick="submitNewThread()">Create Moment</button>'
+    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadMoments()">Cancel</button>'
     + '</div>';
   body.prepend(form);
   const picker = document.getElementById('new-thread-anchor-picker');
   if (picker) {
     picker.fallbackCursor = cursor;
-    // If caller passed a preferred timestamp (e.g. map-click), preselect it
-    if (anchorTimestamp) {
-      picker.addEventListener('connected', () => {}, {once: true});
-      setTimeout(() => {
-        picker._pickAnchor({kind: 'timestamp', t_start: anchorTimestamp, label: fmtTime(anchorTimestamp)});
-      }, 0);
+    if (prefill) {
+      const anchor = typeof prefill === 'string'
+        ? {kind: 'timestamp', t_start: prefill, label: fmtTime(prefill)}
+        : prefill;
+      setTimeout(() => picker._pickAnchor(anchor), 0);
     }
   }
+}
+
+// Open the New Moment form prefilled with a maneuver anchor. Used by the
+// maneuver map-popup "+ Create moment" button and the maneuver-table action.
+function createMomentFromManeuver(idx) {
+  const m = _maneuvers && _maneuvers[idx];
+  if (!m || m.id == null) return;
+  // Close any open map popup so the maneuver's popup doesn't hang around
+  // over the track while the user fills out the form below.
+  if (_map && typeof _map.closePopup === 'function') _map.closePopup();
+  const label = (m.type || 'maneuver') + (m.ts ? ' at ' + fmtTime(m.ts) : '');
+  showNewMomentForm({kind: 'maneuver', entity_id: m.id, label: label});
 }
 
 async function submitNewThread() {
@@ -7186,12 +7240,16 @@ async function submitNewThread() {
 }
 
 async function openThread(threadId, scrollToCommentId) {
-  const body = document.getElementById('discussion-body');
+  const body = document.getElementById('moments-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
+  // Promote this moment's map marker to the focused (large + pulsing) style
+  // so the user can see at a glance where on the track the open moment is
+  // anchored. Cleared when loadMoments() repaints the list view.
+  _setFocusedMoment(threadId);
   // Mark as read
   fetch('/api/moments/' + threadId + '/read', {method: 'POST'});
   const r = await fetch('/api/moments/' + threadId);
-  if (!r.ok) { loadDiscussion(); return; }
+  if (!r.ok) { loadMoments(); return; }
   const t = await r.json();
   const title = _threadTitle(t);
   await _ensureAnchorIndex();
@@ -7217,10 +7275,10 @@ async function openThread(threadId, scrollToCommentId) {
       + '<div class="comment-body">' + _renderMentions(esc(c.body)) + '</div>'
       + '</div>';
   }).join('');
-  const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this thread" '
+  const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this moment" '
     + 'onclick="copyThreadLink(' + t.id + ',null,this)">\ud83d\udd17 Copy link</button>';
   body.innerHTML = '<div style="margin-bottom:8px">'
-    + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadDiscussion()">&larr; All threads</button>'
+    + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadMoments()">&larr; All moments</button>'
     + '</div>'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
     + '<div style="flex:1;min-width:0"><strong style="color:var(--text-primary);font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
@@ -7236,7 +7294,7 @@ async function openThread(threadId, scrollToCommentId) {
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
     + '</div>';
-  const card = document.getElementById('discussion-card');
+  const card = document.getElementById('moments-card');
   _scrollDeepLinkTarget(card, scrollToCommentId);
 }
 

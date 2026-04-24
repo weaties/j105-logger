@@ -253,8 +253,11 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
     """Canonical session URL carrying both the stable id and the slug (#449).
 
     * If the id exists and the slug matches the current slug → render.
-    * If the id exists but the slug is stale (renamed) → 301 to the new
-      canonical URL so old bookmarks keep working indefinitely.
+    * If the id exists but the slug is stale (renamed) → 302 to the new
+      canonical URL so old bookmarks keep working indefinitely. 302 (not
+      301) so browsers don't permanently cache the redirect — a re-rename
+      back to the original slug should resolve correctly without a cache
+      bust.
     * If the id doesn't exist → 404.
     """
     storage = get_storage(request)
@@ -262,7 +265,10 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
     if race is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if race.slug and slug != race.slug:
-        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(
+            url=_canonical_session_url(race.id, race.slug) + qs, status_code=302
+        )
     return await _render_session_page(request, race)
 
 
@@ -314,13 +320,20 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
 
     storage = get_storage(request)
 
+    # Preserve query string across the canonical-slug redirect so deep links
+    # like /session/104?moment=38&comment=20 don't lose their params on the
+    # 301 hop to /session/104/{slug}.
+    qs = f"?{request.url.query}" if request.url.query else ""
+
     if session_ref.isdigit():
         numeric_id = int(session_ref)
         race = await storage.get_race(numeric_id)
         if race is not None:
             slug = race.slug or await storage.ensure_race_slug(race.id) or ""
             if slug:
-                return RedirectResponse(url=_canonical_session_url(race.id, slug), status_code=301)
+                return RedirectResponse(
+                    url=_canonical_session_url(race.id, slug) + qs, status_code=302
+                )
             # Last-resort fallback — render inline rather than redirect-loop.
             return await _render_session_page(request, race)
         # Not a race — try the debrief (audio_sessions) id space so history
@@ -332,7 +345,9 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
 
     race = await storage.get_race_by_slug(session_ref)
     if race is not None:
-        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+        return RedirectResponse(
+            url=_canonical_session_url(race.id, race.slug) + qs, status_code=302
+        )
 
     retired = await storage.lookup_retired_slug(session_ref)
     if retired is None:
@@ -343,7 +358,9 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
     current = await storage.get_race(race_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return RedirectResponse(url=_canonical_session_url(current.id, current.slug), status_code=301)
+    return RedirectResponse(
+        url=_canonical_session_url(current.id, current.slug) + qs, status_code=302
+    )
 
 
 @router.get("/sails", response_class=HTMLResponse, include_in_schema=False)
