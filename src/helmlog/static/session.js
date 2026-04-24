@@ -7170,7 +7170,7 @@ function showNewMomentForm(prefill) {
   form.innerHTML = ''
     + '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
     + '<input id="new-thread-title" placeholder="Subject (e.g. windshift, close call)" style="flex:2;min-width:180px"/>'
-    + '<input id="new-thread-counterparty" list="new-thread-cp-list" placeholder="Counterparty (e.g. USA 123)" style="flex:1;min-width:140px"/>'
+    + '<input id="new-thread-counterparty" list="new-thread-cp-list" placeholder="Counterparty (sail #, e.g. USA 123)" style="flex:1;min-width:140px"/>'
     + '<datalist id="new-thread-cp-list"></datalist>'
     + '</div>'
     + '<div style="margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">'
@@ -7352,25 +7352,57 @@ function _scrollDeepLinkTarget(card, scrollToCommentId) {
 // ---------------------------------------------------------------------------
 // Counterparty chip + typeahead (#677)
 // ---------------------------------------------------------------------------
+//
+// Typeahead source is the boats registry (populated by results imports).
+// Previously-used free-text counterparty values are merged in as a fallback
+// so early users / non-competitor values (e.g. "mark boat") still surface.
+// The counterparty column itself stays free-text — issue #656 tracks the
+// future FK promotion once real usage patterns are in.
 
 let _counterpartyCache = null;
 
 async function _loadCounterparties() {
   if (_counterpartyCache) return _counterpartyCache;
+  const entries = [];
+  const seen = new Set();
+  try {
+    const r = await fetch('/api/boats');
+    if (r.ok) {
+      const boats = await r.json();
+      for (const b of boats || []) {
+        const sail = (b.sail_number || '').trim();
+        if (!sail || seen.has(sail)) continue;
+        seen.add(sail);
+        entries.push({value: sail, label: b.name ? sail + ' — ' + b.name : sail});
+      }
+    }
+  } catch (e) { /* fall through to counterparty strings */ }
   try {
     const r = await fetch('/api/moments/counterparties');
-    _counterpartyCache = r.ok ? ((await r.json()).counterparties || []) : [];
-  } catch (e) {
-    _counterpartyCache = [];
-  }
-  return _counterpartyCache;
+    if (r.ok) {
+      const {counterparties} = await r.json();
+      for (const c of counterparties || []) {
+        const v = (c || '').trim();
+        if (!v || seen.has(v)) continue;
+        seen.add(v);
+        entries.push({value: v, label: v});
+      }
+    }
+  } catch (e) { /* ignore */ }
+  _counterpartyCache = entries;
+  return entries;
 }
 
 async function _populateCounterpartyDatalist(datalistId) {
   const list = await _loadCounterparties();
   const dl = document.getElementById(datalistId);
   if (!dl) return;
-  dl.innerHTML = list.map(c => '<option value="' + esc(c) + '"></option>').join('');
+  // Put sail number in `value` (what gets saved) and the richer
+  // "sail — name" string in the option body so users see both while
+  // typing. Most browsers show the option body; Safari shows value only.
+  dl.innerHTML = list
+    .map(e => '<option value="' + esc(e.value) + '">' + esc(e.label) + '</option>')
+    .join('');
 }
 
 // Render a counterparty chip. `opts.editable` makes it clickable in the
