@@ -197,6 +197,21 @@ async def test_slug_only_redirects_to_canonical(
 
 
 @pytest.mark.asyncio
+async def test_canonical_redirect_preserves_query_string(
+    storage: Storage, admin_client: httpx.AsyncClient
+) -> None:
+    """Deep-link query params (?moment=&comment=, ?t=) survive the 301 hop (#672)."""
+    race_id = await _seed_race(storage, name="20260408-CYC-1")
+    resp = await admin_client.get(f"/session/{race_id}?moment=38&comment=20")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1?moment=38&comment=20"
+    # Slug-only path also preserves the query string.
+    resp = await admin_client.get("/session/20260408-cyc-1?t=12:34")
+    assert resp.status_code == 301
+    assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1?t=12:34"
+
+
+@pytest.mark.asyncio
 async def test_canonical_url_renders_page(
     storage: Storage, admin_client: httpx.AsyncClient
 ) -> None:

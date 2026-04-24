@@ -314,13 +314,20 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
 
     storage = get_storage(request)
 
+    # Preserve query string across the canonical-slug redirect so deep links
+    # like /session/104?moment=38&comment=20 don't lose their params on the
+    # 301 hop to /session/104/{slug}.
+    qs = f"?{request.url.query}" if request.url.query else ""
+
     if session_ref.isdigit():
         numeric_id = int(session_ref)
         race = await storage.get_race(numeric_id)
         if race is not None:
             slug = race.slug or await storage.ensure_race_slug(race.id) or ""
             if slug:
-                return RedirectResponse(url=_canonical_session_url(race.id, slug), status_code=301)
+                return RedirectResponse(
+                    url=_canonical_session_url(race.id, slug) + qs, status_code=301
+                )
             # Last-resort fallback — render inline rather than redirect-loop.
             return await _render_session_page(request, race)
         # Not a race — try the debrief (audio_sessions) id space so history
@@ -332,7 +339,9 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
 
     race = await storage.get_race_by_slug(session_ref)
     if race is not None:
-        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+        return RedirectResponse(
+            url=_canonical_session_url(race.id, race.slug) + qs, status_code=301
+        )
 
     retired = await storage.lookup_retired_slug(session_ref)
     if retired is None:
@@ -343,7 +352,9 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
     current = await storage.get_race(race_id)
     if current is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return RedirectResponse(url=_canonical_session_url(current.id, current.slug), status_code=301)
+    return RedirectResponse(
+        url=_canonical_session_url(current.id, current.slug) + qs, status_code=301
+    )
 
 
 @router.get("/sails", response_class=HTMLResponse, include_in_schema=False)
