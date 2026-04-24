@@ -72,8 +72,10 @@ function snippet(text,max){
 }
 
 function notifUrl(n){
-  if(n.session_id && n.source_thread_id){
-    return '/session/'+n.session_id+'#thread-'+n.source_thread_id;
+  if(n.session_id && n.source_moment_id){
+    let u='/session/'+n.session_id+'?moment='+n.source_moment_id;
+    if(n.source_comment_id) u+='&comment='+n.source_comment_id;
+    return u;
   }
   if(n.session_id){
     return '/session/'+n.session_id;
@@ -128,8 +130,8 @@ async function loadNotifications(){
       // Meta line: time + thread title
       html+='<div class="notif-meta">';
       html+='<span class="notif-time">'+relTime(n.created_at)+'</span>';
-      if(n.thread_title){
-        html+='<span class="notif-thread">'+esc(n.thread_title)+'</span>';
+      if(n.moment_subject){
+        html+='<span class="notif-thread">'+esc(n.moment_subject)+'</span>';
       }
       html+='</div>';
 

@@ -6932,16 +6932,17 @@ function _refreshThreadHighlights(utc) {
 registerSurface('threads', function(utc) { _refreshThreadHighlights(utc); });
 
 function _checkThreadHash() {
-  // Prefer query params (?thread=<id>&comment=<id>) — survive Slack unfurls.
+  // Prefer query params (?moment=<id>&comment=<id>) — survive Slack unfurls.
+  // ?thread= is accepted as a legacy alias from links generated before #663.
   // Fallback to #thread-<id> fragment for backwards compat.
   const params = new URLSearchParams(window.location.search);
-  const threadParam = params.get('thread');
+  const momentParam = params.get('moment') || params.get('thread');
   const commentParam = params.get('comment');
-  if (threadParam) {
-    const threadId = parseInt(threadParam, 10);
-    if (!isNaN(threadId)) {
+  if (momentParam) {
+    const momentId = parseInt(momentParam, 10);
+    if (!isNaN(momentId)) {
       const commentId = commentParam ? parseInt(commentParam, 10) : null;
-      openThread(threadId, commentId && !isNaN(commentId) ? commentId : null);
+      openThread(momentId, commentId && !isNaN(commentId) ? commentId : null);
       return;
     }
   }
@@ -6957,8 +6958,9 @@ function _threadShareUrl(threadId, commentId) {
   const url = new URL(window.location.href);
   url.hash = '';
   url.searchParams.delete('thread');
+  url.searchParams.delete('moment');
   url.searchParams.delete('comment');
-  url.searchParams.set('thread', String(threadId));
+  url.searchParams.set('moment', String(threadId));
   if (commentId) url.searchParams.set('comment', String(commentId));
   return url.toString();
 }
