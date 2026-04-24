@@ -6710,6 +6710,16 @@ function _updateBoatSettingsForUtc(utcDate) {
 
 let _threads = [];
 let _discussionMarkers = [];
+// Currently-focused moment (open in the detail view). Renders as a larger,
+// pulsing marker on the map so the user can see at a glance where on the
+// track the moment they're reading is anchored. Null when the panel is
+// showing the list view.
+let _focusedMomentId = null;
+function _setFocusedMoment(id) {
+  if (_focusedMomentId === id) return;
+  _focusedMomentId = id;
+  if (_threads && _threads.length) _addDiscussionMarkers();
+}
 
 function _threadTitle(t) {
   if (t.title) return esc(t.title);
@@ -6772,6 +6782,10 @@ async function loadMoments(opts) {
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('moments-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
+  // List render → user is back to overview; drop the focus highlight.
+  // (renderList:false is the deep-link init path, where openThread is in
+  // flight and has set the focus — leave it alone.)
+  if (renderList) _focusedMomentId = null;
   _addDiscussionMarkers();
   // When called with renderList:false (deep-link init), we've populated
   // _threads, _anchorIndex, the badge, and the map markers — but skip
@@ -7063,11 +7077,14 @@ function _addDiscussionMarkers() {
     const markerStyle = t.resolved
       ? 'width:14px;height:14px;background:transparent;border:2px solid ' + cssVar('--success') + ';border-radius:50%'
       : 'width:14px;height:14px;background:' + markerColor + ';border:2px solid ' + bgPrimary + ';border-radius:50%;box-shadow:0 0 4px ' + markerColor;
+    const isFocused = (t.id === _focusedMomentId);
     const icon = L.divIcon({
-      className: 'discussion-marker',
-      html: '<div style="' + markerStyle + '"></div>',
-      iconSize: [14, 14],
-      iconAnchor: [7, 7],
+      className: isFocused ? 'discussion-marker focused' : 'discussion-marker',
+      html: isFocused
+        ? '<div class="moment-marker-focused-dot"></div>'
+        : '<div style="' + markerStyle + '"></div>',
+      iconSize: isFocused ? [22, 22] : [14, 14],
+      iconAnchor: isFocused ? [11, 11] : [7, 7],
     });
     const threadId = t.id;
     const marker = L.marker(latLng, {icon: icon})
@@ -7185,6 +7202,10 @@ async function submitNewThread() {
 async function openThread(threadId, scrollToCommentId) {
   const body = document.getElementById('moments-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
+  // Promote this moment's map marker to the focused (large + pulsing) style
+  // so the user can see at a glance where on the track the open moment is
+  // anchored. Cleared when loadMoments() repaints the list view.
+  _setFocusedMoment(threadId);
   // Mark as read
   fetch('/api/moments/' + threadId + '/read', {method: 'POST'});
   const r = await fetch('/api/moments/' + threadId);

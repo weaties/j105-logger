@@ -65,7 +65,18 @@
 .btn-copy-link:hover{border-color:var(--accent);color:var(--accent)}
 @keyframes flash-highlight-kf{0%{box-shadow:0 0 0 2px var(--accent-strong);background:rgba(126,184,247,.2)}100%{box-shadow:0 0 0 0 transparent;background:transparent}}
 .flash-highlight{animation:flash-highlight-kf 2.2s ease-out;border-radius:6px}
-.discussion-marker{background:none!important;border:none!important}
+.discussion-marker{background:none!important;border:none!important;z-index:600}
+.discussion-marker.focused{z-index:1000}
+@keyframes moment-marker-pulse-kf{
+  0%{box-shadow:0 0 0 0 rgba(96,165,250,.65),0 0 10px var(--accent-strong)}
+  70%{box-shadow:0 0 0 14px rgba(96,165,250,0),0 0 10px var(--accent-strong)}
+  100%{box-shadow:0 0 0 0 rgba(96,165,250,0),0 0 10px var(--accent-strong)}
+}
+.moment-marker-focused-dot{
+  width:22px;height:22px;background:var(--accent-strong);
+  border:3px solid var(--bg-primary);border-radius:50%;
+  animation:moment-marker-pulse-kf 1.6s ease-out infinite;
+}
 .mention{color:var(--accent);font-weight:600;text-decoration:none}
 .stale-banner{background:var(--warning);color:var(--bg-primary);padding:6px 10px;border-radius:6px;font-size:.8rem;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;gap:8px}
 .stale-banner button{background:var(--bg-primary);color:var(--warning);border:none;border-radius:4px;padding:4px 10px;font-size:.78rem;cursor:pointer;white-space:nowrap}
