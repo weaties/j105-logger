@@ -1,6 +1,6 @@
 // Tag-picker custom element (#587 / #588 slice 3).
 //
-//   <tag-picker entity-type="bookmark" entity-id="42"></tag-picker>
+//   <tag-picker entity-type="moment" entity-id="42"></tag-picker>
 //
 // Loads the tag list from GET /api/tags?order_by=usage and the current
 // attachments from GET /api/entities/{type}/{id}/tags. User can:

@@ -41,7 +41,7 @@ async def _session(s: Storage, idx: int = 1) -> int:
 
 
 def test_entity_types_constant() -> None:
-    assert frozenset({"session", "maneuver", "thread", "bookmark", "session_note"}) == ENTITY_TYPES
+    assert frozenset({"session", "maneuver", "moment"}) == ENTITY_TYPES
 
 
 @pytest.mark.asyncio
@@ -155,10 +155,13 @@ async def test_attach_idempotent_does_not_double_count(storage: Storage) -> None
 
 @pytest.mark.asyncio
 async def test_list_tags_order_by_name(storage: Storage) -> None:
+    # Fresh DBs include seeded tags (#652), so filter to the names this test
+    # actually created before asserting relative order.
     await storage.create_tag("zebra")
     await storage.create_tag("alpha")
     await storage.create_tag("mongoose")
-    names = [t["name"] for t in await storage.list_tags(order_by="name")]
+    own = {"alpha", "mongoose", "zebra"}
+    names = [t["name"] for t in await storage.list_tags(order_by="name") if t["name"] in own]
     assert names == ["alpha", "mongoose", "zebra"]
 
 
@@ -174,7 +177,10 @@ async def test_list_tags_order_by_usage(storage: Storage) -> None:
     sid2 = await _session(storage, 2)
     await storage.attach_tag("session", sid2, t_hot, user_id=None)
 
-    names = [t["name"] for t in await storage.list_tags(order_by="usage")]
+    # Seeded tags (#652) have 0 usage, same as "cold" — filter to this test's
+    # own tags to make the ordering assertion meaningful.
+    own = {"hot", "warm", "cold"}
+    names = [t["name"] for t in await storage.list_tags(order_by="usage") if t["name"] in own]
     # hot (2) comes first, warm (1), cold (0)
     assert names[:2] == ["hot", "warm"]
     assert names[-1] == "cold"
@@ -264,9 +270,16 @@ async def test_merge_moves_entities_to_target(storage: Storage) -> None:
 
     await storage.merge_tags(src, tgt)
 
-    assert await storage.list_tags_for_entity("session", sid) == [
-        {"id": tgt, "name": "tgt", "color": None}
-    ]
+    # list_tags_for_entity now also returns source / confirmed_at for
+    # provenance (#650). Merged rows inherit the attach_tag defaults
+    # since merge reassigns rather than re-inserts.
+    result = await storage.list_tags_for_entity("session", sid)
+    assert len(result) == 1
+    assert result[0]["id"] == tgt
+    assert result[0]["name"] == "tgt"
+    assert result[0]["color"] is None
+    assert result[0]["source"] == "manual"
+    assert result[0]["confirmed_at"] is None
     assert storage._db is not None
     async with storage._db.execute("SELECT id FROM tags WHERE id=?", (src,)) as cur:
         row = await cur.fetchone()
@@ -372,14 +385,14 @@ async def test_sessions_matching_tags_via_maneuver(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sessions_matching_tags_via_bookmark(storage: Storage) -> None:
+async def test_sessions_matching_tags_via_moment(storage: Storage) -> None:
     sid_a = await _session(storage, 1)
     sid_b = await _session(storage, 2)
-    bid = await storage.create_bookmark(
-        session_id=sid_a, user_id=None, name="b", note=None, t_start=_T0
+    moment_id = await storage.create_moment(
+        session_id=sid_a, anchor_kind="timestamp", anchor_t_start=_T0
     )
     tid = await storage.create_tag("x")
-    await storage.attach_tag("bookmark", bid, tid, user_id=None)
+    await storage.attach_tag("moment", moment_id, tid, user_id=None)
     result = await storage.sessions_matching_tags([tid], mode="and")
     assert result == [sid_a]
     assert sid_b not in result
@@ -426,19 +439,19 @@ async def test_session_tag_summary_groups_by_entity_type(storage: Storage) -> No
     sid = await _session(storage, 1)
     mid1 = await _maneuver(storage, sid)
     mid2 = await _maneuver(storage, sid)
-    bid = await storage.create_bookmark(
-        session_id=sid, user_id=None, name="b", note=None, t_start=_T0
+    moment_id = await storage.create_moment(
+        session_id=sid, anchor_kind="timestamp", anchor_t_start=_T0
     )
     tid = await storage.create_tag("weather")
     await storage.attach_tag("session", sid, tid, user_id=None)
     await storage.attach_tag("maneuver", mid1, tid, user_id=None)
     await storage.attach_tag("maneuver", mid2, tid, user_id=None)
-    await storage.attach_tag("bookmark", bid, tid, user_id=None)
+    await storage.attach_tag("moment", moment_id, tid, user_id=None)
 
     summary = await storage.list_session_tag_summary([sid])
     rows = summary[sid]
     by_et = {r["entity_type"]: r["count"] for r in rows}
-    assert by_et == {"session": 1, "maneuver": 2, "bookmark": 1}
+    assert by_et == {"session": 1, "maneuver": 2, "moment": 1}
 
 
 @pytest.mark.asyncio

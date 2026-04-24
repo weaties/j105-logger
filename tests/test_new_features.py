@@ -55,12 +55,14 @@ async def test_audit_log_limit_offset(storage: Storage) -> None:
 
 @pytest.mark.asyncio
 async def test_create_and_list_tags(storage: Storage) -> None:
+    # Fresh DBs now include a seeded racing-event vocabulary (#652), so this
+    # test looks for its own tag by name rather than asserting total count.
     tag_id = await storage.create_tag("protest", "#e53e3e")
     tags = await storage.list_tags()
-    assert len(tags) == 1
-    assert tags[0]["name"] == "protest"
-    assert tags[0]["color"] == "#e53e3e"
-    assert tags[0]["id"] == tag_id
+    by_name = {t["name"]: t for t in tags}
+    assert "protest" in by_name
+    assert by_name["protest"]["color"] == "#e53e3e"
+    assert by_name["protest"]["id"] == tag_id
 
 
 @pytest.mark.asyncio
@@ -97,18 +99,23 @@ async def test_session_tags(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_note_tags(storage: Storage) -> None:
+async def test_moment_tags(storage: Storage) -> None:
     now = datetime.now(UTC)
     race = await storage.start_race("Test", now, now.date().isoformat(), 1, "Test Race 1", "race")
-    note_id = await storage.create_note(now.isoformat(), "test note", race_id=race.id)
+    moment_id = await storage.create_moment(
+        session_id=race.id,
+        anchor_kind="timestamp",
+        anchor_t_start=now.isoformat(),
+        subject="test moment",
+    )
     tag_id = await storage.create_tag("protest", "#e53e3e")
-    await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
-    tags = await storage.list_tags_for_entity("session_note", note_id)
+    await storage.attach_tag("moment", moment_id, tag_id, user_id=None)
+    tags = await storage.list_tags_for_entity("moment", moment_id)
     assert len(tags) == 1
     assert tags[0]["name"] == "protest"
 
-    await storage.detach_tag("session_note", note_id, tag_id)
-    assert len(await storage.list_tags_for_entity("session_note", note_id)) == 0
+    await storage.detach_tag("moment", moment_id, tag_id)
+    assert len(await storage.list_tags_for_entity("moment", moment_id)) == 0
 
 
 @pytest.mark.asyncio
@@ -140,12 +147,15 @@ async def test_tag_usage_counts(storage: Storage) -> None:
     tag_id = await storage.create_tag("counted")
     now = datetime.now(UTC)
     race = await storage.start_race("T", now, now.date().isoformat(), 1, "T R1", "race")
-    note_id = await storage.create_note(now.isoformat(), "test", race_id=race.id)
+    moment_id = await storage.create_moment(
+        session_id=race.id,
+        anchor_kind="timestamp",
+        anchor_t_start=now.isoformat(),
+    )
     await storage.attach_tag("session", race.id, tag_id, user_id=None)
-    await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
+    await storage.attach_tag("moment", moment_id, tag_id, user_id=None)
     tags = await storage.list_tags()
     t = next(t for t in tags if t["id"] == tag_id)
-    # Combined across entity types
     assert t["usage_count"] == 2
 
 
@@ -155,12 +165,11 @@ async def test_tag_usage_counts(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_trigger_scan_creates_notes(storage: Storage) -> None:
+async def test_trigger_scan_creates_moments(storage: Storage) -> None:
     from helmlog.triggers import TriggerRule, scan_transcript
 
     now = datetime.now(UTC)
     race = await storage.start_race("T", now, now.date().isoformat(), 1, "T R1", "race")
-    # Create a fake audio session
     db = storage._conn()
     await db.execute(
         "INSERT INTO audio_sessions"
@@ -181,14 +190,16 @@ async def test_trigger_scan_creates_notes(storage: Storage) -> None:
     count = await scan_transcript(storage, audio_id, now.isoformat(), segments, rules=rules)
     assert count == 1
 
-    # Verify note was created
-    notes = await storage.list_notes(race_id=race.id)
-    auto_notes = [n for n in notes if n.get("body") and "PROTEST" in n["body"]]
-    assert len(auto_notes) == 1
+    moments = await storage.list_moments_for_session(race.id, include_unconfirmed=True)
+    auto_moments = [m for m in moments if m.get("source") == "auto:transcript"]
+    assert len(auto_moments) == 1
 
-    # Verify tags
-    note_tags = await storage.list_tags_for_entity("session_note", auto_notes[0]["id"])
-    tag_names = {t["name"] for t in note_tags}
+    moment_tags = await storage.list_tags_for_entity(
+        "moment",
+        auto_moments[0]["id"],
+        include_unconfirmed=True,
+    )
+    tag_names = {t["name"] for t in moment_tags}
     assert "protest" in tag_names
     assert "auto-detected" in tag_names
 
@@ -357,14 +368,18 @@ async def test_session_tag_api(client: AsyncClient, storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_note_tag_api(client: AsyncClient, storage: Storage) -> None:
+async def test_moment_tag_api(client: AsyncClient, storage: Storage) -> None:
     now = datetime.now(UTC)
     race = await storage.start_race("T", now, now.date().isoformat(), 1, "T R1", "race")
-    note_id = await storage.create_note(now.isoformat(), "test", race_id=race.id)
-    r = await client.post(f"/api/notes/{note_id}/tags", json={"tag_name": "protest"})
+    moment_id = await storage.create_moment(
+        session_id=race.id,
+        anchor_kind="timestamp",
+        anchor_t_start=now.isoformat(),
+    )
+    r = await client.post(f"/api/entities/moment/{moment_id}/tags", json={"name": "protest"})
     assert r.status_code == 201
 
-    r = await client.get(f"/api/notes/{note_id}/tags")
+    r = await client.get(f"/api/entities/moment/{moment_id}/tags")
     assert len(r.json()) == 1
 
 

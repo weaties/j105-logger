@@ -5,7 +5,6 @@
 | timestamp   | abs(cursor - t_start) <= W                                | 15s       |
 | segment     | t_start <= cursor < t_end                                 | exact     |
 | maneuver    | maneuver.ts <= cursor <= maneuver.end_ts (fallback ±W)    | exact/15s |
-| bookmark    | abs(cursor - bookmark.t_start) <= W                       | 15s       |
 | race        | always active on the thread's session                     | -         |
 | start       | abs(cursor - race.start_utc) <= W_start                   | 60s       |
 """
@@ -103,28 +102,6 @@ def test_maneuver_matches_null_end_ts_with_window() -> None:
 
 def test_maneuver_misses_when_not_in_lookups() -> None:
     a = Anchor(kind="maneuver", entity_id=999)
-    assert not anchor_matches_cursor(a, _BASE, Lookups())
-
-
-# ---------------------------------------------------------------------------
-# bookmark — point ± 15s using bookmark's t_start
-# ---------------------------------------------------------------------------
-
-
-def test_bookmark_matches_within_window() -> None:
-    a = Anchor(kind="bookmark", entity_id=7)
-    lookups = Lookups(bookmarks={7: _iso(_BASE)})
-    assert anchor_matches_cursor(a, _at(10), lookups)
-
-
-def test_bookmark_misses_outside_window() -> None:
-    a = Anchor(kind="bookmark", entity_id=7)
-    lookups = Lookups(bookmarks={7: _iso(_BASE)})
-    assert not anchor_matches_cursor(a, _at(100), lookups)
-
-
-def test_bookmark_misses_when_not_in_lookups() -> None:
-    a = Anchor(kind="bookmark", entity_id=42)
     assert not anchor_matches_cursor(a, _BASE, Lookups())
 
 

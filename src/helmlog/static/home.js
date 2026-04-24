@@ -1377,7 +1377,7 @@ function selectNoteType(type) {
 
 async function _loadSettingsKeys() {
   try {
-    const r = await fetch('/api/notes/settings-keys');
+    const r = await fetch('/api/session-settings/keys');
     if (!r.ok) return;
     const {keys} = await r.json();
     const dl = document.getElementById('settings-key-suggestions');
@@ -1416,7 +1416,7 @@ async function saveNote() {
 async function _saveTextNote(sessionId) {
   const body = document.getElementById('note-body').value.trim();
   if (!body) return;
-  await fetch('/api/sessions/' + sessionId + '/notes', {
+  await fetch('/api/sessions/' + sessionId + '/moments', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({body, note_type: 'text'})
   });
@@ -1434,7 +1434,7 @@ async function _saveSettingsNote(sessionId) {
     if (k) obj[k] = v;
   });
   if (!Object.keys(obj).length) return;
-  await fetch('/api/sessions/' + sessionId + '/notes', {
+  await fetch('/api/sessions/' + sessionId + '/moments', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({body: JSON.stringify(obj), note_type: 'settings'})
   });
@@ -1450,7 +1450,7 @@ async function _savePhotoNote(sessionId) {
   if (!input.files || !input.files[0]) return;
   const fd = new FormData();
   fd.append('file', input.files[0]);
-  const resp = await fetch('/api/sessions/' + sessionId + '/notes/photo', {method: 'POST', body: fd});
+  const resp = await fetch('/api/sessions/' + sessionId + '/moments/photo', {method: 'POST', body: fd});
   if (!resp.ok) {
     const mb = (input.files[0].size / 1048576).toFixed(1);
     alert(resp.status === 413
@@ -1473,7 +1473,7 @@ function renderNote(n, sessionId) {
   const t = new Date(n.ts).toISOString().substring(11, 19) + ' UTC';
   let content = '';
   if (n.note_type === 'photo' && n.photo_path) {
-    const src = '/notes/' + n.photo_path;
+    const src = '/attachments/' + n.photo_path;
     content = '<img src="' + src + '" loading="lazy" style="max-width:80px;max-height:60px;border-radius:4px;'
       + 'cursor:pointer;vertical-align:middle;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '" />';
   } else if (n.note_type === 'settings' && n.body) {
@@ -1498,14 +1498,14 @@ function renderNote(n, sessionId) {
 }
 
 async function deleteNote(noteId, sessionId) {
-  await fetch('/api/notes/' + noteId, {method: 'DELETE'});
+  await fetch('/api/moments/' + noteId, {method: 'DELETE'});
   await refreshNotes(sessionId);
 }
 
 async function refreshNotes(sessionId) {
   const el = document.getElementById('notes-list-' + sessionId);
   if (!el) return;
-  const r = await fetch('/api/sessions/' + sessionId + '/notes');
+  const r = await fetch('/api/sessions/' + sessionId + '/moments');
   const notes = await r.json();
   el.innerHTML = notes.length
     ? notes.map(n => renderNote(n, sessionId)).join('')

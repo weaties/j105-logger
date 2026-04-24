@@ -12,9 +12,10 @@ issue initially drafted) to avoid collision with the existing Insta360 control
 routes in ``routes/cameras.py``.
 
 Both are auth'd by device bearer token (``require_auth("crew")``). Photos
-are stored alongside regular photo notes under ``NOTES_DIR`` so they appear
-in the session's notes list and are served by the existing ``/notes/{path}``
-route.
+land under ``NOTES_DIR`` (the ``ATTACHMENTS_DIR`` env var overrides, but
+``NOTES_DIR`` is honored for backwards compatibility), and are exposed as
+a timestamp-anchored moment with a photo attachment (#663). They're
+served via the ``/attachments/{path}`` route.
 """
 
 from __future__ import annotations
@@ -84,14 +85,17 @@ async def camera_photo(
     await asyncio.to_thread(dest.write_bytes, data)
 
     photo_path = f"{race_id}/{filename}"
-    note_id = await storage.create_note(
-        ts,
-        None,
-        race_id=race_id,
-        audio_session_id=None,
-        note_type="photo",
-        photo_path=photo_path,
+    # #663: notes/comment_threads/bookmarks unified into moments. A photo
+    # capture is now a timestamp-anchored moment with a photo attachment —
+    # mirrors the legacy /api/sessions/{id}/notes/photo shim in routes/moments.py.
+    moment_id = await storage.create_moment(
+        session_id=race_id,
+        anchor_kind="timestamp",
+        anchor_t_start=ts,
         user_id=_user.get("id"),
+    )
+    await storage.create_attachment(
+        moment_id=moment_id, kind="photo", path=photo_path, user_id=_user.get("id")
     )
     from helmlog import influx
 
@@ -101,10 +105,10 @@ async def camera_photo(
         note_type="photo",
         body=f"/notes/{photo_path}",
         race_id=race_id,
-        note_id=note_id,
+        note_id=moment_id,
     )
     await audit(request, "camera.photo", detail=photo_path, user=_user)
     return JSONResponse(
-        {"id": note_id, "ts": ts, "photo_path": photo_path},
+        {"id": moment_id, "ts": ts, "photo_path": photo_path},
         status_code=201,
     )

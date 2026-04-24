@@ -29,6 +29,33 @@ input.inline{background:var(--bg-input);border:1px solid var(--border);border-ra
 {% block content %}
 <h1 style="margin-bottom:12px">Tag Manager</h1>
 
+<div class="card" style="font-size:.82rem;line-height:1.45">
+  <strong>Convention.</strong> Tags capture <em>human-judgment racing events</em>
+  (close crossings, protests, places gained/lost, rollings). Conditions like
+  light or heavy air are <em>not</em> tags &mdash; they are queries against the
+  wind data.
+  <br><br>
+  <strong>Directional pairs are intentional.</strong> <code>rolled-them</code>
+  and <code>got-rolled</code> are separate tags so &ldquo;every moment we got
+  rolled&rdquo; remains a filterable query. Do <strong>not</strong> merge
+  directional pairs &mdash; collapsing them destroys the query. Same for
+  <code>pinned-them</code>&nbsp;/&nbsp;<code>got-pinned</code>,
+  <code>we-protested</code>&nbsp;/&nbsp;<code>got-protested</code>,
+  <code>places-gained</code>&nbsp;/&nbsp;<code>places-lost</code>, etc.
+  <br><br>
+  <strong>Colors are load-bearing.</strong>
+  <span style="color:#16a34a">green</span> = us-good,
+  <span style="color:#b91c1c">red</span> = us-bad,
+  <span style="color:#7c3aed">purple</span> = rules,
+  <span style="color:#6b7280">grey</span> = gear/crew incident,
+  <span style="color:#dc2626">red</span>/<span style="color:#eab308">amber</span>
+  = collision severity. Keep new tags in the convention where it applies.
+  <br><br>
+  <strong>Counterparty is not a tag.</strong> Which <em>other</em> boat was
+  involved lives on the bookmark itself, not as a per-boat tag &mdash;
+  otherwise the tag list drifts into half-boats per season.
+</div>
+
 <div class="card">
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
     <input id="new-tag-name" class="inline" placeholder="New tag name" />

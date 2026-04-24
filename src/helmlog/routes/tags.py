@@ -140,11 +140,14 @@ async def api_list_entity_tags(
     request: Request,
     entity_type: str,
     entity_id: int,
+    include_unconfirmed: bool = False,
     _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
     _validate_entity_type(entity_type)
     storage = get_storage(request)
-    tags = await storage.list_tags_for_entity(entity_type, entity_id)
+    tags = await storage.list_tags_for_entity(
+        entity_type, entity_id, include_unconfirmed=include_unconfirmed
+    )
     return JSONResponse(tags)
 
 
@@ -156,7 +159,13 @@ async def api_attach_entity_tag(
     body: dict[str, Any],
     user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
 ) -> JSONResponse:
-    """Attach a tag. Body: {tag_id} OR {name} for inline-create-and-attach."""
+    """Attach a tag. Body: {tag_id} OR {name} for inline-create-and-attach.
+
+    Source is always ``'manual'`` on this HTTP path. Auto sources
+    (``'auto:transcript'`` / ``'auto:detector'``) come from backend
+    code paths that call ``storage.attach_tag`` directly — never from
+    untrusted body input.
+    """
     _validate_entity_type(entity_type)
     storage = get_storage(request)
     tag_id = body.get("tag_id")
@@ -176,6 +185,38 @@ async def api_attach_entity_tag(
     return JSONResponse(
         {"entity_type": entity_type, "entity_id": entity_id, "tag_id": tag_id},
         status_code=201,
+    )
+
+
+@router.post("/api/entities/{entity_type}/{entity_id}/tags/{tag_id}/confirm", status_code=200)
+async def api_confirm_entity_tag(
+    request: Request,
+    entity_type: str,
+    entity_id: int,
+    tag_id: int,
+    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Accept an auto-generated tag. Stamps confirmed_at / confirmed_by.
+
+    No-op for manual tags (they're already "confirmed" by definition,
+    but calling this still records a review timestamp, which is fine).
+    Returns 404 if no matching attachment exists.
+    """
+    _validate_entity_type(entity_type)
+    storage = get_storage(request)
+    ok = await storage.confirm_tag_attachment(
+        entity_type, entity_id, tag_id, user_id=user.get("id")
+    )
+    if not ok:
+        raise HTTPException(status_code=404, detail="Tag attachment not found")
+    await audit(
+        request,
+        "tag.confirm",
+        detail=f"{entity_type}={entity_id} tag={tag_id}",
+        user=user,
+    )
+    return JSONResponse(
+        {"entity_type": entity_type, "entity_id": entity_id, "tag_id": tag_id, "confirmed": True}
     )
 
 
@@ -253,49 +294,5 @@ async def api_get_session_tags(
     return JSONResponse(tags)
 
 
-@router.post("/api/notes/{note_id}/tags", status_code=201)
-async def api_add_note_tag(
-    request: Request,
-    note_id: int,
-    body: dict[str, Any],
-    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
-    tag_id = body.get("tag_id")
-    tag_name = body.get("tag_name") or body.get("name")
-    if tag_id is None and not tag_name:
-        raise HTTPException(status_code=422, detail="tag_id or tag_name is required")
-    if tag_id is None:
-        assert isinstance(tag_name, str)
-        tag_id = await storage.get_or_create_tag(tag_name)
-    await storage.attach_tag("session_note", note_id, int(tag_id), user_id=user.get("id"))
-    await audit(request, "note.tag.add", detail=f"note={note_id} tag={tag_id}", user=user)
-    return JSONResponse({"note_id": note_id, "tag_id": tag_id}, status_code=201)
-
-
-@router.delete("/api/notes/{note_id}/tags/{tag_id}", status_code=204)
-async def api_remove_note_tag(
-    request: Request,
-    note_id: int,
-    tag_id: int,
-    user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> None:
-    storage = get_storage(request)
-    await storage.detach_tag("session_note", note_id, tag_id)
-    await audit(
-        request,
-        "note.tag.remove",
-        detail=f"note={note_id} tag={tag_id}",
-        user=user,
-    )
-
-
-@router.get("/api/notes/{note_id}/tags")
-async def api_get_note_tags(
-    request: Request,
-    note_id: int,
-    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
-) -> JSONResponse:
-    storage = get_storage(request)
-    tags = await storage.list_tags_for_entity("session_note", note_id)
-    return JSONResponse(tags)
+# Note tag endpoints are gone with session_notes in #662. Callers should use
+# /api/entities/moment/{id}/tags on the new moments primitive instead.

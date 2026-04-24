@@ -1,7 +1,8 @@
-"""Notification system for threaded comments Phase 2 (#284).
+"""Notification system for moment comments (#662, was #284).
 
 Handles @mention parsing, notification creation, and pluggable channels
-(platform + email).
+(platform + email). Moment-level replacement of the old thread-centric
+notification helpers.
 """
 
 from __future__ import annotations
@@ -31,7 +32,6 @@ def parse_mentions(body: str, known_names: list[str] | None = None) -> list[str]
     Returns a list of unique usernames (without the @ prefix).
     """
     if known_names:
-        # Sort longest-first so "dan weatbrook" matches before "dan"
         sorted_names = sorted(known_names, key=len, reverse=True)
         found: list[str] = []
         for name in sorted_names:
@@ -46,13 +46,8 @@ def parse_mentions(body: str, known_names: list[str] | None = None) -> list[str]
 
 
 def render_mentions_html(body: str, user_map: dict[str, int]) -> str:
-    """Replace @username with styled HTML links.
-
-    Matches multi-word names from *user_map* (longest first), then falls
-    back to single-word @token matching for any remaining.
-    """
+    """Replace @username with styled HTML links."""
     result = body
-    # Match known multi-word names first (longest first)
     for name in sorted(user_map.keys(), key=len, reverse=True):
         uid = user_map[name]
         escaped = re.escape(name)
@@ -62,7 +57,6 @@ def render_mentions_html(body: str, user_map: dict[str, int]) -> str:
             result,
         )
 
-    # Fallback: single-word @tokens not already linked
     def _replace_single(m: re.Match[str]) -> str:
         name = m.group(1)
         if name in user_map:
@@ -75,14 +69,14 @@ def render_mentions_html(body: str, user_map: dict[str, int]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Notification creation helpers
+# Notification creation helpers (moment-level)
 # ---------------------------------------------------------------------------
 
 
 async def notify_mention(
     storage: Storage,
     comment_id: int,
-    thread_id: int,
+    moment_id: int,
     session_id: int,
     actor_id: int,
     mentioned_user_ids: list[int],
@@ -95,7 +89,7 @@ async def notify_mention(
         await storage.create_notification(
             uid,
             "mention",
-            source_thread_id=thread_id,
+            source_moment_id=moment_id,
             source_comment_id=comment_id,
             session_id=session_id,
             actor_id=actor_id,
@@ -105,25 +99,25 @@ async def notify_mention(
     return count
 
 
-async def notify_new_thread(
+async def notify_new_moment(
     storage: Storage,
-    thread_id: int,
+    moment_id: int,
     session_id: int,
     actor_id: int,
 ) -> int:
-    """Notify relevant users about a new thread."""
-    users = await storage.get_users_for_notification(session_id, "new_thread")
+    """Notify relevant users about a new moment."""
+    users = await storage.get_users_for_notification(session_id, "new_moment")
     count = 0
     for u in users:
         if u["id"] == actor_id:
             continue
         await storage.create_notification(
             u["id"],
-            "new_thread",
-            source_thread_id=thread_id,
+            "new_moment",
+            source_moment_id=moment_id,
             session_id=session_id,
             actor_id=actor_id,
-            message="started a new discussion",
+            message="flagged a new moment",
         )
         count += 1
     return count
@@ -132,11 +126,11 @@ async def notify_new_thread(
 async def notify_reply(
     storage: Storage,
     comment_id: int,
-    thread_id: int,
+    moment_id: int,
     session_id: int,
     actor_id: int,
 ) -> int:
-    """Notify relevant users about a reply in a thread."""
+    """Notify relevant users about a reply on a moment."""
     users = await storage.get_users_for_notification(session_id, "reply")
     count = 0
     for u in users:
@@ -145,11 +139,11 @@ async def notify_reply(
         await storage.create_notification(
             u["id"],
             "reply",
-            source_thread_id=thread_id,
+            source_moment_id=moment_id,
             source_comment_id=comment_id,
             session_id=session_id,
             actor_id=actor_id,
-            message="replied in a discussion",
+            message="replied to a moment",
         )
         count += 1
     return count
@@ -157,11 +151,11 @@ async def notify_reply(
 
 async def notify_resolved(
     storage: Storage,
-    thread_id: int,
+    moment_id: int,
     session_id: int,
     actor_id: int,
 ) -> int:
-    """Notify relevant users that a thread was resolved."""
+    """Notify relevant users that a moment was resolved."""
     users = await storage.get_users_for_notification(session_id, "resolved")
     count = 0
     for u in users:
@@ -170,10 +164,10 @@ async def notify_resolved(
         await storage.create_notification(
             u["id"],
             "resolved",
-            source_thread_id=thread_id,
+            source_moment_id=moment_id,
             session_id=session_id,
             actor_id=actor_id,
-            message="resolved a discussion",
+            message="resolved a moment",
         )
         count += 1
     return count
@@ -196,8 +190,6 @@ class PlatformChannel(NotificationChannel):
     """In-app notification — always on, writes to notifications table."""
 
     async def send(self, user_id: int, notification: dict[str, Any]) -> bool:
-        # Platform notifications are created directly via storage.create_notification
-        # This channel exists for interface completeness.
         return True
 
 
@@ -247,7 +239,6 @@ async def dispatch_email_notifications(storage: Storage) -> int:
     channel = EmailChannel(storage)
     sent = 0
 
-    # Get all users who have email notifications enabled (immediate)
     db = storage._conn()
     cur = await db.execute(
         "SELECT DISTINCT n.id, n.user_id, n.type, n.message, n.actor_id,"

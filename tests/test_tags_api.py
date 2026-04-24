@@ -288,57 +288,72 @@ async def test_attach_requires_payload(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_bookmark_list_filters_by_tags_and(storage: Storage) -> None:
+async def test_moment_list_filters_by_tags_and(storage: Storage) -> None:
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sid = await _make_session(client)
-        b1 = (
+        m1 = (
             await client.post(
-                f"/api/sessions/{sid}/bookmarks",
-                json={"name": "b1", "t_start": "2024-06-15T12:00:00+00:00"},
+                f"/api/sessions/{sid}/moments",
+                json={
+                    "anchor_kind": "timestamp",
+                    "t_start": "2024-06-15T12:00:00+00:00",
+                    "subject": "m1",
+                },
             )
         ).json()["id"]
-        b2 = (
+        m2 = (
             await client.post(
-                f"/api/sessions/{sid}/bookmarks",
-                json={"name": "b2", "t_start": "2024-06-15T12:01:00+00:00"},
+                f"/api/sessions/{sid}/moments",
+                json={
+                    "anchor_kind": "timestamp",
+                    "t_start": "2024-06-15T12:01:00+00:00",
+                    "subject": "m2",
+                },
             )
         ).json()["id"]
         t_red = (await client.post("/api/tags", json={"name": "red"})).json()["id"]
         t_hot = (await client.post("/api/tags", json={"name": "hot"})).json()["id"]
-        await client.post(f"/api/entities/bookmark/{b1}/tags", json={"tag_id": t_red})
-        await client.post(f"/api/entities/bookmark/{b1}/tags", json={"tag_id": t_hot})
-        await client.post(f"/api/entities/bookmark/{b2}/tags", json={"tag_id": t_red})
+        await client.post(f"/api/entities/moment/{m1}/tags", json={"tag_id": t_red})
+        await client.post(f"/api/entities/moment/{m1}/tags", json={"tag_id": t_hot})
+        await client.post(f"/api/entities/moment/{m2}/tags", json={"tag_id": t_red})
 
-        # AND: only b1 has both
-        resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags={t_red},{t_hot}")
-        ids = [b["id"] for b in resp.json()["bookmarks"]]
-        assert ids == [b1]
+        resp = await client.get(f"/api/sessions/{sid}/moments?tags={t_red},{t_hot}")
+        ids = [m["id"] for m in resp.json()["moments"]]
+        assert ids == [m1]
 
-        # OR: both b1 and b2 carry red
-        resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags={t_red},{t_hot}&tag_mode=or")
-        ids = sorted(b["id"] for b in resp.json()["bookmarks"])
-        assert ids == sorted([b1, b2])
+        resp = await client.get(f"/api/sessions/{sid}/moments?tags={t_red},{t_hot}&tag_mode=or")
+        ids = sorted(m["id"] for m in resp.json()["moments"])
+        assert ids == sorted([m1, m2])
 
 
 @pytest.mark.asyncio
-async def test_thread_list_filters_by_tags(storage: Storage) -> None:
+async def test_moment_list_filters_by_single_tag(storage: Storage) -> None:
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sid = await _make_session(client)
-        t1 = (await client.post(f"/api/sessions/{sid}/threads", json={"title": "t1"})).json()["id"]
-        t2 = (await client.post(f"/api/sessions/{sid}/threads", json={"title": "t2"})).json()["id"]
+        m1 = (
+            await client.post(
+                f"/api/sessions/{sid}/moments",
+                json={"anchor_kind": "session", "subject": "m1"},
+            )
+        ).json()["id"]
+        (
+            await client.post(
+                f"/api/sessions/{sid}/moments",
+                json={"anchor_kind": "session", "subject": "m2"},
+            )
+        ).json()["id"]
         tag = (await client.post("/api/tags", json={"name": "q"})).json()["id"]
-        await client.post(f"/api/entities/thread/{t1}/tags", json={"tag_id": tag})
+        await client.post(f"/api/entities/moment/{m1}/tags", json={"tag_id": tag})
 
-        resp = await client.get(f"/api/sessions/{sid}/threads?tags={tag}")
-        ids = [t["id"] for t in resp.json()["threads"]]
-        assert ids == [t1]
-        assert t2 not in ids
+        resp = await client.get(f"/api/sessions/{sid}/moments?tags={tag}")
+        ids = [m["id"] for m in resp.json()["moments"]]
+        assert ids == [m1]
 
 
 @pytest.mark.asyncio
@@ -348,7 +363,7 @@ async def test_filter_accepts_empty_tags_param(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sid = await _make_session(client)
-        resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags=")
+        resp = await client.get(f"/api/sessions/{sid}/moments?tags=")
         assert resp.status_code == 200
 
 
@@ -359,7 +374,7 @@ async def test_filter_invalid_tags_returns_400(storage: Storage) -> None:
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
         sid = await _make_session(client)
-        resp = await client.get(f"/api/sessions/{sid}/bookmarks?tags=abc")
+        resp = await client.get(f"/api/sessions/{sid}/moments?tags=abc")
         assert resp.status_code == 400
 
 

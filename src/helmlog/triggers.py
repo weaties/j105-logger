@@ -156,9 +156,16 @@ async def scan_transcript(
     if not matches:
         return 0
 
-    # Resolve the race_id for this audio session
+    # Resolve the race_id for this audio session — triggers without a parent
+    # race can't become moments (moments are session-scoped), so we skip them.
     row = await storage.get_audio_session_row(audio_session_id)
     race_id: int | None = row["race_id"] if row and row.get("race_id") else None
+    if race_id is None:
+        logger.debug(
+            "Skipping trigger auto-notes for audio session {} (no parent race)",
+            audio_session_id,
+        )
+        return 0
 
     session_start = datetime.fromisoformat(session_started_at)
     if session_start.tzinfo is None:
@@ -166,32 +173,39 @@ async def scan_transcript(
 
     created = 0
     for m in matches:
-        # Compute wall-clock timestamp
         note_dt = session_start + timedelta(seconds=m.segment_start)
         note_ts = note_dt.isoformat()
 
-        # Dedup check: existing auto-note within 5 seconds
-        existing = await _check_existing_note(storage, race_id, audio_session_id, note_ts)
-        if existing:
+        if await _check_existing_auto_moment(storage, race_id, note_ts):
             continue
 
         context = _build_context(segments, m.segment_start)
-        note_id = await storage.create_note(
-            note_ts,
-            context or m.text,
-            race_id=race_id,
-            audio_session_id=audio_session_id,
-            note_type="text",
+        moment_id = await storage.create_moment(
+            session_id=race_id,
+            anchor_kind="timestamp",
+            anchor_t_start=note_ts,
+            subject=m.rule.note_name,
+            source="auto:transcript",
+        )
+        # Persist the matched transcript excerpt as an inline attachment
+        # (not a comment — comments carry author attribution, which
+        # triggers don't).
+        await storage.create_attachment(
+            moment_id=moment_id,
+            kind="transcript_excerpt",
+            body=context or m.text,
+        )
+        tag_id = await storage.get_or_create_tag(m.rule.tag, _tag_color(m.rule.tag))
+        await storage.attach_tag(
+            "moment", moment_id, tag_id, user_id=None, source="auto:transcript"
+        )
+        auto_tag_id = await storage.get_or_create_tag("auto-detected", "#eab308")
+        await storage.attach_tag(
+            "moment", moment_id, auto_tag_id, user_id=None, source="auto:transcript"
         )
 
-        # Tag the note
-        tag_id = await storage.get_or_create_tag(m.rule.tag, _tag_color(m.rule.tag))
-        await storage.attach_tag("session_note", note_id, tag_id, user_id=None)
-        auto_tag_id = await storage.get_or_create_tag("auto-detected", "#eab308")
-        await storage.attach_tag("session_note", note_id, auto_tag_id, user_id=None)
-
         logger.info(
-            "Auto-note created: {} at {} (audio_session={})",
+            "Auto-moment created: {} at {} (audio_session={})",
             m.rule.note_name,
             note_ts,
             audio_session_id,
@@ -201,14 +215,14 @@ async def scan_transcript(
     return created
 
 
-async def _check_existing_note(
+async def _check_existing_auto_moment(
     storage: Storage,
-    race_id: int | None,
-    audio_session_id: int,
+    race_id: int,
     note_ts: str,
     window_s: float = 5.0,
 ) -> bool:
-    """Check if an auto-detected note already exists within +-window_s of note_ts."""
+    """Does an auto-detected moment already exist within +-window_s of
+    ``note_ts``? Prevents duplicate auto-moments from successive scans."""
     dt = datetime.fromisoformat(note_ts)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
@@ -216,15 +230,15 @@ async def _check_existing_note(
     hi = (dt + timedelta(seconds=window_s)).isoformat()
     db = storage._conn()
     cur = await db.execute(
-        "SELECT sn.id FROM session_notes sn"
+        "SELECT m.id FROM moments m"
         " JOIN entity_tags et"
-        "   ON et.entity_type = 'session_note' AND et.entity_id = sn.id"
+        "   ON et.entity_type = 'moment' AND et.entity_id = m.id"
         " JOIN tags t ON et.tag_id = t.id"
         " WHERE t.name = 'auto-detected'"
-        " AND sn.ts BETWEEN ? AND ?"
-        " AND (sn.race_id = ? OR sn.audio_session_id = ?)"
+        " AND m.anchor_t_start BETWEEN ? AND ?"
+        " AND m.session_id = ?"
         " LIMIT 1",
-        (lo, hi, race_id, audio_session_id),
+        (lo, hi, race_id),
     )
     return await cur.fetchone() is not None
 
