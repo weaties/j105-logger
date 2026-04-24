@@ -312,6 +312,13 @@ async function init() {
     document.getElementById('live-instruments-card').style.display = '';
   }
 
+  // If a deep-link query string targets a specific moment, start opening
+  // it immediately so the user sees the moment detail without waiting for
+  // the rest of the session page (track, video, polar, etc.) to finish
+  // loading. The moments card shows a spinner; loadMoments() runs later
+  // alongside everything else and seeds _threads / map markers.
+  _maybeOpenDeepLinkMoment();
+
   const r = await fetch('/api/sessions/' + SESSION_ID + '/detail');
   if (!r.ok) {
     document.getElementById('session-name').textContent = 'Session not found';
@@ -337,14 +344,36 @@ async function init() {
     loadTranscript();
     loadAudio();
   }
-  await loadMoments();
-  _checkThreadHash();
+  // When a deep-link moment is in flight, skip the list body render so
+  // openThread()'s detail view (already rendering in parallel) isn't
+  // clobbered. The moment list still gets populated (_threads, anchor
+  // index, map markers) so the back-button can repaint instantly.
+  await loadMoments({renderList: !_deepLinkMomentInFlight});
+  if (!_deepLinkMomentInFlight) _checkThreadHash();
   loadSharing();
   loadMatch();
   renderExports();
   renderDangerZone();
   if (cfg.dataset.live === '1') _startLiveRefresh();
   _applyDeepLink();
+}
+
+let _deepLinkMomentInFlight = false;
+
+function _maybeOpenDeepLinkMoment() {
+  const params = new URLSearchParams(window.location.search);
+  const momentParam = params.get('moment') || params.get('thread');
+  if (!momentParam) return;
+  const momentId = parseInt(momentParam, 10);
+  if (isNaN(momentId)) return;
+  const commentParam = params.get('comment');
+  const commentId = commentParam ? parseInt(commentParam, 10) : null;
+  const card = document.getElementById('moments-card');
+  if (card) card.style.display = '';
+  _deepLinkMomentInFlight = true;
+  // openThread is async — fire it and let it render while init() continues
+  // its other work in parallel.
+  openThread(momentId, commentId && !isNaN(commentId) ? commentId : null);
 }
 
 // ---------------------------------------------------------------------------
@@ -6694,7 +6723,8 @@ const _threadTagFilter = new Set();
 let _threadTagMode = 'and';
 let _threadAvailableTags = [];
 
-async function loadMoments() {
+async function loadMoments(opts) {
+  const renderList = !opts || opts.renderList !== false;
   const card = document.getElementById('moments-card');
   card.style.display = '';
   const body = document.getElementById('moments-body');
@@ -6711,7 +6741,10 @@ async function loadMoments() {
     fetch(threadsUrl),
     _ensureAnchorIndex(),
   ]);
-  if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
+  if (!threadsResp.ok) {
+    if (renderList) body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>';
+    return;
+  }
   const data = await threadsResp.json();
   // The list endpoint now returns `moments`. Map each moment to the
   // thread-ish shape the existing discussion UI expects (title = subject,
@@ -6740,6 +6773,10 @@ async function loadMoments() {
   const badge = document.getElementById('moments-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
   _addDiscussionMarkers();
+  // When called with renderList:false (deep-link init), we've populated
+  // _threads, _anchorIndex, the badge, and the map markers — but skip
+  // body.innerHTML so the openThread() detail render isn't clobbered.
+  if (!renderList) return;
 
   const filterBar = _renderThreadTagFilterRow();
   if (!_threads.length) {

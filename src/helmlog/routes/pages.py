@@ -253,8 +253,11 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
     """Canonical session URL carrying both the stable id and the slug (#449).
 
     * If the id exists and the slug matches the current slug → render.
-    * If the id exists but the slug is stale (renamed) → 301 to the new
-      canonical URL so old bookmarks keep working indefinitely.
+    * If the id exists but the slug is stale (renamed) → 302 to the new
+      canonical URL so old bookmarks keep working indefinitely. 302 (not
+      301) so browsers don't permanently cache the redirect — a re-rename
+      back to the original slug should resolve correctly without a cache
+      bust.
     * If the id doesn't exist → 404.
     """
     storage = get_storage(request)
@@ -262,7 +265,10 @@ async def session_detail_page_canonical(request: Request, session_id: int, slug:
     if race is None:
         raise HTTPException(status_code=404, detail="Session not found")
     if race.slug and slug != race.slug:
-        return RedirectResponse(url=_canonical_session_url(race.id, race.slug), status_code=301)
+        qs = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(
+            url=_canonical_session_url(race.id, race.slug) + qs, status_code=302
+        )
     return await _render_session_page(request, race)
 
 
@@ -326,7 +332,7 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
             slug = race.slug or await storage.ensure_race_slug(race.id) or ""
             if slug:
                 return RedirectResponse(
-                    url=_canonical_session_url(race.id, slug) + qs, status_code=301
+                    url=_canonical_session_url(race.id, slug) + qs, status_code=302
                 )
             # Last-resort fallback — render inline rather than redirect-loop.
             return await _render_session_page(request, race)
@@ -340,7 +346,7 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
     race = await storage.get_race_by_slug(session_ref)
     if race is not None:
         return RedirectResponse(
-            url=_canonical_session_url(race.id, race.slug) + qs, status_code=301
+            url=_canonical_session_url(race.id, race.slug) + qs, status_code=302
         )
 
     retired = await storage.lookup_retired_slug(session_ref)
@@ -353,7 +359,7 @@ async def session_detail_page(request: Request, session_ref: str) -> Response:
     if current is None:
         raise HTTPException(status_code=404, detail="Session not found")
     return RedirectResponse(
-        url=_canonical_session_url(current.id, current.slug) + qs, status_code=301
+        url=_canonical_session_url(current.id, current.slug) + qs, status_code=302
     )
 
 

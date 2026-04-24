@@ -182,7 +182,7 @@ async def test_int_id_redirects_to_canonical(
 ) -> None:
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     resp = await admin_client.get(f"/session/{race_id}")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1"
 
 
@@ -192,7 +192,7 @@ async def test_slug_only_redirects_to_canonical(
 ) -> None:
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     resp = await admin_client.get("/session/20260408-cyc-1")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1"
 
 
@@ -200,14 +200,14 @@ async def test_slug_only_redirects_to_canonical(
 async def test_canonical_redirect_preserves_query_string(
     storage: Storage, admin_client: httpx.AsyncClient
 ) -> None:
-    """Deep-link query params (?moment=&comment=, ?t=) survive the 301 hop (#672)."""
+    """Deep-link query params (?moment=&comment=, ?t=) survive the 302 hop (#672)."""
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     resp = await admin_client.get(f"/session/{race_id}?moment=38&comment=20")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1?moment=38&comment=20"
     # Slug-only path also preserves the query string.
     resp = await admin_client.get("/session/20260408-cyc-1?t=12:34")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/20260408-cyc-1?t=12:34"
 
 
@@ -228,9 +228,9 @@ async def test_canonical_url_stale_slug_redirects(
     """Old bookmarks with a renamed slug still resolve via the stable id (#449)."""
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     await storage.rename_race(race_id, new_name="New Name")
-    # Canonical id/old-slug should 301 to canonical id/new-slug.
+    # Canonical id/old-slug should 302 to canonical id/new-slug.
     resp = await admin_client.get(f"/session/{race_id}/20260408-cyc-1")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/new-name"
 
 
@@ -249,7 +249,7 @@ async def test_retired_slug_redirects_within_window(
     race_id = await _seed_race(storage, name="20260408-CYC-1")
     await storage.rename_race(race_id, new_name="New Name")
     resp = await admin_client.get("/session/20260408-cyc-1")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/new-name"
 
 
@@ -342,7 +342,7 @@ async def test_race_without_slug_is_lazily_assigned(
     assert race_id is not None
 
     resp = await admin_client.get(f"/session/{race_id}")
-    assert resp.status_code == 301
+    assert resp.status_code == 302
     assert resp.headers["location"] == f"/session/{race_id}/20260408-practice-1"
 
     # Subsequent calls should keep redirecting (slug now persisted).
