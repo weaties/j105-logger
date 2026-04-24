@@ -23,7 +23,7 @@ h1{font-size:1.3rem;font-weight:700;color:var(--accent);margin-bottom:4px}
 .notif-type{font-size:.72rem;padding:2px 6px;border-radius:3px;font-weight:600}
 .notif-type.mention{background:var(--border);color:var(--accent)}
 .notif-type.reply{background:var(--bg-secondary);color:var(--success)}
-.notif-type.new_thread{background:var(--bg-secondary);color:var(--warning)}
+.notif-type.new_moment,.notif-type.new_thread{background:var(--bg-secondary);color:var(--warning)}
 .notif-type.resolved{background:var(--bg-secondary);color:var(--accent)}
 .notif-snippet{color:var(--text-secondary);font-size:.78rem;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:500px}
 .notif-actions{display:flex;gap:6px;flex-shrink:0;align-items:flex-start}
@@ -71,6 +71,22 @@ function snippet(text,max){
   return text.substring(0,max)+'\u2026';
 }
 
+// Notifications written before #663 used thread/discussion wording. Map them
+// to current moment-language at display time so the Attention list reads
+// consistently without needing a DB backfill.
+const _LEGACY_NOTIF_TYPES={new_thread:'new_moment'};
+const _LEGACY_NOTIF_MESSAGES={
+  'started a new discussion':'flagged a new moment',
+  'replied in a discussion':'replied to a moment',
+  'resolved a thread':'resolved a moment',
+  'resolved a discussion':'resolved a moment',
+};
+function normalizeNotif(n){
+  if(_LEGACY_NOTIF_TYPES[n.type]) n.type=_LEGACY_NOTIF_TYPES[n.type];
+  if(_LEGACY_NOTIF_MESSAGES[n.message]) n.message=_LEGACY_NOTIF_MESSAGES[n.message];
+  return n;
+}
+
 function notifUrl(n){
   if(n.session_id && n.source_moment_id){
     let u='/session/'+n.session_id+'?moment='+n.source_moment_id;
@@ -93,9 +109,10 @@ async function loadNotifications(){
     return;
   }
 
-  // Group by session_id
+  // Group by session_id (after normalizing legacy thread/discussion wording).
   const groups={};const groupOrder=[];
   for(const n of notifs){
+    normalizeNotif(n);
     const sid=n.session_id||'general';
     if(!groups[sid]){groups[sid]=[];groupOrder.push(sid);}
     groups[sid].push(n);

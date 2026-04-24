@@ -7017,7 +7017,7 @@ function _addDiscussionMarkers() {
       + '<div id="discussion-marker-preview-' + t.id + '">'
       + '<div style="font-size:.7rem;color:var(--text-secondary);margin-top:4px">Loading\u2026</div></div>'
       + '<div style="margin-top:6px"><a href="#" data-open-thread="' + t.id + '" '
-      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">Open thread &rarr;</a></div>'
+      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">Open moment &rarr;</a></div>'
       + '</div>';
 
     const hasUnread = t.unread_count > 0;
@@ -7177,7 +7177,7 @@ async function openThread(threadId, scrollToCommentId) {
       + '<div class="comment-body">' + _renderMentions(esc(c.body)) + '</div>'
       + '</div>';
   }).join('');
-  const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this thread" '
+  const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this moment" '
     + 'onclick="copyThreadLink(' + t.id + ',null,this)">\ud83d\udd17 Copy link</button>';
   body.innerHTML = '<div style="margin-bottom:8px">'
     + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadMoments()">&larr; All moments</button>'
