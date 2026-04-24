@@ -83,6 +83,35 @@
 #video-recovery-overlay{top:6px;left:158px}
 #video-course-overlay{top:6px;right:6px}
 #video-maneuver-overlay{bottom:6px;left:6px}
+/* Live-race strip-down (#664) — while a race is in progress and this page
+   is served at /, collapse to: photo, track, instruments, boat setup, notes.
+   Everything else is forcibly hidden even if its loader calls display=''. */
+body.live-race #video-container,
+body.live-race #bookmarks-card,
+body.live-race #wind-field-card,
+body.live-race #polar-card,
+body.live-race #videos-card,
+body.live-race #analysis-card,
+body.live-race #results-card,
+body.live-race #crew-card,
+body.live-race #sails-card,
+body.live-race #discussion-card,
+body.live-race #audio-card,
+body.live-race #tuning-extraction-card,
+body.live-race #maneuvers-card,
+body.live-race #sharing-card,
+body.live-race #match-card,
+body.live-race #exports-card,
+body.live-race #danger-zone,
+body.live-race #track-layers-wrap,
+body.live-race #replay-toggle-row,
+body.live-race #replay-gauges-wrap,
+body.live-race #session-tags-row{display:none!important}
+body.live-race .live-inst-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;font-family:monospace}
+body.live-race .live-inst-item{background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:6px 8px}
+body.live-race .live-inst-label{font-size:.65rem;text-transform:uppercase;letter-spacing:.05em;color:var(--text-secondary)}
+body.live-race .live-inst-value{font-size:1.1rem;color:var(--text-primary)}
+body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margin-left:2px}
 </style>
 {% endblock %}
 
@@ -140,6 +169,16 @@
   </div>
   <div id="yt-player-wrap" style="position:relative;aspect-ratio:16/9;border-radius:8px;overflow:hidden">
     <div id="yt-player" style="width:100%;height:100%"></div>
+  </div>
+</div>
+
+<div id="live-photo-card" class="card" style="display:none;padding:0;overflow:hidden">
+  <a id="live-photo-link" href="#" target="_blank" style="display:block">
+    <img id="live-photo-img" alt="Latest photo note" style="display:block;width:100%;height:auto"/>
+  </a>
+  <div style="padding:6px 10px;font-size:.72rem;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center">
+    <span>Latest photo note</span>
+    <span id="live-photo-ts"></span>
   </div>
 </div>
 
@@ -266,6 +305,25 @@
   </div>
   <div id="track-hint" style="font-size:.72rem;color:var(--text-secondary);margin-top:4px"></div>
   <div id="vakaros-line-info" style="display:none;font-size:.78rem;color:var(--text-secondary);margin-top:6px;font-family:monospace"></div>
+</div>
+
+<div id="live-instruments-card" class="card" style="display:none">
+  <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+    <span>Instruments</span>
+    <span id="live-inst-time" style="font-family:monospace;font-size:.72rem;color:var(--text-secondary);text-transform:none;letter-spacing:normal">--:--:-- UTC</span>
+  </div>
+  <div class="live-inst-grid">
+    <div class="live-inst-item"><div class="live-inst-label">BSP</div><div><span class="live-inst-value" id="liv-bsp">&mdash;</span><span class="live-inst-unit">kts</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">TWS</div><div><span class="live-inst-value" id="liv-tws">&mdash;</span><span class="live-inst-unit">kts</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">TWA</div><div><span class="live-inst-value" id="liv-twa">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">HDG</div><div><span class="live-inst-value" id="liv-hdg">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">COG</div><div><span class="live-inst-value" id="liv-cog">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">SOG</div><div><span class="live-inst-value" id="liv-sog">&mdash;</span><span class="live-inst-unit">kts</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">AWS</div><div><span class="live-inst-value" id="liv-aws">&mdash;</span><span class="live-inst-unit">kts</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">AWA</div><div><span class="live-inst-value" id="liv-awa">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">TWD</div><div><span class="live-inst-value" id="liv-twd">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+    <div class="live-inst-item"><div class="live-inst-label">RDR</div><div><span class="live-inst-value" id="liv-rdr">&mdash;</span><span class="live-inst-unit">&deg;</span></div></div>
+  </div>
 </div>
 
 <div id="bookmarks-card" class="card" style="display:none">

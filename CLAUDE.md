@@ -1,487 +1,177 @@
 # CLAUDE.md — HelmLog
 
-## Project Overview
+Raspberry Pi sailing data logger: reads B&G instruments via Signal K
+(`sk_reader.py`), stores time-series data in SQLite, serves a FastAPI web UI
+for race marking, history, debrief audio, and CSV/GPX/JSON export.
 
-A Raspberry Pi-based sailing data logger that reads from a B&G instrument system via Signal K
-Server (which owns the NMEA 2000 / CAN bus), stores time-series sailing data in SQLite, and
-provides a web interface for race marking, history, debrief audio, and performance exports.
-Data can be exported as CSV, GPX, or JSON for use in Sailmon and other regatta analysis tools.
+## Top rules — read first
 
----
+- **Always work in a git worktree.** Multiple Claude Code agents run
+  concurrently in this repo. Two agents sharing a checkout collide on
+  uncommitted changes and branch switches, and a deploy can pick up a
+  half-finished hotfix from the wrong agent. Before any edit, check
+  `git worktree list` and `ls .claude/worktrees/`; enter an existing one if
+  the branch matches the task, otherwise create a new one with `EnterWorktree`.
+  Read-only work (questions, `/architecture`, `/diagnose`, `/domain`) does
+  not need a worktree.
+- **Never push directly to `main`.** All changes go through merged PRs on a
+  feature branch. If a Pi hotfix is needed, branch + PR + merge — even then.
+- **Always include `Closes #N`** (or `Fixes #N` for bugs) in the PR body so
+  GitHub auto-closes the issue on merge and the tracker stays clean.
+- **Apply the `in-progress` label** when starting work on an issue:
+  `gh issue edit <N> --add-label "in-progress"` plus a comment naming the
+  branch and host.
+- **Commit and push every change immediately.** Uncommitted Pi edits are
+  lost on the next deploy.
 
-## Stack & Tooling
+## Stack & tooling
 
 | Concern | Tool |
 |---|---|
-| Dependency management | `uv` |
+| Dependency management | `uv` (never `uv pip install` for project deps — use `uv add` / `uv sync`) |
 | Data source (primary) | Signal K WebSocket via `websockets` (`sk_reader.py`) |
-| NMEA 2000 / CAN (legacy) | `python-can`, `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
-| Storage | SQLite via `aiosqlite` (schema v44) |
-| Web interface | `fastapi` + `uvicorn` + `jinja2` templates |
-| Audio recording | `sounddevice`, `soundfile` |
-| Audio transcription | `faster-whisper`; optional diarisation via `pyannote-audio` |
-| System monitoring | `psutil` + InfluxDB via `influxdb-client` |
-| WLAN management | `nmcli` (NetworkManager) — `network.py` |
-| Linting + formatting | `ruff` (line length 100; `E501` suppressed only in `web.py`) |
-| Type checking | `mypy` (strict) |
+| NMEA 2000 / CAN (legacy) | `python-can` + `canboat` — `can_reader.py`, `DATA_SOURCE=can` |
+| Storage | SQLite via `aiosqlite` |
+| Web | `fastapi` + `uvicorn` + `jinja2`; `nginx` reverse proxy on :80 |
+| Audio | `sounddevice`, `soundfile`; transcription `faster-whisper` (+ optional `pyannote-audio`) |
+| Lint / format / types | `ruff` (line length 100), `mypy --strict` |
 | Testing | `pytest`, `pytest-asyncio`, `pytest-cov` |
-| Logging | `loguru` |
+| Logging | `loguru` (never `print()` for operational output) |
 | External data | `httpx` — Open-Meteo weather, NOAA CO-OPS tides |
-| YouTube metadata | `yt-dlp` |
-| Reverse proxy | `nginx` — single-port (80) access to all services |
+| Monitoring | `psutil` → InfluxDB |
 
----
-
-## Project Structure
+## Project structure
 
 ```
-helmlog/
-├── CLAUDE.md
-├── README.md
-├── pyproject.toml          # uv-managed; single source of truth for deps & config
-├── .python-version         # pins Python 3.12
-├── .env.example            # canonical env var reference
-│
-├── src/
-│   └── helmlog/
-│       ├── __init__.py
-│       ├── main.py         # CLI entry point; wires modules together, starts async loop
-│       ├── audio.py        # USB audio recording (Gordik / any UAC device)
-│       ├── auth.py         # Magic-link auth middleware; require_auth() dependency
-│       ├── cameras.py      # Insta360 X4 camera control via OSC HTTP API
-│       ├── can_reader.py   # CAN bus interface — legacy direct-CAN path only
-│       ├── deploy.py       # Self-update / deploy management logic
-│       ├── email.py        # SMTP email sending (welcome, new-device alerts)
-│       ├── export.py       # Export to CSV / GPX / JSON for regatta tools
-│       ├── external.py     # Open-Meteo weather + NOAA CO-OPS tide fetching
-│       ├── federation.py   # Boat identity (Ed25519), co-op membership, signing
-│       ├── gaigps.py       # GaiGPS integration
-│       ├── influx.py       # InfluxDB write helpers for system health metrics
-│       ├── insta360.py     # Insta360 / local video metadata extraction + race matching
-│       ├── monitor.py      # psutil background task → InfluxDB every 60 s
-│       ├── network.py      # WLAN profile switching via nmcli (NetworkManager)
-│       ├── nmea2000.py     # PGN decoding dataclasses (used by both paths)
-│       ├── peer_api.py     # FastAPI router for inter-boat peer API endpoints
-│       ├── peer_auth.py    # Ed25519 request signing and verification middleware
-│       ├── peer_client.py  # Async HTTP client for querying peer boats
-│       ├── pipeline.py     # Video processing pipeline orchestration
-│       ├── polar.py        # Polar performance baseline builder
-│       ├── race_classifier.py  # Automated race/practice session classification
-│       ├── races.py        # Race naming logic + RaceConfig dataclass
-│       ├── sk_reader.py    # Signal K WebSocket reader — primary data source
-│       ├── storage.py      # SQLite read/write; schema migrations
-│       ├── transcribe.py   # faster-whisper transcription + pyannote diarisation
-│       ├── triggers.py     # Event triggers (auto-start/stop sessions)
-│       ├── video.py        # YouTube video metadata / sync-point logic
-│       ├── web.py          # FastAPI app — route handlers and API endpoints
-│       ├── youtube.py      # YouTube upload and API integration
-│       │
-│       ├── templates/      # Jinja2 HTML templates (extends base.html)
-│       │   ├── base.html   # Base layout — nav, footer, CSS/JS includes
-│       │   ├── home.html   # Home / race control page
-│       │   ├── history.html
-│       │   ├── login.html  # Standalone (no base.html)
-│       │   ├── profile.html
-│       │   ├── session.html  # Dedicated session detail page
-│       │   └── admin/      # Admin pages (boats, users, audit, cameras, events, settings)
-│       │
-│       └── static/         # CSS and JS served by FastAPI StaticFiles
-│           ├── base.css    # Shared styles for all pages
-│           ├── shared.js   # Shared JS utilities (fmtTime, initNav, etc.)
-│           ├── home.js     # Home page logic
-│           ├── history.js  # History page logic
-│           └── session.js  # Session detail page logic
-│
-├── tests/                  # pytest suite — runs on any machine, no hardware required
-│   └── integration/        # Federation integration tests (two-boat simulation)
-│       ├── conftest.py     # Fleet fixture — two boats with real Ed25519 keypairs
-│       ├── seed.py         # Test data seeding (co-op, sessions, instrument data)
-│       ├── test_federation_e2e.py   # Co-op lifecycle, session list, track fetch
-│       ├── test_auth_e2e.py         # Signing, replay, forgery, non-member
-│       ├── test_embargo_e2e.py      # Embargo enforcement and sharing lifecycle
-│       ├── test_data_license_e2e.py # Field allowlist, PII protection, audit
-│       ├── Dockerfile       # Minimal helmlog image for Docker-based testing
-│       ├── docker-compose.yml  # Two-container boat-a + boat-b + test-runner
-│       └── serve.py         # Entry point for Docker container web server
-├── data/                   # SQLite DB, WAV files, exports (gitignored)
-├── scripts/                # deploy.sh, setup.sh, transcribe_worker.py
-│   ├── integration_smoke.py  # Pi-to-Pi smoke tests over Tailscale (run by harness)
-│   ├── pi_harness.py         # Mac-side orchestrator: setup → seed → test → teardown on two Pis
-│   └── harness_seed.py       # On-Pi data seeder invoked by pi_harness.py via SSH
-└── docs/                   # Guides, policies, and technical specs
+src/helmlog/        # all Python; one module per concern (sk_reader, storage,
+                    # web, federation, peer_*, transcribe, audio, cameras, …)
+src/helmlog/templates/  # Jinja2 (extends base.html)
+src/helmlog/static/     # CSS + JS
+tests/              # pytest, runs anywhere; conftest.py provides in-memory Storage
+tests/integration/  # federation/co-op (Layer 1 in-process; Layer 2 Pi harness; Layer 3 Docker)
+docs/               # guides, policies, specs (data-licensing.md, testing-guide.md, …)
+docs/archive/       # dated point-in-time docs (incidents, audits, calibrations)
+scripts/            # deploy.sh, setup.sh, pi_harness.py, …
 ```
 
----
+Use `ls`/`tree` for detail — don't ask the docs to enumerate every file.
 
-## Common Commands
+## Common commands
 
 ```bash
-uv sync                     # install dependencies
-uv run pytest               # run tests (coverage printed by default)
-uv run pytest tests/integration/ -v  # run federation integration tests
-uv run ruff check .         # lint check
-uv run ruff format --check .  # format check
-uv run mypy src/            # type check
-uv run ruff check --fix . && uv run ruff format .  # auto-fix
+uv sync                              # install deps from lockfile
+uv run pytest                        # all tests + coverage
+uv run pytest tests/integration/ -v  # federation tests
+uv run ruff check . && uv run ruff format --check . && uv run mypy src/
 
-helmlog run             # start the logger
-helmlog status          # show database row counts
-helmlog list-cameras    # show configured cameras and ping status
-helmlog identity init   # generate Ed25519 keypair + boat card
-helmlog identity show   # display current boat identity and fingerprint
-helmlog co-op create    # create a new co-op with this boat as moderator
-helmlog co-op status    # show co-op membership and peers
-helmlog co-op invite    # generate an invite bundle for a new boat
-helmlog --help          # full subcommand list
+helmlog run                          # start the logger
+helmlog status                       # DB row counts
+helmlog identity init|show           # Ed25519 boat identity
+helmlog co-op create|status|invite   # co-op membership
+helmlog --help                       # full subcommand list
 ```
 
----
-
-## Development Workflow
-
-### Always work in a git worktree
-
-**Before making any file edits, enter a git worktree.** Multiple Claude Code
-agents frequently run in this repo on the same machine at the same time. If
-two agents share a working directory, their uncommitted changes collide,
-branch switches reorder each other's files, and a deploy can easily pick up a
-half-finished hotfix from the wrong agent. Worktrees give each agent an
-isolated checkout on its own branch.
-
-**Always check for an existing worktree before creating a new one.** When
-resuming work on a PR or an issue, a worktree often already exists from the
-previous session.
-
-```bash
-git worktree list
-# Also check for leftover directories: ls .claude/worktrees/
-```
-
-If a worktree's branch matches the task (e.g., `feature/my-feature` for PR
-work, or a name containing the issue number), enter it with
-`EnterWorktree(path=<path>)` — do **not** create a second one. Only call
-`EnterWorktree(name=<name>)` to create a new worktree when none of the
-existing ones fit. The created worktree lives at `.claude/worktrees/<name>/`
-on a fresh branch off `HEAD`. When the session ends, you'll be prompted to
-keep or remove it.
-
-Read-only work (answering questions, exploring the codebase, running
-`/architecture`, `/diagnose`, `/domain`) does not need a worktree.
-
-### Mac setup (one time)
-
-```bash
-brew install portaudio libsndfile
-uv sync
-cp .env.example .env        # edit DB_PATH, LOG_LEVEL as needed
-```
-
-### Daily dev loop
-
-Follow TDD (see `/tdd` skill): write a failing test, implement, pass, lint, commit.
-
-```bash
-uv run pytest               # all tests pass
-uv run ruff check .         # lint clean
-uv run ruff format --check .  # format clean
-uv run mypy src/            # types clean
-```
-
-### Issue → PR workflow
-
-When starting work on a GitHub issue:
-
-1. **Enter a worktree first** — call `EnterWorktree` with a descriptive name
-   (e.g. `issue-332-polar-bug`) before any other setup. All subsequent steps
-   run inside the worktree.
-2. **Mark the issue in-progress**: apply the `in-progress` label and add a comment:
-   ```bash
-   gh issue edit <number> --add-label "in-progress"
-   gh issue comment <number> --body "In progress on \`<branch-name>\` (Claude Code on <hostname>)"
-   ```
-3. Rename the worktree's branch to the conventional feature name if needed
-   (`git branch -m feature/my-feature`). The branch is already off `main` /
-   `HEAD`, so no `git checkout -b` is required.
-4. Develop with TDD until tests + lint + types pass
-5. Push and create PR with issue linking:
-   ```bash
-   git push -u origin feature/my-feature
-   gh pr create --title "..." --body "$(cat <<'EOF'
-   ## Summary
-   ...
-
-   Closes #<issue>
-
-   Generated with [Claude Code](https://claude.ai/code)
-   EOF
-   )"
-   ```
-   The PR body **must** include `Closes #<issue>` (or `Fixes #<issue>` for bugs) so GitHub
-   auto-closes the issue on merge.
-6. On merge: GitHub auto-closes the linked issue via `Closes #N`. Remove `in-progress` label if
-   it wasn't automatically cleared:
-   ```bash
-   gh issue edit <number> --remove-label "in-progress"
-   ```
-7. If a PR is **closed without merge**, comment on the linked issue explaining the outcome:
-   - **Superseded** — link to the replacement PR/issue
-   - **Deferred** — explain why, remove `in-progress` label
-   - **Won't fix** — close the issue with `wontfix` label and explanation
-
-**All changes to `main` must come through merged PRs.** Never push directly to `main`.
-
-### Promote gate
-
-The `promote.yml` workflow gates `main → stage` promotion on RELEASES.md:
-- RELEASES.md must have a new `##` heading in the promoted commits (editing an
-  old entry doesn't count)
-- **Exemption:** if all commits only touch `docs/ideation-log.md`, the check is
-  skipped
-- `stage → live` has no RELEASES.md gate (it's a fast-forward of the same commit)
-- Run `/release-notes` before promoting to draft the entry
-
-### Environment & Configuration
-
-All config is via environment variables or `.env`. The canonical reference
-is `.env.example` — read it for the full list of available settings.
-
----
-
-## Coding Conventions
-
-- **Python 3.12+** — use modern syntax: `match`, `X | Y` unions, `tomllib`, etc.
-- **Type hints everywhere** — all functions must have fully annotated signatures. Run mypy clean.
-- **Ruff is the single formatter and linter** — do not introduce black, isort, or flake8. Line length is 100 chars; `E501` is suppressed only in `web.py` for inline HTML.
-- **Modules are small and single-purpose** — if a module is growing beyond ~200 lines, split it.
-- **Use `loguru` for all logging** — never use `print()` for operational output.
-- **Dataclasses or `typing.TypedDict`** for structured data — avoid raw dicts with unknown shapes.
-- **Keep hardware-dependent code isolated** — direct CAN bus access lives only in `can_reader.py`; Signal K WebSocket access only in `sk_reader.py`; camera HTTP control only in `cameras.py`. All other modules work with decoded data structures and can be tested without hardware.
-
----
-
-## Architecture Principles
-
-- **Signal K is the primary data source**: `sk_reader.py` connects to the Signal K WebSocket. Signal K owns the CAN bus. The legacy direct-CAN path (`can_reader.py`) is available via `DATA_SOURCE=can` but not the default.
-- **Hardware isolation**: hardware modules are only imported by `main.py`. All other modules receive decoded data structures, not raw frames or SK deltas.
-- **Decode early, store clean**: raw instrument data is decoded to named dataclasses as soon as it arrives. Nothing downstream handles raw bytes or SK JSON.
-- **SQLite is the single source of truth**: all data is written to SQLite with a UTC timestamp. Export and web functions read from SQLite, never from live data.
-- **Timestamps are always UTC**: store and compute in UTC. Convert to local time only at display/export boundaries.
-- **External data is async-friendly**: use `httpx` with async for weather/tide fetching during logging runs.
-- **New domains go in `storage.py`**: new domains go in `storage.py` alongside existing ones. Extraction into per-domain repositories is tracked in #484 and will happen in a dedicated pass once there are 2–3 domains whose shape supports a generalizable pattern. Do not introduce one-off repository modules.
-
----
-
-## Data Licensing Policy
-
-The data licensing policy (`docs/data-licensing.md`) governs all data ownership,
-sharing, and privacy. **All code that touches user data must comply with this
-policy.** Key constraints that affect development:
-
-- **Boat owns its data** — never restrict a boat's ability to export its own
-  data in CSV, GPX, JSON, or WAV
-- **PII categories** — audio, photos, emails, biometrics, and diarized
-  transcripts are PII with deletion/anonymization rights. Code handling PII
-  must support these rights
-- **Co-op data is view-only** — API endpoints serving other boats' co-op data
-  must not support bulk export. Audit logging and rate limiting required
-- **Temporal sharing** — session data may be under co-op embargo. Check embargo
-  timestamps before serving track data
-- **Gambling prohibition** — no feature may facilitate betting or wagering use
-  of co-op data
-- **Protest firewall** — do not build export formats for co-op data designed for
-  protest committee submission
-- **Biometric data** — requires per-person consent separate from instrument
-  data. Cannot be used in personnel decisions. Coaches need separate
-  authorization from the individual, not just the boat owner
-
-Use `/data-license` to review code changes against the full policy.
-
----
-
-## Dos and Don'ts
-
-**Do:**
-- **Always enter a git worktree before making file edits** (via the `EnterWorktree` tool). Multiple Claude Code agents may be running against this repo on the same machine — isolated worktrees prevent them from stepping on each other's branches and uncommitted changes.
-- **All changes to `main` must come through merged PRs** — never push directly to `main`
-- **Always include `Closes #N` in PR body** when the PR resolves an issue — this auto-closes the issue on merge and keeps the tracker clean. Use `Fixes #N` for bug fixes.
-- **Apply `in-progress` label when starting work** on an issue (`gh issue edit <N> --add-label "in-progress"`); remove it when the issue closes or work is deferred
-- **Follow TDD** — write a failing test before implementing new functionality (see `/tdd` skill)
-- **Commit and push every change** — after editing any file (code, config, scripts), always commit and push to the current branch immediately. This is especially critical for hotfixes on the Pi — uncommitted changes on the device will be lost on the next deploy. Never leave work uncommitted.
-- Write tests for all decoding and export logic
-- Run integration tests (`uv run pytest tests/integration/ -v`) for any federation/co-op/peer API changes
-- Use `uv add <package>` to add dependencies — never edit `pyproject.toml` manually for deps
-- **After adding a dependency**, always run `uv sync` to install it, then verify the import works. On the Pi, also restart the helmlog service (`sudo systemctl restart helmlog`). Never use `uv pip install` for project dependencies — it bypasses the lockfile
-- **After pulling or switching branches**, always run `uv sync` (or `./scripts/deploy.sh` on the Pi) to ensure new dependencies are installed. The helmlog service runs with `--no-sync` and trusts the venv is already correct
-- Keep the SQLite schema versioned with simple integer migrations in `storage.py`
-- Log every read error and decode failure with `loguru` at `WARNING` or above
-
-**Don't:**
-- **Never edit files in the primary checkout** (`/Users/dweatbrook/src/helmlog`) — enter a worktree first. Even "one-line" edits: another agent may already be on that branch.
-- **Never push directly to `main`** — `main` is sacrosanct. Always work on a feature branch and merge via PR. If on the Pi and a hotfix is needed, create or use an existing branch, commit and push there, then merge through GitHub.
-- Don't parse NMEA 2000 PGNs manually from scratch — use `canboat` or a library; only write custom decoders when necessary
-- Don't store data in memory across long runs — flush to SQLite frequently to survive crashes/reboots
-- Don't hardcode device paths (e.g., `/dev/can0`) — use config or environment variables
-- Don't mix business logic into `main.py` — it should only wire things together and start the loop
-- Don't commit the `data/` directory or any `.db` files
-- Don't use `uv pip install` to install project dependencies — always use `uv add` (to add) or `uv sync` (to install from lockfile). `uv pip install` bypasses the lockfile and won't persist across `uv sync` runs
-
----
-
-## Testing Strategy
-
-### Unit tests (`tests/`)
-
-- Run on any machine (no Pi hardware required)
-- `conftest.py` provides in-memory SQLite fixtures and sample decoded data structures
-- Hardware-dependent modules are mocked in tests
-- `test_web.py` uses `httpx.AsyncClient` with `ASGITransport` to exercise all API routes
-- **Pre-existing mypy errors in `web.py`** (do not fix unless explicitly asked):
-  - `Item "None" of "datetime | None" has no attribute "isoformat"`
-  - `Item "None" of "AudioRecorder | None" has no attribute "stop"` (x2)
-
-### Golden-session test (`tests/test_golden_session.py`)
-
-One real recorded session (CYC spring race 1, 13 maneuvers) lives under
-`tests/fixtures/golden_session/` as a downsampled-to-1Hz JSON dump
-(`raw_data.json.gz`) and an expected-output snapshot
-(`expected_maneuvers.json`). The test loads the raw fixture into an
-in-memory Storage, runs detect + enrich end-to-end, and asserts exact
-equality with the snapshot (within float tolerance).
-
-**Any PR that changes detector constants, baseline-window math, the
-loss calc, or the enrichment payload shape must either:**
-
-- Pass the golden test unchanged (the change does not affect real-world
-  detection / enrichment output), or
-- Update the snapshot via `uv run pytest tests/test_golden_session.py
-  --update-golden` and call out the diff in the PR body.
-
-To rebuild the raw fixture from a different session, run
-`scripts/build_golden_fixture.py` against a Pi DB.
-
-### Integration tests (`tests/integration/`)
-
-Three-layer strategy for validating inter-Pi federation, co-op, and data licensing:
-
-**Layer 1 — In-process pytest** (runs in CI, ~5 seconds):
-Two boats with real Ed25519 keypairs and in-memory SQLite, communicating via
-`httpx.ASGITransport`. No mocking of crypto or auth — real signing, real
-verification, real nonce replay protection. 32 tests covering:
-- Co-op lifecycle (create, join, share, unshare, revoke)
-- Ed25519 request auth (valid, tampered, forged, replayed, non-member)
-- Embargo enforcement (blocked while active, accessible after lift)
-- Data licensing (field allowlist, PII exclusion, private session isolation, audit)
-
-```bash
-uv run pytest tests/integration/ -v
-```
-
-**Layer 2 — Pi test harness** (Mac orchestrator → two Pis over Tailscale):
-`scripts/pi_harness.py` runs from your Mac and drives the full lifecycle on
-two real Pis: identity init, co-op setup, data seeding, smoke tests, and
-teardown. Validates Tailscale networking, systemd, nginx, NTP sync, and the
-real federation API end-to-end.
-
-```bash
-# One-time SSH key setup (per Pi). Replace <ssh-user> with the login
-# account you created on the Pi (not the helmlog service account).
-ssh-keygen -t ed25519 -f ~/.ssh/helmlog-harness
-ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-a>
-ssh-copy-id -i ~/.ssh/helmlog-harness.pub <ssh-user>@<pi-b>
-
-# Full lifecycle (setup → seed → test → teardown)
-uv run python scripts/pi_harness.py \
-    --pi-a <pi-a-ip> --pi-b <pi-b-ip> \
-    --ssh-user <ssh-user> \
-    --ssh-key ~/.ssh/helmlog-harness
-
-# Modes for iterative testing
-uv run python scripts/pi_harness.py --setup-only ...   # leave federation in place
-uv run python scripts/pi_harness.py --test-only ...    # re-run tests against existing setup
-uv run python scripts/pi_harness.py --teardown-only ... # remove AUTH_DISABLED, restart
-
-# Post results to a GitHub issue
-uv run python scripts/pi_harness.py ... --issue 281
-```
-
-**Layer 3 — Docker compose** (two containers on Mac, arm64 capable):
-Two real helmlog instances on an isolated Docker network. Useful for testing
-process isolation, network failure scenarios, and Pi-matching architecture.
-
-```bash
-docker compose -f tests/integration/docker-compose.yml up --build --abort-on-container-exit
-```
-
-**When to run integration tests:**
-- Any PR touching `federation.py`, `peer_api.py`, `peer_auth.py`, `peer_client.py`,
-  or federation-related storage code → Layer 1 runs automatically in CI
-- Federation PRs before merge → Layer 2 (Pi smoke) as manual validation
-- Use `/integration-test` skill to run the appropriate layer
-
----
-
-## Risk Tiers
-
-Not all code carries the same blast radius. Verification effort should be
-proportional to risk. The `/pr-checklist` skill uses these tiers to adjust
-its checks based on which files a PR touches.
-
-| Tier | Modules | Blast radius | Verification |
-|---|---|---|---|
-| **Critical** | `auth.py`, `peer_auth.py`, `federation.py`, `storage.py` (migrations), `can_reader.py` | Data loss, security (auth bypass), safety (bad data on displays during racing), data corruption | TDD + integration tests + `/data-license` review + spec review before implementation |
-| **High** | `sk_reader.py`, `peer_api.py`, `peer_client.py`, `export.py`, `transcribe.py`, `boat_settings.py` | Incorrect data capture, broken federation, PII exposure | TDD + integration tests where applicable |
-| **Standard** | `web.py`, `polar.py`, `external.py`, `races.py`, `triggers.py`, `maneuver_detector.py`, `race_classifier.py`, `courses.py` | Wrong numbers on screen, broken features | TDD + standard PR checklist |
-| **Low** | Templates, CSS, JS, docs, config, scripts | Visual issues, non-functional | Smoke test / visual check |
-
-**Rules:**
-- A PR's tier is the **highest** tier of any file it touches
-- Tier assignments are updated when modules change scope (e.g., if
-  `can_reader.py` gains CAN write capability, it stays Critical)
-- New modules default to **Standard** until explicitly classified
-- The `/pr-checklist` skill resolves the tier automatically from changed files
-
----
-
-## Structured Specs
-
-For complex features (combinatorial policy logic, lifecycle state machines,
-hardware interfaces), write a structured spec before starting TDD. Use the
-`/spec` skill to generate one from a GitHub issue.
-
-**When to write a spec:** Any issue touching Critical or High tier modules,
-or any feature with combinatorial logic (role × policy × state → outcome).
-Not required for simple bug fixes, Low-tier changes, or features with
-straightforward linear logic.
-
-**Formats (matched to problem shape):**
-
-| Format | When to use | Example |
-|---|---|---|
-| **Decision table** | Policy/permission logic with multiple inputs | Thread visibility: role × tier × co-op policy → allowed/denied |
-| **State diagram** | Lifecycle with named states and transitions | Plugin lifecycle: available → selected → active → deprecated |
-| **EARS requirements** | Hardware/safety-critical behavior with conditions | WHEN polar confidence < 0.5 THE SYSTEM SHALL stop publishing |
-
-**Workflow:** spec → human reviews spec → TDD from spec → implement → PR.
-The spec is posted as a GitHub issue comment for review before code is written.
-
----
-
-## Skills (on-demand workflows)
-
-| Skill | Purpose |
+## Architecture principles
+
+- **Signal K is the primary data source.** `sk_reader.py` is the default;
+  legacy direct-CAN (`can_reader.py`) only via `DATA_SOURCE=can`.
+- **Hardware isolation.** Hardware modules (`sk_reader.py`, `can_reader.py`,
+  `cameras.py`) are imported only by `main.py`. Everything else receives
+  decoded dataclasses, never raw frames or SK deltas — so it can be tested
+  without hardware.
+- **Decode early, store clean.** Raw bytes → frozen dataclass at the edge:
+
+  ```python
+  @dataclass(frozen=True)
+  class HeadingRecord:
+      pgn: int
+      source_addr: int
+      timestamp: datetime
+      heading_deg: float  # converted from radians at decode time
+      deviation_deg: float | None
+      variation_deg: float | None
+  ```
+
+- **SQLite is the single source of truth.** Every record gets a UTC timestamp
+  and is flushed promptly so a crash/reboot loses at most the last record.
+  Web/export/peer code reads from SQLite, never live data. New domains land
+  in `storage.py` alongside existing ones (per-domain repo extraction tracked
+  in #484).
+- **Tests use the shared in-memory fixture** — no per-test schema setup:
+
+  ```python
+  @pytest_asyncio.fixture
+  async def storage() -> Storage:
+      s = Storage(StorageConfig(db_path=":memory:"))
+      await s.connect()
+      yield s
+      await s.close()
+  ```
+
+- **Timestamps are always UTC.** Convert to local only at display/export.
+- **External fetches are async.** Use `httpx` async for weather/tide.
+
+## Coding conventions
+
+Most style is enforced by `ruff` and `mypy --strict` — don't restate
+those rules here. The non-enforceable ones:
+
+- **Modules are small and single-purpose.** Past ~200 lines, consider
+  splitting.
+- **Hardware-dependent code stays in its hardware module** (see Architecture
+  principles).
+- **Use `loguru` and structured types** (dataclasses, `TypedDict`) — avoid
+  `print()` and raw dicts with unknown shapes.
+
+## Do / Don't
+
+| Do | Don't |
 |---|---|
-| `/tdd` | Test-driven development cycle (red-green-refactor) |
-| `/new-module` | Scaffold a new hardware-isolated module with tests |
-| `/new-migration` | Add a SQLite schema migration to storage.py |
-| `/deploy-pi` | Pi deployment reference and service architecture |
-| `/pr-checklist` | Pre-PR verification (tests, lint, types, docs) |
-| `/data-license` | Review changes against the data licensing policy |
-| `/integration-test` | Run federation integration tests (Layer 1/2/3) |
-| `/spec` | Generate a structured spec (decision table, state diagram, or EARS) from a GitHub issue |
-| `/ideate` | Capture half-baked ideas into the ideation log |
-| `/release-notes` | Draft a RELEASES.md entry from commits since last stage tag |
-| `/skill-eval` | Run evaluation test cases against a skill to measure quality and detect regressions |
-| `/domain` | Sailing instrument domain reference — Signal K paths, NMEA 2000 PGNs, instrument relationships, racing concepts |
-| `/architecture` | Codebase comprehension — module map, data flow, complexity hotspots, risk tier overlay. Full snapshot or delta briefing |
-| `/diagnose` | Systematic Pi troubleshooting runbook — checks all subsystems and reports health |
-| `/skill-compare` | Blind A/B comparison of two skill versions — measures relative improvement across multiple dimensions |
+| Enter a worktree before any file edit (`EnterWorktree`). | Edit files in the primary checkout `/Users/dweatbrook/src/helmlog`. |
+| Land changes via merged PRs on a feature branch. | Push directly to `main` — even for Pi hotfixes. |
+| Include `Closes #N` in every PR body that resolves an issue. | Open a PR without linking the issue; the tracker rots. |
+| Follow TDD: failing test → implement → green → lint (see `/tdd`). | Write code first and bolt tests on later. |
+| Flush each decoded record to SQLite as it arrives. | Hold data in memory across long runs — a reboot loses it all. |
+| Use `canboat` decoders; add new PGNs as dataclasses in `nmea2000.py`. | Hand-parse NMEA 2000 PGNs from raw bytes unless no library covers them. |
+| Read device paths from `.env` / config (`.env.example` is the reference). | Hardcode `/dev/can0` or similar paths. |
+| Keep `main.py` as wiring only — start the loop, no business logic. | Mix decode/storage/web logic into `main.py`. |
+| Add deps via `uv add <pkg>` then `uv sync`; verify the import. | Edit `pyproject.toml` by hand for deps, or use `uv pip install`. |
+| After a pull or branch switch, run `uv sync` (or `./scripts/deploy.sh` on the Pi). | Assume the venv is up to date — the Pi service runs `--no-sync`. |
+| Commit + push every change before stopping work. | Leave uncommitted edits on the Pi — the next deploy wipes them. |
+| Run `uv run pytest tests/integration/ -v` for federation/co-op/peer-API changes. | Skip integration tests for federation work because unit tests pass. |
+
+<important if="touching auth.py / peer_auth.py / federation.py / storage.py migrations / can_reader.py">
+**Critical-tier change.** Required: TDD + integration tests + `/data-license`
+review + a structured spec (`/spec`) before implementation. See
+[docs/risk-tiers.md](docs/risk-tiers.md). PRs touching these files will be
+reviewed against this bar regardless of how small they look.
+</important>
+
+<important if="working on the Pi (deployed device, not Mac dev)">
+- After `uv add <pkg>` or any dependency change, restart the service:
+  `sudo systemctl restart helmlog`. The service runs with `--no-sync` and
+  trusts the venv.
+- A hotfix on the Pi still goes through a feature branch + PR + merge.
+  Never commit to `main` from the device.
+- `/diagnose` is the systematic Pi troubleshooting runbook. Use it before
+  ad-hoc poking.
+</important>
+
+## Where to look next
+
+- **Risk tiers + spec formats:** [docs/risk-tiers.md](docs/risk-tiers.md)
+- **Data licensing policy** (PII, co-op embargoes, biometrics, gambling,
+  protest firewall): [docs/data-licensing.md](docs/data-licensing.md). Run
+  `/data-license` to review code against it.
+- **Testing layers** (in-process, Pi harness, Docker) and Pi-harness SSH
+  setup: [docs/testing-guide.md](docs/testing-guide.md). Run
+  `/integration-test` to pick the right layer.
+- **Promote gate (`main → stage`):** the `promote.yml` workflow requires a
+  new `##` heading in `RELEASES.md` for each promoted commit set (exempt
+  if all commits only touch `docs/ideation-log.md`). Run `/release-notes`
+  before promoting. `stage → live` has no gate.
+- **Skill catalog and domain reference:** the harness lists available
+  skills each session; `/domain` is the authoritative reference for Signal K
+  paths and PGNs.
+- **Past decisions on this file** (e.g. why `/domain` isn't split, why no
+  `AGENTS.md` symlink): [docs/agent-context-decisions.md](docs/agent-context-decisions.md).
