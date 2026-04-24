@@ -655,7 +655,6 @@ async function loadTrack() {
     if (utc) {
       _moveCursorToIndex(idx);
       showNewMomentForm(utc.toISOString());
-      document.getElementById('moments-card').scrollIntoView({behavior: 'smooth', block: 'start'});
     }
   });
 
@@ -5899,6 +5898,14 @@ function renderManeuverCard() {
     const yt = m.youtube_url
       ? '<a href="' + esc(m.youtube_url) + '" target="_blank" rel="noopener" title="Watch on YouTube" style="color:var(--accent);text-decoration:none" onclick="event.stopPropagation()">&#9654;</a>'
       : '';
+    // "+ Moment" action — open the Moments panel's new-moment form anchored
+    // to this maneuver. Inline in the actions column alongside the YouTube
+    // link so there's no new column churn.
+    const momentBtn = m.id != null
+      ? '<a href="#" title="Create a moment anchored to this maneuver" '
+        + 'onclick="event.preventDefault();event.stopPropagation();createMomentFromManeuver(' + idx + ')" '
+        + 'style="color:var(--accent);text-decoration:none;margin-left:6px;font-size:.9em" aria-label="Create moment here">+</a>'
+      : '';
     return '<tr id="mrow-' + idx + '" style="cursor:pointer"'
       + ' onclick="highlightManeuver(' + idx + ')"'
       + ' onmouseenter="_highlightOverlayTrack(' + idx + ',true)"'
@@ -5913,7 +5920,7 @@ function renderManeuverCard() {
       + '<td title="BSP dip from pre-maneuver baseline to minimum BSP during the turn. Not exit−entry.">' + bspDip + '</td>'
       + '<td>' + distLoss + '</td>'
       + '<td>' + esc(cond) + '</td>'
-      + '<td>' + yt + '</td>'
+      + '<td style="white-space:nowrap">' + yt + momentBtn + '</td>'
       + '</tr>';
   }).join('');
 
@@ -6084,7 +6091,7 @@ function _addManeuverMarkers() {
       fillOpacity: 0.9,
       weight: 2,
     });
-    marker.bindPopup(_renderManeuverPopup(m));
+    marker.bindPopup(_renderManeuverPopup(m, idx));
     // Map marker clicks keep the focus on the track — they highlight the
     // maneuver and seek the replay, but do NOT scroll the page down to the
     // maneuvers card (which yanks the user away from the map).
@@ -6094,7 +6101,7 @@ function _addManeuverMarkers() {
   });
 }
 
-function _renderManeuverPopup(m) {
+function _renderManeuverPopup(m, idx) {
   const ringColor = _MANEUVER_COLORS[m.type] || 'var(--text-secondary)';
   const pctSuffix = m.loss_percentile != null ? ' (p' + m.loss_percentile + ')' : '';
   const rankBadge = m.rank
@@ -6115,7 +6122,17 @@ function _renderManeuverPopup(m) {
   }
   if (m.loss_kts != null) lines.push(m.loss_kts.toFixed(2) + ' kt loss');
   if (m.distance_loss_m != null) lines.push(Math.round(m.distance_loss_m) + ' m loss');
-  return lines.join('<br>');
+  const body = lines.join('<br>');
+  // "+ Create moment" action — opens the Moments panel's new-moment form
+  // anchored to this maneuver. Only rendered when the maneuver has a stable
+  // id (all detected maneuvers do; defensive against any unusual rows).
+  const createMoment = (idx != null && m.id != null)
+    ? '<div style="margin-top:6px;border-top:1px solid var(--border);padding-top:6px">'
+      + '<a href="#" onclick="event.preventDefault();createMomentFromManeuver(' + idx + ')" '
+      + 'style="color:var(--accent);font-size:.78rem;text-decoration:none">+ Create moment here &rarr;</a>'
+      + '</div>'
+    : '';
+  return body + createMoment;
 }
 
 let _showManeuverMarkers = true;
@@ -7130,7 +7147,19 @@ async function _loadMarkerPreview(threadId) {
   }).join('');
 }
 
-function showNewMomentForm(anchorTimestamp) {
+// Open the New Moment form in the Moments panel. `prefill` may be:
+//   - a string ISO timestamp \u2192 preselect as a timestamp anchor
+//   - an anchor object {kind, entity_id?, t_start?, label?} \u2192 preselect verbatim
+//   - falsy \u2192 no preselection (user picks in the picker)
+function showNewMomentForm(prefill) {
+  // Make sure the Moments card is visible and the page scrolls to it so the
+  // user always sees the form they just opened (important when creation was
+  // triggered from the map popup or the maneuvers table far below).
+  const card = document.getElementById('moments-card');
+  if (card) {
+    card.style.display = '';
+    card.scrollIntoView({behavior: 'smooth', block: 'start'});
+  }
   const body = document.getElementById('moments-body');
   const form = document.createElement('div');
   form.className = 'thread-form';
@@ -7153,14 +7182,25 @@ function showNewMomentForm(anchorTimestamp) {
   const picker = document.getElementById('new-thread-anchor-picker');
   if (picker) {
     picker.fallbackCursor = cursor;
-    // If caller passed a preferred timestamp (e.g. map-click), preselect it
-    if (anchorTimestamp) {
-      picker.addEventListener('connected', () => {}, {once: true});
-      setTimeout(() => {
-        picker._pickAnchor({kind: 'timestamp', t_start: anchorTimestamp, label: fmtTime(anchorTimestamp)});
-      }, 0);
+    if (prefill) {
+      const anchor = typeof prefill === 'string'
+        ? {kind: 'timestamp', t_start: prefill, label: fmtTime(prefill)}
+        : prefill;
+      setTimeout(() => picker._pickAnchor(anchor), 0);
     }
   }
+}
+
+// Open the New Moment form prefilled with a maneuver anchor. Used by the
+// maneuver map-popup "+ Create moment" button and the maneuver-table action.
+function createMomentFromManeuver(idx) {
+  const m = _maneuvers && _maneuvers[idx];
+  if (!m || m.id == null) return;
+  // Close any open map popup so the maneuver's popup doesn't hang around
+  // over the track while the user fills out the form below.
+  if (_map && typeof _map.closePopup === 'function') _map.closePopup();
+  const label = (m.type || 'maneuver') + (m.ts ? ' at ' + fmtTime(m.ts) : '');
+  showNewMomentForm({kind: 'maneuver', entity_id: m.id, label: label});
 }
 
 async function submitNewThread() {

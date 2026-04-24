@@ -543,7 +543,8 @@ async function renameSession() {
 
 // Bookmark-drop button in the replay controls: opens the Moments panel
 // quick-create form prefilled with the current playback timestamp as the
-// anchor. The actual form lives in session.js (showNewMomentForm).
+// anchor. The form itself (showNewMomentForm in session.js) handles making
+// the Moments card visible and scrolling it into view.
 function dropBookmark() {
   if (typeof showNewMomentForm !== 'function') return;
   const t = (typeof _playClock !== 'undefined' && _playClock.positionUtc)
@@ -552,11 +553,6 @@ function dropBookmark() {
   if (!t) {
     window.alert('Play or scrub the session first so there is a timestamp to anchor to.');
     return;
-  }
-  const card = document.getElementById('moments-card');
-  if (card) {
-    card.style.display = '';
-    card.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
   showNewMomentForm(t);
 }
