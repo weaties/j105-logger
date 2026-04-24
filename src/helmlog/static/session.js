@@ -330,7 +330,6 @@ async function init() {
     loadCrew();
     loadSails();
     loadBoatSettings();
-    loadNotes();
     if (_session.end_utc) loadPolar();
     loadAnalysis();
   }
@@ -338,7 +337,7 @@ async function init() {
     loadTranscript();
     loadAudio();
   }
-  await loadDiscussion();
+  await loadMoments();
   _checkThreadHash();
   loadSharing();
   loadMatch();
@@ -626,13 +625,13 @@ async function loadTrack() {
     const utc = _utcForIndex(idx);
     if (utc) {
       _moveCursorToIndex(idx);
-      showNewThreadForm(utc.toISOString());
-      document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+      showNewMomentForm(utc.toISOString());
+      document.getElementById('moments-card').scrollIntoView({behavior: 'smooth', block: 'start'});
     }
   });
 
   _map.fitBounds(line.getBounds(), {padding: [20, 20]});
-  document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a discussion at that point';
+  document.getElementById('track-hint').textContent = 'Click track to seek \u00b7 Right-click to start a moment at that point';
 
   // #458 — if a matched Vakaros session exists, overlay start line, line pings,
   // and race-start marker on top of the SK track.
@@ -2425,47 +2424,6 @@ async function loadSailChangeTimeline() {
     html += '</div>';
     container.innerHTML = html;
   } catch (e) { console.error('sail changes timeline error', e); }
-}
-
-// ---------------------------------------------------------------------------
-// Notes
-// ---------------------------------------------------------------------------
-
-async function loadNotes() {
-  const card = document.getElementById('notes-card');
-  card.style.display = '';
-  const body = document.getElementById('notes-body');
-  const r = await fetch('/api/sessions/' + SESSION_ID + '/moments');
-  const notes = await r.json();
-  if (notes.length) {
-    body.innerHTML = notes.map(n => {
-      const t = fmtTime(n.ts);
-      let content = '';
-      if (n.note_type === 'photo' && n.photo_path) {
-        const src = '/attachments/' + n.photo_path;
-        content = '<img src="' + src + '" loading="lazy" style="max-width:100px;max-height:80px;border-radius:4px;cursor:pointer;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '"/>';
-      } else if (n.note_type === 'settings' && n.body) {
-        try {
-          const obj = JSON.parse(n.body);
-          content = Object.entries(obj).map(([k, v]) =>
-            '<span style="color:var(--text-secondary)">' + esc(k) + ':</span> ' + esc(v)
-          ).join(' &middot; ');
-        } catch { content = esc(n.body); }
-      } else {
-        content = esc(n.body);
-      }
-      const del = '<button onclick="deleteNote(' + n.id + ')" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:.8rem;padding:0 4px;float:right">&#10005;</button>';
-      return '<div style="padding:4px 0;border-bottom:1px solid ' + cssVar('--border') + ';overflow:hidden">'
-        + del + '<span style="color:var(--text-secondary);margin-right:6px">' + t + '</span>' + content + '</div>';
-    }).join('');
-  } else {
-    body.innerHTML = '<span style="color:var(--text-secondary)">No notes</span>';
-  }
-}
-
-async function deleteNote(noteId) {
-  await fetch('/api/moments/' + noteId, {method: 'DELETE'});
-  loadNotes();
 }
 
 // ---------------------------------------------------------------------------
@@ -6736,10 +6694,10 @@ const _threadTagFilter = new Set();
 let _threadTagMode = 'and';
 let _threadAvailableTags = [];
 
-async function loadDiscussion() {
-  const card = document.getElementById('discussion-card');
+async function loadMoments() {
+  const card = document.getElementById('moments-card');
   card.style.display = '';
-  const body = document.getElementById('discussion-body');
+  const body = document.getElementById('moments-body');
   // Fetch anchor index in parallel so entity-ref chips can resolve labels
   _anchorIndex = null;
   const params = new URLSearchParams();
@@ -6779,15 +6737,15 @@ async function loadDiscussion() {
   }));
   _threadAvailableTags = data.available_tags || [];
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
-  const badge = document.getElementById('discussion-badge');
+  const badge = document.getElementById('moments-badge');
   badge.textContent = totalUnread > 0 ? '(' + totalUnread + ' unread)' : '';
   _addDiscussionMarkers();
 
   const filterBar = _renderThreadTagFilterRow();
   if (!_threads.length) {
     const emptyMsg = _threadTagFilter.size
-      ? '<span style="color:var(--text-secondary)">No discussions match the current tag filter.</span>'
-      : '<span style="color:var(--text-secondary)">No discussions yet. Start one with + New Thread above.</span>';
+      ? '<span style="color:var(--text-secondary)">No moments match the current tag filter.</span>'
+      : '<span style="color:var(--text-secondary)">No moments on this session yet. Use + New Moment or the &#128278; Bookmark button while replaying.</span>';
     body.innerHTML = filterBar + emptyMsg;
     return;
   }
@@ -6847,10 +6805,10 @@ function _renderThreadTagFilterRow() {
 function _toggleThreadTagFilter(id) {
   if (_threadTagFilter.has(id)) _threadTagFilter.delete(id);
   else _threadTagFilter.add(id);
-  loadDiscussion();
+  loadMoments();
 }
-function _setThreadTagMode(m) { _threadTagMode = m; loadDiscussion(); }
-function _clearThreadTagFilter() { _threadTagFilter.clear(); loadDiscussion(); }
+function _setThreadTagMode(m) { _threadTagMode = m; loadMoments(); }
+function _clearThreadTagFilter() { _threadTagFilter.clear(); loadMoments(); }
 
 function _renderRowTagChipsInline(tags) {
   if (!tags || !tags.length) return '';
@@ -7087,7 +7045,7 @@ function _addDiscussionMarkers() {
             ev.preventDefault();
             marker.closePopup();
             openThread(threadId);
-            document.getElementById('discussion-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+            document.getElementById('moments-card').scrollIntoView({behavior: 'smooth', block: 'start'});
           });
         }
       }
@@ -7116,15 +7074,15 @@ async function _loadMarkerPreview(threadId) {
   }).join('');
 }
 
-function showNewThreadForm(anchorTimestamp) {
-  const body = document.getElementById('discussion-body');
+function showNewMomentForm(anchorTimestamp) {
+  const body = document.getElementById('moments-body');
   const form = document.createElement('div');
   form.className = 'thread-form';
   form.style.marginBottom = '10px';
   const cursor = _playClock.positionUtc ? _playClock.positionUtc.toISOString() : null;
   form.innerHTML = ''
     + '<div style="display:flex;gap:6px;margin-bottom:6px">'
-    + '<input id="new-thread-title" placeholder="Thread title (optional)" style="flex:1"/>'
+    + '<input id="new-thread-title" placeholder="Moment title (optional)" style="flex:1"/>'
     + '</div>'
     + '<div style="margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">'
     + 'Anchor (optional):'
@@ -7132,8 +7090,8 @@ function showNewThreadForm(anchorTimestamp) {
     + '<anchor-picker id="new-thread-anchor-picker" session-id="' + esc(SESSION_ID) + '"></anchor-picker>'
     + '<textarea id="new-thread-body" placeholder="First comment\u2026" style="margin-top:8px"></textarea>'
     + '<div style="margin-top:6px;display:flex;gap:6px">'
-    + '<button class="btn-thread" onclick="submitNewThread()">Create Thread</button>'
-    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadDiscussion()">Cancel</button>'
+    + '<button class="btn-thread" onclick="submitNewThread()">Create Moment</button>'
+    + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadMoments()">Cancel</button>'
     + '</div>';
   body.prepend(form);
   const picker = document.getElementById('new-thread-anchor-picker');
@@ -7186,12 +7144,12 @@ async function submitNewThread() {
 }
 
 async function openThread(threadId, scrollToCommentId) {
-  const body = document.getElementById('discussion-body');
+  const body = document.getElementById('moments-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
   // Mark as read
   fetch('/api/moments/' + threadId + '/read', {method: 'POST'});
   const r = await fetch('/api/moments/' + threadId);
-  if (!r.ok) { loadDiscussion(); return; }
+  if (!r.ok) { loadMoments(); return; }
   const t = await r.json();
   const title = _threadTitle(t);
   await _ensureAnchorIndex();
@@ -7220,7 +7178,7 @@ async function openThread(threadId, scrollToCommentId) {
   const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this thread" '
     + 'onclick="copyThreadLink(' + t.id + ',null,this)">\ud83d\udd17 Copy link</button>';
   body.innerHTML = '<div style="margin-bottom:8px">'
-    + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadDiscussion()">&larr; All threads</button>'
+    + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadMoments()">&larr; All moments</button>'
     + '</div>'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
     + '<div style="flex:1;min-width:0"><strong style="color:var(--text-primary);font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
@@ -7236,7 +7194,7 @@ async function openThread(threadId, scrollToCommentId) {
     + '<textarea id="reply-body" placeholder="Reply\u2026"></textarea>'
     + '<div style="margin-top:4px"><button class="btn-thread" onclick="submitReply(' + t.id + ')">Reply</button></div>'
     + '</div>';
-  const card = document.getElementById('discussion-card');
+  const card = document.getElementById('moments-card');
   _scrollDeepLinkTarget(card, scrollToCommentId);
 }
 

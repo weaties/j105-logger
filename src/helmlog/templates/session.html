@@ -87,7 +87,6 @@
    is served at /, collapse to: photo, track, instruments, boat setup, notes.
    Everything else is forcibly hidden even if its loader calls display=''. */
 body.live-race #video-container,
-body.live-race #bookmarks-card,
 body.live-race #wind-field-card,
 body.live-race #polar-card,
 body.live-race #videos-card,
@@ -95,7 +94,7 @@ body.live-race #analysis-card,
 body.live-race #results-card,
 body.live-race #crew-card,
 body.live-race #sails-card,
-body.live-race #discussion-card,
+body.live-race #moments-card,
 body.live-race #audio-card,
 body.live-race #tuning-extraction-card,
 body.live-race #maneuvers-card,
@@ -326,15 +325,6 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
   </div>
 </div>
 
-<div id="bookmarks-card" class="card" style="display:none">
-  <div class="section-title" onclick="toggleSection('bookmarks')">Bookmarks <span id="bookmarks-toggle">&#9660;</span></div>
-  <div class="section-body" id="bookmarks-body">
-    <div id="bookmarks-tag-filter" class="session-tag-filter-row" style="display:none"></div>
-    <ul id="bookmarks-list" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:6px"></ul>
-    <p id="bookmarks-empty" style="font-size:.78rem;color:var(--text-secondary);margin:0;display:none">No bookmarks on this session yet. Use the &#128278; Bookmark button in the replay controls to add one.</p>
-  </div>
-</div>
-
 <div id="wind-field-card" class="card" style="display:none">
   <div class="section-title" onclick="toggleSection('wind-field')">Wind Field <span id="wind-field-toggle">&#9660;</span></div>
   <div class="section-body" id="wind-field-body">
@@ -441,17 +431,12 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
   <div class="section-body" id="boat-settings-body" style="display:none"></div>
 </div>
 
-<div class="card" id="notes-card" style="display:none">
-  <div class="section-title" onclick="toggleSection('notes')">Notes <span id="notes-toggle">&#9660;</span></div>
-  <div class="section-body" id="notes-body"></div>
-</div>
-
-<div class="card" id="discussion-card" style="display:none">
+<div class="card" id="moments-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
-    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('discussion')">Discussion <span id="discussion-badge" style="font-size:.7rem;color:var(--accent)"></span> <span id="discussion-toggle">&#9660;</span></div>
-    <button onclick="showNewThreadForm()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.82rem;padding:2px 0">+ New Thread</button>
+    <div class="section-title" style="margin-bottom:0" onclick="toggleSection('moments')">Moments <span id="moments-badge" style="font-size:.7rem;color:var(--accent)"></span> <span id="moments-toggle">&#9660;</span></div>
+    <button onclick="showNewMomentForm()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.82rem;padding:2px 0">+ New Moment</button>
   </div>
-  <div class="section-body" id="discussion-body" style="margin-top:6px"></div>
+  <div class="section-body" id="moments-body" style="margin-top:6px"></div>
 </div>
 
 <div id="audio-card" class="card" style="display:none">
@@ -545,258 +530,25 @@ async function renameSession() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// "Bookmarks" card: interim adapter over /api/moments (#662). The bookmark
-// concept is now a timestamp-anchored moment with a subject and an optional
-// first comment. The UI rework in the follow-up PR will replace this card
-// with a unified moments view; for now we map bookmark actions onto moment
-// endpoints so the page keeps functioning.
-// ---------------------------------------------------------------------------
-
-function _sessionId() {
-  return document.getElementById('app-config').dataset.sessionId;
-}
-
-async function dropBookmark() {
-  let t = null;
-  try {
-    if (typeof _playClock !== 'undefined' && _playClock.positionUtc) {
-      t = _playClock.positionUtc.toISOString();
-    }
-  } catch { /* ignore */ }
+// Bookmark-drop button in the replay controls: opens the Moments panel
+// quick-create form prefilled with the current playback timestamp as the
+// anchor. The actual form lives in session.js (showNewMomentForm).
+function dropBookmark() {
+  if (typeof showNewMomentForm !== 'function') return;
+  const t = (typeof _playClock !== 'undefined' && _playClock.positionUtc)
+    ? _playClock.positionUtc.toISOString()
+    : null;
   if (!t) {
-    window.alert('Play or scrub the session first so there is a timestamp to anchor the bookmark to.');
+    window.alert('Play or scrub the session first so there is a timestamp to anchor to.');
     return;
   }
-  const name = window.prompt('Bookmark name:', '');
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  const note = window.prompt('Optional note (leave blank for none):', '') || null;
-  try {
-    const resp = await fetch(`/api/sessions/${_sessionId()}/moments`, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        anchor_kind: 'timestamp',
-        t_start: t,
-        subject: trimmed,
-        first_comment: note ? note.trim() : null,
-      }),
-    });
-    if (!resp.ok) { window.alert(`Create failed: ${resp.status}`); return; }
-    await loadBookmarks();
-  } catch (err) { window.alert(`Create failed: ${err}`); }
-}
-
-// Tag filter state for the Bookmarks card.
-const _bookmarkTagFilter = new Set();
-let _bookmarkTagMode = 'and'; // 'and'|'or'
-let _bookmarkAvailableTags = [];
-
-async function loadBookmarks() {
-  try {
-    const params = new URLSearchParams();
-    if (_bookmarkTagFilter.size) {
-      params.set('tags', [...(_bookmarkTagFilter)].join(','));
-      params.set('tag_mode', _bookmarkTagMode);
-    }
-    const qs = params.toString();
-    const url = `/api/sessions/${_sessionId()}/moments` + (qs ? '?' + qs : '');
-    const resp = await fetch(url);
-    if (!resp.ok) return;
-    const data = await resp.json();
-    _bookmarkAvailableTags = data.available_tags || [];
-    // Map moments -> bookmark-shaped rows for the existing renderer:
-    // subject -> name, first_comment_body -> note, anchor.t_start -> t_start.
-    const rows = (data.moments || [])
-      .filter(m => m.anchor_kind === 'timestamp' && m.anchor_t_start)
-      .map(m => ({
-        id: m.id,
-        name: m.subject || 'Moment',
-        note: m.first_comment_body || null,
-        t_start: m.anchor_t_start,
-        tags: m.tags || [],
-        created_by: m.created_by,
-      }));
-    _renderBookmarks(rows);
-    _renderBookmarkTagFilterRow();
-  } catch (err) { /* non-fatal */ }
-}
-
-function _renderBookmarkTagFilterRow() {
-  const wrap = document.getElementById('bookmarks-tag-filter');
-  if (!wrap) return;
-  const byId = new Map();
-  for (const t of _bookmarkAvailableTags) {
-    byId.set(t.id, {id: t.id, name: t.name, color: t.color, count: t.count || 0});
+  const card = document.getElementById('moments-card');
+  if (card) {
+    card.style.display = '';
+    card.scrollIntoView({behavior: 'smooth', block: 'start'});
   }
-  for (const tid of _bookmarkTagFilter) {
-    if (!byId.has(tid)) byId.set(tid, {id: tid, name: '#' + tid, color: null, count: 0});
-  }
-  if (byId.size === 0) { wrap.style.display = 'none'; return; }
-  wrap.style.display = '';
-  const sorted = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const chips = sorted.map(t => {
-    const active = _bookmarkTagFilter.has(t.id);
-    const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
-    return `<span class="session-tag-chip${active ? ' active' : ''}" onclick="_toggleBookmarkTagFilter(${t.id})">${swatch}${esc(t.name)} <span class="session-tag-count">(${t.count})</span></span>`;
-  }).join('');
-  const dim = _bookmarkTagFilter.size < 2 ? ';opacity:.6' : '';
-  const modeToggle = `<span class="session-tag-mode" style="margin-left:6px${dim}">`
-    + `<button class="${_bookmarkTagMode === 'and' ? 'active' : ''}" onclick="_setBookmarkTagMode('and')" title="Require every selected tag">all</button>`
-    + `<button class="${_bookmarkTagMode === 'or' ? 'active' : ''}" onclick="_setBookmarkTagMode('or')" title="Match any selected tag">any</button>`
-    + '</span>';
-  const clear = _bookmarkTagFilter.size
-    ? '<a href="#" onclick="event.preventDefault();_clearBookmarkTagFilter()" style="font-size:.7rem;color:var(--text-secondary);margin-left:6px">clear</a>'
-    : '';
-  wrap.innerHTML = '<span class="session-tag-label">Tags</span>' + chips + modeToggle + clear;
+  showNewMomentForm(t);
 }
 
-function _toggleBookmarkTagFilter(id) {
-  if (_bookmarkTagFilter.has(id)) _bookmarkTagFilter.delete(id);
-  else _bookmarkTagFilter.add(id);
-  loadBookmarks();
-}
-function _setBookmarkTagMode(m) { _bookmarkTagMode = m; loadBookmarks(); }
-function _clearBookmarkTagFilter() { _bookmarkTagFilter.clear(); loadBookmarks(); }
-
-function _renderBookmarks(rows) {
-  const card = document.getElementById('bookmarks-card');
-  const list = document.getElementById('bookmarks-list');
-  const empty = document.getElementById('bookmarks-empty');
-  if (!card || !list) return;
-  card.style.display = '';
-  list.innerHTML = '';
-  if (!rows || rows.length === 0) {
-    empty.style.display = _bookmarkTagFilter.size ? 'none' : '';
-    if (_bookmarkTagFilter.size) {
-      list.innerHTML = '<li style="list-style:none;padding:8px;color:var(--text-secondary);font-size:.78rem">No bookmarks match the current tag filter.</li>';
-    }
-    return;
-  }
-  empty.style.display = 'none';
-  for (const bm of rows) {
-    const li = document.createElement('li');
-    li.style.cssText = 'display:flex;flex-direction:column;gap:4px;padding:6px 8px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px';
-
-    const mainRow = document.createElement('div');
-    mainRow.style.cssText = 'display:flex;align-items:center;gap:8px';
-    const timeLabel = document.createElement('span');
-    timeLabel.style.cssText = 'font-family:monospace;font-size:.72rem;color:var(--text-secondary);min-width:64px';
-    timeLabel.textContent = _fmtBookmarkTime(bm.t_start);
-    const title = document.createElement('button');
-    title.type = 'button';
-    title.style.cssText = 'flex:1;text-align:left;background:none;border:none;color:var(--accent);cursor:pointer;padding:0;font-size:.82rem';
-    title.textContent = bm.name;
-    title.onclick = () => _seekToBookmark(bm.t_start);
-    const noteEl = document.createElement('span');
-    if (bm.note) {
-      noteEl.style.cssText = 'font-size:.72rem;color:var(--text-secondary);flex:2';
-      noteEl.textContent = bm.note;
-    }
-    const tagBtn = document.createElement('button');
-    tagBtn.type = 'button';
-    tagBtn.title = 'Tags';
-    tagBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
-    tagBtn.innerHTML = '&#127991;';
-    const renameBtn = document.createElement('button');
-    renameBtn.type = 'button';
-    renameBtn.title = 'Rename';
-    renameBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
-    renameBtn.innerHTML = '&#9998;';
-    renameBtn.onclick = () => renameBookmark(bm.id, bm.name, bm.note);
-    const delBtn = document.createElement('button');
-    delBtn.type = 'button';
-    delBtn.title = 'Delete';
-    delBtn.style.cssText = 'background:none;border:none;color:var(--text-secondary);cursor:pointer;padding:2px 4px';
-    delBtn.innerHTML = '&#128465;';
-    delBtn.onclick = () => deleteBookmark(bm.id);
-    mainRow.appendChild(timeLabel);
-    mainRow.appendChild(title);
-    if (bm.note) mainRow.appendChild(noteEl);
-    mainRow.appendChild(tagBtn);
-    mainRow.appendChild(renameBtn);
-    mainRow.appendChild(delBtn);
-
-    // Inline tag chip strip shown below the main row when tags are attached,
-    // so users can see the tags at a glance without expanding the picker.
-    const chipStrip = document.createElement('div');
-    chipStrip.style.cssText = 'display:flex;flex-wrap:wrap;gap:3px;padding-left:72px';
-    const tags = Array.isArray(bm.tags) ? bm.tags : [];
-    if (tags.length) {
-      chipStrip.innerHTML = tags.map(t => {
-        const swatch = t.color ? `<span class="hist-tag-chip-swatch" style="background:${t.color}"></span>` : '';
-        const name = (t.name || '').replace(/</g, '&lt;');
-        return `<span class="session-tag-chip" style="cursor:default;font-size:.66rem">${swatch}${name}</span>`;
-      }).join('');
-    } else {
-      chipStrip.style.display = 'none';
-    }
-
-    const tagRow = document.createElement('div');
-    tagRow.style.cssText = 'display:none;padding-left:72px';
-    const picker = document.createElement('tag-picker');
-    picker.setAttribute('entity-type', 'moment');
-    picker.setAttribute('entity-id', String(bm.id));
-    // When the user attaches/detaches from the expanded picker, refresh
-    // the list so the inline chip strip + filter row pick up the change.
-    picker.addEventListener('change', () => { loadBookmarks(); });
-    tagRow.appendChild(picker);
-
-    tagBtn.onclick = () => {
-      tagRow.style.display = tagRow.style.display === 'none' ? '' : 'none';
-    };
-
-    li.appendChild(mainRow);
-    if (tags.length) li.appendChild(chipStrip);
-    li.appendChild(tagRow);
-    list.appendChild(li);
-  }
-}
-
-function _fmtBookmarkTime(iso) {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', second: '2-digit'});
-  } catch { return iso; }
-}
-
-function _seekToBookmark(utc) {
-  if (typeof _seekTo === 'function') {
-    _seekTo(utc, 'moment');
-  }
-}
-
-async function renameBookmark(id, currentName, currentNote) {
-  const name = window.prompt('Name:', currentName || '');
-  if (name === null) return;
-  const trimmed = name.trim();
-  if (!trimmed) return;
-  // PATCH only the subject — existing first-comment edits go through the
-  // moment detail UI in the follow-up PR.
-  try {
-    const resp = await fetch(`/api/moments/${id}`, {
-      method: 'PATCH',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({subject: trimmed}),
-    });
-    if (resp.status === 403) { window.alert('Only the author or an admin can edit this.'); return; }
-    if (!resp.ok) { window.alert(`Rename failed: ${resp.status}`); return; }
-    await loadBookmarks();
-  } catch (err) { window.alert(`Rename failed: ${err}`); }
-}
-
-async function deleteBookmark(id) {
-  if (!window.confirm('Delete this?')) return;
-  try {
-    const resp = await fetch(`/api/moments/${id}`, {method: 'DELETE'});
-    if (resp.status === 403) { window.alert('Only the author or an admin can delete this.'); return; }
-    if (!resp.ok && resp.status !== 204) { window.alert(`Delete failed: ${resp.status}`); return; }
-    await loadBookmarks();
-  } catch (err) { window.alert(`Delete failed: ${err}`); }
-}
-
-document.addEventListener('DOMContentLoaded', () => { loadBookmarks(); });
 </script>
 {% endblock %}
