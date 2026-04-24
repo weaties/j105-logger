@@ -6781,6 +6781,7 @@ async function loadMoments(opts) {
     session_id: m.session_id,
     anchor: m.anchor,
     title: m.subject,
+    counterparty: m.counterparty || null,
     created_by: m.created_by,
     created_at: m.created_at,
     updated_at: m.updated_at,
@@ -6832,8 +6833,9 @@ async function loadMoments(opts) {
         + '<strong>Resolution:</strong> ' + esc(t.resolution_summary) + '</div>'
       : '';
     const tagChips = _renderRowTagChipsInline(t.tags);
+    const cpChip = _renderCounterpartyChip(t.counterparty, null);
     return '<div class="thread-item' + resolved + '" onclick="openThread(' + t.id + ')">'
-      + '<div><strong style="color:var(--text-primary)">' + title + '</strong>' + anchor + unread + resolvedTag + '</div>'
+      + '<div><strong style="color:var(--text-primary)">' + title + '</strong>' + cpChip + anchor + unread + resolvedTag + '</div>'
       + '<div style="font-size:.72rem;color:var(--text-secondary);margin-top:2px">' + esc(author) + ' &middot; ' + count + ' &middot; ' + fmtTime(t.created_at) + '</div>'
       + resolutionHtml
       + tagChips
@@ -7166,8 +7168,10 @@ function showNewMomentForm(prefill) {
   form.style.marginBottom = '10px';
   const cursor = _playClock.positionUtc ? _playClock.positionUtc.toISOString() : null;
   form.innerHTML = ''
-    + '<div style="display:flex;gap:6px;margin-bottom:6px">'
-    + '<input id="new-thread-title" placeholder="Moment title (optional)" style="flex:1"/>'
+    + '<div style="display:flex;gap:6px;margin-bottom:6px;flex-wrap:wrap">'
+    + '<input id="new-thread-title" placeholder="Subject (e.g. windshift, close call)" style="flex:2;min-width:180px"/>'
+    + '<input id="new-thread-counterparty" list="new-thread-cp-list" placeholder="Counterparty (e.g. USA 123)" style="flex:1;min-width:140px"/>'
+    + '<datalist id="new-thread-cp-list"></datalist>'
     + '</div>'
     + '<div style="margin-bottom:6px;font-size:.72rem;color:var(--text-secondary)">'
     + 'Anchor (optional):'
@@ -7179,6 +7183,7 @@ function showNewMomentForm(prefill) {
     + '<button class="btn-thread" style="background:none;color:var(--text-secondary)" onclick="loadMoments()">Cancel</button>'
     + '</div>';
   body.prepend(form);
+  _populateCounterpartyDatalist('new-thread-cp-list');
   const picker = document.getElementById('new-thread-anchor-picker');
   if (picker) {
     picker.fallbackCursor = cursor;
@@ -7205,6 +7210,8 @@ function createMomentFromManeuver(idx) {
 
 async function submitNewThread() {
   const title = document.getElementById('new-thread-title').value.trim();
+  const cpEl = document.getElementById('new-thread-counterparty');
+  const counterparty = cpEl ? cpEl.value.trim() : '';
   const picker = document.getElementById('new-thread-anchor-picker');
   let anchor = picker ? picker.value : null;
   // Fallback: if the user didn't pick anything and the replay has a
@@ -7218,6 +7225,7 @@ async function submitNewThread() {
   // session-scope if the user hasn't picked an anchor or set a cursor.
   const payload = {anchor_kind: 'session'};
   if (title) payload.subject = title;
+  if (counterparty) payload.counterparty = counterparty;
   if (firstComment) payload.first_comment = firstComment;
   if (anchor && anchor.kind) {
     payload.anchor_kind = anchor.kind;
@@ -7235,6 +7243,7 @@ async function submitNewThread() {
     alert('Failed to create moment: ' + (detail.detail || r.status));
     return;
   }
+  if (counterparty) _counterpartyCache = null;
   const {id} = await r.json();
   openThread(id);
 }
@@ -7251,7 +7260,6 @@ async function openThread(threadId, scrollToCommentId) {
   const r = await fetch('/api/moments/' + threadId);
   if (!r.ok) { loadMoments(); return; }
   const t = await r.json();
-  const title = _threadTitle(t);
   await _ensureAnchorIndex();
   const anchor = _renderAnchorChip(t.anchor);
   let resolveBtn = '';
@@ -7277,14 +7285,25 @@ async function openThread(threadId, scrollToCommentId) {
   }).join('');
   const copyThreadBtn = '<button class="btn-copy-link" title="Copy link to this moment" '
     + 'onclick="copyThreadLink(' + t.id + ',null,this)">\ud83d\udd17 Copy link</button>';
+  const subjectText = t.subject || '';
+  const subjectDisplay = subjectText ? esc(subjectText) : '<em style="color:var(--text-secondary);font-weight:400">Untitled</em>';
+  const subjectSpan = '<span class="moment-subject-editable" id="moment-subject-' + t.id + '"'
+    + ' data-raw="' + esc(subjectText) + '"'
+    + ' onclick="_editMomentSubject(' + t.id + ')"'
+    + ' title="Click to edit subject"'
+    + ' style="color:var(--text-primary);font-size:.9rem;font-weight:600">'
+    + subjectDisplay + '</span>';
+  const cpChip = _renderCounterpartyChip(t.counterparty, {momentId: t.id, editable: true});
+  const galleryHtml = _renderMomentAttachmentsSection(t);
   body.innerHTML = '<div style="margin-bottom:8px">'
     + '<button style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;padding:0" onclick="loadMoments()">&larr; All moments</button>'
     + '</div>'
     + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
-    + '<div style="flex:1;min-width:0"><strong style="color:var(--text-primary);font-size:.9rem">' + title + '</strong>' + anchor + '</div>'
+    + '<div style="flex:1;min-width:0">' + subjectSpan + cpChip + anchor + '</div>'
     + '<div style="flex-shrink:0;display:flex;gap:6px">' + copyThreadBtn + resolveBtn + '</div>'
     + '</div>'
     + resolutionHtml
+    + galleryHtml
     + '<div style="margin-top:4px;margin-bottom:6px">'
     + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:3px">Tags</div>'
     + '<tag-picker entity-type="moment" entity-id="' + t.id + '"></tag-picker>'
@@ -7328,6 +7347,216 @@ function _scrollDeepLinkTarget(card, scrollToCommentId) {
     window.scrollTo({top: Math.max(0, scrollY), behavior: 'smooth'});
     _flashHighlight(highlight);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Counterparty chip + typeahead (#677)
+// ---------------------------------------------------------------------------
+
+let _counterpartyCache = null;
+
+async function _loadCounterparties() {
+  if (_counterpartyCache) return _counterpartyCache;
+  try {
+    const r = await fetch('/api/moments/counterparties');
+    _counterpartyCache = r.ok ? ((await r.json()).counterparties || []) : [];
+  } catch (e) {
+    _counterpartyCache = [];
+  }
+  return _counterpartyCache;
+}
+
+async function _populateCounterpartyDatalist(datalistId) {
+  const list = await _loadCounterparties();
+  const dl = document.getElementById(datalistId);
+  if (!dl) return;
+  dl.innerHTML = list.map(c => '<option value="' + esc(c) + '"></option>').join('');
+}
+
+// Render a counterparty chip. `opts.editable` makes it clickable in the
+// detail view (or renders a "+ counterparty" stub when value is empty).
+function _renderCounterpartyChip(value, opts) {
+  const editable = !!(opts && opts.editable);
+  const momentId = opts && opts.momentId;
+  if (!value) {
+    if (!editable) return '';
+    return '<button type="button" class="moment-counterparty-add"'
+      + ' id="moment-cp-' + momentId + '"'
+      + ' onclick="event.stopPropagation();_editMomentCounterparty(' + momentId + ')">'
+      + '+ counterparty</button>';
+  }
+  const cls = editable ? 'moment-counterparty-chip editable' : 'moment-counterparty-chip';
+  const attr = editable
+    ? ' id="moment-cp-' + momentId + '" onclick="event.stopPropagation();_editMomentCounterparty(' + momentId + ')" title="Click to edit"'
+    : '';
+  return '<span class="' + cls + '" data-raw="' + esc(value) + '"' + attr + '>'
+    + esc(value) + '</span>';
+}
+
+// ---------------------------------------------------------------------------
+// Inline subject + counterparty edit (#677)
+// ---------------------------------------------------------------------------
+
+function _editMomentSubject(momentId) {
+  const el = document.getElementById('moment-subject-' + momentId);
+  if (!el || el.tagName === 'INPUT') return;
+  const current = el.getAttribute('data-raw') || '';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'moment-inline-edit';
+  input.value = current;
+  input.placeholder = 'Subject (optional)';
+  input.id = 'moment-subject-' + momentId;
+  input.style.fontSize = '.9rem';
+  input.style.fontWeight = '600';
+  input.style.width = 'min(100%, 360px)';
+  el.replaceWith(input);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const newVal = input.value.trim();
+    if (commit && newVal !== current) {
+      const r = await fetch('/api/moments/' + momentId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({subject: newVal || null}),
+      });
+      if (!r.ok) {
+        alert(r.status === 403
+          ? 'Only the author (or an admin) can edit this moment.'
+          : 'Failed to update subject (HTTP ' + r.status + ')');
+      }
+    }
+    openThread(momentId);
+  };
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+}
+
+function _editMomentCounterparty(momentId) {
+  const el = document.getElementById('moment-cp-' + momentId);
+  if (!el || el.tagName === 'INPUT') return;
+  const current = el.getAttribute('data-raw') || '';
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'moment-inline-edit';
+  input.value = current;
+  input.placeholder = 'Counterparty';
+  input.setAttribute('list', 'moment-cp-datalist-' + momentId);
+  input.id = 'moment-cp-' + momentId;
+  input.style.fontSize = '.78rem';
+  input.style.width = '160px';
+  input.style.marginLeft = '6px';
+  const dl = document.createElement('datalist');
+  dl.id = 'moment-cp-datalist-' + momentId;
+  el.replaceWith(input);
+  input.after(dl);
+  _populateCounterpartyDatalist(dl.id);
+  input.focus();
+  input.select();
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const newVal = input.value.trim();
+    if (commit && newVal !== current) {
+      const r = await fetch('/api/moments/' + momentId, {
+        method: 'PATCH',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({counterparty: newVal || null}),
+      });
+      if (!r.ok) {
+        alert(r.status === 403
+          ? 'Only the author (or an admin) can edit this moment.'
+          : 'Failed to update counterparty (HTTP ' + r.status + ')');
+      } else {
+        _counterpartyCache = null;
+      }
+    }
+    openThread(momentId);
+  };
+  input.addEventListener('blur', () => finish(true));
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Attachment gallery (#677)
+// ---------------------------------------------------------------------------
+
+function _renderMomentAttachmentsSection(t) {
+  const photos = (t.attachments || []).filter(a => a.kind === 'photo');
+  const uploadInputId = 'moment-photo-file-' + t.id;
+  const uploadBtn = ''
+    + '<input type="file" id="' + uploadInputId + '" accept="image/*" style="display:none"'
+    + ' onchange="_uploadMomentPhoto(' + t.id + ',this)"/>'
+    + '<button type="button" class="btn-moment-upload"'
+    + ' onclick="document.getElementById(\'' + uploadInputId + '\').click()">'
+    + '+ Photo</button>';
+  if (!photos.length) {
+    return '<div style="margin-top:6px">' + uploadBtn + '</div>';
+  }
+  const thumbs = photos.map(a => {
+    const url = '/attachments/' + a.path.split('/').map(encodeURIComponent).join('/');
+    return '<div class="moment-photo-thumb">'
+      + '<img src="' + esc(url) + '" alt=""'
+      + ' onclick="_enlargeMomentPhoto(\'' + esc(url) + '\')"/>'
+      + '<button type="button" class="btn-photo-delete" title="Delete photo"'
+      + ' onclick="_deleteMomentAttachment(' + t.id + ',' + a.id + ')">×</button>'
+      + '</div>';
+  }).join('');
+  return '<div class="moment-gallery">' + thumbs + '</div>'
+    + '<div style="margin-top:6px">' + uploadBtn + '</div>';
+}
+
+function _enlargeMomentPhoto(url) {
+  const overlay = document.createElement('div');
+  overlay.className = 'moment-photo-overlay';
+  overlay.innerHTML = '<img src="' + esc(url) + '" alt=""/>';
+  const close = () => overlay.remove();
+  overlay.addEventListener('click', close);
+  const onKey = (e) => {
+    if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); }
+  };
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+}
+
+async function _uploadMomentPhoto(momentId, input) {
+  if (!input.files || !input.files[0]) return;
+  const file = input.files[0];
+  const fd = new FormData();
+  fd.append('file', file);
+  const r = await fetch('/api/moments/' + momentId + '/attachments', {
+    method: 'POST', body: fd,
+  });
+  if (!r.ok) {
+    const mb = (file.size / 1048576).toFixed(1);
+    alert(r.status === 413
+      ? 'Photo too large (' + mb + ' MB). Maximum upload size is 20 MB.'
+      : 'Upload failed (HTTP ' + r.status + '). Please try again.');
+    return;
+  }
+  input.value = '';
+  openThread(momentId);
+}
+
+async function _deleteMomentAttachment(momentId, attachmentId) {
+  if (!confirm('Delete this photo?')) return;
+  const r = await fetch('/api/attachments/' + attachmentId, {method: 'DELETE'});
+  if (!r.ok && r.status !== 404) {
+    alert('Delete failed (HTTP ' + r.status + ').');
+    return;
+  }
+  openThread(momentId);
 }
 
 async function submitReply(threadId) {
