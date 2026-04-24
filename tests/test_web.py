@@ -1377,333 +1377,6 @@ async def test_start_race_uses_boat_level_defaults(storage: Storage) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session notes API
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_note_returns_201(storage: Storage) -> None:
-    """POST /api/sessions/{id}/notes creates a note and returns 201."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        resp = await client.post(
-            f"/api/sessions/{race_id}/notes",
-            json={"body": "Upwind leg, 15kts TWS", "note_type": "text"},
-        )
-    assert resp.status_code == 201
-    data = resp.json()
-    assert "id" in data
-    assert "ts" in data
-
-
-@pytest.mark.asyncio
-async def test_create_note_blank_body_returns_422(storage: Storage) -> None:
-    """POST /api/sessions/{id}/notes with a blank body returns 422."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        resp = await client.post(
-            f"/api/sessions/{race_id}/notes",
-            json={"body": "   ", "note_type": "text"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_create_note_unknown_session_returns_404(storage: Storage) -> None:
-    """POST /api/sessions/{id}/notes for a non-existent session returns 404."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post(
-            "/api/sessions/9999/notes",
-            json={"body": "note", "note_type": "text"},
-        )
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_list_notes_returns_notes(storage: Storage) -> None:
-    """GET /api/sessions/{id}/notes returns notes for the session."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note one"})
-        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Note two"})
-        resp = await client.get(f"/api/sessions/{race_id}/notes")
-    assert resp.status_code == 200
-    notes = resp.json()
-    assert len(notes) == 2
-    bodies = [n["body"] for n in notes]
-    assert "Note one" in bodies
-    assert "Note two" in bodies
-
-
-@pytest.mark.asyncio
-async def test_delete_note_returns_204(storage: Storage) -> None:
-    """DELETE /api/notes/{id} returns 204 and the note is gone."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        create_resp = await client.post(
-            f"/api/sessions/{race_id}/notes", json={"body": "To delete"}
-        )
-        note_id = create_resp.json()["id"]
-        del_resp = await client.delete(f"/api/notes/{note_id}")
-        list_resp = await client.get(f"/api/sessions/{race_id}/notes")
-    assert del_resp.status_code == 204
-    assert list_resp.json() == []
-
-
-@pytest.mark.asyncio
-async def test_delete_note_not_found_returns_404(storage: Storage) -> None:
-    """DELETE /api/notes/{id} for a missing note returns 404."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.delete("/api/notes/99999")
-    assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_grafana_annotations_returns_list(storage: Storage) -> None:
-    """GET /api/grafana/annotations returns annotation objects."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Tack at mark"})
-        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
-        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert isinstance(data, list)
-    assert len(data) >= 1
-    assert "time" in data[0]
-    assert "timeEnd" in data[0]
-    assert "title" in data[0]
-    assert "text" in data[0]
-    assert "tags" in data[0]
-    assert data[0]["text"] == "Tack at mark"
-    assert data[0]["title"] == "Text"
-    assert data[0]["tags"] == ["text"]
-
-
-@pytest.mark.asyncio
-async def test_grafana_annotations_empty_when_no_params(storage: Storage) -> None:
-    """Missing from/to returns empty list."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/grafana/annotations")
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-@pytest.mark.asyncio
-async def test_grafana_annotations_session_filter(storage: Storage) -> None:
-    """sessionId param scopes results to a single race."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        r1 = (await client.post("/api/races/start")).json()["id"]
-        await client.post(f"/api/sessions/{r1}/notes", json={"body": "Race 1 note"})
-        await client.post("/api/races/end")
-        r2 = (await client.post("/api/races/start")).json()["id"]
-        await client.post(f"/api/sessions/{r2}/notes", json={"body": "Race 2 note"})
-        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
-        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp_all = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
-        resp_r1 = await client.get(
-            f"/api/grafana/annotations?from={from_ms}&to={to_ms}&sessionId={r1}"
-        )
-        resp_r2 = await client.get(
-            f"/api/grafana/annotations?from={from_ms}&to={to_ms}&sessionId={r2}"
-        )
-    assert len(resp_all.json()) >= 2
-    r1_notes = resp_r1.json()
-    r2_notes = resp_r2.json()
-    assert len(r1_notes) == 1
-    assert r1_notes[0]["text"] == "Race 1 note"
-    assert len(r2_notes) == 1
-    assert r2_notes[0]["text"] == "Race 2 note"
-
-
-@pytest.mark.asyncio
-async def test_grafana_annotations_out_of_range_returns_empty(storage: Storage) -> None:
-    """Time range that excludes the note returns empty list."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        await client.post(f"/api/sessions/{race_id}/notes", json={"body": "Some note"})
-        # Query a window in 2020 — before any test data
-        from_ms = int(datetime(2020, 1, 1, tzinfo=UTC).timestamp() * 1000)
-        to_ms = int(datetime(2020, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
-    assert resp.status_code == 200
-    assert resp.json() == []
-
-
-@pytest.mark.asyncio
-async def test_grafana_annotations_photo_note_includes_img_tag(storage: Storage) -> None:
-    """Photo notes include an <img> tag pointing at the photo URL."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        # Insert a photo note directly via storage to set photo_path without
-        # needing a real file upload.
-        await storage.create_note(
-            datetime.now(UTC).isoformat(),
-            "Caption text",
-            race_id=race_id,
-            note_type="photo",
-            photo_path=f"{race_id}/test.jpg",
-        )
-        from_ms = int(datetime(2026, 1, 1, tzinfo=UTC).timestamp() * 1000)
-        to_ms = int(datetime(2026, 12, 31, tzinfo=UTC).timestamp() * 1000)
-        resp = await client.get(f"/api/grafana/annotations?from={from_ms}&to={to_ms}")
-    assert resp.status_code == 200
-    data = resp.json()
-    photo_annotations = [a for a in data if "photo" in a["tags"]]
-    assert len(photo_annotations) == 1
-    ann = photo_annotations[0]
-    assert f"/notes/{race_id}/test.jpg" in ann["text"]
-    assert "<img" in ann["text"]
-    assert "Caption text" in ann["text"]
-
-
-# ---------------------------------------------------------------------------
-# Phase 2 notes: settings, photo, serve, traversal
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_create_settings_note_returns_201(storage: Storage) -> None:
-    """POST /api/sessions/{id}/notes with note_type='settings' and valid JSON body returns 201."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        resp = await client.post(
-            f"/api/sessions/{race_id}/notes",
-            json={"body": '{"TWS": "15", "TWD": "220"}', "note_type": "settings"},
-        )
-    assert resp.status_code == 201
-    data = resp.json()
-    assert "id" in data
-    assert "ts" in data
-
-
-@pytest.mark.asyncio
-async def test_create_settings_note_invalid_json_returns_422(storage: Storage) -> None:
-    """POST /api/sessions/{id}/notes with note_type='settings' and non-JSON body returns 422."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        resp = await client.post(
-            f"/api/sessions/{race_id}/notes",
-            json={"body": "not valid json", "note_type": "settings"},
-        )
-    assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_create_photo_note_returns_201(
-    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """POST /api/sessions/{id}/notes/photo with a file creates a photo note and saves file."""
-    notes_dir = tmp_path / "notes"
-    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
-    app = create_app(storage)
-    jpeg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        await _set_event(client)
-        race_id = (await client.post("/api/races/start")).json()["id"]
-        resp = await client.post(
-            f"/api/sessions/{race_id}/notes/photo",
-            files={"file": ("test.jpg", jpeg_bytes, "image/jpeg")},
-        )
-    assert resp.status_code == 201
-    data = resp.json()
-    assert "id" in data
-    assert "photo_path" in data
-    # File should exist on disk
-    assert (notes_dir / data["photo_path"]).exists()
-
-
-@pytest.mark.asyncio
-async def test_serve_note_photo_returns_200(
-    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GET /notes/{path} serves a file that exists in NOTES_DIR."""
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir()
-    photo_file = notes_dir / "test.jpg"
-    photo_file.write_bytes(b"\xff\xd8\xff\xe0test")
-
-    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/notes/test.jpg")
-    assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_serve_note_photo_traversal_blocked(
-    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Path traversal via URL-encoded dots is blocked with 403 (not served)."""
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir()
-
-    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        # Use URL-encoded dots to bypass client-side normalization
-        resp = await client.get("/notes/%2e%2e/%2e%2e/etc/passwd")
-    # Path traversal must not return 200 — either 403 (blocked) or 404 (not found)
-    assert resp.status_code in (403, 404)
-
-
-# ---------------------------------------------------------------------------
 # Video API tests
 # ---------------------------------------------------------------------------
 
@@ -2707,76 +2380,70 @@ async def test_stream_audio_200(storage: Storage, tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_serve_note_photo_cache_headers(
+async def test_serve_attachment_cache_headers(
     storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GET /notes/{path} returns Cache-Control and ETag headers."""
-    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
-    photo = tmp_path / "photo.jpg"
-    photo.write_bytes(b"\xff\xd8")  # minimal JPEG stub
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/notes/photo.jpg")
-    assert resp.status_code == 200
-    assert "max-age=31536000" in resp.headers.get("cache-control", "")
-    assert resp.headers.get("etag", "") != ""
-
-
-@pytest.mark.asyncio
-async def test_serve_note_photo_304_if_none_match(
-    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GET /notes/{path} returns 304 when ETag matches If-None-Match header."""
-    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
+    """GET /attachments/{path} returns Cache-Control and ETag headers."""
+    monkeypatch.setenv("ATTACHMENTS_DIR", str(tmp_path))
     photo = tmp_path / "photo.jpg"
     photo.write_bytes(b"\xff\xd8")
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        first = await client.get("/notes/photo.jpg")
+        resp = await client.get("/attachments/photo.jpg")
+    assert resp.status_code == 200
+    assert "max-age=31536000" in resp.headers.get("cache-control", "")
+    assert resp.headers.get("etag", "") != ""
+
+
+@pytest.mark.asyncio
+async def test_serve_attachment_304_if_none_match(
+    storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GET /attachments/{path} returns 304 when ETag matches If-None-Match."""
+    monkeypatch.setenv("ATTACHMENTS_DIR", str(tmp_path))
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8")
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        first = await client.get("/attachments/photo.jpg")
         etag = first.headers["etag"]
-        second = await client.get("/notes/photo.jpg", headers={"If-None-Match": etag})
+        second = await client.get("/attachments/photo.jpg", headers={"If-None-Match": etag})
     assert second.status_code == 304
 
 
 @pytest.mark.asyncio
-async def test_serve_note_photo_403_traversal(
+async def test_serve_attachment_403_traversal(
     storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GET /notes/{path} with percent-encoded path traversal returns 403.
-
-    Standard HTTP clients normalize literal '..' segments in URLs, so the
-    traversal must be encoded as %2e%2e to reach the handler.
-    """
-    notes_dir = tmp_path / "notes"
-    notes_dir.mkdir()
-    monkeypatch.setenv("NOTES_DIR", str(notes_dir))
-    # Create a "secret" file one level above notes_dir
+    """GET /attachments/{path} with percent-encoded path traversal is blocked."""
+    base = tmp_path / "atts"
+    base.mkdir()
+    monkeypatch.setenv("ATTACHMENTS_DIR", str(base))
     secret = tmp_path / "secret.txt"
     secret.write_text("secret")
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        # %2e%2e is URL-encoded '..'; httpx won't normalize it as a path segment
-        resp = await client.get("/notes/%2e%2e/secret.txt")
-    assert resp.status_code in {403, 404}  # 403 if handler catches it; 404 if server normalizes
+        resp = await client.get("/attachments/%2e%2e/secret.txt")
+    assert resp.status_code in {403, 404}
 
 
 @pytest.mark.asyncio
-async def test_serve_note_photo_404(
+async def test_serve_attachment_404(
     storage: Storage, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """GET /notes/{path} returns 404 when the file does not exist."""
-    monkeypatch.setenv("NOTES_DIR", str(tmp_path))
+    """GET /attachments/{path} returns 404 when the file does not exist."""
+    monkeypatch.setenv("ATTACHMENTS_DIR", str(tmp_path))
     app = create_app(storage)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.get("/notes/nonexistent.jpg")
+        resp = await client.get("/attachments/nonexistent.jpg")
     assert resp.status_code == 404
 
 
@@ -3422,382 +3089,6 @@ async def test_home_page_has_setup_panel(storage: Storage) -> None:
     assert resp.status_code == 200
     assert 'id="setup-card"' in resp.text
     assert "Boat Setup" in resp.text
-
-
-# ---------------------------------------------------------------------------
-# Threaded comments (#282)
-# ---------------------------------------------------------------------------
-
-
-async def _make_race_for_comments(client: httpx.AsyncClient) -> int:
-    """Set an event and start a race, return race_id."""
-    await client.post("/api/event", json={"event_name": "CommentTest"})
-    resp = await client.post("/api/races/start")
-    assert resp.status_code == 201
-    return resp.json()["id"]
-
-
-@pytest.mark.asyncio
-async def test_create_thread_and_list(storage: Storage) -> None:
-    """POST creates a thread; GET lists it with unread count."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={
-                "title": "Bad tack at weather mark",
-                "anchor": {"kind": "race", "entity_id": race_id},
-            },
-        )
-        assert resp.status_code == 201
-        thread_id = resp.json()["id"]
-
-        resp = await client.get(f"/api/sessions/{race_id}/threads")
-        assert resp.status_code == 200
-        threads = resp.json()["threads"]
-        assert len(threads) == 1
-        assert threads[0]["id"] == thread_id
-        assert threads[0]["title"] == "Bad tack at weather mark"
-        assert threads[0]["anchor"] == {"kind": "race", "entity_id": race_id}
-        assert threads[0]["comment_count"] == 0
-        assert threads[0]["unread_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_create_thread_rejects_legacy_mark_reference(storage: Storage) -> None:
-    """Legacy mark_reference payload returns 400 after #478 cutover."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"mark_reference": "weather_mark_1"},
-        )
-        assert resp.status_code == 400
-
-
-@pytest.mark.asyncio
-async def test_thread_general_discussion(storage: Storage) -> None:
-    """A thread with no anchor covers the whole race."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "General discussion"},
-        )
-        assert resp.status_code == 201
-        thread_id = resp.json()["id"]
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["anchor"] is None
-
-
-@pytest.mark.asyncio
-async def test_get_thread_not_found(storage: Storage) -> None:
-    """GET /api/threads/999 returns 404."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.get("/api/threads/999")
-        assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_create_and_list_comments(storage: Storage) -> None:
-    """POST adds comments; GET thread includes them."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "Lane choice"},
-        )
-        thread_id = resp.json()["id"]
-
-        resp = await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "We should have gone left"},
-        )
-        assert resp.status_code == 201
-        assert resp.json()["id"]
-
-        resp = await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "Agreed, the pressure was better"},
-        )
-        assert resp.status_code == 201
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data["comments"]) == 2
-        assert data["comments"][0]["body"] == "We should have gone left"
-
-
-@pytest.mark.asyncio
-async def test_create_comment_empty_body(storage: Storage) -> None:
-    """POST with blank body returns 422."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "test"},
-        )
-        thread_id = resp.json()["id"]
-        resp = await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "  "},
-        )
-        assert resp.status_code == 422
-
-
-@pytest.mark.asyncio
-async def test_update_comment(storage: Storage) -> None:
-    """PUT edits a comment body and sets edited_at."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "test"},
-        )
-        thread_id = resp.json()["id"]
-        resp = await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "original"},
-        )
-        comment_id = resp.json()["id"]
-
-        resp = await client.put(
-            f"/api/comments/{comment_id}",
-            json={"body": "edited"},
-        )
-        assert resp.status_code == 200
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        comments = resp.json()["comments"]
-        assert comments[0]["body"] == "edited"
-        assert comments[0]["edited_at"] is not None
-
-
-@pytest.mark.asyncio
-async def test_delete_comment(storage: Storage) -> None:
-    """DELETE removes a comment."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "test"},
-        )
-        thread_id = resp.json()["id"]
-        resp = await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "delete me"},
-        )
-        comment_id = resp.json()["id"]
-
-        resp = await client.delete(f"/api/comments/{comment_id}")
-        assert resp.status_code == 204
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        assert len(resp.json()["comments"]) == 0
-
-
-@pytest.mark.asyncio
-async def test_resolve_and_unresolve_thread(storage: Storage) -> None:
-    """Resolve and unresolve a thread."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "resolve me"},
-        )
-        thread_id = resp.json()["id"]
-
-        resp = await client.post(
-            f"/api/threads/{thread_id}/resolve",
-            json={"resolution_summary": "We agreed to go left next time"},
-        )
-        assert resp.status_code == 200
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        data = resp.json()
-        assert data["resolved"] == 1
-        assert data["resolution_summary"] == "We agreed to go left next time"
-        assert data["resolved_at"] is not None
-
-        resp = await client.post(
-            f"/api/threads/{thread_id}/unresolve",
-            json={},
-        )
-        assert resp.status_code == 200
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        data = resp.json()
-        assert data["resolved"] == 0
-        assert data["resolution_summary"] is None
-
-
-@pytest.mark.asyncio
-async def test_mark_thread_read(storage: Storage) -> None:
-    """POST /api/threads/{id}/read succeeds."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "read test"},
-        )
-        thread_id = resp.json()["id"]
-
-        resp = await client.post(f"/api/threads/{thread_id}/read")
-        assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_unread_count_with_real_user(storage: Storage) -> None:
-    """Unread tracking works when there is a real user_id (not mock admin)."""
-    # Directly test the storage layer with a real user_id
-    db = storage._conn()
-    await db.execute(
-        "INSERT INTO users (id, email, name, role, is_developer, is_active, created_at)"
-        " VALUES (1, 'helm@boat.test', 'Helm', 'crew', 0, 1, '2026-01-01T00:00:00Z')",
-    )
-    await db.commit()
-
-    # Create a race
-    await db.execute(
-        "INSERT INTO races (id, name, event, race_num, date, start_utc, session_type)"
-        " VALUES (1, 'Test-1', 'Test', 1, '2026-03-12', '2026-03-12T14:00:00Z', 'race')",
-    )
-    await db.commit()
-
-    thread_id = await storage.create_comment_thread(1, 1, title="test")
-    await storage.create_comment(thread_id, 1, "first message")
-
-    # Before marking read — should have 1 unread
-    threads = await storage.list_comment_threads(1, 1)
-    assert threads[0]["unread_count"] == 1
-
-    # Mark as read
-    await storage.mark_thread_read(thread_id, 1)
-
-    # Should have 0 unread now
-    threads = await storage.list_comment_threads(1, 1)
-    assert threads[0]["unread_count"] == 0
-
-    # Add another comment — should be unread again
-    await storage.create_comment(thread_id, 1, "second message")
-    threads = await storage.list_comment_threads(1, 1)
-    assert threads[0]["unread_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_delete_thread_cascades(storage: Storage) -> None:
-    """DELETE thread removes thread and all comments."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "delete me"},
-        )
-        thread_id = resp.json()["id"]
-        await client.post(
-            f"/api/threads/{thread_id}/comments",
-            json={"body": "child"},
-        )
-
-        resp = await client.delete(f"/api/threads/{thread_id}")
-        assert resp.status_code == 204
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        assert resp.status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_redact_comment_author(storage: Storage) -> None:
-    """Redacting replaces author with NULL (storage-layer test with real user)."""
-    db = storage._conn()
-    await db.execute(
-        "INSERT INTO users (id, email, name, role, is_developer, is_active, created_at)"
-        " VALUES (1, 'crew@boat.test', 'Crew', 'crew', 0, 1, '2026-01-01T00:00:00Z')",
-    )
-    await db.execute(
-        "INSERT INTO races (id, name, event, race_num, date, start_utc, session_type)"
-        " VALUES (1, 'Test-1', 'Test', 1, '2026-03-12', '2026-03-12T14:00:00Z', 'race')",
-    )
-    await db.commit()
-
-    thread_id = await storage.create_comment_thread(1, 1, title="redact test")
-    await storage.create_comment(thread_id, 1, "my comment")
-
-    count = await storage.redact_comment_author(1)
-    assert count == 1
-
-    thread = await storage.get_comment_thread(thread_id)
-    assert thread is not None
-    assert thread["comments"][0]["author"] is None
-
-
-@pytest.mark.asyncio
-async def test_redact_comment_author_api(storage: Storage) -> None:
-    """POST /api/comments/redact-author returns 200."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        resp = await client.post("/api/comments/redact-author", json={})
-        assert resp.status_code == 200
-        assert "redacted" in resp.json()
-
-
-@pytest.mark.asyncio
-async def test_thread_with_anchor_timestamp(storage: Storage) -> None:
-    """Thread can be anchored to a specific timestamp via the new Anchor shape."""
-    app = create_app(storage)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        race_id = await _make_race_for_comments(client)
-        ts = "2026-03-12T14:05:30Z"
-        resp = await client.post(
-            f"/api/sessions/{race_id}/threads",
-            json={"title": "At this moment", "anchor": {"kind": "timestamp", "t_start": ts}},
-        )
-        assert resp.status_code == 201
-        thread_id = resp.json()["id"]
-
-        resp = await client.get(f"/api/threads/{thread_id}")
-        assert resp.json()["anchor"] == {"kind": "timestamp", "t_start": ts}
 
 
 # ---------------------------------------------------------------------------

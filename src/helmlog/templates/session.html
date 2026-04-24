@@ -488,8 +488,11 @@ async function renameSession() {
 }
 
 // ---------------------------------------------------------------------------
-// Bookmarks (#477 / #588 slice 1) — drop at current replay time, list, jump,
-// rename, delete. Backed by /api/sessions/{id}/bookmarks and /api/bookmarks/{id}.
+// "Bookmarks" card: interim adapter over /api/moments (#662). The bookmark
+// concept is now a timestamp-anchored moment with a subject and an optional
+// first comment. The UI rework in the follow-up PR will replace this card
+// with a unified moments view; for now we map bookmark actions onto moment
+// endpoints so the page keeps functioning.
 // ---------------------------------------------------------------------------
 
 function _sessionId() {
@@ -513,10 +516,15 @@ async function dropBookmark() {
   if (!trimmed) return;
   const note = window.prompt('Optional note (leave blank for none):', '') || null;
   try {
-    const resp = await fetch(`/api/sessions/${_sessionId()}/bookmarks`, {
+    const resp = await fetch(`/api/sessions/${_sessionId()}/moments`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: trimmed, note: note ? note.trim() : null, t_start: t}),
+      body: JSON.stringify({
+        anchor_kind: 'timestamp',
+        t_start: t,
+        subject: trimmed,
+        first_comment: note ? note.trim() : null,
+      }),
     });
     if (!resp.ok) { window.alert(`Create failed: ${resp.status}`); return; }
     await loadBookmarks();
@@ -536,12 +544,24 @@ async function loadBookmarks() {
       params.set('tag_mode', _bookmarkTagMode);
     }
     const qs = params.toString();
-    const url = `/api/sessions/${_sessionId()}/bookmarks` + (qs ? '?' + qs : '');
+    const url = `/api/sessions/${_sessionId()}/moments` + (qs ? '?' + qs : '');
     const resp = await fetch(url);
     if (!resp.ok) return;
     const data = await resp.json();
     _bookmarkAvailableTags = data.available_tags || [];
-    _renderBookmarks(data.bookmarks || []);
+    // Map moments -> bookmark-shaped rows for the existing renderer:
+    // subject -> name, first_comment_body -> note, anchor.t_start -> t_start.
+    const rows = (data.moments || [])
+      .filter(m => m.anchor_kind === 'timestamp' && m.anchor_t_start)
+      .map(m => ({
+        id: m.id,
+        name: m.subject || 'Moment',
+        note: m.first_comment_body || null,
+        t_start: m.anchor_t_start,
+        tags: m.tags || [],
+        created_by: m.created_by,
+      }));
+    _renderBookmarks(rows);
     _renderBookmarkTagFilterRow();
   } catch (err) { /* non-fatal */ }
 }
@@ -659,7 +679,7 @@ function _renderBookmarks(rows) {
     const tagRow = document.createElement('div');
     tagRow.style.cssText = 'display:none;padding-left:72px';
     const picker = document.createElement('tag-picker');
-    picker.setAttribute('entity-type', 'bookmark');
+    picker.setAttribute('entity-type', 'moment');
     picker.setAttribute('entity-id', String(bm.id));
     // When the user attaches/detaches from the expanded picker, refresh
     // the list so the inline chip strip + filter row pick up the change.
@@ -686,37 +706,34 @@ function _fmtBookmarkTime(iso) {
 
 function _seekToBookmark(utc) {
   if (typeof _seekTo === 'function') {
-    _seekTo(utc, 'bookmark');
+    _seekTo(utc, 'moment');
   }
 }
 
 async function renameBookmark(id, currentName, currentNote) {
-  const name = window.prompt('Bookmark name:', currentName || '');
+  const name = window.prompt('Name:', currentName || '');
   if (name === null) return;
   const trimmed = name.trim();
   if (!trimmed) return;
-  const note = window.prompt('Note (blank to clear):', currentNote || '');
-  if (note === null) return;
-  const body = {name: trimmed};
-  const trimmedNote = note.trim();
-  body.note = trimmedNote ? trimmedNote : null;
+  // PATCH only the subject — existing first-comment edits go through the
+  // moment detail UI in the follow-up PR.
   try {
-    const resp = await fetch(`/api/bookmarks/${id}`, {
+    const resp = await fetch(`/api/moments/${id}`, {
       method: 'PATCH',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body),
+      body: JSON.stringify({subject: trimmed}),
     });
-    if (resp.status === 403) { window.alert('Only the author or an admin can edit this bookmark.'); return; }
+    if (resp.status === 403) { window.alert('Only the author or an admin can edit this.'); return; }
     if (!resp.ok) { window.alert(`Rename failed: ${resp.status}`); return; }
     await loadBookmarks();
   } catch (err) { window.alert(`Rename failed: ${err}`); }
 }
 
 async function deleteBookmark(id) {
-  if (!window.confirm('Delete this bookmark?')) return;
+  if (!window.confirm('Delete this?')) return;
   try {
-    const resp = await fetch(`/api/bookmarks/${id}`, {method: 'DELETE'});
-    if (resp.status === 403) { window.alert('Only the author or an admin can delete this bookmark.'); return; }
+    const resp = await fetch(`/api/moments/${id}`, {method: 'DELETE'});
+    if (resp.status === 403) { window.alert('Only the author or an admin can delete this.'); return; }
     if (!resp.ok && resp.status !== 204) { window.alert(`Delete failed: ${resp.status}`); return; }
     await loadBookmarks();
   } catch (err) { window.alert(`Delete failed: ${err}`); }

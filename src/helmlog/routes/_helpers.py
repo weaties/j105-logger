@@ -484,12 +484,6 @@ class RaceResultEntry(BaseModel):
     notes: str | None = None
 
 
-class NoteCreate(BaseModel):
-    body: str | None = None
-    note_type: str = "text"
-    ts: str | None = None  # UTC ISO 8601; defaults to server time if absent
-
-
 class VideoCreate(BaseModel):
     youtube_url: str
     label: str = ""

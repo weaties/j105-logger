@@ -41,7 +41,7 @@ async def _session(s: Storage, idx: int = 1) -> int:
 
 
 def test_entity_types_constant() -> None:
-    assert frozenset({"session", "maneuver", "thread", "bookmark", "session_note"}) == ENTITY_TYPES
+    assert frozenset({"session", "maneuver", "moment"}) == ENTITY_TYPES
 
 
 @pytest.mark.asyncio
@@ -385,14 +385,14 @@ async def test_sessions_matching_tags_via_maneuver(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sessions_matching_tags_via_bookmark(storage: Storage) -> None:
+async def test_sessions_matching_tags_via_moment(storage: Storage) -> None:
     sid_a = await _session(storage, 1)
     sid_b = await _session(storage, 2)
-    bid = await storage.create_bookmark(
-        session_id=sid_a, user_id=None, name="b", note=None, t_start=_T0
+    moment_id = await storage.create_moment(
+        session_id=sid_a, anchor_kind="timestamp", anchor_t_start=_T0
     )
     tid = await storage.create_tag("x")
-    await storage.attach_tag("bookmark", bid, tid, user_id=None)
+    await storage.attach_tag("moment", moment_id, tid, user_id=None)
     result = await storage.sessions_matching_tags([tid], mode="and")
     assert result == [sid_a]
     assert sid_b not in result
@@ -439,19 +439,19 @@ async def test_session_tag_summary_groups_by_entity_type(storage: Storage) -> No
     sid = await _session(storage, 1)
     mid1 = await _maneuver(storage, sid)
     mid2 = await _maneuver(storage, sid)
-    bid = await storage.create_bookmark(
-        session_id=sid, user_id=None, name="b", note=None, t_start=_T0
+    moment_id = await storage.create_moment(
+        session_id=sid, anchor_kind="timestamp", anchor_t_start=_T0
     )
     tid = await storage.create_tag("weather")
     await storage.attach_tag("session", sid, tid, user_id=None)
     await storage.attach_tag("maneuver", mid1, tid, user_id=None)
     await storage.attach_tag("maneuver", mid2, tid, user_id=None)
-    await storage.attach_tag("bookmark", bid, tid, user_id=None)
+    await storage.attach_tag("moment", moment_id, tid, user_id=None)
 
     summary = await storage.list_session_tag_summary([sid])
     rows = summary[sid]
     by_et = {r["entity_type"]: r["count"] for r in rows}
-    assert by_et == {"session": 1, "maneuver": 2, "bookmark": 1}
+    assert by_et == {"session": 1, "maneuver": 2, "moment": 1}
 
 
 @pytest.mark.asyncio

@@ -2368,14 +2368,14 @@ async function loadNotes() {
   const card = document.getElementById('notes-card');
   card.style.display = '';
   const body = document.getElementById('notes-body');
-  const r = await fetch('/api/sessions/' + SESSION_ID + '/notes');
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/moments');
   const notes = await r.json();
   if (notes.length) {
     body.innerHTML = notes.map(n => {
       const t = fmtTime(n.ts);
       let content = '';
       if (n.note_type === 'photo' && n.photo_path) {
-        const src = '/notes/' + n.photo_path;
+        const src = '/attachments/' + n.photo_path;
         content = '<img src="' + src + '" loading="lazy" style="max-width:100px;max-height:80px;border-radius:4px;cursor:pointer;margin-top:2px" onclick="window.open(this.dataset.src)" data-src="' + src + '"/>';
       } else if (n.note_type === 'settings' && n.body) {
         try {
@@ -2397,7 +2397,7 @@ async function loadNotes() {
 }
 
 async function deleteNote(noteId) {
-  await fetch('/api/notes/' + noteId, {method: 'DELETE'});
+  await fetch('/api/moments/' + noteId, {method: 'DELETE'});
   loadNotes();
 }
 
@@ -6681,14 +6681,35 @@ async function loadDiscussion() {
     params.set('tag_mode', _threadTagMode);
   }
   const qs = params.toString();
-  const threadsUrl = '/api/sessions/' + SESSION_ID + '/threads' + (qs ? '?' + qs : '');
+  const threadsUrl = '/api/sessions/' + SESSION_ID + '/moments' + (qs ? '?' + qs : '');
   const [threadsResp] = await Promise.all([
     fetch(threadsUrl),
     _ensureAnchorIndex(),
   ]);
   if (!threadsResp.ok) { body.innerHTML = '<span style="color:var(--text-secondary)">Failed to load</span>'; return; }
   const data = await threadsResp.json();
-  _threads = data.threads || [];
+  // The list endpoint now returns `moments`. Map each moment to the
+  // thread-ish shape the existing discussion UI expects (title = subject,
+  // unread_count not yet computed server-side for moments — treat as 0).
+  _threads = (data.moments || []).map(m => ({
+    id: m.id,
+    session_id: m.session_id,
+    anchor: m.anchor,
+    title: m.subject,
+    created_by: m.created_by,
+    created_at: m.created_at,
+    updated_at: m.updated_at,
+    resolved: m.resolved,
+    resolved_at: m.resolved_at,
+    resolved_by: m.resolved_by,
+    resolution_summary: m.resolution_summary,
+    author_name: m.author_name,
+    author_email: m.author_email,
+    comment_count: m.comment_count || 0,
+    unread_count: 0,
+    first_comment_body: m.first_comment_body,
+    tags: m.tags || [],
+  }));
   _threadAvailableTags = data.available_tags || [];
   const totalUnread = _threads.reduce((s, t) => s + (t.unread_count || 0), 0);
   const badge = document.getElementById('discussion-badge');
@@ -7011,7 +7032,7 @@ function _addDiscussionMarkers() {
 async function _loadMarkerPreview(threadId) {
   const el = document.getElementById('discussion-marker-preview-' + threadId);
   if (!el) return;
-  const r = await fetch('/api/threads/' + threadId);
+  const r = await fetch('/api/moments/' + threadId);
   if (!r.ok) { el.innerHTML = ''; return; }
   const t = await r.json();
   const comments = (t.comments || []).slice(-3);
@@ -7072,24 +7093,28 @@ async function submitNewThread() {
     anchor = {kind: 'timestamp', t_start: _playClock.positionUtc.toISOString()};
   }
   const firstComment = document.getElementById('new-thread-body').value.trim();
-  const payload = {};
-  if (title) payload.title = title;
-  if (anchor) payload.anchor = anchor;
-  const r = await fetch('/api/sessions/' + SESSION_ID + '/threads', {
+  // Flatten the anchor object into the moment-create body. Default to
+  // session-scope if the user hasn't picked an anchor or set a cursor.
+  const payload = {anchor_kind: 'session'};
+  if (title) payload.subject = title;
+  if (firstComment) payload.first_comment = firstComment;
+  if (anchor && anchor.kind) {
+    payload.anchor_kind = anchor.kind;
+    if (anchor.entity_id !== undefined && anchor.entity_id !== null) {
+      payload.anchor_entity_id = anchor.entity_id;
+    }
+    if (anchor.t_start) payload.t_start = anchor.t_start;
+    if (anchor.t_end) payload.t_end = anchor.t_end;
+  }
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/moments', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
   });
   if (!r.ok) {
     const detail = await r.json().catch(() => ({}));
-    alert('Failed to create thread: ' + (detail.detail || r.status));
+    alert('Failed to create moment: ' + (detail.detail || r.status));
     return;
   }
   const {id} = await r.json();
-  if (firstComment) {
-    await fetch('/api/threads/' + id + '/comments', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({body: firstComment})
-    });
-  }
   openThread(id);
 }
 
@@ -7097,8 +7122,8 @@ async function openThread(threadId, scrollToCommentId) {
   const body = document.getElementById('discussion-body');
   body.innerHTML = '<span style="color:var(--text-secondary)">Loading\u2026</span>';
   // Mark as read
-  fetch('/api/threads/' + threadId + '/read', {method: 'POST'});
-  const r = await fetch('/api/threads/' + threadId);
+  fetch('/api/moments/' + threadId + '/read', {method: 'POST'});
+  const r = await fetch('/api/moments/' + threadId);
   if (!r.ok) { loadDiscussion(); return; }
   const t = await r.json();
   const title = _threadTitle(t);
@@ -7137,7 +7162,7 @@ async function openThread(threadId, scrollToCommentId) {
     + resolutionHtml
     + '<div style="margin-top:4px;margin-bottom:6px">'
     + '<div style="font-size:.7rem;color:var(--text-secondary);margin-bottom:3px">Tags</div>'
-    + '<tag-picker entity-type="thread" entity-id="' + t.id + '"></tag-picker>'
+    + '<tag-picker entity-type="moment" entity-id="' + t.id + '"></tag-picker>'
     + '</div>'
     + '<div id="thread-comments">' + (commentsHtml || '<span style="color:var(--text-secondary)">No comments yet</span>') + '</div>'
     + '<div class="thread-form" style="margin-top:8px">'
@@ -7184,7 +7209,7 @@ async function submitReply(threadId) {
   const el = document.getElementById('reply-body');
   const text = el.value.trim();
   if (!text) return;
-  const r = await fetch('/api/threads/' + threadId + '/comments', {
+  const r = await fetch('/api/moments/' + threadId + '/comments', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({body: text})
   });
@@ -7214,7 +7239,7 @@ function resolveThread(threadId) {
 async function _submitResolve(threadId) {
   const el = document.getElementById('resolve-summary');
   const summary = el ? el.value.trim() || null : null;
-  await fetch('/api/threads/' + threadId + '/resolve', {
+  await fetch('/api/moments/' + threadId + '/resolve', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({resolution_summary: summary})
   });
@@ -7222,7 +7247,7 @@ async function _submitResolve(threadId) {
 }
 
 async function unresolveThread(threadId) {
-  await fetch('/api/threads/' + threadId + '/unresolve', {
+  await fetch('/api/moments/' + threadId + '/unresolve', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'
   });
   openThread(threadId);

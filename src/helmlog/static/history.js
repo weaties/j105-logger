@@ -60,7 +60,7 @@ function _etypeLabel(et, count) {
 }
 
 function _entityTypeOrder(a, b) {
-  const order = {session: 0, thread: 1, bookmark: 2, maneuver: 3};
+  const order = {session: 0, moment: 1, maneuver: 2};
   return (order[a] ?? 99) - (order[b] ?? 99);
 }
 

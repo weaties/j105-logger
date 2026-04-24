@@ -30,12 +30,10 @@ class Lookups:
     """Resolved entity payloads keyed by id.
 
     - maneuvers: id -> (ts, end_ts | None) as ISO strings
-    - bookmarks: id -> t_start ISO string
     - races:     id -> start_utc ISO string
     """
 
     maneuvers: dict[int, tuple[str, str | None]] = field(default_factory=dict)
-    bookmarks: dict[int, str] = field(default_factory=dict)
     races: dict[int, str] = field(default_factory=dict)
 
 
@@ -88,17 +86,6 @@ def anchor_matches_cursor(anchor: Anchor, cursor: CursorLike, lookups: Lookups) 
         if end_ts is None:
             return abs((c - ts).total_seconds()) <= DEFAULT_WINDOW_SECONDS
         return ts <= c <= end_ts
-
-    if kind == "bookmark":
-        if anchor.entity_id is None:
-            return False
-        t_start_s = lookups.bookmarks.get(anchor.entity_id)
-        if t_start_s is None:
-            return False
-        t = _to_dt(t_start_s)
-        if t is None:
-            return False
-        return abs((c - t).total_seconds()) <= DEFAULT_WINDOW_SECONDS
 
     if kind == "race":
         # Thread-scope check happens upstream; if the thread is on this

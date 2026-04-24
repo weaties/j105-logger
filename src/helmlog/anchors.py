@@ -16,10 +16,10 @@ from dataclasses import dataclass
 from typing import Any
 
 KNOWN_KINDS: frozenset[str] = frozenset(
-    {"timestamp", "segment", "maneuver", "rounding", "start", "race", "bookmark"}
+    {"timestamp", "segment", "maneuver", "rounding", "start", "race"}
 )
 
-_ENTITY_REF_KINDS: frozenset[str] = frozenset({"maneuver", "rounding", "start", "race", "bookmark"})
+_ENTITY_REF_KINDS: frozenset[str] = frozenset({"maneuver", "rounding", "start", "race"})
 
 _FIELDS: frozenset[str] = frozenset({"kind", "entity_id", "t_start", "t_end"})
 
