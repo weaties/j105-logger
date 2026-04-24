@@ -7322,30 +7322,70 @@ async function openThread(threadId, scrollToCommentId) {
 // - If a specific comment was requested, still prefer top-of-thread — but only
 //   if the target comment would actually be visible in the viewport at that
 //   scroll position. Otherwise scroll the comment fully into view.
+//
+// The #track-container card (and other async-loading content above the
+// moments card) keeps growing for up to ~2s after init() fires. A single
+// RAF-scheduled scroll lands above the final card position. Re-measure and
+// correct the scroll up to a 2.5s deadline or until the target is stable.
 function _scrollDeepLinkTarget(card, scrollToCommentId) {
   if (!card) return;
-  // Wait a frame so the just-rendered DOM has its final layout.
-  requestAnimationFrame(() => {
+  const computeTarget = () => {
     const cardTop = card.getBoundingClientRect().top + window.scrollY;
     const viewportH = window.innerHeight;
     let highlight = card;
     let scrollY = cardTop;
     if (scrollToCommentId) {
-      const target = document.getElementById('comment-' + scrollToCommentId);
-      if (target) {
-        highlight = target;
-        const tRect = target.getBoundingClientRect();
+      const t = document.getElementById('comment-' + scrollToCommentId);
+      if (t) {
+        highlight = t;
+        const tRect = t.getBoundingClientRect();
         const tTop = tRect.top + window.scrollY;
         const tBottom = tTop + tRect.height;
-        const wouldFitAtCardTop = tBottom <= cardTop + viewportH;
-        if (!wouldFitAtCardTop) {
-          // Center the comment in the viewport
+        if (tBottom > cardTop + viewportH) {
           scrollY = tTop - Math.max(0, (viewportH - tRect.height) / 2);
         }
       }
     }
-    window.scrollTo({top: Math.max(0, scrollY), behavior: 'smooth'});
+    return {scrollY: Math.max(0, scrollY), highlight};
+  };
+
+  // Kill ongoing correction if the user scrolls or we navigate away.
+  let cancelled = false;
+  const cancel = () => { cancelled = true; };
+  window.addEventListener('wheel', cancel, {once: true, passive: true});
+  window.addEventListener('touchstart', cancel, {once: true, passive: true});
+  window.addEventListener('keydown', cancel, {once: true});
+
+  requestAnimationFrame(() => {
+    const {scrollY, highlight} = computeTarget();
+    window.scrollTo({top: scrollY, behavior: 'smooth'});
     _flashHighlight(highlight);
+
+    // Correction loop — re-measure for up to 2.5s; if the target has
+    // shifted by more than a few px, snap to it (instant, not smooth —
+    // repeated smooth-scrolls stack and feel jumpy). Stop early once the
+    // position has been stable for ~400ms.
+    const deadline = performance.now() + 2500;
+    let lastY = scrollY;
+    let stableSince = null;
+    const tick = () => {
+      if (cancelled) return;
+      const now = performance.now();
+      if (now > deadline) return;
+      const {scrollY: newY} = computeTarget();
+      if (Math.abs(newY - lastY) > 3) {
+        window.scrollTo({top: newY, behavior: 'auto'});
+        lastY = newY;
+        stableSince = null;
+      } else if (stableSince == null) {
+        stableSince = now;
+      } else if (now - stableSince > 400) {
+        return;
+      }
+      setTimeout(tick, 120);
+    };
+    // Start after the initial smooth-scroll has had a chance to start.
+    setTimeout(tick, 250);
   });
 }
 
