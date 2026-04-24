@@ -169,7 +169,7 @@ async def test_photo_no_active_race_returns_204(storage: Storage, tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_photo_active_race_creates_note(storage: Storage, tmp_path: Path) -> None:
-    """Active race → 201, file written with role prefix, photo note created."""
+    """Active race → 201, file written with role prefix, moment + photo attachment created."""
     key = await _register_camera(storage, "mainsail")
     race_id = await _start_race(storage)
     with patch.dict(os.environ, {**_AUTH_ENV, "NOTES_DIR": str(tmp_path)}):
@@ -189,15 +189,19 @@ async def test_photo_active_race_creates_note(storage: Storage, tmp_path: Path) 
     assert body["photo_path"].endswith(".jpg")
     assert (tmp_path / body["photo_path"]).read_bytes() == _JPEG
 
-    notes = await storage.list_notes(race_id=race_id)
-    assert len(notes) == 1
-    assert notes[0]["note_type"] == "photo"
-    assert notes[0]["photo_path"] == body["photo_path"]
+    # Post-#663: photo capture creates a timestamp-anchored moment with a
+    # photo attachment (not the legacy session_notes row).
+    moments = await storage.list_moments_for_session(race_id)
+    assert len(moments) == 1
+    attachments = await storage.list_attachments_for_moment(moments[0]["id"])
+    assert len(attachments) == 1
+    assert attachments[0]["kind"] == "photo"
+    assert attachments[0]["path"] == body["photo_path"]
 
 
 @pytest.mark.asyncio
 async def test_photo_served_via_notes_route(storage: Storage, tmp_path: Path) -> None:
-    """Uploaded photo is reachable via GET /notes/{path}."""
+    """Uploaded photo is reachable via GET /attachments/{path} (the /notes/ route retired #663)."""
     key = await _register_camera(storage, "headsail")
     await _start_race(storage)
     with patch.dict(os.environ, {**_AUTH_ENV, "NOTES_DIR": str(tmp_path)}):
@@ -214,7 +218,7 @@ async def test_photo_served_via_notes_route(storage: Storage, tmp_path: Path) ->
             path = up.json()["photo_path"]
             # Fetch with the same device bearer — crew can read /notes/ (viewer)
             resp = await client.get(
-                f"/notes/{path}",
+                f"/attachments/{path}",
                 headers={"Authorization": f"Bearer {key}"},
             )
     assert resp.status_code == 200
