@@ -1,5 +1,177 @@
 # Release Notes
 
+## Moments Unified, Sharper Debriefs, Safer Backups (2026-04-24)
+
+Bookmarks, comment threads, and notes are now one thing — "Moments" —
+with a unified panel on the session page. Debrief audio matches race
+audio channel-for-channel. The box no longer freezes for two minutes
+the first time you open a completed session. And restoring from a
+backup now tells you immediately if photos are missing.
+
+### Moments — one panel, one tag system
+- **Bookmarks, notes, and threads collapse into Moments**
+  ([#663](https://github.com/weaties/helmlog/pull/663),
+   [#672](https://github.com/weaties/helmlog/pull/672),
+   [#673](https://github.com/weaties/helmlog/pull/673)) — the old
+  Bookmarks / Notes / Discussion cards are replaced by a single Moments
+  panel that holds every race observation, anchored to the right place
+  on the timeline. Existing data migrates forward automatically
+- **Moment UX v2** ([#678](https://github.com/weaties/helmlog/pull/678))
+  — subject-first edit flow, a counterparty chip for tagging other
+  boats in a protest/mark-room note, and an attachment gallery that
+  treats photos and videos the same way
+- **Tag provenance + starter vocabulary**
+  ([#674](https://github.com/weaties/helmlog/pull/674)) — every tag
+  records who created it, and fresh installs come with a starter set
+  of sailing-specific tags instead of a blank list
+- **Phone/ESP32-CAM photo ingest**
+  ([#661](https://github.com/weaties/helmlog/pull/661)) — ESP32-CAM
+  devices can push JPEGs straight into the Moments panel of the active
+  race session via a simple HTTP endpoint
+
+### Home page — racing view by default
+- **Stripped-down Home during a race**
+  ([#665](https://github.com/weaties/helmlog/pull/665)) — while racing,
+  Home is just the live track, instruments, setup summary, and notes.
+  Everything non-essential fades away so the helm can find what they
+  need at a glance
+
+### Debrief audio
+- **Multi-channel parity with race audio**
+  ([#649](https://github.com/weaties/helmlog/pull/649)) — when debrief
+  recording starts, it now honors the same per-channel naming/labels
+  the race recorder was using. If the USB device set changed between
+  race end and debrief start, the operator sees a warning instead of
+  silently dropping tracks
+
+### Performance
+- **Polar grading no longer freezes the Pi**
+  ([#680](https://github.com/weaties/helmlog/pull/680)) — the first
+  view of a completed session used to block every API on the box for
+  2–3 minutes while it graded ~400 segments. Grading now runs in a
+  worker thread with the full polar baseline pre-loaded, and is warmed
+  up in the background the moment the race ends, so the debrief page
+  is ready by the time the crew opens it
+- **Hot-path SQLite indexes**
+  ([#671](https://github.com/weaties/helmlog/pull/671)) — adds the
+  missing `audio_sessions.race_id`, `winds(reference, ts)`, and
+  latest-instrument reverse indexes that the race list and live
+  instrument panel hit on every refresh
+- **Stale summary cache fixed after results import**
+  ([#668](https://github.com/weaties/helmlog/pull/668)) — importing a
+  regatta results file now invalidates the cached session summary so
+  finish positions show up immediately instead of on the next restart
+
+### Backups & restore
+- **Atomic SQLite snapshots and integrity validator**
+  ([#681](https://github.com/weaties/helmlog/pull/681)) — `backup.sh`
+  uses `sqlite3 .backup` to stage a consistent DB snapshot before
+  transferring, replacing the WAL-checkpoint approach that could race
+  with active writes. Every snapshot (and every restore) is now
+  cross-checked: if `moment_attachments`, `audio_sessions`, or
+  `users.avatar_path` rows point at files that aren't actually in the
+  snapshot, the backup report says so and `restore.sh` warns before
+  wiping the target. Catches the "25 photo rows, 0 photo files" class
+  of silent data loss
+
+### Docs
+- **Tightened CLAUDE.md** ([#669](https://github.com/weaties/helmlog/pull/669))
+  — AI agent instructions reduced to 177 lines and docs sprawl tamed
+
+## Smarter Maneuver Analysis, Bookmarks & Tags, Heel/Trim, Faster Pages (2026-04-21)
+
+Better debrief tools: deeper maneuver analysis, bookmarks and tags to
+organize moments across your season, heel and trim now recorded and
+shown, a faster history page, and a home page that opens right on your
+latest race.
+
+### Smarter maneuver analysis ([#640](https://github.com/weaties/helmlog/pull/640))
+- **Turn vs. recovery timing** — each tack and gybe is now split into
+  two phases: how fast the helm got the boat through head-to-wind, and
+  how fast speed came back afterward. Slow turn vs. slow recovery are
+  different problems and now show up separately in tooltips and the
+  maneuver browser
+- **Fairer baseline** — entry speed is now measured from the steady part
+  of the approach, not dragged down by a helm bleeding speed in the
+  last few seconds before ready-about, so distance-lost numbers are
+  more trustworthy
+- **No more fake good/bad labels** — when every maneuver in a session is
+  tightly clustered, they're all labeled "consistent" instead of
+  inventing a best-to-worst split out of noise. Rank chips also show a
+  percentile so you still see ordering
+- **Overlay chart** — new button on the session page and maneuvers
+  browser that plots selected tacks/gybes on a shared timeline anchored
+  to head-to-wind, so you can see at a glance which one turned fastest
+  or recovered cleanest
+- **Historical sessions update automatically** — every past session gets
+  re-analyzed in the background on the next start, so the new numbers
+  appear everywhere without any manual rebuild
+
+### Bookmarks, anchored comments & tags ([#588](https://github.com/weaties/helmlog/issues/588))
+- **Bookmarks** ([#589](https://github.com/weaties/helmlog/pull/589))
+  — mark any moment in a session for later reference
+- **Anchored comment threads** ([#592](https://github.com/weaties/helmlog/pull/592))
+  — pin discussions to a specific maneuver, bookmark, or moment; the
+  thread highlights as you scrub past it during replay
+- **Tags across everything** ([#595](https://github.com/weaties/helmlog/pull/595))
+  — one tag system for sessions, maneuvers, threads, and bookmarks,
+  with filter chips on lists and an admin page for renaming and merging
+
+### Heel & trim
+- **Recorded from the boat** ([#624](https://github.com/weaties/helmlog/pull/624))
+  — helmlog now captures heel and trim alongside everything else
+- **Shown on the session page** ([#646](https://github.com/weaties/helmlog/pull/646))
+  — new Attitude card in the gauges panel
+
+### Home page & session navigation
+- **Home page opens on your latest race** ([#636](https://github.com/weaties/helmlog/pull/636))
+  — live view while racing, most recent race otherwise. Start/stop and
+  crew controls moved to a dedicated `/control` page so a spectator
+  can't accidentally end a race
+- **Video overlays during maneuvers** ([#641](https://github.com/weaties/helmlog/pull/641))
+  — optional compass-rose and mini-track overlays fade in over the
+  session video only during tacks/gybes, keeping the long upwind and
+  downwind stretches clean
+- **Share a link to a specific moment** ([#643](https://github.com/weaties/helmlog/pull/643))
+  — new Share button copies a URL that opens the session paused at the
+  current playback time, just like YouTube's "share at current time"
+- **Synthesized sessions now show on history** ([#591](https://github.com/weaties/helmlog/pull/591))
+  — sessions created from imported results are no longer hidden
+
+### Faster pages
+- **Session history, summary, tracks and wind fields load from cache**
+  ([#594](https://github.com/weaties/helmlog/issues/594)) — repeat views
+  of the same race skip the heavy recomputation and come back almost
+  instantly. Browser-side revalidation lets the browser reuse its copy
+  too
+- **Weather and tide lookups are cached** — the logger no longer hits
+  Open-Meteo and NOAA for the same forecast twice
+- **History is pre-warmed** — when a race ends, its summary is built in
+  the background so the first time you open it in history it's already
+  ready
+
+### Video upload reliability
+- **No more half-rendered clips on YouTube** ([#634](https://github.com/weaties/helmlog/pull/634))
+  — the uploader now waits until the Insta360 export is fully finished
+  and verifies YouTube accepted it before moving the source file off
+  the exports disk, fixing a case where partially-rendered videos were
+  being uploaded and the originals archived before you could re-export
+
+### Setup for new boats
+- **New-owner bootstrap guide** ([#627](https://github.com/weaties/helmlog/pull/627))
+  — step-by-step guide for setting up helmlog on a new Pi for a new
+  boat
+- **Fresh installs no longer inherit the original owner's identity**
+  ([#629](https://github.com/weaties/helmlog/pull/629)) — scripts now
+  prompt for required settings instead of silently using defaults from
+  the upstream project
+
+### Fixes
+- **Importing multi-class regatta results no longer fails**
+  ([#606](https://github.com/weaties/helmlog/pull/606)) — second
+  regattas sharing a class (e.g. J/105) with an already-imported one
+  now import cleanly
+
 ## Maneuver Video Compare + Cross-Session Browser (2026-04-16)
 
 Side-by-side synced video comparison for detected maneuvers, followed by a
