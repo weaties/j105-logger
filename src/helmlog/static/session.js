@@ -4469,12 +4469,17 @@ async function loadPolar() {
     }
     const sign = avgDelta >= 0 ? '+' : '';
     const summary = document.getElementById('polar-summary');
+    // POST /api/polar/rebuild requires admin — only show the affordance to
+    // users who can use it (#597).
+    const rebuildBtn = _sessionUserRole === 'admin'
+      ? ' &middot; <button onclick="rebuildPolarBaseline()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;text-decoration:underline;padding:0">Rebuild baseline</button>'
+      : '';
     summary.innerHTML =
       sign + avgDelta.toFixed(2) + ' kt weighted avg vs baseline &middot; '
       + above + ' bins above, ' + below + ' below'
       + (noBaseline ? ' &middot; ' + noBaseline + ' bins no baseline' : '')
       + ' &middot; ' + data.session_sample_count + ' samples'
-      + ' &middot; <button onclick="rebuildPolarBaseline()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:.78rem;text-decoration:underline;padding:0">Rebuild baseline</button>';
+      + rebuildBtn;
   } catch (e) { /* non-fatal */ }
 }
 
