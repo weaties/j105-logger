@@ -19,19 +19,31 @@
 # wipe (only safe if the source Pi will be offline during testing).
 #
 # Environment:
-#   PI                 SSH target              (required)
+#   PI                 SSH target              (required, e.g. helmlog-backup@host)
 #   BACKUP_DEST        local snapshot root     (default: ~/backups/helmlog)
 #   KEEP_IDENTITY      skip identity wipe      (default: 0)
-#   INFLUX_TOKEN_FILE  path on target          (default: ~/influx-token.txt)
+#   SSH_KEY            local SSH key path      (default: ~/.ssh/helmlog-backup)
+#   PI_HELMLOG_DIR     helmlog dir on target   (default: /home/weaties/helmlog)
+#   PI_SIGNALK_DIR     signalk dir on target   (default: /home/weaties/.signalk)
+#   PI_OWNER_USER      file owner on target    (default: weaties)
+#   INFLUX_TOKEN_FILE  path on target          (default: /home/weaties/influx-token.txt)
 #   FORCE              skip confirmation prompt (default: 0)
 
 set -euo pipefail
 
-PI="${PI:?set PI to the target SSH host, e.g. user@pi-hostname}"
+PI="${PI:?set PI to the target SSH host, e.g. helmlog-backup@pi-hostname}"
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 KEEP_IDENTITY="${KEEP_IDENTITY:-0}"
-INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-~/influx-token.txt}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/helmlog-backup}"
+PI_HELMLOG_DIR="${PI_HELMLOG_DIR:-/home/weaties/helmlog}"
+PI_SIGNALK_DIR="${PI_SIGNALK_DIR:-/home/weaties/.signalk}"
+PI_OWNER_USER="${PI_OWNER_USER:-weaties}"
+INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-/home/weaties/influx-token.txt}"
 FORCE="${FORCE:-0}"
+
+SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -F /dev/null)
+SSH="ssh ${SSH_OPTS[*]}"
+RSYNC_SSH="ssh ${SSH_OPTS[*]}"
 
 SNAP="${1:-}"
 if [ -z "$SNAP" ]; then
@@ -84,39 +96,50 @@ fi
 
 # ── 1. Stop services ──────────────────────────────────────────────────────────
 log "Step 1/7: Stopping services on $PI"
-ssh "$PI" "sudo systemctl stop helmlog signalk grafana-server" || \
+$SSH "$PI" "sudo -n systemctl stop helmlog signalk grafana-server" || \
   log "  WARNING: one or more services failed to stop"
 
 # ── 2. SQLite + file data ─────────────────────────────────────────────────────
-log "Step 2/7: Restoring SQLite + file data → ~/helmlog/data/"
-# --omit-dir-times: ~/helmlog/data/ subdirs are owned by the `helmlog` service
-# user (with the SSH login user in the group via setgid), so rsync can write
-# files inside them but cannot update the directory mtimes.
+log "Step 2/7: Restoring SQLite + file data → $PI_HELMLOG_DIR/data/"
+# Use `sudo rsync` on the Pi so we can overwrite files regardless of which
+# user the SSH session is running as (the helmlog service writes as `helmlog`,
+# while the SSH user is typically `helmlog-backup`). Files arrive owned by
+# root; a `chown -R` step below restores the expected ownership.
+# Apple's openrsync on macOS rejects `--chown` pre-send, and even with
+# `--rsync-path` and `--no-o --no-g` the remote GNU rsync 3.4 errors with
+# "You can only specify a user-affecting --chown once" — so chown happens in
+# a separate ssh step instead of during transfer.
 # shellcheck disable=SC2086
-rsync -az --delete --omit-dir-times $RSYNC_PROGRESS \
+rsync -e "$RSYNC_SSH" -az --delete $RSYNC_PROGRESS \
+  --rsync-path="sudo rsync" \
   "$SNAP/data/" \
-  "$PI:helmlog/data/"
+  "$PI:$PI_HELMLOG_DIR/data/"
+$SSH "$PI" "sudo -n chown -R helmlog:$PI_OWNER_USER $PI_HELMLOG_DIR/data"
 log "  data/ done"
 
 # ── 3. .env config ────────────────────────────────────────────────────────────
 log "Step 3/7: Restoring helmlog .env"
 if [ -f "$SNAP/config/helmlog.env" ]; then
-  rsync -az "$SNAP/config/helmlog.env" "$PI:helmlog/.env"
-  ssh "$PI" "chmod 600 ~/helmlog/.env"
+  rsync -e "$RSYNC_SSH" -az \
+    --rsync-path="sudo rsync" \
+    "$SNAP/config/helmlog.env" "$PI:$PI_HELMLOG_DIR/.env"
+  $SSH "$PI" "sudo -n chown $PI_OWNER_USER:$PI_OWNER_USER $PI_HELMLOG_DIR/.env && sudo -n chmod 640 $PI_HELMLOG_DIR/.env"
   log "  .env done"
 else
   log "  WARNING: $SNAP/config/helmlog.env not present; skipping"
 fi
 
 # ── 4. Signal K config + data ─────────────────────────────────────────────────
-log "Step 4/7: Restoring Signal K → ~/.signalk/"
+log "Step 4/7: Restoring Signal K → $PI_SIGNALK_DIR/"
 if [ -d "$SNAP/signalk" ]; then
   # No --delete: preserve target's node_modules and package-lock.json
   # (they were excluded from the snapshot intentionally).
   # shellcheck disable=SC2086
-  rsync -az $RSYNC_PROGRESS \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS \
+    --rsync-path="sudo rsync" \
     "$SNAP/signalk/" \
-    "$PI:.signalk/"
+    "$PI:$PI_SIGNALK_DIR/"
+  $SSH "$PI" "sudo -n chown -R $PI_OWNER_USER:$PI_OWNER_USER $PI_SIGNALK_DIR"
   log "  signalk/ done (target node_modules preserved)"
 else
   log "  WARNING: $SNAP/signalk not present; skipping"
@@ -130,10 +153,10 @@ if [ -d "$SNAP/grafana" ]; then
   # macOS ships Apple's openrsync, which mishandles --chown via --rsync-path,
   # so the chown must happen on the Pi (GNU rsync 3.x).
   # shellcheck disable=SC2086
-  rsync -az --delete $RSYNC_PROGRESS \
+  rsync -e "$RSYNC_SSH" -az --delete $RSYNC_PROGRESS \
     "$SNAP/grafana/" \
     "$PI:/tmp/grafana-restore/"
-  ssh "$PI" "sudo rsync -a --delete --chown=grafana:grafana \
+  $SSH "$PI" "sudo -n rsync -a --delete --chown=grafana:grafana \
     /tmp/grafana-restore/ /var/lib/grafana/ && rm -rf /tmp/grafana-restore"
   log "  grafana data dir done"
 else
@@ -146,10 +169,10 @@ fi
 # dashboards show "No data".
 if [ -d "$SNAP/grafana-provisioning" ]; then
   # shellcheck disable=SC2086
-  rsync -az --delete $RSYNC_PROGRESS \
+  rsync -e "$RSYNC_SSH" -az --delete $RSYNC_PROGRESS \
     "$SNAP/grafana-provisioning/" \
     "$PI:/tmp/grafana-provisioning-restore/"
-  ssh "$PI" "sudo rsync -a --delete --chown=root:grafana \
+  $SSH "$PI" "sudo -n rsync -a --delete --chown=root:grafana \
     /tmp/grafana-provisioning-restore/ /etc/grafana/provisioning/ && \
     rm -rf /tmp/grafana-provisioning-restore"
   log "  grafana provisioning done"
@@ -165,22 +188,24 @@ if [ -d "$SNAP/influxdb" ]; then
   # stale (it has the original target token, but the InfluxDB instance now
   # holds the source's tokens). Try the target's local token first; if that
   # 401s, fall back to the snapshot's captured source token.
-  ssh "$PI" "rm -rf /tmp/influx-restore && mkdir -p /tmp/influx-restore"
-  rsync -az "$SNAP/influxdb/" "$PI:/tmp/influx-restore/"
+  $SSH "$PI" "rm -rf /tmp/influx-restore && mkdir -p /tmp/influx-restore"
+  rsync -e "$RSYNC_SSH" -az "$SNAP/influxdb/" "$PI:/tmp/influx-restore/"
 
   # Stage candidate tokens on the target (avoid embedding secrets in ssh args).
-  ssh "$PI" "rm -f /tmp/influx-token-target /tmp/influx-token-snap"
-  ssh "$PI" "test -f $INFLUX_TOKEN_FILE && cp $INFLUX_TOKEN_FILE /tmp/influx-token-target" \
+  # The target token file is owned by $PI_OWNER_USER and may not be readable
+  # by the SSH login user, so use sudo to copy it into a world-readable temp.
+  $SSH "$PI" "sudo -n rm -f /tmp/influx-token-target /tmp/influx-token-snap"
+  $SSH "$PI" "test -f $INFLUX_TOKEN_FILE && sudo -n cp $INFLUX_TOKEN_FILE /tmp/influx-token-target && sudo -n chmod 644 /tmp/influx-token-target" \
     2>/dev/null || true
   if [ -f "$SNAP/config/influx-token.txt" ]; then
-    rsync -az "$SNAP/config/influx-token.txt" "$PI:/tmp/influx-token-snap"
+    rsync -e "$RSYNC_SSH" -az "$SNAP/config/influx-token.txt" "$PI:/tmp/influx-token-snap"
   fi
 
   RESTORE_OK=0
   WORKING_TOKEN_FILE=""
   for candidate in /tmp/influx-token-target /tmp/influx-token-snap; do
-    if ssh "$PI" "test -s $candidate" 2>/dev/null; then
-      if ssh "$PI" "influx restore /tmp/influx-restore \
+    if $SSH "$PI" "test -s $candidate" 2>/dev/null; then
+      if $SSH "$PI" "influx restore /tmp/influx-restore \
           --host http://localhost:8086 \
           --token \$(cat $candidate) \
           --full"; then
@@ -197,13 +222,13 @@ if [ -d "$SNAP/influxdb" ]; then
     # If we used the snapshot token, write it back to the canonical location
     # so subsequent restores authenticate without falling back.
     if [ "$WORKING_TOKEN_FILE" = "/tmp/influx-token-snap" ]; then
-      ssh "$PI" "cp /tmp/influx-token-snap $INFLUX_TOKEN_FILE && chmod 600 $INFLUX_TOKEN_FILE"
+      $SSH "$PI" "sudo -n install -o $PI_OWNER_USER -g $PI_OWNER_USER -m 640 /tmp/influx-token-snap $INFLUX_TOKEN_FILE"
       log "  Updated $INFLUX_TOKEN_FILE on $PI to match restored auth"
     fi
   else
     log "  WARNING: InfluxDB restore failed (no working token)"
   fi
-  ssh "$PI" "rm -rf /tmp/influx-restore /tmp/influx-token-target /tmp/influx-token-snap"
+  $SSH "$PI" "sudo -n rm -rf /tmp/influx-restore /tmp/influx-token-target /tmp/influx-token-snap"
 else
   log "  WARNING: $SNAP/influxdb missing; skipping"
 fi
@@ -211,11 +236,11 @@ fi
 # ── 7. Identity wipe + service restart ────────────────────────────────────────
 log "Step 7/7: Identity wipe + restart services"
 if [ "$KEEP_IDENTITY" != "1" ]; then
-  ssh "$PI" "rm -rf ~/.helmlog/identity/ && \
-    sqlite3 ~/helmlog/data/logger.db 'DELETE FROM boat_identity;' 2>/dev/null || true"
+  $SSH "$PI" "sudo -n rm -rf /home/$PI_OWNER_USER/.helmlog/identity/ && \
+    sudo -n sqlite3 $PI_HELMLOG_DIR/data/logger.db 'DELETE FROM boat_identity;' 2>/dev/null || true"
   log "  Identity wiped on $PI"
 fi
-ssh "$PI" "sudo systemctl start signalk grafana-server helmlog" || \
+$SSH "$PI" "sudo -n systemctl start signalk grafana-server helmlog" || \
   log "  WARNING: one or more services failed to start"
 log "  Services restarted"
 
@@ -224,9 +249,10 @@ log "  Services restarted"
 # immediately whether photos/audio/avatars made it across (#676).
 if [ -f "$VALIDATOR" ]; then
   log "Post-restore: validating restored tree on $PI"
-  if ssh "$PI" "command -v python3 >/dev/null" 2>/dev/null; then
-    scp -q "$VALIDATOR" "$PI:/tmp/validate_snapshot.py" && \
-      ssh "$PI" "python3 /tmp/validate_snapshot.py ~/helmlog/data; rm -f /tmp/validate_snapshot.py" || \
+  if $SSH "$PI" "command -v python3 >/dev/null" 2>/dev/null; then
+    # shellcheck disable=SC2086
+    scp -q ${SSH_OPTS[*]} "$VALIDATOR" "$PI:/tmp/validate_snapshot.py" && \
+      $SSH "$PI" "python3 /tmp/validate_snapshot.py $PI_HELMLOG_DIR/data; rm -f /tmp/validate_snapshot.py" || \
       log "  WARNING: post-restore validation failed"
   else
     log "  WARNING: python3 not on $PI; skipping post-restore validation"

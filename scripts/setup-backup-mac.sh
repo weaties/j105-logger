@@ -2,13 +2,19 @@
 # setup-backup-mac.sh — Install the daily Pi-to-Mac backup launchd agent.
 #
 # Run once on your Mac from the project root:
-#   PI=user@pi-hostname ./scripts/setup-backup-mac.sh
+#   PI=helmlog-backup@pi-hostname REPORT_TO=you@example.com ./scripts/setup-backup-mac.sh
 #
 # What it does:
-#   1. Verifies SSH connectivity to $PI (required)
+#   1. Verifies SSH connectivity to $PI as helmlog-backup
 #   2. Creates ~/backups/helmlog/
-#   3. Copies com.helmlog.backup.plist → ~/Library/LaunchAgents/ (with real paths)
+#   3. Copies com.helmlog.backup.plist → ~/Library/LaunchAgents/ (with real values)
 #   4. Loads (enables) the agent — runs daily at 03:00
+#
+# Prerequisites (one-time per Pi):
+#   1. ./scripts/setup-backup-user.sh has been run on the Pi (creates the
+#      `helmlog-backup` user and authorises this Mac's helmlog-backup pubkey).
+#   2. The dedicated SSH keypair exists at ~/.ssh/helmlog-backup{,.pub}
+#      (generate with: ssh-keygen -t ed25519 -f ~/.ssh/helmlog-backup -N "")
 #
 # To uninstall:
 #   launchctl unload ~/Library/LaunchAgents/com.helmlog.backup.plist
@@ -22,7 +28,9 @@ PLIST_SRC="$SCRIPT_DIR/com.helmlog.backup.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/com.helmlog.backup.plist"
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 LOG_FILE="$BACKUP_DEST/backup.log"
-: "${PI:?PI must be set — e.g. export PI=user@pi-hostname}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/helmlog-backup}"
+: "${PI:?PI must be set — e.g. export PI=helmlog-backup@pi-hostname}"
+: "${REPORT_TO:?REPORT_TO must be set — e.g. export REPORT_TO=you@example.com}"
 
 log() { echo "==> $*"; }
 warn() { echo "    WARNING: $*" >&2; }
@@ -40,14 +48,21 @@ if ! command -v influx &>/dev/null; then
   warn "Install with: brew install influxdb-cli"
 fi
 
-log "Testing SSH connectivity to $PI..."
-if ! ssh -o ConnectTimeout=10 -o BatchMode=yes "$PI" "echo ok" &>/dev/null; then
+if [ ! -f "$SSH_KEY" ]; then
+  echo "ERROR: SSH key not found at $SSH_KEY" >&2
+  echo "Generate with: ssh-keygen -t ed25519 -f $SSH_KEY -N \"\"" >&2
+  exit 1
+fi
+
+log "Testing SSH connectivity to $PI (key: $SSH_KEY)..."
+if ! ssh -i "$SSH_KEY" -o ConnectTimeout=10 -o BatchMode=yes -o IdentitiesOnly=yes \
+    -o StrictHostKeyChecking=accept-new "$PI" "echo ok" &>/dev/null; then
   echo "" >&2
-  echo "ERROR: Cannot SSH to $PI." >&2
+  echo "ERROR: Cannot SSH to $PI as $(echo "$PI" | cut -d@ -f1)." >&2
   echo "Make sure:" >&2
-  echo "  1. Tailscale is running on both machines ('tailscale status')" >&2
-  echo "  2. SSH key is installed on the Pi ('ssh-copy-id $PI')" >&2
-  echo "  3. You can reach the Pi: ssh $PI" >&2
+  echo "  1. setup-backup-user.sh has been run on the Pi" >&2
+  echo "  2. Tailscale ACL allows ssh user '$(echo "$PI" | cut -d@ -f1)' with action: accept" >&2
+  echo "  3. You can reach the Pi via Tailscale ('tailscale status')" >&2
   exit 1
 fi
 log "  SSH OK"
@@ -59,11 +74,14 @@ log "Backup destination: $BACKUP_DEST"
 # ── 3. Install plist ──────────────────────────────────────────────────────────
 log "Installing launchd agent..."
 
-# Substitute real paths into the plist template
+# Substitute real values into the plist template.
 sed \
   -e "s|BACKUP_SCRIPT_PATH|$BACKUP_SCRIPT|g" \
   -e "s|BACKUP_LOG_PATH|$LOG_FILE|g" \
   -e "s|HOME_PATH|$HOME|g" \
+  -e "s|PI_TARGET|$PI|g" \
+  -e "s|SSH_KEY_PATH|$SSH_KEY|g" \
+  -e "s|REPORT_TO_ADDR|$REPORT_TO|g" \
   "$PLIST_SRC" > "$PLIST_DEST"
 
 log "  Plist written → $PLIST_DEST"

@@ -4,10 +4,16 @@ The logger stores all data on a microSD card inside the Raspberry Pi.
 This guide covers how to pull a complete backup to your Mac automatically,
 and how to restore from it if the card fails.
 
-> **Multiple Pis?** All scripts accept a `PI` environment variable for the SSH
-> target (e.g. `PI=weaties@testpi ./scripts/backup.sh`). The default is
-> `weaties@corvopi`. Examples below use the placeholder `<pi-user>@<pi-host>` —
-> substitute your actual SSH target.
+> **Identity:** Backups run as a dedicated `helmlog-backup` user on the Pi
+> (provisioned by `scripts/setup-backup-user.sh`), authenticated with a
+> dedicated key (`~/.ssh/helmlog-backup`) — not as the boat owner's
+> account. This decouples the backup path from per-boat usernames and lets a
+> narrow Tailscale ACL rule grant the daily cron headless SSH without
+> tripping `check`-mode re-auth.
+>
+> **Multiple Pis?** Pass the `PI` env var
+> (e.g. `PI=helmlog-backup@testpi ./scripts/backup.sh`). Examples below use
+> the placeholder `<pi-host>`.
 
 ---
 
@@ -55,42 +61,82 @@ orphans were found (sample paths are printed).
 ### 1. Prerequisites on the Mac
 
 ```bash
-# SSH key-based auth to the Pi (skip if already done)
-ssh-keygen -t ed25519 -C "mac-to-pi-backup"
-ssh-copy-id <pi-user>@<pi-host>
+# Dedicated SSH keypair for the backup user (separate from your interactive key)
+ssh-keygen -t ed25519 -f ~/.ssh/helmlog-backup -N "" -C "helmlog-backup-mac"
 
-# InfluxDB CLI (for restore; backup is handled on the Pi)
+# InfluxDB CLI (used during restore)
 brew install influxdb-cli
 ```
 
-### 2. Pi: allow sudo rsync without a password (for Grafana backup)
+### 2. Pi: provision the helmlog-backup user
 
-SSH into the Pi and add a sudoers rule:
+From the project root, copy the setup script to the Pi and run it (sudo will
+prompt for the boat owner's password):
 
 ```bash
-ssh <pi-user>@<pi-host>
-echo '<pi-user> ALL=(ALL) NOPASSWD: /usr/bin/rsync' | sudo tee /etc/sudoers.d/rsync-backup
-sudo chmod 440 /etc/sudoers.d/rsync-backup
+scp scripts/setup-backup-user.sh <owner>@<pi-host>:/tmp/
+ssh -t <owner>@<pi-host> 'bash /tmp/setup-backup-user.sh && rm /tmp/setup-backup-user.sh'
 ```
 
-### 3. Install the daily launchd agent on the Mac
+The script is idempotent. It:
+- Creates the `helmlog-backup` system user, member of the boat owner's group
+- Authorises `~/.ssh/helmlog-backup.pub` for SSH login
+- Adds `/etc/sudoers.d/helmlog-backup` with `NOPASSWD: ALL` (needed for
+  restore writes into helmlog-owned paths and service control)
+- Loosens `~/helmlog/.env` and `~/influx-token.txt` to mode 640 so the new
+  user can read them via group membership
+
+If the boat owner is not `weaties`, set `OWNER_USER=<name>` before running.
+
+### 3. Tailscale ACL: bypass check mode for the backup user
+
+Add an `ssh` rule that **accepts** (rather than `check`s) connections from
+this Mac to the Pis when the SSH login user is `helmlog-backup`. Without
+this, the cron-driven backup at 03:00 will fail any time Tailscale's
+periodic re-auth window expires (this is what caused the 2026-04-23 and
+2026-04-24 missed backups).
+
+Minimal addition to the tailnet policy file:
+
+```hujson
+"ssh": [
+  // place this BEFORE the existing check-mode rule for autogroup:nonroot
+  // so it matches first when the SSH login user is helmlog-backup
+  {
+    "action": "accept",
+    "src":    ["autogroup:member"],
+    "dst":    ["autogroup:self"],
+    "users":  ["helmlog-backup"],
+  },
+  // existing check-mode rule stays for interactive humans
+  // ...
+],
+```
+
+`sessionDuration` is only valid on `check`-action rules — `accept` has no
+expiry, which is exactly what the headless cron needs.
+
+Apply via the admin UI at <https://login.tailscale.com/admin/acls/file>.
+
+### 4. Install the daily launchd agent on the Mac
 
 From the project root:
 
 ```bash
-./scripts/setup-backup-mac.sh
+PI=helmlog-backup@<pi-host> REPORT_TO=you@example.com ./scripts/setup-backup-mac.sh
 ```
 
 This:
-- Checks SSH connectivity to the Pi
+- Checks SSH connectivity to the Pi using `~/.ssh/helmlog-backup`
 - Creates `~/backups/helmlog/`
-- Installs `~/Library/LaunchAgents/com.helmlog.backup.plist`
+- Installs `~/Library/LaunchAgents/com.helmlog.backup.plist` with
+  PI / SSH_KEY / REPORT_TO baked into `EnvironmentVariables`
 - Schedules the backup to run every day at **03:00 local time**
 
-### 4. Run a test backup now
+### 5. Run a test backup now
 
 ```bash
-./scripts/backup.sh
+PI=helmlog-backup@<pi-host> REPORT_TO=you@example.com ./scripts/backup.sh
 ```
 
 Verify the snapshot contains:
@@ -132,52 +178,19 @@ launchctl start com.helmlog.backup
 
 ## Restoring from a backup
 
-Pick the snapshot you want:
+`scripts/restore.sh` does the full sequence — stop services, restore SQLite
++ file data, .env, Signal K, Grafana, InfluxDB (`--full`), wipe boat
+identity, restart services. Run it as the dedicated backup user; sudo on the
+Pi handles the privileged writes.
 
 ```bash
-ls ~/backups/helmlog/
-# e.g. 20260228T030000Z
-SNAP=~/backups/helmlog/20260228T030000Z
+PI=helmlog-backup@<pi-host> ./scripts/restore.sh                                # most recent snapshot
+PI=helmlog-backup@<pi-host> ./scripts/restore.sh ~/backups/helmlog/20260228T030000Z
 ```
 
-### SQLite
-
-```bash
-# Stop the logger service on the Pi first
-ssh $PI "sudo systemctl stop helmlog"
-
-# Copy the DB back
-rsync -az "$SNAP/data/" $PI:~/helmlog/data/
-
-# Restart
-ssh $PI "sudo systemctl start helmlog"
-```
-
-### InfluxDB
-
-```bash
-# Restore to the running InfluxDB instance (overwrites existing data)
-influx restore "$SNAP/influxdb/" \
-  --host http://<pi-host>:8086 \
-  --token "$(cat ~/influx-token.txt)"
-```
-
-If restoring to a fresh InfluxDB install, add `--full` to wipe and replace all buckets.
-
-### Grafana
-
-```bash
-# Stop Grafana on the Pi
-ssh $PI "sudo systemctl stop grafana-server"
-
-# Restore the data directory
-rsync -az --rsync-path='sudo rsync' \
-  "$SNAP/grafana/" \
-  $PI:/var/lib/grafana/
-
-# Fix ownership and restart
-ssh $PI "sudo chown -R grafana:grafana /var/lib/grafana && sudo systemctl start grafana-server"
-```
+After restore, run `helmlog identity init …` on the target so it federates
+as itself rather than impersonating the source. Set `KEEP_IDENTITY=1` only
+when the source Pi is offline during testing.
 
 ---
 
@@ -187,10 +200,15 @@ All settings are overridable via environment variables:
 
 | Variable | Default | Description |
 |---|---|---|
-| `PI` | `weaties@corvopi` | SSH target for the Pi |
+| `PI` | _required_ | SSH target, e.g. `helmlog-backup@<pi-host>` |
+| `SSH_KEY` | `~/.ssh/helmlog-backup` | Local SSH private key for the backup user |
+| `REPORT_TO` | _required_ | Email address for the daily report (or set `SKIP_EMAIL=1`) |
 | `BACKUP_DEST` | `~/backups/helmlog` | Local snapshot root |
 | `KEEP_SNAPSHOTS` | `10` | Number of snapshots to retain |
-| `INFLUX_TOKEN_FILE` | `~/influx-token.txt` | Path on the Pi to the InfluxDB token |
+| `PI_HELMLOG_DIR` | `/home/weaties/helmlog` | Pi-side helmlog directory |
+| `PI_SIGNALK_DIR` | `/home/weaties/.signalk` | Pi-side Signal K directory |
+| `PI_OWNER_USER` (restore) | `weaties` | Pi-side file owner used for `--chown` during restore |
+| `INFLUX_TOKEN_FILE` | `/home/weaties/influx-token.txt` | Pi-side InfluxDB token path |
 
 Example — keep 30 days of snapshots:
 
