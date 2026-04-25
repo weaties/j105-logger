@@ -15,12 +15,38 @@ and how to restore from it if the card fails.
 
 | Source | Destination in snapshot |
 |---|---|
-| `~/helmlog/data/` — SQLite DB, WAV audio, photo notes, exports | `<snapshot>/data/` |
+| `~/helmlog/data/logger.db` — consistent copy via `sqlite3 .backup` | `<snapshot>/data/logger.db` |
+| `~/helmlog/data/audio/` — race + debrief WAV files | `<snapshot>/data/audio/` |
+| `~/helmlog/data/notes/` — photo attachments (camera + phone) | `<snapshot>/data/notes/` |
+| `~/helmlog/data/avatars/` — user profile photos | `<snapshot>/data/avatars/` |
+| `~/helmlog/data/vakaros-inbox/` — pending race session uploads | `<snapshot>/data/vakaros-inbox/` |
+| `~/helmlog/data/exports/` — CSV / GPX / JSON exports | `<snapshot>/data/exports/` |
+| `~/helmlog/.env` | `<snapshot>/config/helmlog.env` |
 | InfluxDB (system health metrics) | `<snapshot>/influxdb/` |
 | Grafana (dashboards, datasources) | `<snapshot>/grafana/` |
 
 Snapshots land in `~/backups/helmlog/<timestamp>/`.
 The 10 most recent are kept; older ones are deleted automatically.
+
+### Snapshot integrity (#676)
+
+`backup.sh` runs `scripts/validate_snapshot.py` against every freshly
+written snapshot. The validator cross-checks each `moment_attachments.path`,
+`audio_sessions.file_path`, and `users.avatar_path` row against the files
+actually present under `<snapshot>/data/` and reports orphans in the
+backup-report email. `restore.sh` runs the same validator against the
+snapshot before wiping the target, and again against the restored tree on
+the Pi — so a restore that would land broken attachments is visible
+immediately, not days later as broken image placeholders in the UI.
+
+Run it manually against any snapshot:
+
+```bash
+python3 scripts/validate_snapshot.py ~/backups/helmlog/20260228T030000Z/data
+```
+
+Exit code `0` means every referenced file is present; `1` means one or more
+orphans were found (sample paths are printed).
 
 ---
 

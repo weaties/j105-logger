@@ -361,15 +361,51 @@ run_rsync_step() {
   esac
 }
 
-# ── 1. SQLite — WAL checkpoint then rsync ────────────────────────────────────
-ssh "$PI" "sqlite3 ~/helmlog/data/logger.db 'PRAGMA wal_checkpoint(TRUNCATE);'" 2>/dev/null || \
-  log "  WARNING: WAL checkpoint failed (DB may not exist yet); continuing"
+# ── 1. SQLite — consistent snapshot via sqlite3 .backup, then rsync ──────────
+# Previous versions relied on PRAGMA wal_checkpoint(TRUNCATE) and hoped no
+# writes landed mid-rsync. `sqlite3 .backup` gives an atomic copy that is
+# safe to transfer regardless of active WAL (#676). We overwrite the raw DB
+# that rsync picks up with the staged snapshot after the tree copy.
+ssh "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-* 2>/dev/null; \
+  sqlite3 ~/helmlog/data/logger.db \".backup '/tmp/logger.db.snap'\"" 2>/dev/null && \
+  log "  DB snapshot staged at /tmp/logger.db.snap on $PI" || \
+  log "  WARNING: sqlite3 .backup failed (DB may not exist yet); continuing"
 
 # shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
 run_rsync_step "SQLite + file data" "$SNAP/data" \
   rsync -az $RSYNC_PROGRESS $LINK_DATA \
     "$PI:~/helmlog/data/" \
     "$SNAP/data/" || true
+
+# Replace rsync's live-DB copy with the consistent snapshot, then tidy up.
+if ssh "$PI" "test -f /tmp/logger.db.snap" 2>/dev/null; then
+  rsync -az "$PI:/tmp/logger.db.snap" "$SNAP/data/logger.db" && \
+    log "  DB replaced with consistent snapshot"
+  ssh "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-*" 2>/dev/null || true
+fi
+
+# Cross-check the snapshot: every moment_attachments / audio_sessions /
+# users.avatar_path row must point at a file that actually exists in the
+# snapshot. Silent losses here are how corvopi-tst1 ended up with 25 photo
+# rows pointing at empty directories (#676).
+VALIDATOR="$SCRIPT_DIR/validate_snapshot.py"
+if [ -f "$SNAP/data/logger.db" ] && [ -f "$VALIDATOR" ] && command -v python3 >/dev/null; then
+  log "Step: Snapshot validation"
+  VALIDATE_OUT="/tmp/helmlog-validate-$DATE.txt"
+  if python3 "$VALIDATOR" "$SNAP/data" > "$VALIDATE_OUT" 2>&1; then
+    log "  OK (all referenced files present)"
+    report_line "- **Snapshot validation**: OK (all referenced files present)"
+  else
+    rc=$?
+    log "  WARNING: orphaned DB rows detected (rc=$rc)"
+    report_line "- **Snapshot validation**: WARN (rc=$rc) — orphaned DB rows detected"
+    report_line '```'
+    head -40 "$VALIDATE_OUT" >> "$REPORT" || true
+    report_line '```'
+    mark_warning "Snapshot validation: orphaned rows (see report body)"
+  fi
+  rm -f "$VALIDATE_OUT"
+fi
 
 # ── 2. InfluxDB — remote backup then rsync ───────────────────────────────────
 influx_backup() {
