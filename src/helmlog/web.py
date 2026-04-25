@@ -232,6 +232,7 @@ def create_app(
         pages,
         polar,
         race_start,
+        race_start_sim,
         races,
         results,
         sails,
@@ -278,6 +279,11 @@ def create_app(
         ws,
     ):
         app.include_router(module.router)
+
+    # Race-start simulator (#690) — only mounted when RACE_START_SIMULATOR=true.
+    # Production Pis never see these routes.
+    if race_start_sim.is_simulator_enabled():
+        app.include_router(race_start_sim.router)
 
     # -- Register results providers (#459) --
     from helmlog.results.base import register_provider

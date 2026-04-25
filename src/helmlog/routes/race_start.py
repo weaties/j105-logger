@@ -8,7 +8,7 @@ from the snapshot returned by ``GET /api/race-start/state``.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,8 +45,25 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
+def _sim_offset_s(request: Request) -> float:
+    """Race-start simulator clock offset, in seconds. 0 in production.
+
+    The simulator (#690, gated by ``RACE_START_SIMULATOR=true``) sets this
+    on ``app.state`` to skew the FSM clock for offline validation. Outside
+    the simulator the attribute is absent and the offset is 0.
+    """
+    return float(getattr(request.app.state, "race_start_sim_offset_s", 0.0))
+
+
+def _now_utc(request: Request | None = None) -> datetime:
+    """Wall-clock UTC, plus simulator skew when the simulator is active."""
+    real = datetime.now(UTC)
+    if request is None:
+        return real
+    offset = _sim_offset_s(request)
+    if offset == 0.0:
+        return real
+    return real + timedelta(seconds=offset)
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -113,7 +130,7 @@ async def _save_state(request: Request, state: SequenceState) -> None:
         last_sync_at_utc=state.last_sync_at_utc,
         started_at_utc=state.started_at_utc,
         classes_json=_classes_to_json(state.classes),
-        now_utc=_now_utc(),
+        now_utc=_now_utc(request),
     )
     # When the gun fires (state.phase == "started") and a race is in
     # progress, anchor its start_utc to the actual gun time. Cheap to
@@ -131,7 +148,7 @@ async def _save_state(request: Request, state: SequenceState) -> None:
 
 async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, Any]:
     """Build the JSON snapshot returned by GET /api/race-start/state."""
-    now = _now_utc()
+    now = _now_utc(request)
     state = tick(state, now)
     if state != (await _load_state(request)):
         # tick() advanced the phase — persist so reloads don't replay.
@@ -289,7 +306,7 @@ async def api_sync(
 ) -> JSONResponse:
     state = await _load_state(request)
     try:
-        new_state = sync_to_gun(state, _now_utc(), body.expected_signal_offset_s)
+        new_state = sync_to_gun(state, _now_utc(request), body.expected_signal_offset_s)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await _save_state(request, new_state)
@@ -370,7 +387,7 @@ async def api_recall(
 ) -> JSONResponse:
     state = await _load_state(request)
     try:
-        new_state = general_recall(state, _now_utc())
+        new_state = general_recall(state, _now_utc(request))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await _save_state(request, new_state)
@@ -481,7 +498,7 @@ async def _ping(
         end_kind=end_kind,
         latitude_deg=lat,
         longitude_deg=lon,
-        captured_at=_now_utc(),
+        captured_at=_now_utc(request),
         captured_by=user.get("id"),
     )
     await audit(
