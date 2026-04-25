@@ -198,7 +198,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 80
+_CURRENT_VERSION: int = 81
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1951,6 +1951,22 @@ _MIGRATIONS: dict[int, str] = {
             read              INTEGER NOT NULL DEFAULT 0,
             dismissed         INTEGER NOT NULL DEFAULT 0
         );
+    """,
+    81: """
+        -- #670: hot-path index gaps.
+        -- audio_sessions is joined to races on race_id from the race list
+        -- page (EXISTS subquery per row), race detail, and session cleanup.
+        -- Previously a full table scan per lookup.
+        CREATE INDEX IF NOT EXISTS idx_audio_sessions_race_id
+            ON audio_sessions(race_id);
+        -- latest_instruments() and per-session wind aggregates filter winds
+        -- by reference (IN (0,4) for true wind, =2 for apparent) before an
+        -- ORDER BY ts / ts-range filter. The existing idx_winds_ts has no
+        -- reference column, so SQLite scanned rows in ts order checking
+        -- reference for each. This composite lets it seek straight to the
+        -- matching reference partition and take the newest row in O(log n).
+        CREATE INDEX IF NOT EXISTS idx_winds_reference_ts
+            ON winds(reference, ts);
     """,
 }
 
