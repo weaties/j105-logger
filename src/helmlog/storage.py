@@ -5804,9 +5804,21 @@ class Storage:
         import json
 
         db = self._conn()
-        # Downgrade dependent moments before the FKs vanish.
+        # Downgrade dependent moments before the FKs vanish. Copy the maneuver's
+        # ts into anchor_t_start so the moment keeps its place on the timeline —
+        # the read-time resolver can't recover it once the maneuvers row is gone.
         await db.execute(
-            "UPDATE moments SET anchor_kind = 'timestamp', anchor_entity_id = NULL"
+            "UPDATE moments"
+            " SET anchor_kind = 'timestamp',"
+            "     anchor_t_start = COALESCE("
+            "         anchor_t_start,"
+            "         (SELECT ts FROM maneuvers WHERE id = moments.anchor_entity_id)"
+            "     ),"
+            "     anchor_t_end = COALESCE("
+            "         anchor_t_end,"
+            "         (SELECT end_ts FROM maneuvers WHERE id = moments.anchor_entity_id)"
+            "     ),"
+            "     anchor_entity_id = NULL"
             " WHERE anchor_kind = 'maneuver'"
             " AND anchor_entity_id IN (SELECT id FROM maneuvers WHERE session_id = ?)",
             (session_id,),
