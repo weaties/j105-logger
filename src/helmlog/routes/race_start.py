@@ -436,8 +436,16 @@ async def api_reset(
 
 
 class PingRequest(BaseModel):
-    latitude_deg: float
-    longitude_deg: float
+    """Body for ping endpoints.
+
+    Both fields are optional. If omitted, the server uses the latest
+    boat position from the ``positions`` table (Signal K / GPS feed).
+    Manual lat/lon overrides exist for offline testing and edge cases
+    where the GPS hasn't yet produced a fix.
+    """
+
+    latitude_deg: float | None = None
+    longitude_deg: float | None = None
 
 
 async def _ping(
@@ -446,25 +454,40 @@ async def _ping(
     body: PingRequest,
     user: dict[str, Any],
 ) -> JSONResponse:
-    if not -90.0 <= body.latitude_deg <= 90.0:
-        raise HTTPException(status_code=400, detail="latitude out of range")
-    if not -180.0 <= body.longitude_deg <= 180.0:
-        raise HTTPException(status_code=400, detail="longitude out of range")
     storage = get_storage(request)
+    lat = body.latitude_deg
+    lon = body.longitude_deg
+    if lat is None or lon is None:
+        # Fall back to the latest boat position from the GPS feed.
+        pos = await storage.latest_position()
+        if pos is None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "no GPS fix available — supply latitude_deg/longitude_deg "
+                    "manually or wait for a position record"
+                ),
+            )
+        lat = pos["latitude_deg"]
+        lon = pos["longitude_deg"]
+    if not -90.0 <= lat <= 90.0:
+        raise HTTPException(status_code=400, detail="latitude out of range")
+    if not -180.0 <= lon <= 180.0:
+        raise HTTPException(status_code=400, detail="longitude out of range")
     current_race = await storage.get_current_race()
     race_id = current_race.id if current_race else None
     await storage.add_start_line_ping(
         race_id=race_id,
         end_kind=end_kind,
-        latitude_deg=body.latitude_deg,
-        longitude_deg=body.longitude_deg,
+        latitude_deg=lat,
+        longitude_deg=lon,
         captured_at=_now_utc(),
         captured_by=user.get("id"),
     )
     await audit(
         request,
         f"race_start.ping_{end_kind}",
-        detail=f"{body.latitude_deg:.6f},{body.longitude_deg:.6f}",
+        detail=f"{lat:.6f},{lon:.6f}",
         user=user,
     )
     state = await _load_state(request)

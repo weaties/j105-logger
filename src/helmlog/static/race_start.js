@@ -176,20 +176,25 @@
     if (confirm("Reset the sequence?")) action("/api/race-start/reset");
   });
 
-  function geolocateAndPing(end) {
+  // Pings use the boat's GPS feed (server-side latest_position from
+  // sk_reader / can_reader) — the phone is never the source of truth.
+  // For offline use without a fix, hold Shift to enter manual coords.
+  async function pingEnd(end) {
     if (!isWriter) return;
-    if (!navigator.geolocation) return showError("geolocation unavailable");
-    navigator.geolocation.getCurrentPosition(
-      (pos) => action("/api/race-start/ping/" + end, {
-        latitude_deg: pos.coords.latitude,
-        longitude_deg: pos.coords.longitude,
-      }),
-      (err) => showError("geolocation: " + err.message),
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 1000 }
-    );
+    let body = {};
+    if (window.event && window.event.shiftKey) {
+      const raw = prompt("Enter lat,lon for " + end + " end:");
+      if (!raw) return;
+      const parts = raw.split(",").map((s) => parseFloat(s.trim()));
+      if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) {
+        return showError("expected 'lat,lon'");
+      }
+      body = { latitude_deg: parts[0], longitude_deg: parts[1] };
+    }
+    return action("/api/race-start/ping/" + end, body);
   }
-  bind("rs-ping-boat", () => geolocateAndPing("boat"));
-  bind("rs-ping-pin", () => geolocateAndPing("pin"));
+  bind("rs-ping-boat", () => pingEnd("boat"));
+  bind("rs-ping-pin", () => pingEnd("pin"));
 
   // Live tick at 4 Hz; reconcile from server every 30 s.
   setInterval(renderClock, 250);

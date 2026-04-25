@@ -247,6 +247,60 @@ async def test_ping_boat_then_pin_completes_line(storage: Storage) -> None:
         assert body["start_line"]["is_complete"] is True
 
 
+async def _insert_position(storage: Storage, lat: float, lon: float) -> None:
+    """Insert a row into the positions table (mimics sk_reader/can_reader)."""
+    db = storage._conn()  # noqa: SLF001
+    await db.execute(
+        "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg) VALUES (?, ?, ?, ?)",
+        (datetime.now(UTC).isoformat(), 0, lat, lon),
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_ping_with_no_body_uses_latest_position(storage: Storage) -> None:
+    """An empty ping body falls back to the latest GPS row in storage —
+    works on plain HTTP (no browser geolocation needed)."""
+    await _insert_position(storage, 47.6499, -122.3998)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.post("/api/race-start/ping/boat", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["start_line"]["boat_end_lat"] == pytest.approx(47.6499)
+    assert body["start_line"]["boat_end_lon"] == pytest.approx(-122.3998)
+
+
+@pytest.mark.asyncio
+async def test_ping_no_position_no_body_returns_409(storage: Storage) -> None:
+    """No GPS rows yet and no manual coords → 409 with helpful message."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.post("/api/race-start/ping/boat", json={})
+    assert r.status_code == 409
+    assert "no GPS fix" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_ping_manual_override_wins_over_db(storage: Storage) -> None:
+    """If lat/lon are supplied in the body, they override the DB position."""
+    await _insert_position(storage, 47.0, -122.0)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.post(
+            "/api/race-start/ping/pin",
+            json={"latitude_deg": 47.65, "longitude_deg": -122.40},
+        )
+    body = r.json()
+    assert body["start_line"]["pin_end_lat"] == 47.65
+
+
 @pytest.mark.asyncio
 async def test_ping_invalid_coords_400(storage: Storage) -> None:
     app = create_app(storage)
