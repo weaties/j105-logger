@@ -100,17 +100,21 @@ Minimal addition to the tailnet policy file:
 
 ```hujson
 "ssh": [
+  // place this BEFORE the existing check-mode rule for autogroup:nonroot
+  // so it matches first when the SSH login user is helmlog-backup
+  {
+    "action": "accept",
+    "src":    ["autogroup:member"],
+    "dst":    ["autogroup:self"],
+    "users":  ["helmlog-backup"],
+  },
   // existing check-mode rule stays for interactive humans
   // ...
-  {
-    "action":          "accept",
-    "src":             ["autogroup:member"],
-    "dst":             ["autogroup:self"],
-    "users":           ["helmlog-backup"],
-    "sessionDuration": "8760h",
-  },
 ],
 ```
+
+`sessionDuration` is only valid on `check`-action rules — `accept` has no
+expiry, which is exactly what the headless cron needs.
 
 Apply via the admin UI at <https://login.tailscale.com/admin/acls/file>.
 
