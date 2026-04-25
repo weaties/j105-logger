@@ -143,8 +143,9 @@ class TestReadMoment:
         sid = await _race(storage)
         db = storage._conn()
         cur = await db.execute(
-            "INSERT INTO maneuvers (session_id, type, ts)"
-            " VALUES (?, 'tack', '2026-01-01T12:08:00+00:00')",
+            "INSERT INTO maneuvers (session_id, type, ts, end_ts)"
+            " VALUES (?, 'tack', '2026-01-01T12:08:00+00:00',"
+            "         '2026-01-01T12:08:30+00:00')",
             (sid,),
         )
         await db.commit()
@@ -155,11 +156,15 @@ class TestReadMoment:
             anchor_entity_id=mv_id,
         )
         # write_maneuvers replaces the session's maneuvers, downgrading moments.
+        # The anchor times must be persisted before the maneuvers row is gone —
+        # otherwise the moment loses its place on the timeline (#683).
         await storage.write_maneuvers(sid, [])
         m = await storage.get_moment(mid)
         assert m is not None
         assert m["anchor_kind"] == "timestamp"
         assert m["anchor_entity_id"] is None
+        assert m["anchor_t_start"] == "2026-01-01T12:08:00+00:00"
+        assert m["anchor_t_end"] == "2026-01-01T12:08:30+00:00"
 
 
 class TestMutateMoment:

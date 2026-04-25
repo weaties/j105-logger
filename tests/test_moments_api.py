@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
 import pytest_asyncio
 
+import helmlog.auth as auth_module
 from helmlog.storage import Storage, StorageConfig
 from helmlog.web import create_app
 
@@ -174,6 +175,126 @@ class TestCounterparties:
             resp = await c.get("/api/moments/counterparties")
             assert resp.status_code == 200
             assert "Orca" in resp.json()["counterparties"]
+
+
+def _as_viewer(user_id: int) -> dict[str, Any]:
+    return {
+        "id": user_id,
+        "email": f"u{user_id}@example.com",
+        "name": f"User {user_id}",
+        "role": "viewer",
+        "is_developer": 0,
+        "created_at": "2024-01-01T00:00:00+00:00",
+        "last_seen": None,
+        "is_active": 1,
+    }
+
+
+async def _seed_user(storage: Storage, user_id: int) -> None:
+    """Insert a real users row so created_by FK references resolve."""
+    db = storage._conn()
+    await db.execute(
+        "INSERT OR IGNORE INTO users (id, email, role, created_at)"
+        " VALUES (?, ?, 'viewer', '2024-01-01T00:00:00+00:00')",
+        (user_id, f"u{user_id}@example.com"),
+    )
+    await db.commit()
+
+
+class TestPermissionMatrix:
+    """PATCH/DELETE /api/moments/{id} must enforce author-or-admin (#683).
+
+    The default test fixture authenticates as the mock admin (id=None),
+    which trivially satisfies `_moment_is_author`. These tests swap
+    `_MOCK_ADMIN` mid-flight to simulate non-admin viewers.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_author_viewer_cannot_edit(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed_user(storage, 1)
+        await _seed_user(storage, 2)
+        sid = await _race(storage)
+        monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(1))
+        async with await _client(storage) as c:
+            mid = (
+                await c.post(
+                    f"/api/sessions/{sid}/moments",
+                    json={"anchor_kind": "session", "subject": "mine"},
+                )
+            ).json()["id"]
+
+            monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(2))
+            resp = await c.patch(f"/api/moments/{mid}", json={"subject": "hijacked"})
+            assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_non_author_viewer_cannot_delete(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed_user(storage, 1)
+        await _seed_user(storage, 2)
+        sid = await _race(storage)
+        monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(1))
+        async with await _client(storage) as c:
+            mid = (
+                await c.post(
+                    f"/api/sessions/{sid}/moments",
+                    json={"anchor_kind": "session", "subject": "mine"},
+                )
+            ).json()["id"]
+
+            monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(2))
+            resp = await c.delete(f"/api/moments/{mid}")
+            assert resp.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_author_viewer_can_edit_and_delete(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed_user(storage, 7)
+        sid = await _race(storage)
+        monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(7))
+        async with await _client(storage) as c:
+            mid = (
+                await c.post(
+                    f"/api/sessions/{sid}/moments",
+                    json={"anchor_kind": "session", "subject": "mine"},
+                )
+            ).json()["id"]
+
+            patch = await c.patch(f"/api/moments/{mid}", json={"subject": "renamed"})
+            assert patch.status_code == 200
+            assert patch.json()["subject"] == "renamed"
+
+            delete = await c.delete(f"/api/moments/{mid}")
+            assert delete.status_code == 204
+
+    @pytest.mark.asyncio
+    async def test_admin_can_edit_and_delete_other_users_moment(
+        self, storage: Storage, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        await _seed_user(storage, 1)
+        await _seed_user(storage, 99)
+        sid = await _race(storage)
+        monkeypatch.setattr(auth_module, "_MOCK_ADMIN", _as_viewer(1))
+        async with await _client(storage) as c:
+            mid = (
+                await c.post(
+                    f"/api/sessions/{sid}/moments",
+                    json={"anchor_kind": "session", "subject": "owned by 1"},
+                )
+            ).json()["id"]
+
+            admin_user = _as_viewer(99)
+            admin_user["role"] = "admin"
+            monkeypatch.setattr(auth_module, "_MOCK_ADMIN", admin_user)
+
+            patch = await c.patch(f"/api/moments/{mid}", json={"subject": "moderated"})
+            assert patch.status_code == 200
+            delete = await c.delete(f"/api/moments/{mid}")
+            assert delete.status_code == 204
 
 
 class TestLegacyPhotoShim:
