@@ -760,3 +760,62 @@ async def test_grade_distinct_polar_source_caches_separately(storage: Storage) -
     own = await grade_session_segments(storage, sid, polar_source="own", segment_seconds=10)
     ref = await grade_session_segments(storage, sid, polar_source="reference", segment_seconds=10)
     assert len(own) == len(ref) == 3
+
+
+@pytest.mark.asyncio
+async def test_grade_runs_in_worker_thread(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#603: the CPU-bound grading must be dispatched via asyncio.to_thread so
+    the event loop stays responsive while a long session is being graded."""
+    import asyncio as _asyncio
+    from typing import Any
+
+    import helmlog.polar as polar_mod
+
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    sid = await _seed_session(storage, duration_s=30, bsp=6.0, tws=10.0, twa=45.0)
+
+    calls: list[str] = []
+    real_to_thread = _asyncio.to_thread
+
+    async def spy_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        calls.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(polar_mod.asyncio, "to_thread", spy_to_thread)
+
+    segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    assert len(segs) == 3
+    assert "_grade_segments_sync" in calls
+
+
+@pytest.mark.asyncio
+async def test_grade_does_not_block_event_loop(storage: Storage) -> None:
+    """#603: other coroutines must be able to make progress while a grading
+    call is in flight. Runs a ticker in parallel and asserts it ticked."""
+    import asyncio as _asyncio
+
+    await _build_baseline_at(storage, bsp=6.0, tws=10.0, twa=45.0)
+    # Larger synthetic session so the sync work is non-trivial.
+    sid = await _seed_session(storage, duration_s=600, bsp=6.0, tws=10.0, twa=45.0)
+
+    ticks = 0
+    stop = False
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not stop:
+            await _asyncio.sleep(0)
+            ticks += 1
+
+    t = _asyncio.create_task(ticker())
+    try:
+        segs = await grade_session_segments(storage, sid, segment_seconds=10)
+    finally:
+        stop = True
+        await t
+    assert len(segs) == 60
+    # If the grader held the loop, ticks would be 0-ish. With to_thread the
+    # ticker runs freely while the thread computes.
+    assert ticks > 10

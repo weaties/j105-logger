@@ -5671,6 +5671,20 @@ class Storage:
         row = await cur.fetchone()
         return dict(row) if row else None
 
+    async def get_all_polar_points(self) -> dict[tuple[int, int], dict[str, Any]]:
+        """Return every polar_baseline row keyed by (tws_bin, twa_bin).
+
+        Used by ``grade_session_segments`` to batch-load the whole baseline
+        before dispatching CPU-bound segmentation to a worker thread — avoids
+        one await-per-segment on the event loop for long sessions.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT tws_bin, twa_bin, mean_bsp, p90_bsp, session_count, sample_count"
+            " FROM polar_baseline"
+        )
+        rows = await cur.fetchall()
+        return {(int(r["tws_bin"]), int(r["twa_bin"])): dict(r) for r in rows}
+
     async def upsert_polar_baseline(self, rows: list[dict[str, Any]], built_at: str) -> None:
         """Replace all polar_baseline rows with the freshly computed set."""
         db = self._conn()
