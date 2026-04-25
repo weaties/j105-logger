@@ -3633,6 +3633,23 @@ class Storage:
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
+    async def set_race_start_utc(self, race_id: int, start_utc: datetime) -> None:
+        """Update the start_utc of a race (#644 — gun anchors session start).
+
+        Used when the race-start FSM transitions to ``started`` while a
+        race row is already in progress. Anchors the session start time
+        to the actual start gun rather than whenever the user clicked
+        "Start race" in the UI.
+        """
+        db = self._conn()
+        await db.execute(
+            "UPDATE races SET start_utc = ? WHERE id = ?",
+            (start_utc.isoformat(), race_id),
+        )
+        await db.commit()
+        await self._invalidate_race_cache(race_id)
+        logger.info("Race {} start_utc anchored to gun at {}", race_id, start_utc.isoformat())
+
     async def rename_race(
         self,
         race_id: int,
@@ -4222,9 +4239,7 @@ class Storage:
         await db.commit()
         return int(cur.lastrowid or 0)
 
-    async def get_latest_start_line(
-        self, race_id: int | None
-    ) -> dict[str, Any] | None:
+    async def get_latest_start_line(self, race_id: int | None) -> dict[str, Any] | None:
         """Return the latest boat-end and pin-end ping for *race_id*.
 
         When ``race_id`` is None, returns the latest *unscoped* pings (used
@@ -4263,9 +4278,7 @@ class Storage:
             out[f"{end_kind}_end_captured_at"] = ts
         return out
 
-    async def list_start_line_pings(
-        self, race_id: int | None
-    ) -> list[dict[str, Any]]:
+    async def list_start_line_pings(self, race_id: int | None) -> list[dict[str, Any]]:
         """Return full ping history for *race_id*, ordered oldest → newest."""
         db = self._read_conn()
         if race_id is None:

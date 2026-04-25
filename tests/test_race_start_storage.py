@@ -208,9 +208,7 @@ async def test_get_latest_uses_newest_per_end(storage: Storage) -> None:
 @pytest.mark.asyncio
 async def test_pings_scoped_by_race(storage: Storage) -> None:
     # Insert a race row (start_race auto-closes prior open races).
-    race = await storage.start_race(
-        "BallardCup", T0, "2026-05-01", 1, "20260501-BallardCup-1"
-    )
+    race = await storage.start_race("BallardCup", T0, "2026-05-01", 1, "20260501-BallardCup-1")
     await storage.add_start_line_ping(
         race_id=race.id,
         end_kind="boat",

@@ -264,22 +264,16 @@ def postpone(state: SequenceState) -> SequenceState:
     return SequenceState(**{**state.__dict__, "phase": "postponed"})
 
 
-def resume_from_postponement(
-    state: SequenceState, new_t0_utc: datetime
-) -> SequenceState:
+def resume_from_postponement(state: SequenceState, new_t0_utc: datetime) -> SequenceState:
     """AP comes down — sequence resumes with a new t0."""
     if state.phase != "postponed":
         raise ValueError(f"cannot resume from phase {state.phase!r}")
     if new_t0_utc.tzinfo is None:
         raise ValueError("new_t0_utc must be timezone-aware (UTC)")
-    return SequenceState(
-        **{**state.__dict__, "phase": "counting_down", "t0_utc": new_t0_utc}
-    )
+    return SequenceState(**{**state.__dict__, "phase": "counting_down", "t0_utc": new_t0_utc})
 
 
-def general_recall(
-    state: SequenceState, now_utc: datetime
-) -> SequenceState:
+def general_recall(state: SequenceState, now_utc: datetime) -> SequenceState:
     """Raise First Substitute — countdown halted pending restart.
 
     Only valid while in counting_down, or within ``GENERAL_RECALL_GRACE_S``
@@ -301,9 +295,7 @@ def general_recall(
     raise ValueError(f"cannot general-recall from phase {state.phase!r}")
 
 
-def restart_after_recall(
-    state: SequenceState, new_t0_utc: datetime
-) -> SequenceState:
+def restart_after_recall(state: SequenceState, new_t0_utc: datetime) -> SequenceState:
     """First Sub down, sequence restarts. Line pings are preserved (kept in
     the StartLine record outside this state)."""
     if state.phase != "general_recall":
@@ -566,10 +558,7 @@ def line_metrics(
             rel = _angle_diff_deg(line_bearing, twd_deg)
             wind_on_left = rel > 0  # wind is to the left of boat→pin
             on_left = signed > 0
-            if on_left == wind_on_left:
-                side = "pre_start"
-            else:
-                side = "post_start"
+            side = "pre_start" if on_left == wind_on_left else "post_start"
 
         if sog_kn is not None and sog_kn >= SOG_FLOOR_KN:
             speed_mps = sog_kn * _KN_TO_MPS

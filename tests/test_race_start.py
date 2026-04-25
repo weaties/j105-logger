@@ -7,6 +7,7 @@ FSM diagram (see #644 spec comment).
 from __future__ import annotations
 
 import math
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -36,7 +37,6 @@ from helmlog.race_start import (
     tick,
     warning_seconds,
 )
-
 
 # Reference t0 — 13:45:00 UTC
 T0 = datetime(2026, 5, 1, 13, 45, 0, tzinfo=UTC)
@@ -523,8 +523,9 @@ def _line_ew(length_m: float = 100.0) -> StartLine:
 
 
 def test_line_metrics_incomplete_returns_none() -> None:
-    assert line_metrics(StartLine(), boat_lat=47.65, boat_lon=-122.40,
-                        sog_kn=5.0, twd_deg=0.0) is None
+    assert (
+        line_metrics(StartLine(), boat_lat=47.65, boat_lon=-122.40, sog_kn=5.0, twd_deg=0.0) is None
+    )
 
 
 def test_line_metrics_bearing_and_length() -> None:
@@ -538,9 +539,7 @@ def test_line_metrics_bearing_and_length() -> None:
 
 def test_line_metrics_no_twd_omits_bias_and_side() -> None:
     line = _line_ew(100.0)
-    m = line_metrics(
-        line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=None
-    )
+    m = line_metrics(line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=None)
     assert m is not None
     assert m.line_bias_deg is None
     assert m.favoured_end is None
@@ -551,9 +550,7 @@ def test_line_metrics_pin_favoured_when_pin_to_windward() -> None:
     """East-west line, wind from due east (TWD=90°): pin end is straight
     upwind, so pin is massively favoured (+90° bias)."""
     line = _line_ew(100.0)
-    m = line_metrics(
-        line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=90.0
-    )
+    m = line_metrics(line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=90.0)
     assert m is not None
     assert m.line_bias_deg == pytest.approx(90.0, abs=0.5)
     assert m.favoured_end == "pin"
@@ -562,9 +559,7 @@ def test_line_metrics_pin_favoured_when_pin_to_windward() -> None:
 def test_line_metrics_boat_favoured_when_boat_to_windward() -> None:
     """East-west line, wind from due west (TWD=270°): boat end favoured."""
     line = _line_ew(100.0)
-    m = line_metrics(
-        line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=270.0
-    )
+    m = line_metrics(line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=270.0)
     assert m is not None
     assert m.line_bias_deg is not None
     assert m.line_bias_deg < 0
@@ -574,9 +569,7 @@ def test_line_metrics_boat_favoured_when_boat_to_windward() -> None:
 def test_line_metrics_neutral_bias() -> None:
     """East-west line, wind from due north (TWD=0°): square line, neutral."""
     line = _line_ew(100.0)
-    m = line_metrics(
-        line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=0.0
-    )
+    m = line_metrics(line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=0.0)
     assert m is not None
     assert abs(m.line_bias_deg or 0) < 1.0
     assert m.favoured_end == "neutral"
@@ -634,13 +627,13 @@ def test_line_metrics_distance_zero_when_on_line() -> None:
 
 def test_flag_state_is_frozen() -> None:
     fs = FlagState(None, None, None, None)
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         fs.class_flag_up = "x"  # type: ignore[misc]
 
 
 def test_sequence_state_is_frozen() -> None:
     s = SequenceState(phase="idle")
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         s.phase = "armed"  # type: ignore[misc]
 
 
@@ -648,5 +641,5 @@ def test_line_metrics_is_frozen() -> None:
     line = _line_ew(100.0)
     m = line_metrics(line, boat_lat=47.65, boat_lon=-122.401, sog_kn=5.0, twd_deg=0.0)
     assert isinstance(m, LineMetrics)
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         m.line_bearing_deg = 0.0  # type: ignore[misc]

@@ -115,6 +115,13 @@ async def _save_state(request: Request, state: SequenceState) -> None:
         classes_json=_classes_to_json(state.classes),
         now_utc=_now_utc(),
     )
+    # When the gun fires (state.phase == "started") and a race is in
+    # progress, anchor its start_utc to the actual gun time. Cheap to
+    # wire and matches the user-visible "the race started here" intuition.
+    if state.phase == "started" and state.t0_utc is not None:
+        current = await storage.get_current_race()
+        if current is not None and current.start_utc != state.t0_utc:
+            await storage.set_race_start_utc(current.id, state.t0_utc)
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +129,7 @@ async def _save_state(request: Request, state: SequenceState) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def _build_snapshot(
-    request: Request, state: SequenceState
-) -> dict[str, Any]:
+async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, Any]:
     """Build the JSON snapshot returned by GET /api/race-start/state."""
     now = _now_utc()
     state = tick(state, now)
@@ -142,14 +147,10 @@ async def _build_snapshot(
     line = StartLine(
         boat_end_lat=line_row.get("boat_end_lat") if line_row else None,
         boat_end_lon=line_row.get("boat_end_lon") if line_row else None,
-        boat_end_captured_at=_parse_dt(
-            line_row.get("boat_end_captured_at") if line_row else None
-        ),
+        boat_end_captured_at=_parse_dt(line_row.get("boat_end_captured_at") if line_row else None),
         pin_end_lat=line_row.get("pin_end_lat") if line_row else None,
         pin_end_lon=line_row.get("pin_end_lon") if line_row else None,
-        pin_end_captured_at=_parse_dt(
-            line_row.get("pin_end_captured_at") if line_row else None
-        ),
+        pin_end_captured_at=_parse_dt(line_row.get("pin_end_captured_at") if line_row else None),
     )
 
     flags = flag_state(state, now)
@@ -183,16 +184,12 @@ async def _build_snapshot(
             "boat_end_lat": line.boat_end_lat,
             "boat_end_lon": line.boat_end_lon,
             "boat_end_captured_at": (
-                line.boat_end_captured_at.isoformat()
-                if line.boat_end_captured_at
-                else None
+                line.boat_end_captured_at.isoformat() if line.boat_end_captured_at else None
             ),
             "pin_end_lat": line.pin_end_lat,
             "pin_end_lon": line.pin_end_lon,
             "pin_end_captured_at": (
-                line.pin_end_captured_at.isoformat()
-                if line.pin_end_captured_at
-                else None
+                line.pin_end_captured_at.isoformat() if line.pin_end_captured_at else None
             ),
             "is_complete": line.is_complete,
         },

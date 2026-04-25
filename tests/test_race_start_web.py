@@ -131,9 +131,7 @@ async def test_sync_from_idle_is_409(storage: Storage) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        resp = await client.post(
-            "/api/race-start/sync", json={"expected_signal_offset_s": 0}
-        )
+        resp = await client.post("/api/race-start/sync", json={"expected_signal_offset_s": 0})
     assert resp.status_code == 409
 
 
@@ -172,9 +170,7 @@ async def test_postpone_then_resume(storage: Storage) -> None:
         assert r.json()["phase"] == "postponed"
 
         resume_t0 = (datetime.now(UTC) + timedelta(minutes=10)).isoformat()
-        r = await client.post(
-            "/api/race-start/resume", json={"new_t0_utc": resume_t0}
-        )
+        r = await client.post("/api/race-start/resume", json={"new_t0_utc": resume_t0})
         assert r.status_code == 200
         assert r.json()["phase"] == "counting_down"
 
@@ -195,9 +191,7 @@ async def test_recall_then_restart(storage: Storage) -> None:
         assert r.json()["phase"] == "general_recall"
 
         new_t0 = (datetime.now(UTC) + timedelta(minutes=8)).isoformat()
-        r = await client.post(
-            "/api/race-start/restart", json={"new_t0_utc": new_t0}
-        )
+        r = await client.post("/api/race-start/restart", json={"new_t0_utc": new_t0})
         assert r.status_code == 200
         # Restart re-arms; tick will advance to counting_down on next read.
         assert r.json()["phase"] in {"armed", "counting_down"}
@@ -413,6 +407,66 @@ async def test_viewer_template_shows_readonly_banner(storage: Storage) -> None:
 # ---------------------------------------------------------------------------
 # Persistence — state survives "page reload"
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gun_anchors_current_race_start_utc(storage: Storage) -> None:
+    """When the FSM transitions to 'started' and a race is in progress,
+    the race's start_utc is anchored to the FSM's t0_utc (gun time)."""
+    # Manually start a race a few minutes ago.
+    race_start_at = datetime.now(UTC) - timedelta(minutes=10)
+    race = await storage.start_race(
+        "BallardCup",
+        race_start_at,
+        race_start_at.date().isoformat(),
+        1,
+        "20260501-BallardCup-1",
+    )
+
+    # Arm with t0 in the past so first state read transitions to "started".
+    gun_t0 = datetime.now(UTC) - timedelta(seconds=2)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/api/race-start/arm",
+            json={
+                "kind": "5-4-1-0",
+                "t0_utc": gun_t0.isoformat(),
+                "classes": [],
+            },
+        )
+        # First state read advances FSM to 'started' and triggers anchor.
+        r = await client.get("/api/race-start/state")
+        assert r.json()["phase"] == "started"
+
+    # Race row's start_utc should now match gun_t0 within a millisecond.
+    races = await storage.list_races_for_date(race.date)
+    updated = next(r for r in races if r.id == race.id)
+    assert abs((updated.start_utc - gun_t0).total_seconds()) < 0.001
+
+
+@pytest.mark.asyncio
+async def test_gun_with_no_current_race_does_not_error(storage: Storage) -> None:
+    """If no race is in progress when the gun fires, the FSM still
+    advances normally — anchoring is a no-op."""
+    gun_t0 = datetime.now(UTC) - timedelta(seconds=2)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        await client.post(
+            "/api/race-start/arm",
+            json={
+                "kind": "5-4-1-0",
+                "t0_utc": gun_t0.isoformat(),
+                "classes": [],
+            },
+        )
+        r = await client.get("/api/race-start/state")
+    assert r.status_code == 200
+    assert r.json()["phase"] == "started"
 
 
 @pytest.mark.asyncio
