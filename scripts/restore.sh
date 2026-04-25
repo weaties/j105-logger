@@ -40,7 +40,22 @@ if [ -z "$SNAP" ]; then
 fi
 [ -d "$SNAP" ] || { echo "Snapshot directory not found: $SNAP" >&2; exit 1; }
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+VALIDATOR="$SCRIPT_DIR/validate_snapshot.py"
+
 log() { echo "[$(date -u +%H:%M:%SZ)] $*"; }
+
+# ── 0. Pre-flight: validate the snapshot before wiping the target ────────────
+# Catches "DB references files that aren't in the snapshot" before the target
+# is destroyed (#676). Warns only — the user can still proceed, since a
+# recent DB with older photos may still be preferable to no restore at all.
+if [ -f "$VALIDATOR" ] && [ -f "$SNAP/data/logger.db" ] && command -v python3 >/dev/null; then
+  log "Pre-flight: validating snapshot $SNAP"
+  if ! python3 "$VALIDATOR" "$SNAP/data"; then
+    log "  WARNING: snapshot has orphaned DB rows (files missing from $SNAP/data/)"
+    log "  Restoring this snapshot will reproduce the missing-attachment symptom."
+  fi
+fi
 
 # rsync 3.1+ has --info=progress2; macOS ships with 2.6.9.
 if rsync --info=progress2 --version >/dev/null 2>&1; then
@@ -203,6 +218,20 @@ fi
 ssh "$PI" "sudo systemctl start signalk grafana-server helmlog" || \
   log "  WARNING: one or more services failed to start"
 log "  Services restarted"
+
+# ── Post-restore: validate the restored tree on the target ───────────────────
+# Surfaces any orphaned DB rows on the live target so the operator knows
+# immediately whether photos/audio/avatars made it across (#676).
+if [ -f "$VALIDATOR" ]; then
+  log "Post-restore: validating restored tree on $PI"
+  if ssh "$PI" "command -v python3 >/dev/null" 2>/dev/null; then
+    scp -q "$VALIDATOR" "$PI:/tmp/validate_snapshot.py" && \
+      ssh "$PI" "python3 /tmp/validate_snapshot.py ~/helmlog/data; rm -f /tmp/validate_snapshot.py" || \
+      log "  WARNING: post-restore validation failed"
+  else
+    log "  WARNING: python3 not on $PI; skipping post-restore validation"
+  fi
+fi
 
 echo
 log "Restore complete: $SNAP → $PI"
