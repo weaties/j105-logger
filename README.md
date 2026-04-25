@@ -133,12 +133,30 @@ Admins have access to additional pages under `/admin`:
 - **Users** — manage accounts, generate invites, view active sessions
 - **Boats** — register boats with sail number, name, and class
 - **Cameras** — control Insta360 cameras, start/stop recording
+- **Audio channels** — multi-device routing for debrief recording (helm vs.
+  tactician on separate channels)
+- **ArUco** — calibration profiles and visual-control bindings for any
+  attached USB camera
+- **Controls** — define named race-day controls (start/end race, start
+  debrief, …) and bind them to ArUco markers or audio trigger words
+- **Tags** — create and merge tags applied across sessions, notes, and
+  maneuvers
+- **Analysis** — manage the analysis-plugin catalog (approve, deprecate,
+  pick the default model)
+- **Vakaros** — view the VKX inbox and rematch ingested files to sessions
+- **Race results** — import and link external regatta results
+  (Clubspot, STYC)
+- **Network** — manage Wi-Fi profiles via NetworkManager
 - **Event rules** — configure day-of-week auto-naming
 - **Settings** — adjust configuration without SSH
+- **Devices** — issue and rotate API keys for headless devices
 - **Deployment** — view deploy status, promote between branches (requires
   developer flag)
 - **Federation** — initialize boat identity, create/manage co-ops, invite boats
 - **Audit log** — full trail of every user action
+
+For a single-page index of every feature broken out by audience, see
+[`docs/features.md`](docs/features.md).
 
 ### Exports
 
@@ -854,6 +872,7 @@ The `docs/` directory contains guides, policies, and technical specs:
 
 | Document | Audience | Description |
 |---|---|---|
+| [Feature Reference](docs/features.md) | Everyone | Full feature index — split by crew, viewer, and admin audience |
 | [On-Boat Operations Guide](docs/operators-guide.md) | All crew | Race-day reference — connecting, marking races, notes, exports |
 | [How the Co-op Works](docs/guide-sailors.md) | Sailors | What's shared, what's private, how to join/leave |
 | [Coach Access Guide](docs/guide-coaches.md) | Coaches | What coaches can see, how access works, rules |
@@ -868,7 +887,7 @@ The `docs/` directory contains guides, policies, and technical specs:
 |---|---|
 | [Data Licensing Policy](docs/data-licensing.md) | Data ownership, sharing rules, privacy, governance |
 | [Federation Protocol Design](docs/federation-design.md) | Peer-to-peer protocol — identity, membership, API, caching, security |
-| [Database Schema](docs/database-schema.md) | SQLite schema reference (v47) |
+| [Database Schema](docs/database-schema.md) | SQLite schema reference (v77) |
 | [PGN Notes](docs/pgn-notes.md) | NMEA 2000 PGN decoding reference |
 | [Gaia GPS API](docs/gaigps-api.md) | Reverse-engineered Gaia GPS API for track import |
 

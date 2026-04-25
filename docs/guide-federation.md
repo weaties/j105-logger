@@ -3,7 +3,7 @@
 > How to create your boat's cryptographic identity, start or join a co-op,
 > and share race sessions with your fleet.
 
-_Requires: HelmLog with federation support (schema v38+)._
+_Requires: HelmLog with federation support (schema v38+ — current schema is v77)._
 
 ---
 

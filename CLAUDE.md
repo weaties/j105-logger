@@ -159,6 +159,8 @@ reviewed against this bar regardless of how small they look.
 
 ## Where to look next
 
+- **User-facing feature index** (crew / viewer / admin breakdown):
+  [docs/features.md](docs/features.md)
 - **Risk tiers + spec formats:** [docs/risk-tiers.md](docs/risk-tiers.md)
 - **Data licensing policy** (PII, co-op embargoes, biometrics, gambling,
   protest firewall): [docs/data-licensing.md](docs/data-licensing.md). Run

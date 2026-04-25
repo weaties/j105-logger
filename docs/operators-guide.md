@@ -1,6 +1,6 @@
 # HelmLog — On-Boat Operations Guide
 
-_Last reviewed: 2026-03-08 · App version: schema v26_
+_Last reviewed: 2026-04-25 · App version: schema v77_
 
 Quick reference for using the logger on race day.
 No technical knowledge required. Print double-sided, laminate, keep in the nav station.

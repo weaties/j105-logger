@@ -1,10 +1,21 @@
-# HelmLog — Database Schema (v22)
+# HelmLog — Database Schema (v77)
 
 SQLite database storing time-series sailing instrument data, race sessions,
 audio recordings, transcripts, video links, weather/tide data, and user auth.
 
 All timestamps are **UTC ISO 8601 strings** (`TEXT`). The schema is versioned
-with simple integer migrations in `src/logger/storage.py`.
+with simple integer migrations in `src/helmlog/storage.py` (see
+`_CURRENT_VERSION`).
+
+> **Note**: The entity-relationship overview and table list below were
+> last fully refreshed at **v22**. Tables added since then (analysis-plugin
+> catalog and cache, web response cache, anchored discussion threads,
+> bookmarks, tags across entities, ArUco cameras and profiles, controls,
+> tuning extraction runs, audio channels, vakaros ingest, deployment
+> history, federation peer caches, and others) are present in the
+> database but not yet documented here. Treat `storage.py` as the
+> authoritative source until this doc is regenerated; tracked in
+> [#484](https://github.com/weaties/helmlog/issues/484).
 
 ---
 
@@ -455,7 +466,7 @@ Index: `idx_camera_sessions_session` on `(session_id)`
 #### `schema_version`
 | Column | Type | Constraints | Description |
 |---|---|---|---|
-| version | INTEGER | PK | Current schema version (22) |
+| version | INTEGER | PK | Current schema version (77 — see `_CURRENT_VERSION` in `storage.py`) |
 
 ---
 
