@@ -101,16 +101,20 @@ $SSH "$PI" "sudo -n systemctl stop helmlog signalk grafana-server" || \
 
 # ── 2. SQLite + file data ─────────────────────────────────────────────────────
 log "Step 2/7: Restoring SQLite + file data → $PI_HELMLOG_DIR/data/"
-# Use sudo rsync on the Pi so we can overwrite files regardless of which user
-# the SSH session is running as (the helmlog service writes as `helmlog`,
-# while the SSH user is typically `helmlog-backup`). --chown restores the
-# expected ownership on the target.
+# Use `sudo rsync` on the Pi so we can overwrite files regardless of which
+# user the SSH session is running as (the helmlog service writes as `helmlog`,
+# while the SSH user is typically `helmlog-backup`). Files arrive owned by
+# root; a `chown -R` step below restores the expected ownership.
+# Apple's openrsync on macOS rejects `--chown` pre-send, and even with
+# `--rsync-path` and `--no-o --no-g` the remote GNU rsync 3.4 errors with
+# "You can only specify a user-affecting --chown once" — so chown happens in
+# a separate ssh step instead of during transfer.
 # shellcheck disable=SC2086
 rsync -e "$RSYNC_SSH" -az --delete $RSYNC_PROGRESS \
   --rsync-path="sudo rsync" \
-  --chown="helmlog:$PI_OWNER_USER" \
   "$SNAP/data/" \
   "$PI:$PI_HELMLOG_DIR/data/"
+$SSH "$PI" "sudo -n chown -R helmlog:$PI_OWNER_USER $PI_HELMLOG_DIR/data"
 log "  data/ done"
 
 # ── 3. .env config ────────────────────────────────────────────────────────────
@@ -118,9 +122,8 @@ log "Step 3/7: Restoring helmlog .env"
 if [ -f "$SNAP/config/helmlog.env" ]; then
   rsync -e "$RSYNC_SSH" -az \
     --rsync-path="sudo rsync" \
-    --chown="$PI_OWNER_USER:$PI_OWNER_USER" \
-    --chmod=F640 \
     "$SNAP/config/helmlog.env" "$PI:$PI_HELMLOG_DIR/.env"
+  $SSH "$PI" "sudo -n chown $PI_OWNER_USER:$PI_OWNER_USER $PI_HELMLOG_DIR/.env && sudo -n chmod 640 $PI_HELMLOG_DIR/.env"
   log "  .env done"
 else
   log "  WARNING: $SNAP/config/helmlog.env not present; skipping"
@@ -134,9 +137,9 @@ if [ -d "$SNAP/signalk" ]; then
   # shellcheck disable=SC2086
   rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS \
     --rsync-path="sudo rsync" \
-    --chown="$PI_OWNER_USER:$PI_OWNER_USER" \
     "$SNAP/signalk/" \
     "$PI:$PI_SIGNALK_DIR/"
+  $SSH "$PI" "sudo -n chown -R $PI_OWNER_USER:$PI_OWNER_USER $PI_SIGNALK_DIR"
   log "  signalk/ done (target node_modules preserved)"
 else
   log "  WARNING: $SNAP/signalk not present; skipping"
@@ -191,7 +194,7 @@ if [ -d "$SNAP/influxdb" ]; then
   # Stage candidate tokens on the target (avoid embedding secrets in ssh args).
   # The target token file is owned by $PI_OWNER_USER and may not be readable
   # by the SSH login user, so use sudo to copy it into a world-readable temp.
-  $SSH "$PI" "rm -f /tmp/influx-token-target /tmp/influx-token-snap"
+  $SSH "$PI" "sudo -n rm -f /tmp/influx-token-target /tmp/influx-token-snap"
   $SSH "$PI" "test -f $INFLUX_TOKEN_FILE && sudo -n cp $INFLUX_TOKEN_FILE /tmp/influx-token-target && sudo -n chmod 644 /tmp/influx-token-target" \
     2>/dev/null || true
   if [ -f "$SNAP/config/influx-token.txt" ]; then
@@ -225,7 +228,7 @@ if [ -d "$SNAP/influxdb" ]; then
   else
     log "  WARNING: InfluxDB restore failed (no working token)"
   fi
-  $SSH "$PI" "rm -rf /tmp/influx-restore /tmp/influx-token-target /tmp/influx-token-snap"
+  $SSH "$PI" "sudo -n rm -rf /tmp/influx-restore /tmp/influx-token-target /tmp/influx-token-snap"
 else
   log "  WARNING: $SNAP/influxdb missing; skipping"
 fi
