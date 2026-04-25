@@ -501,9 +501,21 @@ async def api_end_race(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Auto maneuver detection failed for race {}: {}", rid, exc)
 
+    async def _warm_polar_grades(rid: int) -> None:
+        # Populate polar_segment_grades cache before the user opens the debrief,
+        # so the first view doesn't pay the 2-3 min compute (#603).
+        try:
+            from helmlog.polar import grade_session_segments
+
+            segs = await grade_session_segments(storage, rid)
+            logger.info("Warmed polar grades for race {}: {} segments", rid, len(segs))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Polar warm-on-complete failed for race {}: {}", rid, exc)
+
     asyncio.ensure_future(_stop_cameras(race_id))
     asyncio.ensure_future(_network_auto_switch_end())
     asyncio.ensure_future(_auto_detect_maneuvers(race_id))
+    asyncio.ensure_future(_warm_polar_grades(race_id))
 
     # Warm-on-complete (#594 / #611): pre-compute summary/track/wind-field
     # in the background so the history page hits a warm T2 cache on first

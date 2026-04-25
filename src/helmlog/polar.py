@@ -7,6 +7,7 @@ this baseline to show whether the boat is over or under-performing.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import math
 import os
@@ -528,6 +529,95 @@ def _interp_position(
     return None, None
 
 
+def _grade_segments_sync(
+    start: datetime,
+    end: datetime,
+    width: int,
+    speeds: list[dict[str, Any]],
+    winds: list[dict[str, Any]],
+    headings: list[dict[str, Any]],
+    positions: list[dict[str, Any]],
+    polar_map: dict[tuple[int, int], dict[str, Any]],
+    min_sessions: int = 3,
+) -> tuple[list[GradedSegment], dict[str, int]]:
+    """Pure-Python segmentation + grading. No I/O; safe to run in a worker thread.
+
+    *polar_map* is the full (tws_bin, twa_bin) → baseline row mapping, pre-fetched
+    so no ``await`` is needed inside the loop (#603).
+    """
+
+    def _ts_of(rec: dict[str, Any]) -> datetime:
+        return datetime.fromisoformat(str(rec["ts"])).replace(tzinfo=UTC)
+
+    speeds_dt = [(_ts_of(r), r) for r in speeds]
+    winds_dt = [
+        (_ts_of(r), r)
+        for r in winds
+        if int(r.get("reference", -1)) in (_WIND_REF_BOAT, _WIND_REF_NORTH)
+    ]
+    hdg_dt = [(_ts_of(r), r) for r in headings]
+
+    segments: list[GradedSegment] = []
+    grade_hist: dict[str, int] = defaultdict(int)
+
+    n_segments = math.ceil((end - start).total_seconds() / width)
+    for idx in range(n_segments):
+        seg_start = start + timedelta(seconds=idx * width)
+        seg_end = min(end, seg_start + timedelta(seconds=width))
+        t_mid = seg_start + (seg_end - seg_start) / 2
+
+        spd_in = [float(r["speed_kts"]) for ts, r in speeds_dt if seg_start <= ts < seg_end]
+        wind_in = [(ts, r) for ts, r in winds_dt if seg_start <= ts < seg_end]
+        hdg_in = [float(r["heading_deg"]) for ts, r in hdg_dt if seg_start <= ts < seg_end]
+
+        lat, lon = _interp_position(positions, t_mid) if positions else (None, None)
+
+        bsp = _mean(spd_in)
+        tws = _mean([float(r["wind_speed_kts"]) for _, r in wind_in])
+        twa: float | None = None
+        if wind_in:
+            wind_angle_mean = sum(float(r["wind_angle_deg"]) for _, r in wind_in) / len(wind_in)
+            ref = int(wind_in[0][1].get("reference", -1))
+            heading_mean = _mean(hdg_in) if ref == _WIND_REF_NORTH else None
+            twa = _compute_twa(wind_angle_mean, ref, heading_mean)
+
+        target: float | None = None
+        pct: float | None = None
+        delta: float | None = None
+        if bsp is not None and tws is not None and twa is not None:
+            lp = polar_map.get((_tws_bin(tws), _twa_bin(twa)))
+            if lp is not None and int(lp["session_count"]) >= min_sessions:
+                target = float(lp["mean_bsp"])
+                pct = bsp / target if target > 0 else None
+                delta = round(bsp - target, 4)
+
+        if bsp is not None and tws is not None and twa is not None:
+            grade = _grade_from_pct(pct)
+        else:
+            grade = "unknown"
+        if lat is None or lon is None:
+            grade = "unknown"
+
+        seg = GradedSegment(
+            segment_index=idx,
+            t_start=seg_start,
+            t_end=seg_end,
+            lat=lat,
+            lon=lon,
+            tws_kts=round(tws, 4) if tws is not None else None,
+            twa_deg=round(twa, 4) if twa is not None else None,
+            bsp_kts=round(bsp, 4) if bsp is not None else None,
+            target_bsp_kts=round(target, 4) if target is not None else None,
+            pct_target=round(pct, 4) if pct is not None else None,
+            delta_kts=delta,
+            grade=grade,
+        )
+        segments.append(seg)
+        grade_hist[grade] += 1
+
+    return segments, grade_hist
+
+
 async def grade_session_segments(
     storage: Storage,
     session_id: int,
@@ -540,6 +630,9 @@ async def grade_session_segments(
     range. Each segment carries averaged conditions, the polar target, and
     a grade label. Results are cached in ``polar_segment_grades`` and
     invalidated when the polar baseline is rebuilt.
+
+    The CPU-bound segmentation runs in a worker thread (#603) so long sessions
+    don't block the event loop for other HTTP requests.
     """
     width = segment_seconds or POLAR_SEGMENT_SECONDS
     db = storage._conn()
@@ -586,89 +679,27 @@ async def grade_session_segments(
     headings = await storage.query_range("headings", start, end)
     positions = await storage.query_range("positions", start, end)
 
-    # Detect un-migrated DB: lookup_polar will raise on missing table.
-    baseline_missing = False
+    # Pre-load the entire polar baseline once so the tight per-segment loop
+    # has no I/O and can run in a worker thread. Un-migrated DBs (no
+    # polar_baseline table) fall through to an empty map → all segments grade
+    # "unknown", matching the original per-lookup fallback behavior.
+    try:
+        polar_map = await storage.get_all_polar_points()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Polar grading: baseline lookup failed for session {}: {}", session_id, e)
+        polar_map = {}
 
-    def _ts_of(rec: dict[str, Any]) -> datetime:
-        return datetime.fromisoformat(str(rec["ts"])).replace(tzinfo=UTC)
-
-    speeds_dt = [(_ts_of(r), r) for r in speeds]
-    winds_dt = [
-        (_ts_of(r), r)
-        for r in winds
-        if int(r.get("reference", -1)) in (_WIND_REF_BOAT, _WIND_REF_NORTH)
-    ]
-    hdg_dt = [(_ts_of(r), r) for r in headings]
-
-    segments: list[GradedSegment] = []
-    grade_hist: dict[str, int] = defaultdict(int)
-
-    n_segments = math.ceil((end - start).total_seconds() / width)
-    for idx in range(n_segments):
-        seg_start = start + timedelta(seconds=idx * width)
-        seg_end = min(end, seg_start + timedelta(seconds=width))
-        t_mid = seg_start + (seg_end - seg_start) / 2
-
-        spd_in = [float(r["speed_kts"]) for ts, r in speeds_dt if seg_start <= ts < seg_end]
-        wind_in = [(ts, r) for ts, r in winds_dt if seg_start <= ts < seg_end]
-        hdg_in = [float(r["heading_deg"]) for ts, r in hdg_dt if seg_start <= ts < seg_end]
-        pos_in = [r for ts, r in [(_ts_of(r), r) for r in positions] if seg_start <= ts < seg_end]
-
-        lat, lon = _interp_position(positions, t_mid) if positions else (None, None)
-
-        bsp = _mean(spd_in)
-
-        tws = _mean([float(r["wind_speed_kts"]) for _, r in wind_in])
-        # Compute segment TWA from the mean wind angle / mean heading.
-        twa: float | None = None
-        if wind_in:
-            wind_angle_mean = sum(float(r["wind_angle_deg"]) for _, r in wind_in) / len(wind_in)
-            ref = int(wind_in[0][1].get("reference", -1))
-            heading_mean = _mean(hdg_in) if ref == _WIND_REF_NORTH else None
-            twa = _compute_twa(wind_angle_mean, ref, heading_mean)
-
-        target: float | None = None
-        pct: float | None = None
-        delta: float | None = None
-        if bsp is not None and tws is not None and twa is not None and not baseline_missing:
-            try:
-                lp = await lookup_polar(storage, tws, twa)
-            except Exception as e:  # un-migrated DB or other table-missing error
-                logger.warning(
-                    "Polar grading: baseline lookup failed for session {}: {}", session_id, e
-                )
-                baseline_missing = True
-                lp = None
-            if lp is not None:
-                target = float(lp["mean_bsp"])
-                pct = bsp / target if target > 0 else None
-                delta = round(bsp - target, 4)
-
-        if bsp is not None and tws is not None and twa is not None:
-            grade = _grade_from_pct(pct)
-        else:
-            grade = "unknown"
-        if lat is None or lon is None:
-            grade = "unknown"
-
-        seg = GradedSegment(
-            segment_index=idx,
-            t_start=seg_start,
-            t_end=seg_end,
-            lat=lat,
-            lon=lon,
-            tws_kts=round(tws, 4) if tws is not None else None,
-            twa_deg=round(twa, 4) if twa is not None else None,
-            bsp_kts=round(bsp, 4) if bsp is not None else None,
-            target_bsp_kts=round(target, 4) if target is not None else None,
-            pct_target=round(pct, 4) if pct is not None else None,
-            delta_kts=delta,
-            grade=grade,
-        )
-        segments.append(seg)
-        grade_hist[grade] += 1
-        # silence unused
-        _ = pos_in
+    segments, grade_hist = await asyncio.to_thread(
+        _grade_segments_sync,
+        start,
+        end,
+        width,
+        speeds,
+        winds,
+        headings,
+        positions,
+        polar_map,
+    )
 
     # Persist cache
     await storage.upsert_polar_segment_grades(
