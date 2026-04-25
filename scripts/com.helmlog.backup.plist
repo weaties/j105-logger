@@ -50,6 +50,12 @@
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>HOME</key>
     <string>HOME_PATH</string>
+    <key>PI</key>
+    <string>PI_TARGET</string>
+    <key>SSH_KEY</key>
+    <string>SSH_KEY_PATH</string>
+    <key>REPORT_TO</key>
+    <string>REPORT_TO_ADDR</string>
   </dict>
 </dict>
 </plist>

@@ -8,19 +8,22 @@
 # Keeps the most recent $KEEP_SNAPSHOTS snapshots; older ones are deleted.
 #
 # Prerequisites on the Mac:
-#   - SSH access to the Pi (via Tailscale; key-based auth recommended)
+#   - SSH access to the Pi as `helmlog-backup` (provisioned by
+#     scripts/setup-backup-user.sh; key-based auth via ~/.ssh/helmlog-backup)
 #   - influx CLI for InfluxDB backup: brew install influxdb-cli
-#   - sudo rsync allowed on the Pi for the SSH user (for Grafana dir)
 #   - Python 3 on PATH (for the email report helper; stdlib only)
 #
 # Required environment:
-#   PI                 SSH target, e.g. user@pi-hostname (no default)
+#   PI                 SSH target, e.g. helmlog-backup@pi-hostname (no default)
 #   REPORT_TO          email recipient (required unless SKIP_EMAIL=1)
 #
 # Optional environment overrides:
 #   BACKUP_DEST        local snapshot root       (default: ~/backups/helmlog)
 #   KEEP_SNAPSHOTS     how many to retain        (default: 10)
-#   INFLUX_TOKEN_FILE  path on the Pi            (default: ~/influx-token.txt)
+#   SSH_KEY            local SSH key path        (default: ~/.ssh/helmlog-backup)
+#   PI_HELMLOG_DIR     helmlog dir on the Pi     (default: /home/weaties/helmlog)
+#   PI_SIGNALK_DIR     signalk dir on the Pi     (default: /home/weaties/.signalk)
+#   INFLUX_TOKEN_FILE  path on the Pi            (default: /home/weaties/influx-token.txt)
 #   SMTP_CACHE         local creds cache path    (default: ~/.config/helmlog-backup/smtp.env)
 #   MIN_SNAPSHOT_BYTES safety-gate threshold     (default: 10485760 — 10 MiB)
 #   SKIP_EMAIL         set to 1 to suppress mail (default: unset)
@@ -39,9 +42,20 @@ if [ "${SKIP_EMAIL:-0}" != "1" ]; then
 fi
 BACKUP_DEST="${BACKUP_DEST:-$HOME/backups/helmlog}"
 KEEP_SNAPSHOTS="${KEEP_SNAPSHOTS:-10}"
-INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-~/influx-token.txt}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/helmlog-backup}"
+PI_HELMLOG_DIR="${PI_HELMLOG_DIR:-/home/weaties/helmlog}"
+PI_SIGNALK_DIR="${PI_SIGNALK_DIR:-/home/weaties/.signalk}"
+INFLUX_TOKEN_FILE="${INFLUX_TOKEN_FILE:-/home/weaties/influx-token.txt}"
 SMTP_CACHE="${SMTP_CACHE:-$HOME/.config/helmlog-backup/smtp.env}"
 MIN_SNAPSHOT_BYTES="${MIN_SNAPSHOT_BYTES:-10485760}"
+
+# Pin every ssh/scp/rsync to the dedicated key + non-interactive options. This
+# avoids picking up a stale agent identity and ensures predictable behaviour
+# under launchd. `-F /dev/null` ignores ~/.ssh/config so a stray Host stanza
+# can't redirect the connection.
+SSH_OPTS=(-i "$SSH_KEY" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -F /dev/null)
+SSH="ssh ${SSH_OPTS[*]}"
+RSYNC_SSH="ssh ${SSH_OPTS[*]}"
 
 DATE=$(date -u +%Y%m%dT%H%M%SZ)
 SNAP="$BACKUP_DEST/$DATE"
@@ -225,8 +239,7 @@ init_report
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
 log "Preflight: SSH check to $PI"
-if ! ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
-    "$PI" true 2>&1; then
+if ! $SSH -o ConnectTimeout=10 "$PI" true 2>&1; then
   mark_failed "SSH preflight to $PI failed (host unreachable or auth failure)"
   log "  FAIL: SSH preflight"
   report_line "- **Preflight**: FAILED — could not SSH to \`$PI\`"
@@ -243,7 +256,7 @@ mkdir -p "$(dirname "$SMTP_CACHE")"
 # Pull just the SMTP_* lines from the Pi's .env so the cache never holds
 # unrelated secrets. `grep -E` yields rc=1 on no match, which we swallow.
 SMTP_TMP="$(mktemp)"
-if ssh "$PI" "grep -E '^SMTP_' ~/helmlog/.env 2>/dev/null" > "$SMTP_TMP" 2>&1; then
+if $SSH "$PI" "grep -E '^SMTP_' $PI_HELMLOG_DIR/.env 2>/dev/null" > "$SMTP_TMP" 2>&1; then
   if [ -s "$SMTP_TMP" ]; then
     mv "$SMTP_TMP" "$SMTP_CACHE"
     chmod 600 "$SMTP_CACHE"
@@ -366,22 +379,27 @@ run_rsync_step() {
 # writes landed mid-rsync. `sqlite3 .backup` gives an atomic copy that is
 # safe to transfer regardless of active WAL (#676). We overwrite the raw DB
 # that rsync picks up with the staged snapshot after the tree copy.
-ssh "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-* 2>/dev/null; \
-  sqlite3 ~/helmlog/data/logger.db \".backup '/tmp/logger.db.snap'\"" 2>/dev/null && \
+$SSH "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-* 2>/dev/null; \
+  sqlite3 $PI_HELMLOG_DIR/data/logger.db \".backup '/tmp/logger.db.snap'\"" 2>/dev/null && \
   log "  DB snapshot staged at /tmp/logger.db.snap on $PI" || \
   log "  WARNING: sqlite3 .backup failed (DB may not exist yet); continuing"
 
+# --rsync-path='sudo rsync' so we can read photos in notes/<session>/ — those
+# are written by the helmlog service as 0600/helmlog and were previously
+# silently skipped (rc=23 partial transfer), producing the orphaned
+# moment_attachments rows tracked in #676.
 # shellcheck disable=SC2086  # LINK_DATA is intentionally unquoted (empty or single flag)
 run_rsync_step "SQLite + file data" "$SNAP/data" \
-  rsync -az $RSYNC_PROGRESS $LINK_DATA \
-    "$PI:~/helmlog/data/" \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS $LINK_DATA \
+    --rsync-path='sudo rsync' \
+    "$PI:$PI_HELMLOG_DIR/data/" \
     "$SNAP/data/" || true
 
 # Replace rsync's live-DB copy with the consistent snapshot, then tidy up.
-if ssh "$PI" "test -f /tmp/logger.db.snap" 2>/dev/null; then
-  rsync -az "$PI:/tmp/logger.db.snap" "$SNAP/data/logger.db" && \
+if $SSH "$PI" "test -f /tmp/logger.db.snap" 2>/dev/null; then
+  rsync -e "$RSYNC_SSH" -az "$PI:/tmp/logger.db.snap" "$SNAP/data/logger.db" && \
     log "  DB replaced with consistent snapshot"
-  ssh "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-*" 2>/dev/null || true
+  $SSH "$PI" "rm -f /tmp/logger.db.snap /tmp/logger.db.snap-*" 2>/dev/null || true
 fi
 
 # Cross-check the snapshot: every moment_attachments / audio_sessions /
@@ -409,19 +427,19 @@ fi
 
 # ── 2. InfluxDB — remote backup then rsync ───────────────────────────────────
 influx_backup() {
-  if ! ssh "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
+  if ! $SSH "$PI" "test -f $INFLUX_TOKEN_FILE" 2>/dev/null; then
     log "  $INFLUX_TOKEN_FILE not found on Pi; skipping"
     report_line "- **InfluxDB**: SKIPPED — no token file on Pi"
     return 0
   fi
-  ssh "$PI" "influx backup /tmp/influx-backup \
+  $SSH "$PI" "influx backup /tmp/influx-backup \
     --host http://localhost:8086 \
     --token \$(cat $INFLUX_TOKEN_FILE)" || return $?
   # shellcheck disable=SC2086
-  rsync -az $RSYNC_PROGRESS $LINK_INFLUX \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS $LINK_INFLUX \
     "$PI:/tmp/influx-backup/" \
     "$SNAP/influxdb/" || return $?
-  ssh "$PI" "rm -rf /tmp/influx-backup" || true
+  $SSH "$PI" "rm -rf /tmp/influx-backup" || true
 }
 if influx_backup; then
   size=$(human_size "$SNAP/influxdb")
@@ -434,8 +452,8 @@ fi
 
 # ── 3. Config — .env, Signal K, influx token ────────────────────────────────
 mkdir -p "$SNAP/config"
-if rsync -az $RSYNC_PROGRESS \
-    "$PI:~/helmlog/.env" \
+if rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS \
+    "$PI:$PI_HELMLOG_DIR/.env" \
     "$SNAP/config/helmlog.env" 2>&1; then
   report_line "- **helmlog .env**: OK — $(human_size "$SNAP/config/helmlog.env")"
 else
@@ -446,7 +464,7 @@ fi
 # influx-token.txt is needed by restore.sh to authenticate against the
 # target's InfluxDB after a prior `influx restore --full`, which replaces all
 # auth on the target with the source's tokens.
-if rsync -az "$PI:$INFLUX_TOKEN_FILE" "$SNAP/config/influx-token.txt" 2>&1; then
+if rsync -e "$RSYNC_SSH" -az "$PI:$INFLUX_TOKEN_FILE" "$SNAP/config/influx-token.txt" 2>&1; then
   report_line "- **Influx token file**: OK"
 else
   report_line "- **Influx token file**: FAILED"
@@ -458,16 +476,16 @@ LINK_SK=""
 [ -n "$PREV" ] && [ -d "$PREV/signalk" ] && LINK_SK="--link-dest=$PREV/signalk"
 # shellcheck disable=SC2086
 run_rsync_step "Signal K config + data" "$SNAP/signalk" \
-  rsync -az $RSYNC_PROGRESS $LINK_SK \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS $LINK_SK \
     --exclude='node_modules/' \
     --exclude='package-lock.json' \
-    "$PI:~/.signalk/" \
+    "$PI:$PI_SIGNALK_DIR/" \
     "$SNAP/signalk/" || true
 
 # ── 4. Grafana — data dir + provisioning config ──────────────────────────────
 # shellcheck disable=SC2086
 run_rsync_step "Grafana data dir" "$SNAP/grafana" \
-  rsync -az $RSYNC_PROGRESS \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GRAFANA \
     "$PI:/var/lib/grafana/" \
@@ -478,7 +496,7 @@ LINK_GP=""
   LINK_GP="--link-dest=$PREV/grafana-provisioning"
 # shellcheck disable=SC2086
 run_rsync_step "Grafana provisioning" "$SNAP/grafana-provisioning" \
-  rsync -az $RSYNC_PROGRESS \
+  rsync -e "$RSYNC_SSH" -az $RSYNC_PROGRESS \
     --rsync-path='sudo rsync' \
     $LINK_GP \
     "$PI:/etc/grafana/provisioning/" \
