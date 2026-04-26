@@ -173,7 +173,9 @@ reviewed against this bar regardless of how small they look.
   if all commits only touch `docs/ideation-log.md`). Run `/release-notes`
   before promoting. `stage → live` has no gate.
 - **Skill catalog and domain reference:** the harness lists available
-  skills each session; `/domain` is the authoritative reference for Signal K
-  paths and PGNs.
+  skills each session. For Signal K paths, PGN byte layouts, and unit
+  conversions, `sk_reader.py` and `nmea2000.py` are the source of truth;
+  `/domain` only encodes tribal knowledge that is not directly visible in
+  those files (B&G quirks, J/105 polar targets, miscalibration symptoms).
 - **Past decisions on this file** (e.g. why `/domain` isn't split, why no
   `AGENTS.md` symlink): [docs/agent-context-decisions.md](docs/agent-context-decisions.md).
