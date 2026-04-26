@@ -1,100 +1,58 @@
 ---
 name: tdd
-description: Use test-driven development when implementing new features or fixing bugs. TRIGGER when writing or modifying Python source code in src/helmlog/ — new functionality, bug fixes, or refactors that change behavior. DO NOT trigger for documentation, config, templates, CSS/JS, skill definitions, or changes that don't affect runtime behavior.
+description: HelmLog-specific test patterns and the pre-existing-error allowlist for ruff/mypy. The Red-Green-Refactor cycle and lint commands are already mandated in CLAUDE.md — this skill encodes only the patterns and known-pre-existing-errors list that aren't recoverable from existing tests at a glance. TRIGGER when writing or modifying Python source code in src/helmlog/. DO NOT trigger for documentation, config, templates, CSS/JS, skill definitions, or changes that don't affect runtime behavior.
 ---
 
-# Test-Driven Development (Red-Green-Refactor)
+# TDD — HelmLog patterns
 
-Always follow this cycle when implementing new functionality or fixing bugs.
+CLAUDE.md already mandates: failing test → implement → green → lint. This
+skill encodes only the project-specific bits that aren't obvious from
+existing tests:
 
-## 0. Enter a worktree
+## Test patterns
 
-Before writing any test or code, make sure the session is in a git worktree.
-Check `git worktree list` — if one already exists for this task, enter it via
-`EnterWorktree(path=...)`; otherwise create a new one via
-`EnterWorktree(name=...)`. See the "Always work in a git worktree" rule in
-CLAUDE.md for the why. Skip only if already in a worktree.
+**Storage tests** — use the shared `storage` fixture from `conftest.py`
+(in-memory SQLite, fully migrated; never construct `Storage` by hand in a
+test):
 
-## 1. Red — Write a Failing Test
-
-Write the test **before** writing the implementation.
-
-- Test file: `tests/test_<module>.py`
-- Use the `storage` fixture from `conftest.py` for in-memory SQLite
-- Use `httpx.AsyncClient` with `ASGITransport` for web route tests
-- Mock hardware modules (`audio.py`, `can_reader.py`, `sk_reader.py`, `cameras.py`)
-- All tests are `@pytest.mark.asyncio` for async code
-
-```bash
-uv run pytest tests/test_<module>.py -xvs
-```
-
-Confirm the test **fails** with the expected error (not an import error or fixture issue).
-
-## 2. Green — Write Minimal Code to Pass
-
-Implement just enough to make the failing test pass. No more.
-
-```bash
-uv run pytest tests/test_<module>.py -xvs
-```
-
-Confirm the test **passes**.
-
-## 3. Refactor — Improve Without Breaking
-
-Clean up the implementation. Then run the **full** test suite:
-
-```bash
-uv run pytest
-```
-
-All tests must pass.
-
-## 4. Lint and Type-Check
-
-```bash
-uv run ruff check . && uv run ruff format . && uv run mypy src/
-```
-
-**Pre-existing errors to ignore** (do not fix unless explicitly asked):
-- `web.py`: `Item "None" of "datetime | None" has no attribute "isoformat"`
-- `web.py`: `Item "None" of "AudioRecorder | None" has no attribute "stop"` (x2)
-- `main.py`: `Unused "type: ignore" comment`
-- `storage.py`: 2 pre-existing E501 line-length violations
-
-## 5. Commit
- 
-Commit the test and implementation together. Use conventional commit format.
-If working on a GitHub issue, include the issue number in the commit message:
-`feat: description (#332)`
-
-## Testing Patterns
-
-**Storage tests** — use the `storage` fixture (in-memory SQLite, fully migrated):
 ```python
 @pytest.mark.asyncio
-async def test_my_feature(storage: object) -> None:
-    from logger.storage import Storage
-    assert isinstance(storage, Storage)
+async def test_my_feature(storage: Storage) -> None:
     # storage is ready with all migrations applied
+    ...
 ```
 
-**Web route tests** — use `httpx.AsyncClient`:
+**Web route tests** — use `httpx.AsyncClient` with `ASGITransport`, not the
+sync `TestClient`:
+
 ```python
 @pytest.mark.asyncio
-async def test_my_endpoint(storage: object) -> None:
-    from logger.storage import Storage
-    assert isinstance(storage, Storage)
-    from logger.web import create_app
+async def test_my_endpoint(storage: Storage) -> None:
+    from helmlog.web import create_app
     app = create_app(storage)
-    async with httpx.AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
         resp = await client.get("/api/my-endpoint")
         assert resp.status_code == 200
 ```
 
-**Hardware mocking** — patch at the module level:
+**Hardware mocking** — patch hardware modules at the import site so the
+test never touches real devices:
+
 ```python
-with patch("logger.cameras.httpx.AsyncClient") as mock_client:
-    # test camera operations without real hardware
+with patch("helmlog.cameras.httpx.AsyncClient") as mock_client:
+    ...
 ```
+
+Hardware modules to mock: `audio.py`, `can_reader.py`, `sk_reader.py`,
+`cameras.py`.
+
+## Pre-existing errors to ignore
+
+Do not fix these unless explicitly asked — they are tracked separately:
+
+- `web.py`: `Item "None" of "datetime | None" has no attribute "isoformat"`
+- `web.py`: `Item "None" of "AudioRecorder | None" has no attribute "stop"` (×2)
+- `main.py`: `Unused "type: ignore" comment`
+- `storage.py`: 2 pre-existing E501 line-length violations
