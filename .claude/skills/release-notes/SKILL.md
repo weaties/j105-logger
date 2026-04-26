@@ -3,85 +3,45 @@ name: release-notes
 description: Draft a curated RELEASES.md entry from commits since the last stage/* tag. TRIGGER when preparing to promote main → stage, when the user asks for release notes, or when running the promote workflow. DO NOT trigger for general documentation edits, mid-development work, or changes to RELEASES.md that aren't promotion-related.
 ---
 
-# Release Notes: Draft Entry
+# /release-notes — Draft a RELEASES.md entry
 
-Draft a new RELEASES.md entry summarizing commits on `main` since the latest
-`stage/*` tag. Run this skill before promoting `main` to `stage`.
+Format conventions emerge naturally from reading the existing
+`RELEASES.md`; this skill encodes only the operational rules that are NOT
+recoverable from existing entries.
 
-## 1. Find the Commit Range
+## Operational rules
 
-Run `git tag -l 'stage/*' --sort=-creatordate | head -1` to find the latest
-stage tag. If no stage tags exist, use the initial commit as the base.
+- **Commit range:** from the latest `stage/*` tag (by creation date) to
+  HEAD. Use `git tag -l 'stage/*' --sort=-creatordate | head -1`. If no
+  stage tag exists, use the initial commit.
+- **Filter ideation-log-only commits.** A commit whose only changed file
+  is `docs/ideation-log.md` is excluded entirely. A commit that touches
+  `docs/ideation-log.md` AND other files is included, but the entry
+  describes only the non-ideation changes. Use:
+  `git diff-tree --no-commit-id --name-only -r <sha>`.
+- **If only ideation-log commits remain after filtering**, tell the user:
+  "All commits since the last stage tag only touch the ideation log —
+  nothing to document. The promote workflow will allow this through
+  automatically." Stop there.
+- **Today's date** in YYYY-MM-DD goes in the entry heading.
+- **Insertion point:** prepend immediately after the `# Release Notes`
+  H1 (line 1), separated by a blank line. Do not modify existing entries.
+- **Do NOT commit.** Present the draft for review; the user commits when
+  satisfied.
+- **Do NOT mention the ideation log** anywhere in the entry.
 
-Save the tag as `$LAST_TAG` and collect the commit range:
+## Link format
 
-```bash
-git log --oneline "$LAST_TAG"..HEAD
-```
+Reference numbers as clickable Markdown links. Determine PR vs issue with
+`gh pr view <N> --json state -q .state 2>/dev/null` — success means PR.
 
-## 2. Filter Out Ideation-Log-Only Commits
+- PR: `([#NNN](https://github.com/weaties/helmlog/pull/NNN))`
+- Issue: `([#NNN](https://github.com/weaties/helmlog/issues/NNN))`
 
-For each commit in the range, check which files it touches:
+## Theme grouping
 
-```bash
-git diff-tree --no-commit-id --name-only -r <sha>
-```
-
-- **Exclude entirely:** Commits where every changed file is `docs/ideation-log.md`
-- **Include (code changes only):** Commits that touch `docs/ideation-log.md` AND
-  other files — describe only the non-ideation changes
-
-If no non-ideation commits remain after filtering, tell the user:
-> All commits since the last stage tag only touch the ideation log — nothing to
-> document. The promote workflow will allow this through automatically.
-
-And stop here.
-
-## 3. Analyze Changes and Group by Theme
-
-For each included commit, examine:
-- The commit message and any PR title (from `(#NNN)` references)
-- The files changed and the nature of the diff
-
-Group changes into logical themes (e.g., "Performance analysis", "Synthesizer
-improvements", "Deploy & infrastructure", "Bug fixes"). Use your judgment — aim
-for 2–5 groups. A single-commit release can have just one group.
-
-## 4. Draft the RELEASES.md Entry
-
-Read `RELEASES.md` to match the existing format. Draft a new entry following
-this pattern:
-
-```markdown
-## Title — Description (YYYY-MM-DD)
-
-Optional 1–2 sentence summary of the release.
-
-### Theme group
-- **Feature name** (#issue) — one-line description
-- **Feature name** (#issue) — one-line description with enough context to
-  understand the change without reading the code
-```
-
-Rules:
-- Use today's date (YYYY-MM-DD format)
-- Bold feature names, reference issue/PR numbers as clickable Markdown links:
-  `([#NNN](https://github.com/weaties/helmlog/issues/NNN))` for issues,
-  `([#NNN](https://github.com/weaties/helmlog/pull/NNN))` for PRs.
-  Use `gh pr view NNN --json state -q .state 2>/dev/null` to determine whether
-  a number is a PR or issue — if the command succeeds it's a PR, otherwise use
-  the issues URL.
-- One bullet per logical change — merge related commits into a single bullet
-- Use sub-bullets only when a change needs a brief clarification
-- Do NOT mention ideation log updates anywhere in the entry
-
-## 5. Insert into RELEASES.md
-
-Prepend the new entry immediately after the `# Release Notes` heading (line 1),
-with a blank line separating it from the next entry. Do not modify existing
-entries.
-
-## 6. Present for Review
-
-Show the user the drafted entry and ask them to review and edit before
-committing. Do NOT commit automatically — the user will commit when satisfied.
+Group commits into 2–5 logical themes (e.g., "Performance analysis",
+"Synthesizer improvements", "Deploy & infrastructure", "Bug fixes"). One
+bullet per logical change — merge related commits into a single bullet.
+Use sub-bullets only when a change needs a brief clarification. A
+single-commit release can have just one group.
