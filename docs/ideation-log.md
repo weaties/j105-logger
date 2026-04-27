@@ -2444,3 +2444,152 @@ make HelmLog the helm/tactician's primary start tool.
   the same race page but cannot mutate (countdown, pings, sync), likely
   gated by `auth.py` role. User framed the target as a "superset of
   RaceMaster, B&G page, and Vakaros".
+
+---
+
+## IDX-038: Cloud-hosted race viewer — decouple viewing from the Pi
+
+- **Date captured:** 2026-04-27
+- **Origin:** Conversation about how viewers (crew, friends, club members)
+  currently can't browse past races unless the boat's Pi is online and
+  reachable over Tailscale. The aspiration: turn the Pi into a pure
+  data-gathering appliance and serve the historical/replay UI from
+  always-on cloud infrastructure.
+- **Status:** `raw`
+- **Related:** **IDX-034** (Pi → Mac/test-Pi DB replication — narrower
+  precursor of the same plumbing), IDX-007 (centralized-vs-federated
+  tension, already settled in favor of centralized for the social feed),
+  IDX-009 (ChartedSails-style cloud offload as comparison), IDX-023 (plugin
+  marketplace monetization — overlaps the cost/operator-model question),
+  `docs/data-licensing.md`, `docs/federation-design.md`, `web.py`,
+  `storage.py`, `auth.py`, `peer_api.py`, response-cache work (#594)
+
+**Description:**
+Today HelmLog is Pi-first: `sk_reader.py`, `storage.py`, and the FastAPI
+web UI all run on the same Raspberry Pi on the boat. That works for crew
+during a race (no internet at sea) but is hostile to shore-side viewers —
+to look at last weekend's race, the Pi has to be powered on, on a network,
+and reachable via Tailscale. Friends, family, and casual club members
+won't jump those hoops.
+
+Split the system in two:
+
+1. **Pi = data-gathering appliance.** Keeps Signal K reader, storage,
+   audio/photo capture, on-board live UI (still needed at sea), maneuver
+   detection. Continuously (or on a schedule when connected) replicates
+   to the cloud.
+2. **Cloud = always-on viewer.** Hosts session list, track replay,
+   maneuver overlay, polar charts, debrief threads, race cards. Honors
+   co-op roles for access control. Boat doesn't need to be online for
+   viewers to browse history.
+
+The Pi's role gets simpler in *purpose* (it's no longer the primary viewer
+endpoint) but not in *code* — it still runs the live on-board UI and the
+capture loop. The cloud is additional infrastructure, not a replacement.
+
+**Design questions:**
+
+1. **Hosting topology** — several models, each with very different
+   operational and ethos implications:
+   - **Single multi-tenant FastAPI** (Fly.io / Render / Railway):
+     `helmlog.cloud/boats/<boat-id>/...`. Cheapest to operate, but one
+     operator holds every boat's data. Tension with "boat owns its data."
+   - **Per-boat cloud instance**: each owner deploys their own
+     Fly/Railway/VM. Aligns with the ethos but operationally heavy for
+     non-technical owners.
+   - **Co-op-hosted**: each co-op runs a viewer for its member boats.
+     Mirrors the existing federation trust boundary. Probably the most
+     consistent with how federation/co-op auth already works.
+   - **Static export per session**: generate a JAMstack-style snapshot at
+     race-end, push to S3 + CloudFront. Trivially cheap. Breaks live
+     features (threads, comments, ongoing debriefs, live race viewing).
+   - **CDN-cached read replica**: Pi stays primary; cloud is a passive
+     cache layer leveraging the response cache from #594. Simpler model;
+     still requires Pi to be reachable for cache misses.
+
+2. **What replicates to the cloud, and when?**
+   - Track + maneuvers + polar + race metadata: clearly fine, no PII.
+   - Debrief audio + transcripts + diarized speaker labels: PII per
+     `docs/data-licensing.md`. The cloud operator becomes a processor;
+     need explicit owner consent and probably an opt-in per session.
+   - ArUco / camera photos: same PII concerns (faces).
+   - Co-op embargoes (race-day visibility windows) must survive the
+     replica — the cloud can't show data the Pi wouldn't show.
+   - **Likely v1 cut:** non-PII only (track, maneuvers, polar, session
+     metadata, race cards). Audio/transcripts/photos stay on the Pi
+     until the consent flow exists.
+
+3. **Sync mechanism** — heavy overlap with IDX-034:
+   - **Litestream**-style continuous WAL streaming → cloud-mounted
+     SQLite. Near-real-time, no app changes, but covers only the DB.
+   - **rsync over Tailscale** to a cloud VM that joins the tailnet. Drop-
+     dead simple, batches well, handles media files, latency is whatever
+     the cron interval is.
+   - **Custom `helmlog push` CLI** that the Pi runs on session-end. Best
+     control over what leaves the boat (re: data licensing) but most code
+     to maintain.
+   - **Federation as transport** — the cloud joins the boat's federation
+     mesh as a peer with `auto-accept-from-this-boat` policy. Reuses the
+     existing peer protocol; cloud is just "another boat that happens to
+     have a public DNS name and 100% uptime."
+
+4. **Auth and access control.** The co-op model already has
+   owner/admin/crew/viewer/public roles. The cloud needs to honor them
+   without becoming a separate identity system. Cleanest: cloud trusts
+   the boat's Ed25519 identity (same as federation peers do), and the
+   boat's auth records replicate alongside the data. A viewer logs in
+   to the cloud with the same creds they use on the Pi.
+
+5. **Live race viewing.** Shore-side viewers wanting to watch a race
+   *as it happens* push the architecture toward continuous streaming
+   (Litestream, websocket relay, or federation deltas). If live viewing
+   is out of scope for v1, batch sync at session-end is much simpler.
+
+6. **Federation vs. centralization.** This is the biggest tension. The
+   project is built on a federated, boat-owns-its-data model. A
+   centralized cloud viewer is the easiest path to "viewers don't need
+   the Pi online" but pulls toward the RaceQs/Sailmon/Vakaros
+   architecture. Possible reconciliations:
+   - The cloud is *a* federation peer, not the only source of truth — Pi
+     remains canonical and viewers can hit either.
+   - Co-ops run their own clouds; there is no single
+     `helmlog.cloud`.
+   - The cloud is a thin proxy that read-throughs to one or more boat
+     Pis when they're reachable, and serves cached data when they
+     aren't (#594 cache makes this much more viable).
+
+7. **Cost / operator model.** Who pays for the cloud, and is HelmLog
+   a hosted service or open-source-only? Touches IDX-023's monetization
+   discussion. Options: free tier per boat sponsored by the project, paid
+   hosted plan, BYO-cloud with a one-line `fly deploy`, club-sponsored
+   for member boats.
+
+8. **What can't move to the cloud.** The on-board live UI (no internet
+   at sea), the Signal K reader, audio capture, camera control. So
+   "Pi as just data gathering" is more accurately "Pi as data gathering
+   *plus* on-board live experience." The cloud handles **everything
+   shore-side / post-race / asynchronous**.
+
+**Simplest starting point:**
+A read-only cloud replica that piggybacks on IDX-034's plumbing. Pi
+rsyncs `data/logger.db` (and nothing else for v1) to a cloud VM joined
+to the tailnet on session-end. The cloud runs the same FastAPI app in
+`HELMLOG_READ_ONLY=true` mode (already proposed in IDX-034) behind a
+single shared password. No audio, no photos, no live updates, no
+multi-tenant isolation. Get viewers a URL they can hit when the boat is
+off-network; iterate on auth, real-time, and PII-bearing data later.
+
+**Notes:**
+- *2026-04-27:* Initial capture. Strong overlap with IDX-034 — they
+  share the replication plumbing and read-only mode. The differences are
+  (a) IDX-034 targets the owner's other devices for personal analysis,
+  (b) this targets a public/co-op viewing surface for crew and friends,
+  and (c) this raises hosting/auth/PII/federation questions IDX-034
+  sidesteps because both endpoints are owner-controlled. Consider this
+  the "phase 2" of IDX-034: once the replication primitive exists,
+  pointing it at a cloud target is mostly a deployment question; the
+  hard parts that remain are co-op auth honoring, PII gating, and the
+  centralization-vs-federation philosophical call.
+- The federation-as-transport option is attractive — it means the cloud
+  isn't a special case in the codebase, just a peer with unusually high
+  uptime. Worth a closer look before committing to a bespoke sync path.
