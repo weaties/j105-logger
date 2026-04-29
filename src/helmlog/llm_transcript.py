@@ -74,7 +74,8 @@ async def build_race_transcript_text(
 
     db = storage._read_conn()
     cur = await db.execute(
-        "SELECT a.id AS audio_id, a.start_utc AS audio_start, t.segments_json"
+        "SELECT a.id AS audio_id, a.start_utc AS audio_start,"
+        " t.segments_json, t.speaker_map"
         " FROM audio_sessions a JOIN transcripts t ON t.audio_session_id = a.id"
         " WHERE a.race_id = ? AND t.status = 'done'"
         " ORDER BY a.start_utc, a.id",
@@ -94,6 +95,13 @@ async def build_race_transcript_text(
             segs: list[dict[str, Any]] = json.loads(row["segments_json"])
         except json.JSONDecodeError:
             continue
+        # speaker_map is {raw_label: {"type": "crew"|"auto", "name": str, ...}}
+        speaker_map: dict[str, dict[str, Any]] = {}
+        if row["speaker_map"]:
+            try:
+                speaker_map = json.loads(row["speaker_map"]) or {}
+            except json.JSONDecodeError:
+                speaker_map = {}
         audio_start = datetime.fromisoformat(row["audio_start"])
         if base_audio_start is None:
             base_audio_start = audio_start
@@ -102,7 +110,9 @@ async def build_race_transcript_text(
             start_s = float(seg.get("start", 0) or 0)
             absolute = audio_start + timedelta(seconds=start_s)
             offset_s = (absolute - base_audio_start).total_seconds()
-            speaker = str(seg.get("speaker") or seg.get("position_name") or "?")
+            raw_label = str(seg.get("speaker") or seg.get("position_name") or "?")
+            mapped = speaker_map.get(raw_label) or {}
+            speaker = str(mapped.get("name") or raw_label)
             text = str(seg.get("text", "")).strip()
             if not text:
                 continue
