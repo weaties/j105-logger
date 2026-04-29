@@ -569,6 +569,9 @@ async function loadTrack() {
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     attribution: '&copy; OpenStreetMap', maxZoom: 18,
   }).addTo(_map);
+  // Expose the map so the race-start widget can overlay the HelmLog
+  // start line + bias on the prestart track (#644). Read-only consumer.
+  window._helmlogLeafletMap = _map;
   initTrackSizeControls(_map);
   _restorePersistedSections();
 

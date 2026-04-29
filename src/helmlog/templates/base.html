@@ -47,6 +47,7 @@
 </div>
 {% endblock %}
 <script src="/static/shared.js?v={{ git_sha }}"></script>
+<script src="/static/race_start_widget.js?v={{ git_sha }}"></script>
 <script>initNav();(async()=>{try{const r=await fetch('/api/notifications/count');if(r.ok){const d=await r.json();const b=document.getElementById('notif-badge');if(d.unread>0){b.textContent=d.unread;b.style.display='inline';}}}catch(e){}})();</script>
 {% block scripts %}{% endblock %}
 </body>
