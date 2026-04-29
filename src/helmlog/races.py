@@ -33,7 +33,7 @@ class Race:
     date: str  # UTC date "YYYY-MM-DD"
     start_utc: datetime
     end_utc: datetime | None
-    session_type: str = "race"  # "race" | "practice"
+    session_type: str = "race"  # "race" | "practice" | "synthesized" | "forecast"
     slug: str = ""  # human-readable URL slug (#449); backfilled from name
     renamed_at: datetime | None = None  # UTC ts of most recent rename (#449)
 
@@ -122,6 +122,10 @@ def build_race_name(event: str, d: date, race_num: int, session_type: str = "rac
         num_str = f"P{race_num}"
     elif session_type == "synthesized":
         num_str = f"S{race_num}"
+    elif session_type == "forecast":
+        # #700 — pre-race briefing placeholder Race rows. F{n} so the slug
+        # never collides with a real race or practice on the same date.
+        num_str = f"F{race_num}"
     else:
         num_str = str(race_num)
     return f"{d.strftime('%Y%m%d')}-{event}-{num_str}"

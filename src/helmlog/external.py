@@ -325,6 +325,92 @@ class ExternalFetcher:
         return None
 
     # ------------------------------------------------------------------
+    # Hourly forecast — Open-Meteo (#700)
+    # ------------------------------------------------------------------
+
+    async def fetch_hourly_forecast(
+        self,
+        *,
+        lat: float,
+        lon: float,
+        start_utc: datetime,
+        end_utc: datetime,
+    ) -> list[Any]:
+        """Fetch an hourly forecast slice covering ``[start_utc, end_utc]``.
+
+        Returns a list of ``helmlog.briefings.HourlyForecastSample``. Empty
+        list on failure (callers treat as "forecast unavailable" — never
+        raises). Used by the pre-race briefing job (#700).
+        """
+        from helmlog.briefings import HourlyForecastSample
+
+        lat = _reduce_precision(lat)
+        lon = _reduce_precision(lon)
+        params: dict[str, Any] = {
+            "latitude": lat,
+            "longitude": lon,
+            "hourly": (
+                "wind_speed_10m,wind_direction_10m,wind_gusts_10m,"
+                "temperature_2m,precipitation_probability,cloud_cover,surface_pressure"
+            ),
+            "wind_speed_unit": "kn",
+            "timezone": "UTC",
+            "start_date": start_utc.date().isoformat(),
+            "end_date": end_utc.date().isoformat(),
+        }
+        try:
+            resp = await self._http().get(_OPEN_METEO_URL, params=params)
+            resp.raise_for_status()
+            _track_response("weather", resp)
+            data: dict[str, Any] = resp.json()
+        except httpx.HTTPError as exc:
+            logger.warning("Hourly forecast fetch failed: {}", exc)
+            return []
+
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        try:
+            hourly = data["hourly"]
+            times = hourly["time"]
+            speeds = hourly["wind_speed_10m"]
+            dirs = hourly["wind_direction_10m"]
+            gusts = hourly["wind_gusts_10m"]
+            temps = hourly["temperature_2m"]
+            precips = hourly["precipitation_probability"]
+            clouds = hourly["cloud_cover"]
+            pressures = hourly["surface_pressure"]
+        except (KeyError, TypeError) as exc:
+            logger.warning("Hourly forecast parse error: {}", exc)
+            return []
+
+        out: list[HourlyForecastSample] = []
+        for i, t in enumerate(times):
+            try:
+                ts = _datetime.fromisoformat(t).replace(tzinfo=_UTC)
+            except (TypeError, ValueError):
+                continue
+            if not (start_utc <= ts <= end_utc):
+                continue
+            try:
+                out.append(
+                    HourlyForecastSample(
+                        timestamp_utc=ts,
+                        wind_speed_kts=float(speeds[i]),
+                        wind_gust_kts=float(gusts[i]) if gusts[i] is not None else float(speeds[i]),
+                        wind_direction_deg=float(dirs[i]),
+                        air_temp_c=float(temps[i]),
+                        pressure_hpa=float(pressures[i]),
+                        precip_probability_pct=float(precips[i]) if precips[i] is not None else 0.0,
+                        cloud_cover_pct=float(clouds[i]) if clouds[i] is not None else 0.0,
+                    )
+                )
+            except (TypeError, ValueError, IndexError) as exc:
+                logger.debug("Hourly forecast skipped row {}: {}", i, exc)
+                continue
+        return out
+
+    # ------------------------------------------------------------------
     # Weather — Open-Meteo
     # ------------------------------------------------------------------
 
