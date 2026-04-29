@@ -476,6 +476,35 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
   </div>
 </div>
 
+<div class="card" id="llm-card" style="display:none" data-race-id="{{ session_id }}">
+  <div style="display:flex;align-items:center;justify-content:space-between">
+    <div class="section-title" style="margin-bottom:0">
+      LLM debrief <span id="llm-cost-header" style="font-size:.7rem;color:var(--text-secondary);margin-left:8px"></span>
+    </div>
+    <button id="llm-callbacks-rerun" style="display:none;font-size:.72rem;color:var(--accent);background:none;border:none;cursor:pointer;padding:2px 0">&#8635; Re-run callbacks</button>
+  </div>
+  <div id="llm-consent-banner" style="display:none;margin:8px 0;padding:8px;border:1px solid var(--accent);border-radius:4px;background:var(--bg-secondary)">
+    <div style="font-size:.85rem;margin-bottom:6px">
+      LLM Q&amp;A and callback detection send this race's diarized transcript to a hosted Claude API endpoint. PII review required (see <a href="/docs/data-licensing.md">data licensing</a>).
+    </div>
+    <button id="llm-consent-ack" style="font-size:.72rem;color:var(--accent);background:none;border:1px solid var(--accent);border-radius:4px;padding:4px 10px;cursor:pointer">Acknowledge &amp; enable</button>
+  </div>
+  <div id="llm-tabs" style="display:flex;gap:8px;margin:8px 0;border-bottom:1px solid var(--border)">
+    <button class="llm-tab" data-tab="qa" style="background:none;border:none;color:var(--accent);padding:6px 10px;cursor:pointer;border-bottom:2px solid var(--accent)">Q&amp;A</button>
+    <button class="llm-tab" data-tab="callbacks" style="background:none;border:none;color:var(--text-secondary);padding:6px 10px;cursor:pointer;border-bottom:2px solid transparent">Callbacks</button>
+  </div>
+  <div id="llm-qa-pane">
+    <div id="llm-qa-history" style="max-height:340px;overflow-y:auto;margin-bottom:8px"></div>
+    <form id="llm-qa-form" style="display:flex;gap:6px">
+      <input id="llm-qa-input" type="text" placeholder="Ask about this race…" style="flex:1;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);padding:6px 8px;font:inherit">
+      <button type="submit" style="background:var(--accent);border:none;color:var(--bg-primary);border-radius:4px;padding:6px 12px;cursor:pointer">Ask</button>
+    </form>
+  </div>
+  <div id="llm-callbacks-pane" style="display:none">
+    <div id="llm-callbacks-list" style="font-size:.85rem"></div>
+  </div>
+</div>
+
 <div class="card" id="tuning-extraction-card" style="display:none">
   <div style="display:flex;align-items:center;justify-content:space-between">
     <div class="section-title" style="margin-bottom:0" onclick="toggleSection('tuning-extraction')">
@@ -529,6 +558,7 @@ body.live-race .live-inst-unit{font-size:.7rem;color:var(--text-secondary);margi
 <script src="/static/anchor-picker.js?v={{ git_sha }}"></script>
 <script src="/static/maneuver_viz.js?v={{ git_sha }}"></script>
 <script src="/static/session.js?v={{ git_sha }}"></script>
+<script src="/static/llm.js?v={{ git_sha }}"></script>
 <script>
 async function renameSession() {
   const sessionId = document.getElementById('app-config').dataset.sessionId;

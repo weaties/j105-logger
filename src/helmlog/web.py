@@ -225,6 +225,7 @@ def create_app(
         devices,
         federation,
         instruments,
+        llm,
         me,
         moments,
         network,
@@ -273,6 +274,7 @@ def create_app(
         analysis,
         notifications,
         visualizations,
+        llm,
         ws,
     ):
         app.include_router(module.router)

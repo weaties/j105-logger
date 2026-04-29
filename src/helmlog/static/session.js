@@ -9387,6 +9387,49 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 // ---------------------------------------------------------------------------
+// Hooks for the LLM panel (#697)
+//
+// llm.js needs to drive the same playback surfaces (track cursor, video, YT,
+// audio player) when a citation is clicked. Rather than duplicate seek
+// logic, expose two helpers that wrap the existing setPosition + play tick
+// pipeline. helmlogReloadMoments lets the LLM panel refresh the moments
+// list after Save-as-moment so the new row appears without a page reload.
+// ---------------------------------------------------------------------------
+
+window.helmlogSeekTo = function(offsetSeconds) {
+  // offsetSeconds is relative to the race transcript pane's audio session
+  // (i.e., the same time-base the LLM transcript builder used).
+  const pane = _transcriptPanes['race'];
+  if (!pane || !pane.audioStartUtcRaw) return;
+  const raw = pane.audioStartUtcRaw;
+  const audioStart = new Date(raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z');
+  if (isNaN(audioStart.getTime())) return;
+  const targetUtc = new Date(audioStart.getTime() + offsetSeconds * 1000);
+  setPosition(targetUtc, {source: 'llm'});
+  // Drive the audio surface — multi-channel via mc player, otherwise the
+  // legacy single <audio>. Pause first so any currently-playing surface
+  // doesn't fight the new seek.
+  try { _pauseAllPlayback(); } catch (e) { /* swallow */ }
+  if ((_session && _session.audio_channels || 1) > 1) {
+    try { _mcOnSegmentClick(null, offsetSeconds, offsetSeconds + 30); } catch (e) { /* fall through */ }
+  } else {
+    const audioEl = document.getElementById('session-audio')
+      || document.querySelector('#audio-body audio');
+    if (audioEl) {
+      audioEl.currentTime = offsetSeconds;
+      audioEl.play().catch(() => {});
+    }
+  }
+  // Start the playback clock so the play button shows as paused (i.e. is
+  // active) and the track cursor advances.
+  try { _startPlayTick(); _updateReplayControls(); } catch (e) { /* swallow */ }
+};
+
+window.helmlogReloadMoments = async function() {
+  try { await loadMoments({renderList: true}); } catch (e) { /* swallow */ }
+};
+
+// ---------------------------------------------------------------------------
 // Go
 // ---------------------------------------------------------------------------
 
