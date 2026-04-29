@@ -21,8 +21,10 @@ from loguru import logger
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from datetime import date as _date_type
 
     from helmlog.audio import AudioSession
+    from helmlog.briefings import Briefing
     from helmlog.cache import RaceCache
     from helmlog.external import TideReading, WeatherReading
     from helmlog.races import Race
@@ -198,7 +200,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 81
+_CURRENT_VERSION: int = 82
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1967,6 +1969,41 @@ _MIGRATIONS: dict[int, str] = {
         -- matching reference partition and take the newest row in O(log n).
         CREATE INDEX IF NOT EXISTS idx_winds_reference_ts
             ON winds(reference, ts);
+    """,
+    82: """
+        -- #700: pre-race weather briefings. One row per
+        -- (venue_id, local_date, lead_hours) triple. Repeated runs upsert
+        -- via the unique index on that triple, so re-firing a tick is a
+        -- no-op rather than a duplicate. race_id is nullable until the
+        -- lead-12 briefing auto-creates (or finds an existing) Race row
+        -- and links the series. Forecast / tide payloads are stored as
+        -- JSON to keep the schema flexible while the briefing shape
+        -- settles -- structure is owned by helmlog.briefings.
+        CREATE TABLE IF NOT EXISTS pre_race_briefings (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            venue_id              TEXT    NOT NULL,
+            local_date            TEXT    NOT NULL,
+            lead_hours            INTEGER NOT NULL,
+            state                 TEXT    NOT NULL,
+            race_id               INTEGER REFERENCES races(id) ON DELETE SET NULL,
+            forecast_json         TEXT    NOT NULL,
+            tide_json             TEXT    NOT NULL,
+            pressure_trend        TEXT    NOT NULL DEFAULT 'unknown',
+            source_urls_json      TEXT    NOT NULL DEFAULT '{}',
+            tide_station_id       TEXT,
+            tide_station_name     TEXT,
+            tide_unavailable_reason TEXT,
+            chart_path            TEXT,
+            forecast_issued_at    TEXT,
+            fetched_at            TEXT    NOT NULL,
+            error                 TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_pre_race_briefings_triple
+            ON pre_race_briefings(venue_id, local_date, lead_hours);
+        CREATE INDEX IF NOT EXISTS idx_pre_race_briefings_race
+            ON pre_race_briefings(race_id);
+        CREATE INDEX IF NOT EXISTS idx_pre_race_briefings_date
+            ON pre_race_briefings(venue_id, local_date);
     """,
 }
 
@@ -10777,6 +10814,295 @@ class Storage:
             sid = int(r["id"])
             results[sid] = await self.match_vakaros_session(sid)
         return results
+
+    # ------------------------------------------------------------------
+    # Pre-race briefings (#700)
+    # ------------------------------------------------------------------
+
+    async def write_briefing(self, briefing: Briefing) -> int:
+        """Upsert a Briefing keyed on (venue_id, local_date, lead_hours).
+
+        Returns the row id (stable across upserts of the same triple).
+        ``briefing`` is the helmlog.briefings.Briefing dataclass.
+        """
+        db = self._conn()
+
+        forecast_blob = json.dumps(
+            [
+                {
+                    "timestamp_utc": s.timestamp_utc.isoformat(),
+                    "wind_speed_kts": s.wind_speed_kts,
+                    "wind_gust_kts": s.wind_gust_kts,
+                    "wind_direction_deg": s.wind_direction_deg,
+                    "air_temp_c": s.air_temp_c,
+                    "pressure_hpa": s.pressure_hpa,
+                    "precip_probability_pct": s.precip_probability_pct,
+                    "cloud_cover_pct": s.cloud_cover_pct,
+                }
+                for s in briefing.hourly_forecast
+            ]
+        )
+        tide_blob = json.dumps(
+            [
+                {
+                    "timestamp_utc": s.timestamp_utc.isoformat(),
+                    "tide_height_m": s.tide_height_m,
+                    "current_speed_kts": s.current_speed_kts,
+                    "current_set_deg": s.current_set_deg,
+                }
+                for s in briefing.hourly_tide
+            ]
+        )
+        params = (
+            briefing.venue_id,
+            briefing.local_date.isoformat(),
+            int(briefing.lead_hours),
+            briefing.state,
+            briefing.race_id,
+            forecast_blob,
+            tide_blob,
+            briefing.pressure_trend,
+            json.dumps(briefing.source_urls),
+            briefing.tide_station_id,
+            briefing.tide_station_name,
+            briefing.tide_unavailable_reason,
+            briefing.chart_path,
+            briefing.forecast_issued_at.isoformat() if briefing.forecast_issued_at else None,
+            briefing.fetched_at.isoformat() if briefing.fetched_at else None,
+            briefing.error,
+        )
+        await db.execute(
+            "INSERT INTO pre_race_briefings"
+            " (venue_id, local_date, lead_hours, state, race_id,"
+            "  forecast_json, tide_json, pressure_trend, source_urls_json,"
+            "  tide_station_id, tide_station_name, tide_unavailable_reason,"
+            "  chart_path, forecast_issued_at, fetched_at, error)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(venue_id, local_date, lead_hours) DO UPDATE SET"
+            "  state=excluded.state,"
+            "  race_id=COALESCE(excluded.race_id, pre_race_briefings.race_id),"
+            "  forecast_json=excluded.forecast_json,"
+            "  tide_json=excluded.tide_json,"
+            "  pressure_trend=excluded.pressure_trend,"
+            "  source_urls_json=excluded.source_urls_json,"
+            "  tide_station_id=excluded.tide_station_id,"
+            "  tide_station_name=excluded.tide_station_name,"
+            "  tide_unavailable_reason=excluded.tide_unavailable_reason,"
+            "  chart_path=COALESCE(excluded.chart_path, pre_race_briefings.chart_path),"
+            "  forecast_issued_at=excluded.forecast_issued_at,"
+            "  fetched_at=excluded.fetched_at,"
+            "  error=excluded.error",
+            params,
+        )
+        await db.commit()
+        cur = await db.execute(
+            "SELECT id FROM pre_race_briefings"
+            " WHERE venue_id = ? AND local_date = ? AND lead_hours = ?",
+            (briefing.venue_id, briefing.local_date.isoformat(), int(briefing.lead_hours)),
+        )
+        row = await cur.fetchone()
+        assert row is not None
+        return int(row["id"])
+
+    async def get_briefing(
+        self,
+        *,
+        venue_id: str,
+        local_date: _date_type,
+        lead_hours: int,
+    ) -> Briefing | None:
+        """Return the Briefing for the triple, or None if not stored."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT * FROM pre_race_briefings"
+            " WHERE venue_id = ? AND local_date = ? AND lead_hours = ?",
+            (venue_id, local_date.isoformat(), int(lead_hours)),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return self._briefing_from_row(row)
+
+    async def list_briefings_for_date(
+        self,
+        *,
+        venue_id: str,
+        local_date: _date_type,
+    ) -> list[Briefing]:
+        """Return all briefings for a (venue, local_date), ordered by lead desc."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT * FROM pre_race_briefings"
+            " WHERE venue_id = ? AND local_date = ?"
+            " ORDER BY lead_hours DESC",
+            (venue_id, local_date.isoformat()),
+        )
+        return [self._briefing_from_row(r) for r in await cur.fetchall()]
+
+    async def list_briefings_for_race(self, race_id: int) -> list[Briefing]:
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT * FROM pre_race_briefings WHERE race_id = ? ORDER BY lead_hours DESC",
+            (int(race_id),),
+        )
+        return [self._briefing_from_row(r) for r in await cur.fetchall()]
+
+    async def link_briefing_to_race(self, *, briefing_id: int, race_id: int) -> None:
+        db = self._conn()
+        await db.execute(
+            "UPDATE pre_race_briefings SET race_id = ? WHERE id = ?",
+            (int(race_id), int(briefing_id)),
+        )
+        await db.commit()
+
+    async def update_briefing_chart_path(self, *, briefing_id: int, chart_path: str | None) -> None:
+        db = self._conn()
+        await db.execute(
+            "UPDATE pre_race_briefings SET chart_path = ? WHERE id = ?",
+            (chart_path, int(briefing_id)),
+        )
+        await db.commit()
+
+    async def get_briefing_by_id(self, briefing_id: int) -> Briefing | None:
+        db = self._read_conn()
+        cur = await db.execute("SELECT * FROM pre_race_briefings WHERE id = ?", (int(briefing_id),))
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return self._briefing_from_row(row)
+
+    async def get_briefing_chart_path(self, briefing_id: int) -> str | None:
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT chart_path FROM pre_race_briefings WHERE id = ?",
+            (int(briefing_id),),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        chart_path = row["chart_path"]
+        return str(chart_path) if chart_path is not None else None
+
+    async def list_briefings(
+        self,
+        *,
+        venue_id: str | None = None,
+        state: str | None = None,
+        date_from: _date_type | None = None,
+        date_to: _date_type | None = None,
+        limit: int = 200,
+    ) -> list[tuple[int, Briefing]]:
+        """Return briefings sorted by (local_date desc, lead_hours asc).
+
+        Each entry is (id, Briefing) so the caller can build links without a
+        second lookup. Filters are applied at the SQL layer; ``limit`` caps
+        the response (default 200, ample for the index page).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if venue_id:
+            clauses.append("venue_id = ?")
+            params.append(venue_id)
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if date_from:
+            clauses.append("local_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            clauses.append("local_date <= ?")
+            params.append(date_to.isoformat())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT * FROM pre_race_briefings"
+            f"{where}"
+            " ORDER BY local_date DESC, lead_hours ASC"
+            " LIMIT ?",
+            params,
+        )
+        out: list[tuple[int, Briefing]] = []
+        for row in await cur.fetchall():
+            out.append((int(row["id"]), self._briefing_from_row(row)))
+        return out
+
+    async def list_briefing_venue_ids(self) -> list[str]:
+        """Return distinct venue_ids that have any briefings, alphabetical."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT DISTINCT venue_id FROM pre_race_briefings ORDER BY venue_id ASC"
+        )
+        return [str(r["venue_id"]) for r in await cur.fetchall()]
+
+    async def list_briefing_ids_for_date(
+        self,
+        *,
+        venue_id: str,
+        local_date: _date_type,
+    ) -> dict[tuple[str, str, int], int]:
+        """Map (venue_id, local_date_iso, lead_hours) → briefing id."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT id, venue_id, local_date, lead_hours FROM pre_race_briefings"
+            " WHERE venue_id = ? AND local_date = ?",
+            (venue_id, local_date.isoformat()),
+        )
+        out: dict[tuple[str, str, int], int] = {}
+        for r in await cur.fetchall():
+            out[(r["venue_id"], r["local_date"], int(r["lead_hours"]))] = int(r["id"])
+        return out
+
+    @staticmethod
+    def _briefing_from_row(row: aiosqlite.Row) -> Briefing:
+        from datetime import date as _date
+        from datetime import datetime as _dt
+
+        from helmlog.briefings import Briefing, HourlyForecastSample, HourlyTideSample
+
+        forecast_raw = json.loads(row["forecast_json"] or "[]")
+        tide_raw = json.loads(row["tide_json"] or "[]")
+        forecast = tuple(
+            HourlyForecastSample(
+                timestamp_utc=_dt.fromisoformat(s["timestamp_utc"]),
+                wind_speed_kts=float(s["wind_speed_kts"]),
+                wind_gust_kts=float(s["wind_gust_kts"]),
+                wind_direction_deg=float(s["wind_direction_deg"]),
+                air_temp_c=float(s["air_temp_c"]),
+                pressure_hpa=float(s["pressure_hpa"]),
+                precip_probability_pct=float(s["precip_probability_pct"]),
+                cloud_cover_pct=float(s["cloud_cover_pct"]),
+            )
+            for s in forecast_raw
+        )
+        tide = tuple(
+            HourlyTideSample(
+                timestamp_utc=_dt.fromisoformat(s["timestamp_utc"]),
+                tide_height_m=s.get("tide_height_m"),
+                current_speed_kts=s.get("current_speed_kts"),
+                current_set_deg=s.get("current_set_deg"),
+            )
+            for s in tide_raw
+        )
+        return Briefing(
+            venue_id=row["venue_id"],
+            local_date=_date.fromisoformat(row["local_date"]),
+            lead_hours=int(row["lead_hours"]),
+            state=row["state"],
+            hourly_forecast=forecast,
+            hourly_tide=tide,
+            pressure_trend=row["pressure_trend"] or "unknown",
+            source_urls=json.loads(row["source_urls_json"] or "{}"),
+            forecast_issued_at=_parse_utc(row["forecast_issued_at"]),
+            fetched_at=_parse_utc(row["fetched_at"]),
+            error=row["error"],
+            tide_unavailable_reason=row["tide_unavailable_reason"],
+            tide_station_id=row["tide_station_id"],
+            tide_station_name=row["tide_station_name"],
+            chart_path=row["chart_path"],
+            race_id=row["race_id"],
+        )
 
     # ------------------------------------------------------------------
     # Helpers

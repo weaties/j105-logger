@@ -216,6 +216,7 @@ def create_app(
         audio_channels,
         auth,
         boat_settings,
+        briefings,
         cameras,
         comments,
         controls,
@@ -273,6 +274,7 @@ def create_app(
         analysis,
         notifications,
         visualizations,
+        briefings,
         ws,
     ):
         app.include_router(module.router)

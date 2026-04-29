@@ -82,6 +82,72 @@ async def _weather_loop(storage: object, fetcher: object) -> None:
         await asyncio.sleep(3600)
 
 
+async def _briefings_loop(storage: object, fetcher: object) -> None:
+    """Background task: fire pre-race briefing ticks for every configured venue (#700).
+
+    Wakes at most once a minute, computes the next ``BriefingTick`` for each
+    venue, and runs ``run_briefing_tick`` when the trigger time is reached.
+    Best-effort — fetch errors are logged and the loop continues.
+    """
+    from datetime import UTC as _UTC
+    from datetime import datetime as _datetime
+    from pathlib import Path as _Path
+
+    from helmlog.briefings import (
+        list_venues,
+        next_tick,
+        render_chart,
+        run_briefing_tick,
+    )
+    from helmlog.external import ExternalFetcher
+    from helmlog.storage import Storage
+
+    assert isinstance(storage, Storage)
+    assert isinstance(fetcher, ExternalFetcher)
+
+    chart_dir = _Path(os.environ.get("BRIEFING_CHART_DIR", "data/briefings"))
+
+    while True:
+        try:
+            now = _datetime.now(_UTC)
+            for venue in list_venues():
+                tick = next_tick(venue, now)
+                if tick is None:
+                    continue
+                if tick.trigger_utc > now:
+                    continue
+                # Skip if a Generated briefing for this triple already
+                # exists (idempotent re-fire after a restart).
+                existing = await storage.get_briefing(
+                    venue_id=venue.venue_id,
+                    local_date=tick.local_date,
+                    lead_hours=tick.lead_hours,
+                )
+                if existing is not None and existing.state == "Generated":
+                    continue
+                logger.info(
+                    "Firing briefing tick venue={} date={} lead={}h",
+                    venue.venue_id,
+                    tick.local_date.isoformat(),
+                    tick.lead_hours,
+                )
+                await run_briefing_tick(
+                    storage=storage,
+                    venue=venue,
+                    tick=tick,
+                    fetch_forecast=fetcher.fetch_hourly_forecast,
+                    fetch_tide=fetcher.fetch_tide_predictions,
+                    chart_renderer=render_chart,
+                    chart_dir=chart_dir,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Briefings loop error (will retry): {}", exc)
+
+        await asyncio.sleep(60)
+
+
 async def _tide_loop(storage: object, fetcher: object) -> None:
     """Background task: fetch NOAA tide predictions daily and persist them.
 
@@ -448,13 +514,15 @@ async def _run() -> None:
         if external_data_should_fetch():
             weather_task = asyncio.create_task(_weather_loop(storage, fetcher))
             tide_task = asyncio.create_task(_tide_loop(storage, fetcher))
+            briefings_task = asyncio.create_task(_briefings_loop(storage, fetcher))
         else:
             if metered:
-                logger.info("Weather/tide fetches skipped (METERED=true)")
+                logger.info("Weather/tide/briefing fetches skipped (METERED=true)")
             else:
                 logger.info("External data fetching disabled (EXTERNAL_DATA_ENABLED=false)")
             weather_task = asyncio.create_task(asyncio.sleep(1e9))  # no-op placeholder
             tide_task = asyncio.create_task(asyncio.sleep(1e9))
+            briefings_task = asyncio.create_task(asyncio.sleep(1e9))
         aruco_task = asyncio.create_task(_aruco_poll_loop(storage))
         web_task = asyncio.create_task(_web_loop(storage, recorder, audio_config))
         monitor_task = asyncio.create_task(monitor_loop())
@@ -509,6 +577,7 @@ async def _run() -> None:
             aruco_task.cancel()
             weather_task.cancel()
             tide_task.cancel()
+            briefings_task.cancel()
             web_task.cancel()
             monitor_task.cancel()
             deploy_task.cancel()
@@ -517,6 +586,7 @@ async def _run() -> None:
                 aruco_task,
                 weather_task,
                 tide_task,
+                briefings_task,
                 web_task,
                 monitor_task,
                 deploy_task,

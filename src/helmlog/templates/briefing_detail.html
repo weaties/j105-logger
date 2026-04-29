@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}{{ briefing.venue_id|title }} pre-race briefing — {{ briefing.local_date }}{% endblock %}
+
+{% block extra_css %}
+<meta property="og:title" content="{{ briefing.venue_id|title }} pre-race briefing — {{ briefing.local_date }} (lead {{ briefing.lead_hours }} h)"/>
+<meta property="og:description" content="{{ headline }}"/>
+{% if chart_url %}
+<meta property="og:image" content="{{ chart_url }}"/>
+{% else %}
+<meta property="og:image" content="/static/og-default.png"/>
+{% endif %}
+<meta property="og:type" content="website"/>
+<meta name="twitter:card" content="summary_large_image"/>
+{% endblock %}
+
+{% block content %}
+<section class="briefing-detail">
+  <h1>
+    {% if briefing.venue_id == "shilshole" %}Shilshole Bay{% else %}{{ briefing.venue_id|title }}{% endif %}
+    pre-race briefing — {{ briefing.local_date }}
+  </h1>
+  <p class="lead">
+    Lead {{ briefing.lead_hours }} h ·
+    state <strong>{{ briefing.state }}</strong> ·
+    pressure {{ briefing.pressure_trend }}
+  </p>
+  <p class="headline">{{ headline }}</p>
+
+  {% if chart_url %}
+    <p><img src="{{ chart_url }}" alt="wind and current chart" style="max-width:100%;height:auto"/></p>
+  {% else %}
+    <p class="muted">chart unavailable — see hourly table below for the data of record.</p>
+  {% endif %}
+
+  <h2>Forecast (hourly)</h2>
+  {% if briefing.hourly_forecast %}
+    <table class="briefing-table">
+      <thead>
+        <tr>
+          <th>UTC</th><th>Wind (kts)</th><th>Gust</th><th>Dir (°)</th>
+          <th>Temp (°C / °F)</th><th>Precip %</th><th>Cloud %</th><th>Pressure (hPa)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in briefing.hourly_forecast %}
+        <tr>
+          <td>{{ s.timestamp_utc.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>{{ "%.1f"|format(s.wind_speed_kts) }}</td>
+          <td>{{ "%.1f"|format(s.wind_gust_kts) }}</td>
+          <td>{{ "%.0f"|format(s.wind_direction_deg) }}</td>
+          <td>{{ "%.1f"|format(s.air_temp_c) }} / {{ "%.0f"|format(s.air_temp_c * 9 / 5 + 32) }}</td>
+          <td>{{ "%.0f"|format(s.precip_probability_pct) }}</td>
+          <td>{{ "%.0f"|format(s.cloud_cover_pct) }}</td>
+          <td>{{ "%.0f"|format(s.pressure_hpa) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p class="muted">forecast unavailable — see source error below.</p>
+  {% endif %}
+
+  <h2>Tide & current</h2>
+  {% if briefing.hourly_tide %}
+    <table class="briefing-table">
+      <thead>
+        <tr><th>UTC</th><th>Height (m, MLLW)</th><th>Current (kts)</th><th>Set (°)</th></tr>
+      </thead>
+      <tbody>
+        {% for s in briefing.hourly_tide %}
+        <tr>
+          <td>{{ s.timestamp_utc.strftime("%Y-%m-%d %H:%M") }}</td>
+          <td>{% if s.tide_height_m is not none %}{{ "%.2f"|format(s.tide_height_m) }}{% else %}—{% endif %}</td>
+          <td>{% if s.current_speed_kts is not none %}{{ "%.1f"|format(s.current_speed_kts) }}{% else %}—{% endif %}</td>
+          <td>{% if s.current_set_deg is not none %}{{ "%.0f"|format(s.current_set_deg) }}{% else %}—{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if briefing.tide_station_name %}
+      <p class="muted">Source: {{ briefing.tide_station_name }} (CO-OPS station {{ briefing.tide_station_id }}).</p>
+    {% endif %}
+  {% else %}
+    <p class="muted">tide unavailable{% if briefing.tide_unavailable_reason %} — {{ briefing.tide_unavailable_reason }}{% endif %}.</p>
+  {% endif %}
+
+  <h2>Sources</h2>
+  <ul>
+    {% for label, url in briefing.source_urls.items() %}
+      <li><a href="{{ url }}" rel="noopener">{{ label }}</a></li>
+    {% endfor %}
+    {% if briefing.fetched_at %}
+      <li>Fetched at {{ briefing.fetched_at.strftime("%Y-%m-%d %H:%M UTC") }}</li>
+    {% endif %}
+    {% if briefing.forecast_issued_at %}
+      <li>Forecast issued at {{ briefing.forecast_issued_at.strftime("%Y-%m-%d %H:%M UTC") }}</li>
+    {% endif %}
+  </ul>
+
+  {% if briefing.error %}
+    <h2>Source error</h2>
+    <pre class="error">{{ briefing.error }}</pre>
+  {% endif %}
+
+  <h2>Series for this race day</h2>
+  <ul>
+    {% for s in series %}
+      {% set sid = series_ids.get((s.venue_id, s.local_date.isoformat(), s.lead_hours)) %}
+      <li>
+        {% if sid == briefing_id %}
+          <strong>lead {{ s.lead_hours }} h (this briefing)</strong>
+        {% else %}
+          <a href="/briefings/{{ sid }}">lead {{ s.lead_hours }} h — {{ s.state }}</a>
+        {% endif %}
+      </li>
+    {% endfor %}
+  </ul>
+
+  {% if linked_race %}
+    <h2>Linked race</h2>
+    <p>
+      <a href="/session/{{ linked_race.id }}">{{ linked_race.name }}</a>
+      ({{ linked_race.session_type }})
+    </p>
+  {% endif %}
+</section>
+{% endblock %}

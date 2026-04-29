@@ -47,6 +47,7 @@ dependencies = [
     "opencv-contrib-python-headless>=4.8.0",
     "selectolax>=0.4.7",
     "pyudev>=0.24.4 ; sys_platform == 'linux'",
+    "matplotlib>=3.10.8",
 ]
 
 [project.scripts]
