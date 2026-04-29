@@ -228,9 +228,14 @@
   bind("rs-ping-boat", () => pingEnd("boat"));
   bind("rs-ping-pin", () => pingEnd("pin"));
 
-  // Live tick at 4 Hz; reconcile from server every 30 s.
+  // Local clock tick at 4 Hz; reconcile from server every 2 s so that
+  // arm / sync / ping / postpone fired from one device shows up on
+  // every other device almost immediately (#644). This is a polling
+  // fallback — a WebSocket broadcast would be cheaper at scale, but at
+  // 2 s × handful of devices the load is negligible and the flow is
+  // robust to disconnect.
   setInterval(renderClock, 250);
-  setInterval(refreshState, 30000);
+  setInterval(refreshState, 2000);
 
   refreshState();
 })();
