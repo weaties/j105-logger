@@ -30,23 +30,25 @@ from loguru import logger
 _TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=30.0, pool=10.0)
 _ANTHROPIC_VERSION = "2023-06-01"
 
-_CITATION_RE = re.compile(r"\[(\d{1,2}:\d{2}:\d{2})\]")
+_CITATION_RE = re.compile(r"\[((?:\d+:)?\d{1,2}:\d{2})\]")
 
 _QA_SYSTEM = (
     "You are an expert sailing coach reviewing a single race transcript. "
     "Answer the user's question using only what the transcript supports. "
     "When you reference a moment, cite it with the timestamp in square "
-    "brackets like [HH:MM:SS] so the UI can deep-link into audio playback. "
-    "Be concise. If the transcript does not contain the answer, say so."
+    "brackets exactly as it appears in the transcript (e.g. [12:34] or "
+    "[1:05:30]). Be concise. If the transcript does not contain the "
+    "answer, say so."
 )
 
 _CALLBACK_SYSTEM = (
     "You are scanning a sailing race transcript for verbal callbacks — "
     "moments where a crew member said they want to revisit, flag, or come "
     "back to something post-race. Return a JSON array (and nothing else) "
-    "of objects with keys: anchor_ts (HH:MM:SS), speaker (the diarized "
-    "speaker label exactly as it appears in the transcript), excerpt (the "
-    "exact short phrase), rationale (one short sentence on why this is a "
+    "of objects with keys: anchor_ts (the timestamp exactly as it appears "
+    'in the transcript, e.g. "12:34" or "1:05:30"), speaker (the '
+    "diarized speaker label exactly as it appears), excerpt (the exact "
+    "short phrase), rationale (one short sentence on why this is a "
     "callback). Return [] if there are no callbacks."
 )
 
@@ -240,7 +242,9 @@ class LLMClient:
                 # mentions the status code, which makes 400s opaque.
                 logger.warning(
                     "Anthropic API {} for model={}: {}",
-                    resp.status_code, self._cfg.model, resp.text[:1000],
+                    resp.status_code,
+                    self._cfg.model,
+                    resp.text[:1000],
                 )
                 resp.raise_for_status()
             payload = resp.json()

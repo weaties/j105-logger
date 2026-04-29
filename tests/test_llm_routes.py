@@ -44,8 +44,8 @@ class FakeLLMClient:
         estimate: float = 0.001,
     ) -> None:
         self.ask_response = ask_response or LLMResponse(
-            text="We tacked at [12:05:30].",
-            citations=[{"ts": "12:05:30"}],
+            text="We tacked at [12:05].",
+            citations=[{"ts": "12:05"}],
             input_tokens=200,
             output_tokens=20,
             cache_read_tokens=0,
@@ -186,8 +186,8 @@ class TestQAAskFlow:
             )
             assert resp.status_code == 200
             data = resp.json()
-            assert data["answer"] == "We tacked at [12:05:30]."
-            assert data["citations"] == [{"ts": "12:05:30"}]
+            assert data["answer"] == "We tacked at [12:05]."
+            assert data["citations"] == [{"ts": "12:05"}]
             assert data["cost_usd"] == pytest.approx(0.001)
 
             # Persisted

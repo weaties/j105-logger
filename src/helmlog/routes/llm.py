@@ -21,7 +21,7 @@ env when nothing is bound — production startup binds one explicitly.
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -32,10 +32,43 @@ from helmlog.auth import require_auth
 from helmlog.llm_callback_job import run_for_race
 from helmlog.llm_client import LLMClient, LLMConfig
 from helmlog.llm_policy import check_can_query, get_effective_caps
-from helmlog.llm_transcript import build_race_transcript_text
+from helmlog.llm_transcript import build_race_transcript_text, parse_relative_ts
 from helmlog.routes._helpers import audit, get_storage
 
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
+
 router = APIRouter()
+
+
+async def _resolve_relative_anchor(
+    storage: Storage,
+    race_id: int,
+    ts: str | None,
+) -> str | None:
+    """Convert an ``MM:SS`` / ``H:MM:SS`` callback timestamp (relative to the
+    first audio session of the race) into an absolute UTC ISO string suitable
+    for ``moments.anchor_t_start``. Returns None if the timestamp can't be
+    parsed or no audio session exists."""
+    from datetime import timedelta
+
+    if not ts:
+        return None
+    offset_s = parse_relative_ts(ts)
+    if offset_s is None:
+        return None
+    db = storage._read_conn()
+    cur = await db.execute(
+        "SELECT start_utc FROM audio_sessions WHERE race_id = ? ORDER BY start_utc, id LIMIT 1",
+        (race_id,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return None
+    from datetime import datetime as _dt
+
+    base = _dt.fromisoformat(row["start_utc"])
+    return (base + timedelta(seconds=offset_s)).isoformat()
 
 
 def _get_llm_client(request: Request) -> LLMClient:
@@ -133,12 +166,13 @@ async def api_ask(
     if not body.question.strip():
         raise HTTPException(status_code=422, detail="question is required")
 
-    transcript = await build_race_transcript_text(storage, race_id)
-    if transcript is None:
+    build = await build_race_transcript_text(storage, race_id)
+    if build is None:
         raise HTTPException(
             status_code=404,
             detail="No diarized transcript for this race",
         )
+    transcript = build.text
 
     client = _get_llm_client(request)
     estimate = client.estimate_input_cost(transcript + body.question)
@@ -237,14 +271,13 @@ async def api_qa_save_as_moment(
     subject = (row["question"] or "")[:200]
 
     if citations:
-        first_ts = citations[0].get("ts")
-        # Spec: deep-link to first citation. Citation timestamps are
-        # HH:MM:SS — anchor against the race's start date.
-        race = await storage.get_race(row["race_id"])
-        if race is None or race.start_utc is None:
-            raise HTTPException(status_code=409, detail="race has no start time")
-        date_str = race.start_utc.strftime("%Y-%m-%d")
-        anchor = f"{date_str}T{first_ts}+00:00"
+        first_ts = str(citations[0].get("ts") or "")
+        anchor = await _resolve_relative_anchor(storage, row["race_id"], first_ts)
+        if anchor is None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"could not resolve citation timestamp {first_ts!r}",
+            )
         moment_id = await storage.create_moment(
             session_id=row["race_id"],
             anchor_kind="timestamp",
@@ -332,11 +365,12 @@ async def api_callback_save_as_moment(
     row = await cur.fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="callback not found")
-    race = await storage.get_race(row["race_id"])
-    if race is None or race.start_utc is None:
-        raise HTTPException(status_code=409, detail="race has no start time")
-    date_str = race.start_utc.strftime("%Y-%m-%d")
-    anchor = f"{date_str}T{row['anchor_ts']}+00:00"
+    anchor = await _resolve_relative_anchor(storage, row["race_id"], row["anchor_ts"])
+    if anchor is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"could not resolve callback timestamp {row['anchor_ts']!r}",
+        )
     moment_id = await storage.create_moment(
         session_id=row["race_id"],
         anchor_kind="timestamp",

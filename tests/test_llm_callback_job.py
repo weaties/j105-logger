@@ -99,7 +99,7 @@ class TestRunForRace:
         rid, _ = await _race_with_transcript(storage)
         client = FakeClient(
             callbacks=[
-                {"anchor_ts": "12:05:30", "speaker": "helm", "excerpt": "x", "rationale": "r"},
+                {"anchor_ts": "12:05", "speaker": "helm", "excerpt": "x", "rationale": "r"},
             ]
         )
         result = await run_for_race(storage, rid, client)
@@ -136,7 +136,7 @@ class TestRunForRace:
         client = FakeClient(
             callbacks=[
                 {
-                    "anchor_ts": "12:05:30",
+                    "anchor_ts": "12:05",
                     "speaker": "helm",
                     "excerpt": "come back to this",
                     "rationale": "explicit revisit",
@@ -178,7 +178,7 @@ class TestMaybeRunAfterTranscription:
         await storage.acknowledge_llm_consent(user_id=None)
         client = FakeClient(
             callbacks=[
-                {"anchor_ts": "12:05:30", "speaker": "helm", "excerpt": "x", "rationale": "r"},
+                {"anchor_ts": "12:05", "speaker": "helm", "excerpt": "x", "rationale": "r"},
             ]
         )
         result = await maybe_run_after_transcription(

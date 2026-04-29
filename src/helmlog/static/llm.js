@@ -43,9 +43,17 @@
   // Render an answer with citations linkified as [HH:MM:SS] chips that
   // seek the audio player on click. Falls back to plain text when no
   // audio player is present.
+  function tsToSeconds(ts) {
+    // MM:SS or H:MM:SS — relative to the audio session's start.
+    const parts = String(ts).split(':').map(Number);
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    return NaN;
+  }
+
   function renderAnswer(text) {
     return escapeHtml(text).replace(
-      /\[(\d{1,2}:\d{2}:\d{2})\]/g,
+      /\[((?:\d+:)?\d{1,2}:\d{2})\]/g,
       (_, ts) => `<a href="#" data-ts="${ts}" class="llm-cite" style="color:var(--accent);text-decoration:none;border-bottom:1px dotted var(--accent)">[${ts}]</a>`,
     );
   }
@@ -57,10 +65,9 @@
         const ts = a.dataset.ts;
         const audio = document.querySelector('audio');
         if (!audio || !ts) return;
-        const [h, m, s] = ts.split(':').map(Number);
-        const seconds = h * 3600 + m * 60 + s;
-        const offset = seconds - (window.HELMLOG_AUDIO_START_OFFSET || 0);
-        if (offset >= 0) audio.currentTime = offset;
+        const seconds = tsToSeconds(ts);
+        if (!Number.isFinite(seconds)) return;
+        if (seconds <= audio.duration) audio.currentTime = seconds;
         audio.play().catch(() => {});
       });
     });
@@ -133,7 +140,7 @@
         <div style="font-weight:500;margin-bottom:4px">${escapeHtml(speaker)}</div>
         ${list.map((cb) => `
           <div style="margin-left:10px;padding:6px 8px;border-left:2px solid var(--accent);margin-bottom:4px">
-            <a href="#" data-ts="${cb.anchor_ts.split('T').pop().slice(0, 8)}" class="llm-cite" style="color:var(--accent);font-size:.7rem">${escapeHtml(cb.anchor_ts.split('T').pop().slice(0, 8))}</a>
+            <a href="#" data-ts="${escapeHtml(cb.anchor_ts)}" class="llm-cite" style="color:var(--accent);font-size:.7rem">${escapeHtml(cb.anchor_ts)}</a>
             <span style="margin-left:8px">${escapeHtml(cb.source_excerpt)}</span>
             <button class="btn-cb-save-moment" data-cb-id="${cb.id}" style="margin-left:8px;background:none;border:1px solid var(--border);color:var(--text-secondary);border-radius:3px;padding:1px 6px;font-size:.65rem;cursor:pointer">Save as moment</button>
             ${cb.rationale ? `<div style="font-size:.7rem;color:var(--text-secondary);margin-top:2px">${escapeHtml(cb.rationale)}</div>` : ''}

@@ -26,7 +26,7 @@ class TestParseCallbackArray:
         assert _parse_callback_array('[{"a":1}]') == [{"a": 1}]
 
     def test_strips_markdown_fences(self) -> None:
-        assert _parse_callback_array("```json\n[{\"a\":1}]\n```") == [{"a": 1}]
+        assert _parse_callback_array('```json\n[{"a":1}]\n```') == [{"a": 1}]
 
     def test_extracts_from_prose(self) -> None:
         assert _parse_callback_array(
@@ -66,16 +66,21 @@ def _api_payload(
 
 
 class TestExtractCitations:
-    def test_finds_hms_marker(self) -> None:
-        text = "We tacked at [12:05:30] and again at [12:09:15]."
+    def test_finds_mmss_marker(self) -> None:
+        text = "We tacked at [12:05] and again at [14:30]."
         cites = extract_citations(text)
-        assert [c["ts"] for c in cites] == ["12:05:30", "12:09:15"]
+        assert [c["ts"] for c in cites] == ["12:05", "14:30"]
+
+    def test_finds_hmmss_marker(self) -> None:
+        text = "Long race — see [1:05:30]."
+        cites = extract_citations(text)
+        assert [c["ts"] for c in cites] == ["1:05:30"]
 
     def test_returns_empty_when_no_markers(self) -> None:
         assert extract_citations("plain answer") == []
 
     def test_dedupes_same_marker(self) -> None:
-        cites = extract_citations("[12:05:30] then [12:05:30]")
+        cites = extract_citations("[12:05] then [12:05]")
         assert len(cites) == 1
 
 
@@ -97,7 +102,7 @@ class TestLLMClientAsk:
             ctx.post = AsyncMock(
                 return_value=_mock_response(
                     _api_payload(
-                        "We tacked at [12:05:30].",
+                        "We tacked at [12:05].",
                         in_tok=200,
                         out_tok=20,
                         cache_read=1000,
@@ -108,13 +113,13 @@ class TestLLMClientAsk:
             mock_cls.return_value.__aenter__.return_value = ctx
 
             resp = await client.ask(
-                transcript_text="[12:05:30] helm: tack now\n[12:06:00] trim: ok",
+                transcript_text="[12:05] helm: tack now\n[12:06:00] trim: ok",
                 question="When did we tack?",
             )
 
         assert isinstance(resp, LLMResponse)
         assert "tacked" in resp.text
-        assert resp.citations == [{"ts": "12:05:30"}]
+        assert resp.citations == [{"ts": "12:05"}]
         assert resp.input_tokens == 200
         assert resp.output_tokens == 20
         assert resp.cache_read_tokens == 1000
@@ -210,7 +215,7 @@ class TestLLMClientDetectCallbacks:
             cache_write_usd_per_mtok=1.25,
         )
         client = LLMClient(cfg)
-        body = '[{"anchor_ts":"12:05:30","speaker":"helm","excerpt":"come back to this","rationale":"explicit revisit"}]'
+        body = '[{"anchor_ts":"12:05","speaker":"helm","excerpt":"come back to this","rationale":"explicit revisit"}]'
         with patch("helmlog.llm_client.httpx.AsyncClient") as mock_cls:
             ctx = AsyncMock()
             ctx.post = AsyncMock(
@@ -219,11 +224,11 @@ class TestLLMClientDetectCallbacks:
             mock_cls.return_value.__aenter__.return_value = ctx
 
             cbs, cost = await client.detect_callbacks(
-                transcript_text="[12:05:30] helm: come back to this",
+                transcript_text="[12:05] helm: come back to this",
             )
 
         assert len(cbs) == 1
-        assert cbs[0]["anchor_ts"] == "12:05:30"
+        assert cbs[0]["anchor_ts"] == "12:05"
         assert cbs[0]["speaker"] == "helm"
         assert cost == pytest.approx((500 * 1.0 + 80 * 5.0) / 1e6)
 

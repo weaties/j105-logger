@@ -51,9 +51,10 @@ async def run_for_race(
       * ``{"count": N, "cost_usd": X}`` on success.
       * ``{"failed": "<error>"}`` when the LLM call raised.
     """
-    transcript = await build_race_transcript_text(storage, race_id)
-    if transcript is None:
+    build = await build_race_transcript_text(storage, race_id)
+    if build is None:
         return {"skipped": "no_transcript"}
+    transcript = build.text
 
     estimate = client.estimate_input_cost(transcript)
     check = await check_can_query(storage, race_id, estimate_usd=estimate)
