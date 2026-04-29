@@ -280,10 +280,11 @@ def create_app(
     ):
         app.include_router(module.router)
 
-    # Race-start simulator (#690) — only mounted when RACE_START_SIMULATOR=true.
-    # Production Pis never see these routes.
-    if race_start_sim.is_simulator_enabled():
-        app.include_router(race_start_sim.router)
+    # Race-start simulator (#690). Routes are always mounted but gated on
+    # the developer flag (users.is_developer = 1). RACE_START_SIMULATOR=false
+    # is a hard kill switch that turns the routes into 404s for defense in
+    # depth on production boats.
+    app.include_router(race_start_sim.router)
 
     # -- Register results providers (#459) --
     from helmlog.results.base import register_provider

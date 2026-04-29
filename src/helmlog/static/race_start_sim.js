@@ -133,6 +133,24 @@
       }
     },
 
+    async runDrill() {
+      const body = {
+        center_lat: parseFloat(document.getElementById("sim-drill-lat").value),
+        center_lon: parseFloat(document.getElementById("sim-drill-lon").value),
+        line_bearing_deg: parseFloat(document.getElementById("sim-drill-bearing").value),
+        line_length_m: parseFloat(document.getElementById("sim-drill-len").value),
+        twd_deg: parseFloat(document.getElementById("sim-drill-twd").value),
+        sog_kn: parseFloat(document.getElementById("sim-drill-sog").value),
+        duration_s: parseFloat(document.getElementById("sim-drill-dur").value),
+      };
+      try {
+        const r = await postJSON("/api/race-start/sim/drill", body);
+        log("drill: " + r.duration_s + "s, race_id=" + (r.race_id ?? "(none)"));
+      } catch (e) {
+        log("drill error: " + e.message);
+      }
+    },
+
     async reset() {
       try {
         await postJSON("/api/race-start/sim/reset", {});

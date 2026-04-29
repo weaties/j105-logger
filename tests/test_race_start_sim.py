@@ -1,16 +1,19 @@
 """Tests for the race-start simulator (#690).
 
 Covers:
-- The simulator is 404 unless RACE_START_SIMULATOR=true.
+- Simulator routes 404 when RACE_START_SIMULATOR=false (kill switch).
+- Simulator routes are gated on the developer flag — non-devs get 403,
+  AUTH_DISABLED uses the mock-admin (which is is_developer=1).
 - Setting the virtual clock offset shifts the FSM clock so flag transitions
   fire deterministically without waiting real time.
 - Synthetic boat-state writes feed line-metrics and ping fallback.
 - Scenario presets apply offset + boat state in one call.
-- The simulator does not leak into production (router not mounted).
+- Prestart drill stamps line endpoints + walks the boat in the background.
 """
 
 from __future__ import annotations
 
+import asyncio
 import os
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -31,19 +34,23 @@ if TYPE_CHECKING:
 
 
 def _sim_env() -> dict[str, str]:
+    """Force the simulator on. Default is also on, but tests are explicit."""
     return {"RACE_START_SIMULATOR": "true"}
 
 
+def _kill_switch_env() -> dict[str, str]:
+    return {"RACE_START_SIMULATOR": "false"}
+
+
 # ---------------------------------------------------------------------------
-# Guard
+# Guard — kill switch + developer auth
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_sim_routes_404_without_env(storage: Storage) -> None:
-    """Simulator routes are not mounted when RACE_START_SIMULATOR is unset."""
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("RACE_START_SIMULATOR", None)
+async def test_sim_routes_404_when_kill_switch(storage: Storage) -> None:
+    """RACE_START_SIMULATOR=false turns the routes into 404s."""
+    with patch.dict(os.environ, _kill_switch_env()):
         app = create_app(storage)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -53,7 +60,63 @@ async def test_sim_routes_404_without_env(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sim_routes_default_on(storage: Storage) -> None:
+    """Default (env unset) is enabled — no opt-in required for devs."""
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("RACE_START_SIMULATOR", None)
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            r = await client.get("/api/race-start/sim/clock")
+        assert r.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_sim_routes_403_for_non_developer(storage: Storage) -> None:
+    """A non-developer crew user is blocked from the simulator."""
+    from helmlog.auth import generate_token, session_expires_at
+
+    with patch.dict(os.environ, {**_sim_env(), "AUTH_DISABLED": "false"}):
+        user_id = await storage.create_user(
+            "crew@test.com", "Test Crew", "crew", is_developer=False
+        )
+        sid = generate_token()
+        await storage.create_session(sid, user_id, session_expires_at())
+
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": sid},
+        ) as client:
+            r = await client.get("/api/race-start/sim/clock")
+        assert r.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sim_routes_ok_for_developer(storage: Storage) -> None:
+    """A user with is_developer=1 reaches the simulator."""
+    from helmlog.auth import generate_token, session_expires_at
+
+    with patch.dict(os.environ, {**_sim_env(), "AUTH_DISABLED": "false"}):
+        user_id = await storage.create_user("dev@test.com", "Test Dev", "crew", is_developer=True)
+        sid = generate_token()
+        await storage.create_session(sid, user_id, session_expires_at())
+
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"session": sid},
+        ) as client:
+            r = await client.get("/api/race-start/sim/clock")
+        assert r.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_sim_routes_mounted_with_env(storage: Storage) -> None:
+    """AUTH_DISABLED=true (mock admin, is_developer=1) hits the simulator."""
     with patch.dict(os.environ, _sim_env()):
         app = create_app(storage)
         async with httpx.AsyncClient(
@@ -290,12 +353,74 @@ async def test_sim_page_renders(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
-async def test_sim_page_404_without_env(storage: Storage) -> None:
-    with patch.dict(os.environ, {}, clear=False):
-        os.environ.pop("RACE_START_SIMULATOR", None)
+async def test_sim_page_404_when_kill_switch(storage: Storage) -> None:
+    with patch.dict(os.environ, _kill_switch_env()):
         app = create_app(storage)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
         ) as client:
             r = await client.get("/race-start/simulate")
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Prestart drill
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drill_stamps_line_endpoints_and_returns_200(storage: Storage) -> None:
+    """Drill returns immediately and stamps both line endpoints."""
+    with patch.dict(os.environ, _sim_env()):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            r = await client.post(
+                "/api/race-start/sim/drill",
+                json={
+                    "center_lat": 47.65,
+                    "center_lon": -122.40,
+                    "line_bearing_deg": 90.0,
+                    "line_length_m": 100.0,
+                    "duration_s": 1.0,  # short for the test
+                },
+            )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["started"] is True
+        assert "boat" in body["line_endpoints"]
+        assert "pin" in body["line_endpoints"]
+
+    # Both endpoint pings are in storage so the line is "complete"
+    line = await storage.get_latest_start_line(race_id=None)
+    assert line is not None
+    assert line["boat_end_lat"] is not None
+    assert line["pin_end_lat"] is not None
+
+
+@pytest.mark.asyncio
+async def test_drill_writes_positions_in_background(storage: Storage) -> None:
+    """After waiting briefly for the background task, positions accumulate."""
+    with patch.dict(os.environ, _sim_env()):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            await client.post(
+                "/api/race-start/sim/drill",
+                json={
+                    "center_lat": 47.65,
+                    "center_lon": -122.40,
+                    "duration_s": 2.0,
+                },
+            )
+            # Let the background task fire a couple of ticks
+            await asyncio.sleep(2.5)
+
+    db = storage._conn()  # noqa: SLF001
+    cur = await db.execute("SELECT COUNT(*) FROM positions")
+    row = await cur.fetchone()
+    assert row is not None
+    # >= 2 because the drill writes 1 position per second for ~2 seconds
+    assert row[0] >= 2

@@ -75,6 +75,27 @@
   </div>
 
   <div class="sim-section">
+    <h3>Prestart drill (auto-walk)</h3>
+    <div class="sim-status" style="margin-bottom: .5rem">
+      Walks the boat in a circle around a synthetic start line for the
+      configured duration, writing one position per second. Stamps the
+      boat-end + pin-end pings so the line draws on the session map
+      immediately. Start a race in /control first so positions land in
+      the active session window.
+    </div>
+    <div class="sim-row">
+      <label>center lat <input type="number" id="sim-drill-lat" value="47.6500" step="0.0001"/></label>
+      <label>center lon <input type="number" id="sim-drill-lon" value="-122.4000" step="0.0001"/></label>
+      <label>line bearing ° <input type="number" id="sim-drill-bearing" value="90" step="1"/></label>
+      <label>line length m <input type="number" id="sim-drill-len" value="100" step="10"/></label>
+      <label>TWD ° <input type="number" id="sim-drill-twd" value="180" step="1"/></label>
+      <label>SOG kn <input type="number" id="sim-drill-sog" value="4" step="0.5"/></label>
+      <label>duration s <input type="number" id="sim-drill-dur" value="30" step="5"/></label>
+      <button onclick="sim.runDrill()">Run drill</button>
+    </div>
+  </div>
+
+  <div class="sim-section">
     <h3>Action log</h3>
     <div class="sim-log" id="sim-log"></div>
     <div class="sim-row" style="margin-top: .5rem">

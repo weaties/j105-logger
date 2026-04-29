@@ -1,8 +1,14 @@
 """Race-start simulator (#690).
 
 Offline validation harness for #644: time skew, synthetic boat state, and
-scenario presets. Mounted only when ``RACE_START_SIMULATOR=true`` so it
-never appears in production.
+scenario presets.
+
+Access is gated on the developer flag (``users.is_developer = 1``) — the
+routes are always mounted, but a non-developer hits a 403, so the page
+isn't usable to anyone but a dev. ``RACE_START_SIMULATOR=false`` (or
+``=off``) is a hard kill switch that turns the routes into 404s for
+defense in depth on prod boats; the default is "on" so devs can use it
+without restarting the service.
 
 The simulator exercises the *real* race-start routes — we don't fake the
 FSM, the flag resolver, or the geometry. We only fake (a) the wall clock
@@ -13,6 +19,8 @@ through the real code stays in the test loop.
 
 from __future__ import annotations
 
+import asyncio
+import math
 import os
 from datetime import UTC, datetime
 from typing import Any
@@ -21,7 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from helmlog.auth import require_auth
+from helmlog.auth import require_developer
 from helmlog.routes._helpers import audit, get_storage, templates, tpl_ctx
 
 router = APIRouter()
@@ -33,20 +41,22 @@ router = APIRouter()
 
 
 def is_simulator_enabled() -> bool:
-    """Whether the simulator is enabled for this process."""
-    return os.environ.get("RACE_START_SIMULATOR", "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    """Whether the simulator routes are mounted at all.
+
+    Defaults to True so devs can use the simulator without restarting the
+    service. Set ``RACE_START_SIMULATOR=false`` (or ``off``/``no``/``0``)
+    to disable as a kill switch on production boats. Per-route auth still
+    enforces ``is_developer`` regardless of this flag.
+    """
+    val = os.environ.get("RACE_START_SIMULATOR", "true").lower()
+    return val not in {"0", "false", "no", "off"}
 
 
 def _require_sim() -> None:
     if not is_simulator_enabled():
         raise HTTPException(
             status_code=404,
-            detail="race-start simulator not enabled (set RACE_START_SIMULATOR=true)",
+            detail="race-start simulator disabled (RACE_START_SIMULATOR=false)",
         )
 
 
@@ -62,7 +72,7 @@ def _require_sim() -> None:
 )
 async def sim_page(
     request: Request,
-    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    _user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> Response:
     _require_sim()
     return templates.TemplateResponse(
@@ -91,7 +101,7 @@ class ClockRequest(BaseModel):
 @router.get("/api/race-start/sim/clock")
 async def sim_get_clock(
     request: Request,
-    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    _user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     _require_sim()
     offset = float(getattr(request.app.state, "race_start_sim_offset_s", 0.0))
@@ -110,7 +120,7 @@ async def sim_get_clock(
 async def sim_set_clock(
     request: Request,
     body: ClockRequest,
-    user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     _require_sim()
     request.app.state.race_start_sim_offset_s = float(body.offset_s)
@@ -178,7 +188,7 @@ async def _write_synthetic_state(request: Request, body: BoatStateRequest) -> di
 async def sim_set_boat(
     request: Request,
     body: BoatStateRequest,
-    user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     _require_sim()
     written = await _write_synthetic_state(request, body)
@@ -294,7 +304,7 @@ SCENARIOS: dict[str, list[dict[str, Any]]] = {
 @router.get("/api/race-start/sim/scenarios")
 async def sim_list_scenarios(
     request: Request,
-    _user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    _user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     _require_sim()
     return JSONResponse(
@@ -311,7 +321,7 @@ class StepRequest(BaseModel):
 async def sim_step(
     request: Request,
     body: StepRequest,
-    user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     """Apply one step of a scenario.
 
@@ -351,7 +361,7 @@ async def sim_step(
 @router.post("/api/race-start/sim/reset")
 async def sim_reset(
     request: Request,
-    user: dict[str, Any] = Depends(require_auth("crew")),  # noqa: B008
+    user: dict[str, Any] = Depends(require_developer),  # noqa: B008
 ) -> JSONResponse:
     """Reset clock offset to 0 and clear race-start state.
 
@@ -365,3 +375,146 @@ async def sim_reset(
     await storage.clear_race_start_state()
     await audit(request, "race_start_sim.reset", user=user)
     return JSONResponse({"offset_s": 0.0, "fsm_cleared": True})
+
+
+# ---------------------------------------------------------------------------
+# Prestart drill — auto-walk the boat around the line for a few minutes
+# ---------------------------------------------------------------------------
+
+
+# A circular hold pattern around a synthetic start line. The drill writes
+# one position every DRILL_TICK_S seconds for DRILL_DURATION_S real seconds.
+DRILL_TICK_S: float = 1.0
+DRILL_DURATION_S: float = 30.0  # 30 s of real time
+DRILL_RADIUS_M: float = 60.0  # circle radius around midline
+DRILL_TWS_KN: float = 10.0
+
+
+def _offset_lat_lon(
+    lat: float, lon: float, bearing_deg: float, distance_m: float
+) -> tuple[float, float]:
+    """Project a (lat, lon) by *distance_m* metres along *bearing_deg*.
+
+    Small-angle approximation — accurate enough at start-line scales.
+    """
+    rad = math.radians(bearing_deg)
+    dlat = (distance_m * math.cos(rad)) / 111_320.0
+    dlon = (distance_m * math.sin(rad)) / (111_320.0 * math.cos(math.radians(lat)))
+    return (lat + dlat, lon + dlon)
+
+
+class DrillRequest(BaseModel):
+    center_lat: float = 47.6500
+    center_lon: float = -122.4000
+    line_bearing_deg: float = 90.0  # boat-end → pin-end bearing
+    line_length_m: float = 100.0
+    twd_deg: float = 180.0  # wind from south (square line)
+    sog_kn: float = 4.0
+    duration_s: float = DRILL_DURATION_S
+
+
+async def _run_drill(app: Any, body: DrillRequest) -> None:  # noqa: ANN401 — FastAPI app type
+    """Background task — writes one position per second around the start
+    area for ``duration_s`` seconds. The dev sees positions accumulate on
+    the session map in real time."""
+    storage = app.state.storage
+    n_ticks = int(body.duration_s / DRILL_TICK_S)
+    for i in range(n_ticks):
+        # Hold-pattern circle around the line midpoint.
+        angle = (i / n_ticks) * 360.0
+        lat, lon = _offset_lat_lon(body.center_lat, body.center_lon, angle, DRILL_RADIUS_M)
+        # COG is tangent to the circle (angle + 90).
+        cog = (angle + 90.0) % 360.0
+        ts = datetime.now(UTC).isoformat()
+        try:
+            db = storage._conn()  # noqa: SLF001
+            await db.execute(
+                "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+                " VALUES (?, ?, ?, ?)",
+                (ts, 0, lat, lon),
+            )
+            await db.execute(
+                "INSERT INTO cogsog (ts, source_addr, cog_deg, sog_kts) VALUES (?, ?, ?, ?)",
+                (ts, 0, cog, body.sog_kn),
+            )
+            await db.execute(
+                "INSERT INTO winds"
+                " (ts, source_addr, wind_speed_kts, wind_angle_deg, reference)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (ts, 0, DRILL_TWS_KN, body.twd_deg, 0),
+            )
+            await db.commit()
+        except Exception:  # noqa: BLE001
+            # Drill is best-effort — never fail loudly.
+            return
+        await asyncio.sleep(DRILL_TICK_S)
+
+
+@router.post("/api/race-start/sim/drill")
+async def sim_drill(
+    request: Request,
+    body: DrillRequest,
+    user: dict[str, Any] = Depends(require_developer),  # noqa: B008
+) -> JSONResponse:
+    """Kick off the prestart drill in the background.
+
+    Writes positions around a synthetic start line for ``duration_s``
+    seconds. Also stamps the line endpoints into ``start_line_pings``
+    so the line draws on the session map immediately. The dev should
+    have already run ``/control`` → "Start race" so positions land in
+    the active race's window.
+    """
+    _require_sim()
+    # Stamp the line endpoints (boat = west, pin = east of centre along
+    # line_bearing_deg). Tied to the active race if there is one.
+    storage = get_storage(request)
+    half = body.line_length_m / 2.0
+    boat_lat, boat_lon = _offset_lat_lon(
+        body.center_lat, body.center_lon, (body.line_bearing_deg + 180.0) % 360.0, half
+    )
+    pin_lat, pin_lon = _offset_lat_lon(
+        body.center_lat, body.center_lon, body.line_bearing_deg, half
+    )
+    current_race = await storage.get_current_race()
+    race_id = current_race.id if current_race else None
+    now = datetime.now(UTC)
+    await storage.add_start_line_ping(
+        race_id=race_id,
+        end_kind="boat",
+        latitude_deg=boat_lat,
+        longitude_deg=boat_lon,
+        captured_at=now,
+        captured_by=user.get("id"),
+    )
+    await storage.add_start_line_ping(
+        race_id=race_id,
+        end_kind="pin",
+        latitude_deg=pin_lat,
+        longitude_deg=pin_lon,
+        captured_at=now,
+        captured_by=user.get("id"),
+    )
+
+    # Fire-and-forget background task. Using request.app.state.storage so
+    # we don't depend on the request scope after we return.
+    asyncio.create_task(_run_drill(request.app, body))
+
+    await audit(
+        request,
+        "race_start_sim.drill",
+        detail=f"center=({body.center_lat:.4f},{body.center_lon:.4f})"
+        f" len={body.line_length_m}m duration={body.duration_s}s",
+        user=user,
+    )
+    return JSONResponse(
+        {
+            "started": True,
+            "duration_s": body.duration_s,
+            "center": [body.center_lat, body.center_lon],
+            "line_endpoints": {
+                "boat": [boat_lat, boat_lon],
+                "pin": [pin_lat, pin_lon],
+            },
+            "race_id": race_id,
+        }
+    )
