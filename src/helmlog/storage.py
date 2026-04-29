@@ -198,7 +198,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 81
+_CURRENT_VERSION: int = 82
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1967,6 +1967,80 @@ _MIGRATIONS: dict[int, str] = {
         -- matching reference partition and take the newest row in O(log n).
         CREATE INDEX IF NOT EXISTS idx_winds_reference_ts
             ON winds(reference, ts);
+    """,
+    82: """
+        -- #697 LLM-powered transcript Q&A and verbal callback detection.
+        -- Diarized transcripts are routed to a hosted LLM (a new external
+        -- data flow). The consent flag below gates everything until an
+        -- admin acknowledges the policy. Per-race tables so deleting a
+        -- race wipes its LLM artefacts in the same transaction.
+
+        CREATE TABLE IF NOT EXISTS llm_qa (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id             INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            user_id             INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            question            TEXT    NOT NULL,
+            answer              TEXT,
+            citations_json      TEXT    NOT NULL DEFAULT '[]',
+            model               TEXT    NOT NULL,
+            input_tokens        INTEGER NOT NULL DEFAULT 0,
+            output_tokens       INTEGER NOT NULL DEFAULT 0,
+            cache_read_tokens   INTEGER NOT NULL DEFAULT 0,
+            cache_create_tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd            REAL    NOT NULL DEFAULT 0,
+            status              TEXT    NOT NULL DEFAULT 'complete',
+            error_msg           TEXT,
+            created_at          TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_qa_race_created
+            ON llm_qa(race_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS llm_callbacks (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id         INTEGER NOT NULL REFERENCES races(id) ON DELETE CASCADE,
+            speaker_label   TEXT,
+            anchor_ts       TEXT NOT NULL,
+            source_excerpt  TEXT NOT NULL,
+            rationale       TEXT,
+            moment_id       INTEGER REFERENCES moments(id) ON DELETE SET NULL,
+            created_at      TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_llm_callbacks_race_ts
+            ON llm_callbacks(race_id, anchor_ts);
+        CREATE INDEX IF NOT EXISTS idx_llm_callbacks_speaker
+            ON llm_callbacks(race_id, speaker_label);
+
+        -- One row per race tracking the detection-job lifecycle (state
+        -- diagram §2 of the spec). cost_usd is the LLM spend for the job
+        -- itself. Per-query Q&A spend lives on llm_qa.
+        CREATE TABLE IF NOT EXISTS llm_callback_jobs (
+            race_id     INTEGER PRIMARY KEY REFERENCES races(id) ON DELETE CASCADE,
+            status      TEXT    NOT NULL DEFAULT 'NotRun',
+            error_msg   TEXT,
+            cost_usd    REAL    NOT NULL DEFAULT 0,
+            started_at  TEXT,
+            finished_at TEXT
+        );
+
+        -- Per-race cap overrides. Absent row = use config defaults.
+        CREATE TABLE IF NOT EXISTS llm_race_caps (
+            race_id        INTEGER PRIMARY KEY REFERENCES races(id) ON DELETE CASCADE,
+            soft_warn_usd  REAL,
+            hard_cap_usd   REAL,
+            updated_by     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            updated_at     TEXT NOT NULL
+        );
+
+        -- Boat-wide consent acknowledgement (admin one-time, per spec).
+        -- Singleton row with id fixed at 1. INSERT OR IGNORE guarantees
+        -- the row exists so updates are unconditional.
+        CREATE TABLE IF NOT EXISTS llm_consent (
+            id           INTEGER PRIMARY KEY CHECK (id = 1),
+            acknowledged INTEGER NOT NULL DEFAULT 0,
+            by_user      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            at           TEXT
+        );
+        INSERT OR IGNORE INTO llm_consent (id, acknowledged) VALUES (1, 0);
     """,
 }
 
@@ -7642,6 +7716,255 @@ class Storage:
         )
         rows = await cur.fetchall()
         return [dict(row) for row in rows]
+
+    # ------------------------------------------------------------------
+    # LLM transcript Q&A and callback detection (#697)
+    # ------------------------------------------------------------------
+
+    async def get_llm_consent(self) -> dict[str, Any] | None:
+        """Return the LLM consent record, or None if not yet acknowledged.
+
+        Diarized transcripts are PII; the consent flag must be set before
+        any transcript is sent to a hosted LLM.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT acknowledged, by_user, at FROM llm_consent WHERE id = 1"
+        )
+        row = await cur.fetchone()
+        if row is None or not row["acknowledged"]:
+            return None
+        return {"by_user": row["by_user"], "at": row["at"]}
+
+    async def acknowledge_llm_consent(self, user_id: int) -> None:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        await db.execute(
+            "UPDATE llm_consent SET acknowledged = 1, by_user = ?, at = ?"
+            " WHERE id = 1 AND acknowledged = 0",
+            (user_id, _datetime.now(_UTC).isoformat()),
+        )
+        await db.commit()
+
+    async def insert_llm_qa(
+        self,
+        *,
+        race_id: int,
+        user_id: int | None,
+        question: str,
+        answer: str | None,
+        citations: list[dict[str, Any]],
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_create_tokens: int,
+        cost_usd: float,
+        status: str = "complete",
+        error_msg: str | None = None,
+    ) -> int:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO llm_qa (race_id, user_id, question, answer, citations_json,"
+            " model, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_create_tokens, cost_usd, status, error_msg, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                race_id, user_id, question, answer, json.dumps(citations),
+                model, input_tokens, output_tokens, cache_read_tokens,
+                cache_create_tokens, cost_usd, status, error_msg,
+                _datetime.now(_UTC).isoformat(),
+            ),
+        )
+        await db.commit()
+        assert cur.lastrowid is not None
+        return cur.lastrowid
+
+    async def list_llm_qa(self, race_id: int) -> list[dict[str, Any]]:
+        cur = await self._read_conn().execute(
+            "SELECT id, race_id, user_id, question, answer, citations_json,"
+            " model, input_tokens, output_tokens, cache_read_tokens,"
+            " cache_create_tokens, cost_usd, status, error_msg, created_at"
+            " FROM llm_qa WHERE race_id = ? ORDER BY created_at, id",
+            (race_id,),
+        )
+        rows = await cur.fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            d = dict(row)
+            d["citations"] = json.loads(d.pop("citations_json") or "[]")
+            out.append(d)
+        return out
+
+    async def replace_llm_callbacks(
+        self,
+        *,
+        race_id: int,
+        callbacks: list[dict[str, Any]],
+        job_cost_usd: float,
+    ) -> None:
+        """Replace all detected callbacks for a race in one transaction.
+
+        Idempotent re-run: prior `llm_callbacks` rows for the race are
+        deleted, the new set is inserted, and the per-race job row is
+        updated to Complete with cumulative cost. Linked `moments` survive
+        because moment rows are independent (the FK from llm_callbacks
+        only flows the other way).
+        """
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(_UTC).isoformat()
+        db = self._conn()
+        await db.execute("BEGIN")
+        try:
+            await db.execute("DELETE FROM llm_callbacks WHERE race_id = ?", (race_id,))
+            for cb in callbacks:
+                await db.execute(
+                    "INSERT INTO llm_callbacks (race_id, speaker_label, anchor_ts,"
+                    " source_excerpt, rationale, created_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        race_id, cb.get("speaker_label"), cb["anchor_ts"],
+                        cb["source_excerpt"], cb.get("rationale"), now,
+                    ),
+                )
+            await db.execute(
+                "INSERT INTO llm_callback_jobs (race_id, status, cost_usd,"
+                " started_at, finished_at) VALUES (?, 'Complete', ?, ?, ?)"
+                " ON CONFLICT(race_id) DO UPDATE SET"
+                " status = 'Complete', error_msg = NULL,"
+                " cost_usd = llm_callback_jobs.cost_usd + excluded.cost_usd,"
+                " finished_at = excluded.finished_at",
+                (race_id, job_cost_usd, now, now),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def list_llm_callbacks(
+        self, race_id: int, *, speaker: str | None = None,
+    ) -> list[dict[str, Any]]:
+        sql = (
+            "SELECT id, race_id, speaker_label, anchor_ts, source_excerpt,"
+            " rationale, moment_id, created_at FROM llm_callbacks"
+            " WHERE race_id = ?"
+        )
+        params: list[Any] = [race_id]
+        if speaker is not None:
+            sql += " AND speaker_label = ?"
+            params.append(speaker)
+        sql += " ORDER BY anchor_ts, id"
+        cur = await self._read_conn().execute(sql, params)
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def link_llm_callback_moment(
+        self, *, callback_id: int, moment_id: int,
+    ) -> None:
+        db = self._conn()
+        await db.execute(
+            "UPDATE llm_callbacks SET moment_id = ? WHERE id = ?",
+            (moment_id, callback_id),
+        )
+        await db.commit()
+
+    async def get_callback_job(self, race_id: int) -> dict[str, Any] | None:
+        cur = await self._read_conn().execute(
+            "SELECT race_id, status, error_msg, cost_usd, started_at, finished_at"
+            " FROM llm_callback_jobs WHERE race_id = ?",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def set_callback_job(
+        self,
+        race_id: int,
+        *,
+        status: str,
+        error_msg: str | None = None,
+        cost_usd: float | None = None,
+    ) -> None:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        if status not in {"NotRun", "Running", "Complete", "Failed"}:
+            raise ValueError(f"invalid callback job status: {status!r}")
+        now = _datetime.now(_UTC).isoformat()
+        started = now if status == "Running" else None
+        finished = now if status in {"Complete", "Failed"} else None
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO llm_callback_jobs (race_id, status, error_msg, cost_usd,"
+            " started_at, finished_at) VALUES (?, ?, ?, COALESCE(?, 0), ?, ?)"
+            " ON CONFLICT(race_id) DO UPDATE SET"
+            " status = excluded.status,"
+            " error_msg = excluded.error_msg,"
+            " cost_usd = COALESCE(?, llm_callback_jobs.cost_usd),"
+            " started_at = COALESCE(excluded.started_at, llm_callback_jobs.started_at),"
+            " finished_at = COALESCE(excluded.finished_at, llm_callback_jobs.finished_at)",
+            (race_id, status, error_msg, cost_usd, started, finished, cost_usd),
+        )
+        await db.commit()
+
+    async def get_race_caps(self, race_id: int) -> dict[str, Any] | None:
+        cur = await self._read_conn().execute(
+            "SELECT race_id, soft_warn_usd, hard_cap_usd, updated_by, updated_at"
+            " FROM llm_race_caps WHERE race_id = ?",
+            (race_id,),
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def set_race_caps(
+        self,
+        *,
+        race_id: int,
+        soft_warn_usd: float | None,
+        hard_cap_usd: float | None,
+        by_user: int | None,
+    ) -> None:
+        from datetime import UTC as _UTC
+        from datetime import datetime as _datetime
+
+        now = _datetime.now(_UTC).isoformat()
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO llm_race_caps (race_id, soft_warn_usd, hard_cap_usd,"
+            " updated_by, updated_at) VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(race_id) DO UPDATE SET"
+            " soft_warn_usd = excluded.soft_warn_usd,"
+            " hard_cap_usd = excluded.hard_cap_usd,"
+            " updated_by = excluded.updated_by,"
+            " updated_at = excluded.updated_at",
+            (race_id, soft_warn_usd, hard_cap_usd, by_user, now),
+        )
+        await db.commit()
+
+    async def race_llm_cost(self, race_id: int) -> float:
+        """Sum of per-race LLM spend across Q&A queries and the callback job.
+
+        Includes failed Q&A rows because tokens may have been billed before
+        the failure — counting them prevents repeated failures from
+        bypassing the per-race hard cap.
+        """
+        cur = await self._read_conn().execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) AS qa FROM llm_qa WHERE race_id = ?",
+            (race_id,),
+        )
+        qa_row = await cur.fetchone()
+        cur = await self._read_conn().execute(
+            "SELECT COALESCE(cost_usd, 0) AS job FROM llm_callback_jobs WHERE race_id = ?",
+            (race_id,),
+        )
+        job_row = await cur.fetchone()
+        return float(qa_row["qa"]) + float(job_row["job"] if job_row else 0)
 
     # ------------------------------------------------------------------
     # Color schemes (#347)

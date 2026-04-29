@@ -343,6 +343,7 @@ async def transcribe_session(
                 len(all_segments),
             )
             await _run_trigger_scan(storage, audio_session_id, row, all_segments)
+            await _run_llm_callback_detection(storage, audio_session_id)
             return
 
         # ----- Single-channel mode (Existing logic) -----
@@ -379,6 +380,7 @@ async def transcribe_session(
             if diarize and segments:
                 await _try_auto_match(storage, transcript_id, file_path, segments)
             await _run_trigger_scan(storage, audio_session_id, row, segments)
+            await _run_llm_callback_detection(storage, audio_session_id)
             return
 
         # ----- Local processing (fallback) -----
@@ -435,6 +437,7 @@ async def transcribe_session(
 
         # Auto-scan for trigger keywords and create tagged notes
         await _run_trigger_scan(storage, audio_session_id, row, segments)
+        await _run_llm_callback_detection(storage, audio_session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("Transcription failed: audio_session_id={} err={}", audio_session_id, exc)
         await storage.update_transcript(transcript_id, status="error", error_msg=str(exc))
@@ -467,6 +470,47 @@ async def _run_trigger_scan(
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Trigger scan failed for audio_session_id={}: {}", audio_session_id, exc)
+
+
+async def _run_llm_callback_detection(
+    storage: Storage,
+    audio_session_id: int,
+) -> None:
+    """Auto-trigger the LLM verbal-callback job once per race (#697).
+
+    Best-effort: silently no-op when ``ANTHROPIC_API_KEY`` is unset, the
+    audio session is not linked to a race, the consent flag is unset, or
+    the cost cap is reached. The admin can always re-run via the route.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return
+    try:
+        from helmlog.llm_callback_job import maybe_run_after_transcription
+        from helmlog.llm_client import LLMClient, LLMConfig
+
+        cfg = LLMConfig(
+            api_key=api_key,
+            model=os.environ.get("LLM_CALLBACK_MODEL", "claude-haiku-4-5-20251001"),
+            endpoint=os.environ.get("LLM_ENDPOINT", "https://api.anthropic.com/v1/messages"),
+            input_usd_per_mtok=1.00,
+            output_usd_per_mtok=5.00,
+            cache_read_usd_per_mtok=0.10,
+            cache_write_usd_per_mtok=1.25,
+        )
+        result = await maybe_run_after_transcription(
+            storage, audio_session_id=audio_session_id, client=LLMClient(cfg),
+        )
+        if result is not None:
+            logger.info(
+                "LLM callback detection: audio_session_id={} result={}",
+                audio_session_id, result,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "LLM callback detection failed for audio_session_id={}: {}",
+            audio_session_id, exc,
+        )
 
 
 # ---------------------------------------------------------------------------
