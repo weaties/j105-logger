@@ -25,10 +25,6 @@ class TestParseCallbackArray:
     def test_plain_json(self) -> None:
         assert _parse_callback_array('[{"a":1}]') == [{"a": 1}]
 
-    def test_with_assistant_prefill_attached(self) -> None:
-        # The detect_callbacks path prepends "[" to the response.
-        assert _parse_callback_array('[' + '{"a":1}]') == [{"a": 1}]
-
     def test_strips_markdown_fences(self) -> None:
         assert _parse_callback_array("```json\n[{\"a\":1}]\n```") == [{"a": 1}]
 

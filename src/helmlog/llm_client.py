@@ -190,11 +190,6 @@ class LLMClient:
         transcript_text: str,
         max_tokens: int = 4096,
     ) -> tuple[list[dict[str, Any]], float]:
-        # Pre-fill the assistant turn with "[" to force the model to
-        # continue from a JSON-array opening bracket. Anthropic's API
-        # supports this and it dramatically improves JSON-mode reliability
-        # for Haiku, which otherwise tends to wrap output in prose or
-        # ```json fences.
         body = {
             "model": self._cfg.model,
             "max_tokens": max_tokens,
@@ -208,18 +203,22 @@ class LLMClient:
                             "text": f"Race transcript:\n{transcript_text}",
                             "cache_control": {"type": "ephemeral"},
                         },
-                        {"type": "text", "text": "Return the JSON array now."},
+                        {
+                            "type": "text",
+                            "text": (
+                                "Return the JSON array now. Output ONLY the "
+                                "array, starting with [ and ending with ]. "
+                                "Do not wrap in markdown fences. Do not add "
+                                "preamble or explanation."
+                            ),
+                        },
                     ],
                 },
-                {"role": "assistant", "content": "["},
             ],
         }
         usage, text = await self._post(body)
         cost = _compute_cost(self._cfg, usage)
-        # The pre-fill "[" is not part of the response — re-attach it,
-        # but only if the model didn't already echo it back.
-        candidate = text if text.lstrip().startswith("[") else "[" + text
-        parsed = _parse_callback_array(candidate)
+        parsed = _parse_callback_array(text)
         if parsed is None:
             logger.warning(
                 "callback detection returned unparseable text (first 500 chars): {!r}",
@@ -236,7 +235,14 @@ class LLMClient:
         }
         async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
             resp = await client.post(self._cfg.endpoint, headers=headers, json=body)
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                # Surface Anthropic's error body — `raise_for_status` only
+                # mentions the status code, which makes 400s opaque.
+                logger.warning(
+                    "Anthropic API {} for model={}: {}",
+                    resp.status_code, self._cfg.model, resp.text[:1000],
+                )
+                resp.raise_for_status()
             payload = resp.json()
         usage = payload.get("usage") or {}
         # First text content block holds the answer
