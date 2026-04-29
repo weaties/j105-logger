@@ -122,6 +122,7 @@
       renderPhase();
       renderFlags();
       renderClock();
+      renderLineMetrics(snapshot.line_metrics);
       showError("");
     } catch (e) {
       showError("could not load state: " + e.message);
@@ -157,6 +158,7 @@
       renderPhase();
       renderFlags();
       renderClock();
+      renderLineMetrics(snapshot.line_metrics);
     } catch (e) {
       showError(e.message);
     }
@@ -178,8 +180,12 @@
         { kind: "5-4-1-0", t0_utc: defaultT0Utc() }));
   bind("rs-sync", () => {
     if (!snapshot || !snapshot.t0_utc) return showError("arm a sequence first");
-    // Sync at t0 — the user is tapping at the start gun.
-    action("/api/race-start/sync", { expected_signal_offset_s: 0 });
+    // Sync rounds the countdown to the nearest minute. Use case: user
+    // hears the prep gun late — countdown reads 4:10 but should be 4:00.
+    // Tap sync; we re-anchor so remaining = round(remaining / 60) × 60.
+    const remaining = (new Date(snapshot.t0_utc).getTime() - Date.now()) / 1000;
+    const rounded = Math.round(remaining / 60) * 60;
+    action("/api/race-start/sync", { expected_signal_offset_s: rounded });
   });
   bind("rs-plus-min", () => action("/api/race-start/nudge", { delta_s: 60 }));
   bind("rs-minus-min", () => action("/api/race-start/nudge", { delta_s: -60 }));

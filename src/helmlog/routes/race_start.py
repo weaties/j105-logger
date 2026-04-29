@@ -172,6 +172,36 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
 
     flags = flag_state(state, now)
 
+    # Live line metrics from the latest position + cogsog + wind. Pulling
+    # these into the state snapshot means the page can render bearing /
+    # length / bias / dist / time-to-line on every poll without a separate
+    # round-trip. Returns None for any field we can't compute (incomplete
+    # line, low SOG, missing TWD — see EARS §E in the spec).
+    metrics_payload: dict[str, Any] | None = None
+    if line.is_complete:
+        latest_pos = await storage.latest_position()
+        instr = await storage.latest_instruments()
+        m = line_metrics(
+            line,
+            boat_lat=latest_pos["latitude_deg"] if latest_pos else None,
+            boat_lon=latest_pos["longitude_deg"] if latest_pos else None,
+            sog_kn=instr.get("sog_kts"),
+            twd_deg=instr.get("twd_deg"),
+            cog_deg=instr.get("cog_deg"),
+        )
+        if m is not None:
+            metrics_payload = {
+                "line_bearing_deg": m.line_bearing_deg,
+                "line_length_m": m.line_length_m,
+                "line_bias_deg": m.line_bias_deg,
+                "favoured_end": m.favoured_end,
+                "distance_to_line_m": m.distance_to_line_m,
+                "side_of_line": m.side_of_line,
+                "time_to_line_s": m.time_to_line_s,
+                "time_to_burn_s": m.time_to_burn_s,
+                "note": m.note,
+            }
+
     return {
         "now_utc": now.isoformat(),
         "phase": state.phase,
@@ -210,6 +240,7 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
             ),
             "is_complete": line.is_complete,
         },
+        "line_metrics": metrics_payload,
         "race_id": race_id,
     }
 
