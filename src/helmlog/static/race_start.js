@@ -20,6 +20,14 @@
 
   let snapshot = null;
 
+  // Virtual-now matches the server's clock (real + simulator offset).
+  // In production sim_offset_s is always 0; in the simulator it's whatever
+  // the harness has set, so display + sync stay in sync with the FSM.
+  function virtualNowMs() {
+    const offset = snapshot && snapshot.sim_offset_s ? snapshot.sim_offset_s : 0;
+    return Date.now() + offset * 1000;
+  }
+
   function showError(msg) {
     errorEl.textContent = msg || "";
   }
@@ -39,7 +47,7 @@
       return;
     }
     const t0 = new Date(snapshot.t0_utc).getTime();
-    const now = Date.now();
+    const now = virtualNowMs();
     const remaining = (t0 - now) / 1000;  // seconds; negative after t0
 
     // Display countdown as a positive number until t0, then count up.
@@ -109,11 +117,20 @@
   async function refreshState() {
     try {
       const r = await fetch("/api/race-start/state");
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      const ct = r.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        const text = await r.text();
+        throw new Error("HTTP " + r.status + " (non-JSON): " + text.slice(0, 120));
+      }
+      if (!r.ok) {
+        const data = await r.json();
+        throw new Error(data.detail || "HTTP " + r.status);
+      }
       snapshot = await r.json();
       renderPhase();
       renderFlags();
       renderClock();
+      renderLineMetrics(snapshot.line_metrics);
       showError("");
     } catch (e) {
       showError("could not load state: " + e.message);
@@ -126,6 +143,14 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     });
+    const ct = r.headers.get("content-type") || "";
+    const isJSON = ct.includes("application/json");
+    if (!isJSON) {
+      const text = await r.text();
+      throw new Error(
+        "HTTP " + r.status + " (non-JSON): " + text.slice(0, 120)
+      );
+    }
     const data = await r.json();
     if (!r.ok) {
       throw new Error(data.detail || ("HTTP " + r.status));
@@ -141,14 +166,17 @@
       renderPhase();
       renderFlags();
       renderClock();
+      renderLineMetrics(snapshot.line_metrics);
     } catch (e) {
       showError(e.message);
     }
   }
 
   function defaultT0Utc() {
-    // Default arm: 5 minutes from now, rounded up to next 30s.
-    const ms = Date.now() + 5 * 60 * 1000;
+    // Default arm: 5 minutes from virtual-now, rounded up to next 30s.
+    // Using virtualNowMs() means the simulator's clock skew is honored
+    // so the displayed countdown actually reads ~5:00 after Arm.
+    const ms = virtualNowMs() + 5 * 60 * 1000;
     const rounded = Math.ceil(ms / 30000) * 30000;
     return new Date(rounded).toISOString();
   }
@@ -162,8 +190,12 @@
         { kind: "5-4-1-0", t0_utc: defaultT0Utc() }));
   bind("rs-sync", () => {
     if (!snapshot || !snapshot.t0_utc) return showError("arm a sequence first");
-    // Sync at t0 — the user is tapping at the start gun.
-    action("/api/race-start/sync", { expected_signal_offset_s: 0 });
+    // Sync rounds the countdown to the nearest minute. Use case: user
+    // hears the prep gun late — countdown reads 4:10 but should be 4:00.
+    // Tap sync; we re-anchor so remaining = round(remaining / 60) × 60.
+    const remaining = (new Date(snapshot.t0_utc).getTime() - virtualNowMs()) / 1000;
+    const rounded = Math.round(remaining / 60) * 60;
+    action("/api/race-start/sync", { expected_signal_offset_s: rounded });
   });
   bind("rs-plus-min", () => action("/api/race-start/nudge", { delta_s: 60 }));
   bind("rs-minus-min", () => action("/api/race-start/nudge", { delta_s: -60 }));
@@ -196,9 +228,14 @@
   bind("rs-ping-boat", () => pingEnd("boat"));
   bind("rs-ping-pin", () => pingEnd("pin"));
 
-  // Live tick at 4 Hz; reconcile from server every 30 s.
+  // Local clock tick at 4 Hz; reconcile from server every 2 s so that
+  // arm / sync / ping / postpone fired from one device shows up on
+  // every other device almost immediately (#644). This is a polling
+  // fallback — a WebSocket broadcast would be cheaper at scale, but at
+  // 2 s × handful of devices the load is negligible and the flow is
+  // robust to disconnect.
   setInterval(renderClock, 250);
-  setInterval(refreshState, 30000);
+  setInterval(refreshState, 2000);
 
   refreshState();
 })();

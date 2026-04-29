@@ -8,7 +8,7 @@ from the snapshot returned by ``GET /api/race-start/state``.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -45,8 +45,25 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
-def _now_utc() -> datetime:
-    return datetime.now(UTC)
+def _sim_offset_s(request: Request) -> float:
+    """Race-start simulator clock offset, in seconds. 0 in production.
+
+    The simulator (#690, gated by ``RACE_START_SIMULATOR=true``) sets this
+    on ``app.state`` to skew the FSM clock for offline validation. Outside
+    the simulator the attribute is absent and the offset is 0.
+    """
+    return float(getattr(request.app.state, "race_start_sim_offset_s", 0.0))
+
+
+def _now_utc(request: Request | None = None) -> datetime:
+    """Wall-clock UTC, plus simulator skew when the simulator is active."""
+    real = datetime.now(UTC)
+    if request is None:
+        return real
+    offset = _sim_offset_s(request)
+    if offset == 0.0:
+        return real
+    return real + timedelta(seconds=offset)
 
 
 def _parse_dt(s: str | None) -> datetime | None:
@@ -113,7 +130,7 @@ async def _save_state(request: Request, state: SequenceState) -> None:
         last_sync_at_utc=state.last_sync_at_utc,
         started_at_utc=state.started_at_utc,
         classes_json=_classes_to_json(state.classes),
-        now_utc=_now_utc(),
+        now_utc=_now_utc(request),
     )
     # When the gun fires (state.phase == "started") and a race is in
     # progress, anchor its start_utc to the actual gun time. Cheap to
@@ -131,7 +148,7 @@ async def _save_state(request: Request, state: SequenceState) -> None:
 
 async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, Any]:
     """Build the JSON snapshot returned by GET /api/race-start/state."""
-    now = _now_utc()
+    now = _now_utc(request)
     state = tick(state, now)
     if state != (await _load_state(request)):
         # tick() advanced the phase — persist so reloads don't replay.
@@ -155,8 +172,39 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
 
     flags = flag_state(state, now)
 
+    # Live line metrics from the latest position + cogsog + wind. Pulling
+    # these into the state snapshot means the page can render bearing /
+    # length / bias / dist / time-to-line on every poll without a separate
+    # round-trip. Returns None for any field we can't compute (incomplete
+    # line, low SOG, missing TWD — see EARS §E in the spec).
+    metrics_payload: dict[str, Any] | None = None
+    if line.is_complete:
+        latest_pos = await storage.latest_position()
+        instr = await storage.latest_instruments()
+        m = line_metrics(
+            line,
+            boat_lat=latest_pos["latitude_deg"] if latest_pos else None,
+            boat_lon=latest_pos["longitude_deg"] if latest_pos else None,
+            sog_kn=instr.get("sog_kts"),
+            twd_deg=instr.get("twd_deg"),
+            cog_deg=instr.get("cog_deg"),
+        )
+        if m is not None:
+            metrics_payload = {
+                "line_bearing_deg": m.line_bearing_deg,
+                "line_length_m": m.line_length_m,
+                "line_bias_deg": m.line_bias_deg,
+                "favoured_end": m.favoured_end,
+                "distance_to_line_m": m.distance_to_line_m,
+                "side_of_line": m.side_of_line,
+                "time_to_line_s": m.time_to_line_s,
+                "time_to_burn_s": m.time_to_burn_s,
+                "note": m.note,
+            }
+
     return {
         "now_utc": now.isoformat(),
+        "sim_offset_s": _sim_offset_s(request),
         "phase": state.phase,
         "kind": state.kind,
         "t0_utc": state.t0_utc.isoformat() if state.t0_utc else None,
@@ -193,6 +241,7 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
             ),
             "is_complete": line.is_complete,
         },
+        "line_metrics": metrics_payload,
         "race_id": race_id,
     }
 
@@ -289,7 +338,7 @@ async def api_sync(
 ) -> JSONResponse:
     state = await _load_state(request)
     try:
-        new_state = sync_to_gun(state, _now_utc(), body.expected_signal_offset_s)
+        new_state = sync_to_gun(state, _now_utc(request), body.expected_signal_offset_s)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await _save_state(request, new_state)
@@ -370,7 +419,7 @@ async def api_recall(
 ) -> JSONResponse:
     state = await _load_state(request)
     try:
-        new_state = general_recall(state, _now_utc())
+        new_state = general_recall(state, _now_utc(request))
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await _save_state(request, new_state)
@@ -481,7 +530,7 @@ async def _ping(
         end_kind=end_kind,
         latitude_deg=lat,
         longitude_deg=lon,
-        captured_at=_now_utc(),
+        captured_at=_now_utc(request),
         captured_by=user.get("id"),
     )
     await audit(

@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 # ---------------------------------------------------------------------------
 # Constants — see spec §C and §E
@@ -244,17 +244,22 @@ def sync_to_gun(
 
 
 def nudge(state: SequenceState, delta_s: int) -> SequenceState:
-    """Shift t0 by *delta_s* seconds (positive = later)."""
-    if state.phase not in {"armed", "counting_down"}:
+    """Shift t0 by *delta_s* seconds (positive = later).
+
+    Allowed from armed, counting_down, and started. Nudging from started
+    re-anchors the gun moment after the fact (e.g. crew realises the RC
+    actually fired the gun 5s later than the FSM thinks); the FSM stays
+    in started and ``started_at_utc`` is updated to match the new t0.
+    """
+    if state.phase not in {"armed", "counting_down", "started"}:
         raise ValueError(f"cannot nudge from phase {state.phase!r}")
     if state.t0_utc is None:
         raise ValueError("state has no t0")
-    return SequenceState(
-        **{
-            **state.__dict__,
-            "t0_utc": state.t0_utc + timedelta(seconds=delta_s),
-        }
-    )
+    new_t0 = state.t0_utc + timedelta(seconds=delta_s)
+    update: dict[str, Any] = {"t0_utc": new_t0}
+    if state.phase == "started":
+        update["started_at_utc"] = new_t0
+    return SequenceState(**{**state.__dict__, **update})
 
 
 def postpone(state: SequenceState) -> SequenceState:
