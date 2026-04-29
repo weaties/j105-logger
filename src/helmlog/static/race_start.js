@@ -109,7 +109,15 @@
   async function refreshState() {
     try {
       const r = await fetch("/api/race-start/state");
-      if (!r.ok) throw new Error("HTTP " + r.status);
+      const ct = r.headers.get("content-type") || "";
+      if (!ct.includes("application/json")) {
+        const text = await r.text();
+        throw new Error("HTTP " + r.status + " (non-JSON): " + text.slice(0, 120));
+      }
+      if (!r.ok) {
+        const data = await r.json();
+        throw new Error(data.detail || "HTTP " + r.status);
+      }
       snapshot = await r.json();
       renderPhase();
       renderFlags();
@@ -126,6 +134,14 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     });
+    const ct = r.headers.get("content-type") || "";
+    const isJSON = ct.includes("application/json");
+    if (!isJSON) {
+      const text = await r.text();
+      throw new Error(
+        "HTTP " + r.status + " (non-JSON): " + text.slice(0, 120)
+      );
+    }
     const data = await r.json();
     if (!r.ok) {
       throw new Error(data.detail || ("HTTP " + r.status));
