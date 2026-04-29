@@ -198,7 +198,7 @@ _LIVE_KEYS = (
 # Schema version & migrations
 # ---------------------------------------------------------------------------
 
-_CURRENT_VERSION: int = 81
+_CURRENT_VERSION: int = 82
 
 _MIGRATIONS: dict[int, str] = {
     1: """
@@ -1968,6 +1968,36 @@ _MIGRATIONS: dict[int, str] = {
         CREATE INDEX IF NOT EXISTS idx_winds_reference_ts
             ON winds(reference, ts);
     """,
+    82: """
+        -- #644: race-start management. Two tables.
+        -- race_start_state is a singleton row (id=1) holding the live FSM
+        -- state. Only one start sequence is active at a time per boat.
+        -- start_line_pings is an append-only log of boat-end and pin-end
+        -- pings, preserving history for re-pings and audit.
+        CREATE TABLE IF NOT EXISTS race_start_state (
+            id                INTEGER PRIMARY KEY CHECK (id = 1),
+            phase             TEXT NOT NULL,
+            kind              TEXT,
+            t0_utc            TEXT,
+            sync_offset_s     REAL NOT NULL DEFAULT 0,
+            last_sync_at_utc  TEXT,
+            started_at_utc    TEXT,
+            classes_json      TEXT NOT NULL DEFAULT '[]',
+            updated_at        TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS start_line_pings (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            race_id       INTEGER REFERENCES races(id) ON DELETE CASCADE,
+            end_kind      TEXT NOT NULL CHECK (end_kind IN ('boat', 'pin')),
+            latitude_deg  REAL NOT NULL,
+            longitude_deg REAL NOT NULL,
+            captured_at   TEXT NOT NULL,
+            captured_by   INTEGER REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_start_line_pings_race
+            ON start_line_pings(race_id, end_kind, captured_at);
+    """,
 }
 
 # Retention window for retired slugs (#449). Requests for a retired slug 301
@@ -3603,6 +3633,23 @@ class Storage:
         self._session_active = False
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
+    async def set_race_start_utc(self, race_id: int, start_utc: datetime) -> None:
+        """Update the start_utc of a race (#644 — gun anchors session start).
+
+        Used when the race-start FSM transitions to ``started`` while a
+        race row is already in progress. Anchors the session start time
+        to the actual start gun rather than whenever the user clicked
+        "Start race" in the UI.
+        """
+        db = self._conn()
+        await db.execute(
+            "UPDATE races SET start_utc = ? WHERE id = ?",
+            (start_utc.isoformat(), race_id),
+        )
+        await db.commit()
+        await self._invalidate_race_cache(race_id)
+        logger.info("Race {} start_utc anchored to gun at {}", race_id, start_utc.isoformat())
+
     async def rename_race(
         self,
         race_id: int,
@@ -4080,6 +4127,188 @@ class Storage:
         )
         row = await cur.fetchone()
         return self._row_to_race(row) if row else None
+
+    # ------------------------------------------------------------------
+    # Race start state (#644) — singleton row
+    # ------------------------------------------------------------------
+
+    async def get_race_start_state(self) -> dict[str, Any] | None:
+        """Return the singleton race-start state row as a dict, or None.
+
+        Caller is responsible for hydrating it into a ``SequenceState`` via
+        ``race_start.SequenceState`` — storage stays domain-agnostic.
+        """
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT phase, kind, t0_utc, sync_offset_s, last_sync_at_utc,"
+            "       started_at_utc, classes_json, updated_at"
+            "  FROM race_start_state WHERE id = 1"
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return {
+            "phase": row[0],
+            "kind": row[1],
+            "t0_utc": row[2],
+            "sync_offset_s": row[3],
+            "last_sync_at_utc": row[4],
+            "started_at_utc": row[5],
+            "classes_json": row[6],
+            "updated_at": row[7],
+        }
+
+    async def upsert_race_start_state(
+        self,
+        *,
+        phase: str,
+        kind: str | None,
+        t0_utc: datetime | None,
+        sync_offset_s: float,
+        last_sync_at_utc: datetime | None,
+        started_at_utc: datetime | None,
+        classes_json: str,
+        now_utc: datetime,
+    ) -> None:
+        """Upsert the singleton race-start state row."""
+        db = self._conn()
+        await db.execute(
+            "INSERT INTO race_start_state"
+            " (id, phase, kind, t0_utc, sync_offset_s, last_sync_at_utc,"
+            "  started_at_utc, classes_json, updated_at)"
+            " VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET"
+            "   phase=excluded.phase,"
+            "   kind=excluded.kind,"
+            "   t0_utc=excluded.t0_utc,"
+            "   sync_offset_s=excluded.sync_offset_s,"
+            "   last_sync_at_utc=excluded.last_sync_at_utc,"
+            "   started_at_utc=excluded.started_at_utc,"
+            "   classes_json=excluded.classes_json,"
+            "   updated_at=excluded.updated_at",
+            (
+                phase,
+                kind,
+                t0_utc.isoformat() if t0_utc else None,
+                sync_offset_s,
+                last_sync_at_utc.isoformat() if last_sync_at_utc else None,
+                started_at_utc.isoformat() if started_at_utc else None,
+                classes_json,
+                now_utc.isoformat(),
+            ),
+        )
+        await db.commit()
+
+    async def clear_race_start_state(self) -> None:
+        """Drop the singleton state row (back to idle)."""
+        db = self._conn()
+        await db.execute("DELETE FROM race_start_state WHERE id = 1")
+        await db.commit()
+
+    # ------------------------------------------------------------------
+    # Start-line pings (#644) — append-only, race-scoped history
+    # ------------------------------------------------------------------
+
+    async def add_start_line_ping(
+        self,
+        *,
+        race_id: int | None,
+        end_kind: str,
+        latitude_deg: float,
+        longitude_deg: float,
+        captured_at: datetime,
+        captured_by: int | None,
+    ) -> int:
+        """Append a boat-end or pin-end ping. Returns the new row id."""
+        if end_kind not in {"boat", "pin"}:
+            raise ValueError(f"end_kind must be 'boat' or 'pin', got {end_kind!r}")
+        db = self._conn()
+        cur = await db.execute(
+            "INSERT INTO start_line_pings"
+            " (race_id, end_kind, latitude_deg, longitude_deg, captured_at, captured_by)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                race_id,
+                end_kind,
+                latitude_deg,
+                longitude_deg,
+                captured_at.isoformat(),
+                captured_by,
+            ),
+        )
+        await db.commit()
+        return int(cur.lastrowid or 0)
+
+    async def get_latest_start_line(self, race_id: int | None) -> dict[str, Any] | None:
+        """Return the latest boat-end and pin-end ping for *race_id*.
+
+        When ``race_id`` is None, returns the latest *unscoped* pings (used
+        in pre-arm flow before a race row exists).
+        """
+        db = self._read_conn()
+        if race_id is None:
+            sql = (
+                "SELECT end_kind, latitude_deg, longitude_deg, captured_at"
+                "  FROM start_line_pings"
+                " WHERE race_id IS NULL"
+                " AND id IN ("
+                "   SELECT MAX(id) FROM start_line_pings"
+                "   WHERE race_id IS NULL GROUP BY end_kind"
+                " )"
+            )
+            cur = await db.execute(sql)
+        else:
+            sql = (
+                "SELECT end_kind, latitude_deg, longitude_deg, captured_at"
+                "  FROM start_line_pings"
+                " WHERE race_id = ?"
+                " AND id IN ("
+                "   SELECT MAX(id) FROM start_line_pings"
+                "   WHERE race_id = ? GROUP BY end_kind"
+                " )"
+            )
+            cur = await db.execute(sql, (race_id, race_id))
+        rows = await cur.fetchall()
+        if not rows:
+            return None
+        out: dict[str, Any] = {}
+        for end_kind, lat, lon, ts in rows:
+            out[f"{end_kind}_end_lat"] = lat
+            out[f"{end_kind}_end_lon"] = lon
+            out[f"{end_kind}_end_captured_at"] = ts
+        return out
+
+    async def list_start_line_pings(self, race_id: int | None) -> list[dict[str, Any]]:
+        """Return full ping history for *race_id*, ordered oldest → newest."""
+        db = self._read_conn()
+        if race_id is None:
+            cur = await db.execute(
+                "SELECT id, race_id, end_kind, latitude_deg, longitude_deg,"
+                " captured_at, captured_by"
+                "  FROM start_line_pings WHERE race_id IS NULL"
+                " ORDER BY captured_at ASC"
+            )
+        else:
+            cur = await db.execute(
+                "SELECT id, race_id, end_kind, latitude_deg, longitude_deg,"
+                " captured_at, captured_by"
+                "  FROM start_line_pings WHERE race_id = ?"
+                " ORDER BY captured_at ASC",
+                (race_id,),
+            )
+        rows = await cur.fetchall()
+        return [
+            {
+                "id": r[0],
+                "race_id": r[1],
+                "end_kind": r[2],
+                "latitude_deg": r[3],
+                "longitude_deg": r[4],
+                "captured_at": r[5],
+                "captured_by": r[6],
+            }
+            for r in rows
+        ]
 
     async def list_races_for_date(self, date_str: str) -> list[Race]:
         """Return all races for a UTC date string, ordered by start_utc ASC."""
