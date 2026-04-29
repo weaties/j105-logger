@@ -75,6 +75,34 @@ class LLMResponse:
     cost_usd: float = 0.0
 
 
+def _parse_callback_array(text: str) -> list[dict[str, Any]] | None:
+    """Tolerantly parse a JSON array out of an LLM response.
+
+    Tries, in order:
+      1. The whole string as JSON.
+      2. The first ``[...]`` substring (handles ``Here are the callbacks:
+         [...]`` or ``\\`\\`\\`json [...] \\`\\`\\```` markdown fences).
+      3. Strip ``\\`\\`\\`json`` / ``\\`\\`\\``` fences and try again.
+
+    Returns None if nothing parses to a list.
+    """
+    candidates: list[str] = [text.strip()]
+    fenced = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip(), flags=re.IGNORECASE)
+    if fenced != text.strip():
+        candidates.append(fenced)
+    bracket_match = re.search(r"\[.*\]", text, re.DOTALL)
+    if bracket_match:
+        candidates.append(bracket_match.group(0))
+    for cand in candidates:
+        try:
+            parsed = json.loads(cand)
+            if isinstance(parsed, list):
+                return parsed
+        except (ValueError, json.JSONDecodeError):
+            continue
+    return None
+
+
 def extract_citations(text: str) -> list[dict[str, Any]]:
     """Pull [HH:MM:SS] markers out of a response, deduped, in first-seen order."""
     seen: set[str] = set()
@@ -162,6 +190,11 @@ class LLMClient:
         transcript_text: str,
         max_tokens: int = 4096,
     ) -> tuple[list[dict[str, Any]], float]:
+        # Pre-fill the assistant turn with "[" to force the model to
+        # continue from a JSON-array opening bracket. Anthropic's API
+        # supports this and it dramatically improves JSON-mode reliability
+        # for Haiku, which otherwise tends to wrap output in prose or
+        # ```json fences.
         body = {
             "model": self._cfg.model,
             "max_tokens": max_tokens,
@@ -177,19 +210,23 @@ class LLMClient:
                         },
                         {"type": "text", "text": "Return the JSON array now."},
                     ],
-                }
+                },
+                {"role": "assistant", "content": "["},
             ],
         }
         usage, text = await self._post(body)
         cost = _compute_cost(self._cfg, usage)
-        try:
-            parsed = json.loads(text.strip())
-            if not isinstance(parsed, list):
-                raise ValueError("expected JSON array")
-            return parsed, cost
-        except (ValueError, json.JSONDecodeError) as exc:
-            logger.warning("callback detection returned non-JSON: {}", exc)
+        # The pre-fill "[" is not part of the response — re-attach it,
+        # but only if the model didn't already echo it back.
+        candidate = text if text.lstrip().startswith("[") else "[" + text
+        parsed = _parse_callback_array(candidate)
+        if parsed is None:
+            logger.warning(
+                "callback detection returned unparseable text (first 500 chars): {!r}",
+                text[:500],
+            )
             return [], cost
+        return parsed, cost
 
     async def _post(self, body: dict[str, Any]) -> tuple[dict[str, Any], str]:
         headers = {

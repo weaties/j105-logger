@@ -16,8 +16,32 @@ from helmlog.llm_client import (
     LLMClient,
     LLMConfig,
     LLMResponse,
+    _parse_callback_array,
     extract_citations,
 )
+
+
+class TestParseCallbackArray:
+    def test_plain_json(self) -> None:
+        assert _parse_callback_array('[{"a":1}]') == [{"a": 1}]
+
+    def test_with_assistant_prefill_attached(self) -> None:
+        # The detect_callbacks path prepends "[" to the response.
+        assert _parse_callback_array('[' + '{"a":1}]') == [{"a": 1}]
+
+    def test_strips_markdown_fences(self) -> None:
+        assert _parse_callback_array("```json\n[{\"a\":1}]\n```") == [{"a": 1}]
+
+    def test_extracts_from_prose(self) -> None:
+        assert _parse_callback_array(
+            'Here are the callbacks: [{"a":1}] and that is all.',
+        ) == [{"a": 1}]
+
+    def test_empty_array(self) -> None:
+        assert _parse_callback_array("[]") == []
+
+    def test_returns_none_for_garbage(self) -> None:
+        assert _parse_callback_array("I cannot find any callbacks.") is None
 
 
 def _mock_response(payload: dict[str, Any], status: int = 200) -> MagicMock:
