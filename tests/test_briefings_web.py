@@ -147,6 +147,98 @@ async def test_chart_png_404_when_chart_unavailable(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_briefings_index_lists_recent_with_summary(storage: Storage) -> None:
+    """Index lists every briefing sorted by date desc, with headline summary."""
+    for lh in (12, 8):
+        await storage.write_briefing(_briefing(lead_hours=lh))
+
+    with patch.dict(os.environ, {"AUTH_DISABLED": "true"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/briefings")
+            assert resp.status_code == 200
+            html = resp.text
+            assert "Pre-race briefings" in html
+            assert "Shilshole Bay" in html
+            # Both briefings present with their lead-hours.
+            assert "12 h" in html
+            assert "8 h" in html
+            # Summary columns: wind range, pressure trend.
+            assert "Wind (kts)" in html
+            assert "Pressure" in html
+
+
+@pytest.mark.asyncio
+async def test_briefings_index_filters_by_venue_and_state(storage: Storage) -> None:
+    """Filter form narrows results; non-matching briefings are excluded."""
+    # One Generated Shilshole briefing.
+    await storage.write_briefing(_briefing(lead_hours=12))
+    # One Failed briefing for the same venue/date — different lead.
+    failed = compose_briefing(
+        venue=SHILSHOLE,
+        local_date=date(2026, 4, 29),
+        lead_hours=8,
+        forecast_samples=[],
+        tide_samples=[],
+        source_urls={},
+        forecast_issued_at=None,
+        fetched_at=datetime(2026, 4, 29, 12, 0, tzinfo=UTC),
+        forecast_error="open-meteo timeout",
+    )
+    await storage.write_briefing(failed)
+
+    with patch.dict(os.environ, {"AUTH_DISABLED": "true"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            # No filter — both rows show.
+            resp = await client.get("/briefings")
+            assert "12 h" in resp.text
+            assert "8 h" in resp.text
+            # state=Failed — only the failed one.
+            resp = await client.get("/briefings?state=Failed")
+            assert "8 h" in resp.text
+            assert "12 h" not in resp.text
+            # venue=shilshole — both still show.
+            resp = await client.get("/briefings?venue=shilshole")
+            assert "12 h" in resp.text and "8 h" in resp.text
+            # venue=bellingham (no rows) — no leads visible, empty-state message shown.
+            resp = await client.get("/briefings?venue=bellingham")
+            assert "No briefings match" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_briefings_index_rejects_invalid_date(storage: Storage) -> None:
+    with patch.dict(os.environ, {"AUTH_DISABLED": "true"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/briefings?date_from=not-a-date")
+            assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_briefings_nav_link_present(storage: Storage) -> None:
+    """The site nav surfaces the Briefings page."""
+    with patch.dict(os.environ, {"AUTH_DISABLED": "true"}):
+        app = create_app(storage)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            resp = await client.get("/briefings")
+            assert resp.status_code == 200
+            assert 'href="/briefings"' in resp.text
+
+
+@pytest.mark.asyncio
 async def test_briefing_detail_lists_prior_briefings_in_series(
     storage: Storage, tmp_path: Path
 ) -> None:

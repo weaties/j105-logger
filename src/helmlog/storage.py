@@ -10983,6 +10983,59 @@ class Storage:
         chart_path = row["chart_path"]
         return str(chart_path) if chart_path is not None else None
 
+    async def list_briefings(
+        self,
+        *,
+        venue_id: str | None = None,
+        state: str | None = None,
+        date_from: _date_type | None = None,
+        date_to: _date_type | None = None,
+        limit: int = 200,
+    ) -> list[tuple[int, Briefing]]:
+        """Return briefings sorted by (local_date desc, lead_hours asc).
+
+        Each entry is (id, Briefing) so the caller can build links without a
+        second lookup. Filters are applied at the SQL layer; ``limit`` caps
+        the response (default 200, ample for the index page).
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+        if venue_id:
+            clauses.append("venue_id = ?")
+            params.append(venue_id)
+        if state:
+            clauses.append("state = ?")
+            params.append(state)
+        if date_from:
+            clauses.append("local_date >= ?")
+            params.append(date_from.isoformat())
+        if date_to:
+            clauses.append("local_date <= ?")
+            params.append(date_to.isoformat())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(int(limit))
+
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT * FROM pre_race_briefings"
+            f"{where}"
+            " ORDER BY local_date DESC, lead_hours ASC"
+            " LIMIT ?",
+            params,
+        )
+        out: list[tuple[int, Briefing]] = []
+        for row in await cur.fetchall():
+            out.append((int(row["id"]), self._briefing_from_row(row)))
+        return out
+
+    async def list_briefing_venue_ids(self) -> list[str]:
+        """Return distinct venue_ids that have any briefings, alphabetical."""
+        db = self._read_conn()
+        cur = await db.execute(
+            "SELECT DISTINCT venue_id FROM pre_race_briefings ORDER BY venue_id ASC"
+        )
+        return [str(r["venue_id"]) for r in await cur.fetchall()]
+
     async def list_briefing_ids_for_date(
         self,
         *,

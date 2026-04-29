@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Pre-race briefings{% endblock %}
+
+{% block content %}
+<section class="briefings-list">
+  <h1>Pre-race briefings</h1>
+
+  <form method="get" action="/briefings" class="briefings-filters" style="margin-bottom:1rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:end">
+    <label>
+      <div style="font-size:.8rem">Venue</div>
+      <select name="venue">
+        <option value=""{% if not filters.venue %} selected{% endif %}>All venues</option>
+        {% for vid in venue_options %}
+          {% set v = get_venue(vid) %}
+          <option value="{{ vid }}"{% if filters.venue == vid %} selected{% endif %}>
+            {{ v.venue_name if v else vid }}
+          </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      <div style="font-size:.8rem">State</div>
+      <select name="state">
+        <option value=""{% if not filters.state %} selected{% endif %}>Any</option>
+        <option value="Generated"{% if filters.state == "Generated" %} selected{% endif %}>Generated</option>
+        <option value="Failed"{% if filters.state == "Failed" %} selected{% endif %}>Failed</option>
+      </select>
+    </label>
+    <label>
+      <div style="font-size:.8rem">From</div>
+      <input type="date" name="date_from" value="{{ filters.date_from }}"/>
+    </label>
+    <label>
+      <div style="font-size:.8rem">To</div>
+      <input type="date" name="date_to" value="{{ filters.date_to }}"/>
+    </label>
+    <button type="submit">Filter</button>
+    <a href="/briefings" style="font-size:.85rem">Reset</a>
+  </form>
+
+  {% if items %}
+    <p class="muted" style="font-size:.85rem">{{ items|length }} briefing{{ "" if items|length == 1 else "s" }}{% if items|length == 200 %} (capped — narrow filters to see more){% endif %}.</p>
+    <table class="briefings-table" style="width:100%;border-collapse:collapse">
+      <thead>
+        <tr style="text-align:left;border-bottom:1px solid var(--border, #444)">
+          <th style="padding:.4rem">Date</th>
+          <th style="padding:.4rem">Venue</th>
+          <th style="padding:.4rem">Lead</th>
+          <th style="padding:.4rem">State</th>
+          <th style="padding:.4rem">Wind (kts)</th>
+          <th style="padding:.4rem">Gust</th>
+          <th style="padding:.4rem">Dir</th>
+          <th style="padding:.4rem">Pressure</th>
+          <th style="padding:.4rem">Tide</th>
+          <th style="padding:.4rem">Chart</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for bid, b, s in items %}
+          {% set v = get_venue(b.venue_id) %}
+          <tr style="border-bottom:1px solid var(--border-faint, #333)">
+            <td style="padding:.4rem">
+              <a href="/briefings/{{ bid }}">{{ b.local_date }}</a>
+            </td>
+            <td style="padding:.4rem">{{ v.venue_name if v else b.venue_id }}</td>
+            <td style="padding:.4rem">{{ b.lead_hours }} h</td>
+            <td style="padding:.4rem">
+              {% if b.state == "Generated" %}<span style="color:var(--ok, #16a34a)">{{ b.state }}</span>
+              {% elif b.state == "Failed" %}<span style="color:var(--danger, #b91c1c)">{{ b.state }}</span>
+              {% else %}{{ b.state }}{% endif %}
+            </td>
+            <td style="padding:.4rem">
+              {% if b.hourly_forecast %}{{ "%.0f"|format(s.wind_lo) }}–{{ "%.0f"|format(s.wind_hi) }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:.4rem">
+              {% if b.hourly_forecast %}{{ "%.0f"|format(s.gust_hi) }}{% else %}—{% endif %}
+            </td>
+            <td style="padding:.4rem">{{ s.dir_str }}</td>
+            <td style="padding:.4rem">{{ b.pressure_trend }}</td>
+            <td style="padding:.4rem">
+              {% if b.hourly_tide %}OK
+              {% elif s.tide_unavailable %}<span class="muted" title="{{ b.tide_unavailable_reason or '' }}">unavailable</span>
+              {% else %}—{% endif %}
+            </td>
+            <td style="padding:.4rem">
+              {% if s.has_chart %}<a href="/briefings/{{ bid }}/chart.png">PNG</a>{% else %}—{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No briefings match these filters yet. The job fires on configured venue race days at lead times {{ "[12, 8, 6, 4, 2, 0]" }} hours before the racing window.</p>
+  {% endif %}
+</section>
+{% endblock %}
