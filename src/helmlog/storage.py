@@ -7735,14 +7735,19 @@ class Storage:
             return None
         return {"by_user": row["by_user"], "at": row["at"]}
 
-    async def acknowledge_llm_consent(self, user_id: int) -> None:
+    async def acknowledge_llm_consent(self, user_id: int | None) -> None:
         from datetime import UTC as _UTC
         from datetime import datetime as _datetime
 
         db = self._conn()
+        # UPSERT — robust whether the singleton row was seeded by the
+        # migration or not. (Pi DBs from before the seed-INSERT landed
+        # have an empty table, so a plain UPDATE silently no-ops.)
         await db.execute(
-            "UPDATE llm_consent SET acknowledged = 1, by_user = ?, at = ?"
-            " WHERE id = 1",
+            "INSERT INTO llm_consent (id, acknowledged, by_user, at)"
+            " VALUES (1, 1, ?, ?)"
+            " ON CONFLICT(id) DO UPDATE SET"
+            " acknowledged = 1, by_user = excluded.by_user, at = excluded.at",
             (user_id, _datetime.now(_UTC).isoformat()),
         )
         await db.commit()
