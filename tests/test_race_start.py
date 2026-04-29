@@ -266,6 +266,22 @@ def test_nudge_from_idle_raises() -> None:
         nudge(IDLE, 60)
 
 
+def test_nudge_from_started_updates_t0_and_started_at() -> None:
+    """Nudging after the gun re-anchors the start moment retroactively."""
+    s = tick(arm("5-4-1-0", T0), at(5))
+    assert s.phase == "started"
+    s2 = nudge(s, 3)
+    assert s2.phase == "started"
+    assert s2.t0_utc == T0 + timedelta(seconds=3)
+    assert s2.started_at_utc == T0 + timedelta(seconds=3)
+
+
+def test_nudge_from_postponed_raises() -> None:
+    s = postpone(arm("5-4-1-0", T0))
+    with pytest.raises(ValueError, match="cannot nudge"):
+        nudge(s, 60)
+
+
 # ---------------------------------------------------------------------------
 # FSM — postpone / resume
 # ---------------------------------------------------------------------------
