@@ -20,6 +20,14 @@
 
   let snapshot = null;
 
+  // Virtual-now matches the server's clock (real + simulator offset).
+  // In production sim_offset_s is always 0; in the simulator it's whatever
+  // the harness has set, so display + sync stay in sync with the FSM.
+  function virtualNowMs() {
+    const offset = snapshot && snapshot.sim_offset_s ? snapshot.sim_offset_s : 0;
+    return Date.now() + offset * 1000;
+  }
+
   function showError(msg) {
     errorEl.textContent = msg || "";
   }
@@ -39,7 +47,7 @@
       return;
     }
     const t0 = new Date(snapshot.t0_utc).getTime();
-    const now = Date.now();
+    const now = virtualNowMs();
     const remaining = (t0 - now) / 1000;  // seconds; negative after t0
 
     // Display countdown as a positive number until t0, then count up.
@@ -165,8 +173,10 @@
   }
 
   function defaultT0Utc() {
-    // Default arm: 5 minutes from now, rounded up to next 30s.
-    const ms = Date.now() + 5 * 60 * 1000;
+    // Default arm: 5 minutes from virtual-now, rounded up to next 30s.
+    // Using virtualNowMs() means the simulator's clock skew is honored
+    // so the displayed countdown actually reads ~5:00 after Arm.
+    const ms = virtualNowMs() + 5 * 60 * 1000;
     const rounded = Math.ceil(ms / 30000) * 30000;
     return new Date(rounded).toISOString();
   }
@@ -183,7 +193,7 @@
     // Sync rounds the countdown to the nearest minute. Use case: user
     // hears the prep gun late — countdown reads 4:10 but should be 4:00.
     // Tap sync; we re-anchor so remaining = round(remaining / 60) × 60.
-    const remaining = (new Date(snapshot.t0_utc).getTime() - Date.now()) / 1000;
+    const remaining = (new Date(snapshot.t0_utc).getTime() - virtualNowMs()) / 1000;
     const rounded = Math.round(remaining / 60) * 60;
     action("/api/race-start/sync", { expected_signal_offset_s: rounded });
   });

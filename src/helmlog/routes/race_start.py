@@ -204,6 +204,7 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
 
     return {
         "now_utc": now.isoformat(),
+        "sim_offset_s": _sim_offset_s(request),
         "phase": state.phase,
         "kind": state.kind,
         "t0_utc": state.t0_utc.isoformat() if state.t0_utc else None,
