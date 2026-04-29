@@ -294,6 +294,11 @@ async def api_qa_save_as_moment(
             source="llm",
             user_id=user["id"],
         )
+    # Explicit Save-as-moment click is the user's confirmation. Without
+    # this, the moments list filters non-manual rows out by default and
+    # the user never sees what they just saved (#697).
+    if user.get("id") is not None:
+        await storage.confirm_moment(moment_id, user["id"])
 
     await audit(
         request,
@@ -379,6 +384,8 @@ async def api_callback_save_as_moment(
         source="llm",
         user_id=user["id"],
     )
+    if user.get("id") is not None:
+        await storage.confirm_moment(moment_id, user["id"])
     await storage.link_llm_callback_moment(callback_id=cb_id, moment_id=moment_id)
     await audit(
         request,
