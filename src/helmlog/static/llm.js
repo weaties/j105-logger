@@ -63,12 +63,21 @@
       a.addEventListener('click', (ev) => {
         ev.preventDefault();
         const ts = a.dataset.ts;
-        const audio = document.querySelector('audio');
-        if (!audio || !ts) return;
+        if (!ts) return;
         const seconds = tsToSeconds(ts);
         if (!Number.isFinite(seconds)) return;
-        if (seconds <= audio.duration) audio.currentTime = seconds;
-        audio.play().catch(() => {});
+        // Drive the existing player surfaces (track + audio + YT) via the
+        // hook session.js exposes — falls back to a naive audio seek if
+        // session.js hasn't loaded yet (shouldn't happen in practice).
+        if (typeof window.helmlogSeekTo === 'function') {
+          window.helmlogSeekTo(seconds);
+        } else {
+          const audio = document.querySelector('audio');
+          if (audio) {
+            audio.currentTime = seconds;
+            audio.play().catch(() => {});
+          }
+        }
       });
     });
   }
@@ -117,7 +126,17 @@
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         const r = await fetch(`/api/llm/qa/${btn.dataset.qaId}/save-as-moment`, { method: 'POST' });
-        btn.textContent = r.ok ? 'Saved ✓' : 'Failed';
+        if (r.ok) {
+          btn.textContent = 'Saved ✓';
+          if (typeof window.helmlogReloadMoments === 'function') {
+            window.helmlogReloadMoments();
+          }
+        } else {
+          const text = await r.text().catch(() => '');
+          console.error('save-as-moment failed', r.status, text);
+          btn.textContent = `Failed (${r.status})`;
+          btn.disabled = false;
+        }
       });
     });
   }
@@ -153,7 +172,17 @@
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         const r = await fetch(`/api/llm/callbacks/${btn.dataset.cbId}/save-as-moment`, { method: 'POST' });
-        btn.textContent = r.ok ? 'Saved ✓' : 'Failed';
+        if (r.ok) {
+          btn.textContent = 'Saved ✓';
+          if (typeof window.helmlogReloadMoments === 'function') {
+            window.helmlogReloadMoments();
+          }
+        } else {
+          const text = await r.text().catch(() => '');
+          console.error('callback save-as-moment failed', r.status, text);
+          btn.textContent = `Failed (${r.status})`;
+          btn.disabled = false;
+        }
       });
     });
   }
