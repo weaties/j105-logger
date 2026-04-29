@@ -64,7 +64,10 @@ class TestLLMConsent:
         first = await storage.get_llm_consent()
         await storage.acknowledge_llm_consent(user_id=uid)
         second = await storage.get_llm_consent()
-        assert first == second
+        # Re-ack remains acknowledged and stays attributed to the same user.
+        # `at` may refresh on each call — that's fine.
+        assert first is not None and second is not None
+        assert first["by_user"] == second["by_user"] == uid
 
 
 class TestLLMQAInsertList:

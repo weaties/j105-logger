@@ -181,9 +181,30 @@
   }
 
   els.consentAck.addEventListener('click', async () => {
-    const r = await fetch('/api/llm/consent', { method: 'POST' });
-    if (r.ok) refresh();
-    else alert('Only admins can acknowledge.');
+    els.consentAck.disabled = true;
+    els.consentAck.textContent = 'Acknowledging…';
+    try {
+      const r = await fetch('/api/llm/consent', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Accept': 'application/json' },
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        console.error('LLM consent POST failed', r.status, text);
+        alert(`Consent failed (${r.status}): ${text.slice(0, 200)}`);
+        els.consentAck.disabled = false;
+        els.consentAck.textContent = 'Acknowledge & enable';
+        return;
+      }
+      console.log('LLM consent POST ok', text);
+      await refresh();
+    } catch (err) {
+      console.error('LLM consent click handler threw', err);
+      alert('Consent click failed: ' + err.message);
+      els.consentAck.disabled = false;
+      els.consentAck.textContent = 'Acknowledge & enable';
+    }
   });
 
   els.qaForm.addEventListener('submit', async (ev) => {

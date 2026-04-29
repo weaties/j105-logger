@@ -7742,7 +7742,7 @@ class Storage:
         db = self._conn()
         await db.execute(
             "UPDATE llm_consent SET acknowledged = 1, by_user = ?, at = ?"
-            " WHERE id = 1 AND acknowledged = 0",
+            " WHERE id = 1",
             (user_id, _datetime.now(_UTC).isoformat()),
         )
         await db.commit()
