@@ -85,9 +85,19 @@ async def api_acknowledge_llm_consent(
     user: dict[str, Any] = Depends(require_auth("admin")),  # noqa: B008
 ) -> JSONResponse:
     storage = get_storage(request)
-    await storage.acknowledge_llm_consent(user_id=user["id"])
-    await audit(request, "llm.consent.ack", user=user)
+    logger.info("llm.consent.ack starting user_id={}", user.get("id"))
+    try:
+        await storage.acknowledge_llm_consent(user_id=user["id"])
+        logger.info("llm.consent.ack stored")
+    except Exception as exc:
+        logger.exception("llm.consent.ack storage update failed: {}", exc)
+        raise HTTPException(status_code=500, detail=f"storage: {exc}") from exc
+    try:
+        await audit(request, "llm.consent.ack", user=user)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("llm.consent.ack audit failed (non-fatal): {}", exc)
     consent = await storage.get_llm_consent()
+    logger.info("llm.consent.ack returning consent={}", consent)
     return JSONResponse({"acknowledged": True, **(consent or {})})
 
 
