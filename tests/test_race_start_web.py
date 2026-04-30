@@ -524,6 +524,69 @@ async def test_gun_with_no_current_race_does_not_error(storage: Storage) -> None
 
 
 @pytest.mark.asyncio
+async def test_state_snapshot_exposes_carry_over(storage: Storage) -> None:
+    """Snapshot's start_line block surfaces carried_over_from_race_id per
+    end so the UI can warn the helm to re-ping (#702)."""
+    date = "2026-04-30"
+    r1 = await storage.start_race("CYC", datetime.now(UTC), date, 1, "20260430-CYC-1")
+    await storage.add_start_line_ping(
+        race_id=r1.id,
+        end_kind="boat",
+        latitude_deg=47.6895,
+        longitude_deg=-122.4160,
+        captured_at=datetime.now(UTC),
+        captured_by=None,
+    )
+    await storage.add_start_line_ping(
+        race_id=r1.id,
+        end_kind="pin",
+        latitude_deg=47.6901,
+        longitude_deg=-122.4189,
+        captured_at=datetime.now(UTC),
+        captured_by=None,
+    )
+    # Close race 1, start race 2 — race 2 has no pings of its own.
+    await storage.end_race(r1.id, datetime.now(UTC))
+    await storage.start_race("CYC", datetime.now(UTC), date, 2, "20260430-CYC-2")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get("/api/race-start/state")
+    body = r.json()
+    sl = body["start_line"]
+    assert sl["is_complete"] is True
+    assert sl["boat_end_carried_over_from_race_id"] == r1.id
+    assert sl["pin_end_carried_over_from_race_id"] == r1.id
+
+
+@pytest.mark.asyncio
+async def test_state_snapshot_no_carry_over_for_fresh_pings(storage: Storage) -> None:
+    """When pings belong to the active race, carried_over_from_race_id is null."""
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        # Start a race and ping its line.
+        await storage.start_race("CYC", datetime.now(UTC), "2026-04-30", 1, "20260430-CYC-1")
+        await client.post(
+            "/api/race-start/ping/boat",
+            json={"latitude_deg": 47.65, "longitude_deg": -122.40},
+        )
+        await client.post(
+            "/api/race-start/ping/pin",
+            json={"latitude_deg": 47.66, "longitude_deg": -122.41},
+        )
+        r = await client.get("/api/race-start/state")
+    body = r.json()
+    sl = body["start_line"]
+    assert sl["is_complete"] is True
+    assert sl["boat_end_carried_over_from_race_id"] is None
+    assert sl["pin_end_carried_over_from_race_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_state_persists_across_clients(storage: Storage) -> None:
     """Arming via one client and reading via a fresh client returns the same
     state — the singleton row is the source of truth (#644 EARS §E)."""

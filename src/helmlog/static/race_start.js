@@ -87,8 +87,29 @@
     }
   }
 
+  function renderLineCarryover() {
+    const el = document.getElementById("rs-line-carryover");
+    if (!el || !snapshot || !snapshot.start_line) return;
+    const sl = snapshot.start_line;
+    const parts = [];
+    if (sl.boat_end_carried_over_from_race_id) {
+      parts.push("boat end from race " + sl.boat_end_carried_over_from_race_id);
+    }
+    if (sl.pin_end_carried_over_from_race_id) {
+      parts.push("pin end from race " + sl.pin_end_carried_over_from_race_id);
+    }
+    if (parts.length === 0) {
+      el.style.display = "none";
+      return;
+    }
+    el.textContent = "⚠ Line carried over: " + parts.join(", ")
+      + ". Re-ping if RC has moved the line.";
+    el.style.display = "";
+  }
+
   function renderLineMetrics(metrics) {
     function set(id, value) { document.getElementById(id).textContent = value; }
+    renderLineCarryover();
     if (!metrics) {
       set("rs-line-bearing", "—");
       set("rs-line-length", "—");

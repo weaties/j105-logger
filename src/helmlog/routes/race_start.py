@@ -157,9 +157,12 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
     storage = get_storage(request)
     current_race = await storage.get_current_race()
     race_id = current_race.id if current_race else None
+    # Storage handles per-end carry-over from prior same-date races when
+    # *race_id* is set (#702). When no race is active we still fall back
+    # to unscoped pre-arm pings so the helm can ping before the race row
+    # exists.
     line_row = await storage.get_latest_start_line(race_id=race_id)
-    if line_row is None:
-        # Fall back to unscoped pings (pre-arm flow).
+    if line_row is None and race_id is not None:
         line_row = await storage.get_latest_start_line(race_id=None)
     line = StartLine(
         boat_end_lat=line_row.get("boat_end_lat") if line_row else None,
@@ -234,10 +237,28 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
             "boat_end_captured_at": (
                 line.boat_end_captured_at.isoformat() if line.boat_end_captured_at else None
             ),
+            "boat_end_carried_over_from_race_id": (
+                line_row.get("boat_end_race_id")
+                if (
+                    line_row
+                    and race_id is not None
+                    and line_row.get("boat_end_race_id") not in (None, race_id)
+                )
+                else None
+            ),
             "pin_end_lat": line.pin_end_lat,
             "pin_end_lon": line.pin_end_lon,
             "pin_end_captured_at": (
                 line.pin_end_captured_at.isoformat() if line.pin_end_captured_at else None
+            ),
+            "pin_end_carried_over_from_race_id": (
+                line_row.get("pin_end_race_id")
+                if (
+                    line_row
+                    and race_id is not None
+                    and line_row.get("pin_end_race_id") not in (None, race_id)
+                )
+                else None
             ),
             "is_complete": line.is_complete,
         },

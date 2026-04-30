@@ -4242,13 +4242,19 @@ class Storage:
     async def get_latest_start_line(self, race_id: int | None) -> dict[str, Any] | None:
         """Return the latest boat-end and pin-end ping for *race_id*.
 
-        When ``race_id`` is None, returns the latest *unscoped* pings (used
-        in pre-arm flow before a race row exists).
+        Carry-over (#702): when *race_id* is given and a particular end has
+        no ping for this race, fall back to the most recent ping of that
+        end_kind from any prior race on the same UTC date. The carried-over
+        end is tagged with ``{end}_end_race_id`` so callers can render a
+        "from race N" hint when the line wasn't explicitly re-pinged.
+
+        When *race_id* is ``None`` (pre-arm flow before a race row exists),
+        returns the latest unscoped pings only — no cross-race fallback.
         """
         db = self._read_conn()
         if race_id is None:
-            sql = (
-                "SELECT end_kind, latitude_deg, longitude_deg, captured_at"
+            cur = await db.execute(
+                "SELECT end_kind, latitude_deg, longitude_deg, captured_at, race_id"
                 "  FROM start_line_pings"
                 " WHERE race_id IS NULL"
                 " AND id IN ("
@@ -4256,27 +4262,58 @@ class Storage:
                 "   WHERE race_id IS NULL GROUP BY end_kind"
                 " )"
             )
-            cur = await db.execute(sql)
-        else:
-            sql = (
-                "SELECT end_kind, latitude_deg, longitude_deg, captured_at"
+            rows = await cur.fetchall()
+            if not rows:
+                return None
+            out: dict[str, Any] = {}
+            for end_kind, lat, lon, ts, rid in rows:
+                out[f"{end_kind}_end_lat"] = lat
+                out[f"{end_kind}_end_lon"] = lon
+                out[f"{end_kind}_end_captured_at"] = ts
+                out[f"{end_kind}_end_race_id"] = rid
+            return out
+
+        # Race-scoped path with carry-over fallback per end.
+        race_cur = await db.execute("SELECT date FROM races WHERE id = ?", (race_id,))
+        race_row = await race_cur.fetchone()
+        date_str = race_row["date"] if race_row else None
+
+        out = {}
+        for end_kind in ("boat", "pin"):
+            # Prefer a ping for this exact race.
+            cur = await db.execute(
+                "SELECT latitude_deg, longitude_deg, captured_at, race_id"
                 "  FROM start_line_pings"
-                " WHERE race_id = ?"
-                " AND id IN ("
-                "   SELECT MAX(id) FROM start_line_pings"
-                "   WHERE race_id = ? GROUP BY end_kind"
-                " )"
+                " WHERE race_id = ? AND end_kind = ?"
+                " ORDER BY captured_at DESC LIMIT 1",
+                (race_id, end_kind),
             )
-            cur = await db.execute(sql, (race_id, race_id))
-        rows = await cur.fetchall()
-        if not rows:
-            return None
-        out: dict[str, Any] = {}
-        for end_kind, lat, lon, ts in rows:
-            out[f"{end_kind}_end_lat"] = lat
-            out[f"{end_kind}_end_lon"] = lon
-            out[f"{end_kind}_end_captured_at"] = ts
-        return out
+            row = await cur.fetchone()
+
+            # Carry-over: most recent ping of this end_kind on the same
+            # UTC date, from a different race. Same-date keeps the helm
+            # safe across consecutive starts but won't reach into older
+            # sessions where the line is irrelevant.
+            if row is None and date_str is not None:
+                cur = await db.execute(
+                    "SELECT slp.latitude_deg, slp.longitude_deg,"
+                    "       slp.captured_at, slp.race_id"
+                    "  FROM start_line_pings slp"
+                    "  JOIN races r ON r.id = slp.race_id"
+                    " WHERE slp.end_kind = ? AND r.date = ? AND r.id != ?"
+                    " ORDER BY slp.captured_at DESC LIMIT 1",
+                    (end_kind, date_str, race_id),
+                )
+                row = await cur.fetchone()
+
+            if row is None:
+                continue
+            out[f"{end_kind}_end_lat"] = row["latitude_deg"]
+            out[f"{end_kind}_end_lon"] = row["longitude_deg"]
+            out[f"{end_kind}_end_captured_at"] = row["captured_at"]
+            out[f"{end_kind}_end_race_id"] = row["race_id"]
+
+        return out or None
 
     async def list_start_line_pings(self, race_id: int | None) -> list[dict[str, Any]]:
         """Return full ping history for *race_id*, ordered oldest → newest."""
