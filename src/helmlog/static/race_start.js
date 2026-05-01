@@ -87,6 +87,41 @@
     }
   }
 
+  function fmtCountdown(seconds) {
+    const sign = seconds < 0 ? "−" : "";
+    const abs = Math.abs(Math.floor(seconds));
+    const days = Math.floor(abs / 86400);
+    const hrs = Math.floor((abs % 86400) / 3600);
+    const min = Math.floor((abs % 3600) / 60);
+    const sec = abs % 60;
+    if (days > 0) return sign + days + "d " + hrs + "h " + min + "m";
+    if (hrs > 0) return sign + hrs + "h " + min + "m " + sec + "s";
+    if (min > 0) return sign + min + "m " + sec + "s";
+    return sign + sec + "s";
+  }
+
+  function renderScheduledStart() {
+    const wrap = document.getElementById("rs-scheduled");
+    if (!wrap || !snapshot) return;
+    const sched = snapshot.scheduled_start;
+    // Show only when there's a schedule AND the FSM hasn't been armed
+    // against it yet — once the helm arms, the live countdown is the
+    // primary surface and we hide the scheduled banner.
+    if (!sched || (snapshot.phase !== "idle" && snapshot.phase !== "abandoned")) {
+      wrap.style.display = "none";
+      return;
+    }
+    wrap.style.display = "";
+    const fireMs = new Date(sched.scheduled_start_utc).getTime();
+    const localTime = new Date(fireMs).toLocaleString();
+    document.getElementById("rs-sched-utc").textContent = localTime;
+    const ev = document.getElementById("rs-sched-event");
+    ev.textContent = sched.event ? "· " + sched.event : "";
+    const remaining = (fireMs - virtualNowMs()) / 1000;
+    document.getElementById("rs-sched-countdown").textContent =
+      fmtCountdown(remaining);
+  }
+
   function renderLineCarryover() {
     const el = document.getElementById("rs-line-carryover");
     if (!el || !snapshot || !snapshot.start_line) return;
@@ -151,6 +186,7 @@
       renderPhase();
       renderFlags();
       renderClock();
+      renderScheduledStart();
       renderLineMetrics(snapshot.line_metrics);
       showError("");
     } catch (e) {
@@ -187,6 +223,7 @@
       renderPhase();
       renderFlags();
       renderClock();
+      renderScheduledStart();
       renderLineMetrics(snapshot.line_metrics);
     } catch (e) {
       showError(e.message);
@@ -209,6 +246,12 @@
 
   bind("rs-arm", () => action("/api/race-start/arm",
         { kind: "5-4-1-0", t0_utc: defaultT0Utc() }));
+  bind("rs-arm-sched", () => {
+    const sched = snapshot && snapshot.scheduled_start;
+    if (!sched) return showError("no scheduled start");
+    action("/api/race-start/arm",
+      { kind: "5-4-1-0", t0_utc: sched.scheduled_start_utc, classes: [] });
+  });
   bind("rs-sync", () => {
     if (!snapshot || !snapshot.t0_utc) return showError("arm a sequence first");
     // Sync rounds the countdown to the nearest minute. Use case: user
@@ -256,6 +299,9 @@
   // 2 s × handful of devices the load is negligible and the flow is
   // robust to disconnect.
   setInterval(renderClock, 250);
+  // Tick the scheduled-start countdown alongside the main clock so the
+  // helm sees the seconds drop without waiting for the 2 s state poll.
+  setInterval(renderScheduledStart, 1000);
   setInterval(refreshState, 2000);
 
   refreshState();
