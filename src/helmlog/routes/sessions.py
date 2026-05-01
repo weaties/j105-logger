@@ -311,14 +311,29 @@ async def api_session_track(
     )
 
 
+#: Window of GPS rows to include before the race's start_utc on the
+#: session track. The helm's prestart maneuvers (line pings, traffic
+#: management, hold patterns) live in this window. Positions inside it
+#: that are *unscoped* (race_id IS NULL — captured before start_race
+#: was called) get included; positions tagged to a different race do
+#: not, so back-to-back starts don't bleed into each other.
+_PRESTART_WINDOW_S: int = 1200  # 20 minutes
+
+
 async def _compute_session_track(storage: Storage, session_id: int) -> dict[str, Any]:
     """Build the GeoJSON FeatureCollection for a session's GPS track.
+
+    Includes a prestart prefix (last :data:`_PRESTART_WINDOW_S` seconds
+    before ``start_utc``) so the session map shows the helm's pre-gun
+    maneuvers, not just the race itself.
 
     Called by the HTTP endpoint and by the warm-on-complete hook in
     ``cache.warm_race_cache`` (#611). Raises ``HTTPException(404)`` when
     the race doesn't exist — the HTTP path surfaces that; the warmer
     catches and logs it.
     """
+    from datetime import datetime, timedelta
+
     db = storage._conn()
     cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
     row = await cur.fetchone()
@@ -327,8 +342,17 @@ async def _compute_session_track(storage: Storage, session_id: int) -> dict[str,
     start_utc = row["start_utc"]
     end_utc = row["end_utc"] or start_utc
 
+    # Prestart cutoff: start_utc shifted back by the configured window.
+    try:
+        start_dt = datetime.fromisoformat(start_utc)
+        prestart_cutoff = (start_dt - timedelta(seconds=_PRESTART_WINDOW_S)).isoformat()
+    except ValueError:
+        prestart_cutoff = start_utc  # bad timestamp — degrade to no prestart
+
     # Prefer race_id filter (exact match for synthesized sessions);
-    # fall back to time-range query for real instrument data.
+    # fall back to time-range query for real instrument data. In both
+    # branches we include unscoped positions in the prestart window so
+    # the helm's pre-gun maneuvers show up.
     rid_cur = await db.execute(
         "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
     )
@@ -337,14 +361,17 @@ async def _compute_session_track(storage: Storage, session_id: int) -> dict[str,
 
     if has_race_id:
         pos_cur = await db.execute(
-            "SELECT latitude_deg, longitude_deg, ts FROM positions WHERE race_id = ? ORDER BY ts",
-            (session_id,),
+            "SELECT latitude_deg, longitude_deg, ts FROM positions"
+            " WHERE race_id = ?"
+            "    OR (race_id IS NULL AND ts >= ? AND ts < ?)"
+            " ORDER BY ts",
+            (session_id, prestart_cutoff, start_utc),
         )
     else:
         pos_cur = await db.execute(
             "SELECT latitude_deg, longitude_deg, ts FROM positions"
             " WHERE ts >= ? AND ts <= ? ORDER BY ts",
-            (start_utc, end_utc),
+            (prestart_cutoff, end_utc),
         )
     positions = await pos_cur.fetchall()
     if not positions:
