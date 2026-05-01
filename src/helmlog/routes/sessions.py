@@ -644,6 +644,93 @@ async def api_session_vakaros_overlay(
     return JSONResponse({"matched": True, **overlay})
 
 
+@router.get("/api/sessions/{session_id}/race-start-overlay")
+@limiter.limit("30/minute")
+async def api_session_race_start_overlay(
+    request: Request,
+    session_id: int,
+    _user: dict[str, Any] = Depends(require_auth("viewer")),  # noqa: B008
+) -> JSONResponse:
+    """Return HelmLog start-line ping history + computed line for the session.
+
+    Used by the session detail page to draw HelmLog's own start-line markers
+    (boat + pin) and a time-synced bias indicator that updates as the user
+    scrubs the replay. Distinct from the Vakaros overlay so both can coexist
+    on the same map.
+    """
+    import math
+
+    storage = get_storage(request)
+    db = storage._conn()
+    cur = await db.execute("SELECT id FROM races WHERE id = ?", (session_id,))
+    if await cur.fetchone() is None:
+        raise HTTPException(status_code=404, detail="Race not found")
+
+    pings = await storage.list_start_line_pings(race_id=session_id)
+    line_row = await storage.get_latest_start_line(race_id=session_id)
+
+    line_payload: dict[str, Any] | None = None
+    if line_row and all(
+        line_row.get(k) is not None
+        for k in ("boat_end_lat", "boat_end_lon", "pin_end_lat", "pin_end_lon")
+    ):
+        boat_lat = line_row["boat_end_lat"]
+        boat_lon = line_row["boat_end_lon"]
+        pin_lat = line_row["pin_end_lat"]
+        pin_lon = line_row["pin_end_lon"]
+        # Bearing from boat-end to pin-end (matches race_start.line_metrics).
+        phi1 = math.radians(boat_lat)
+        phi2 = math.radians(pin_lat)
+        dlam = math.radians(pin_lon - boat_lon)
+        bearing = (
+            math.degrees(
+                math.atan2(
+                    math.sin(dlam) * math.cos(phi2),
+                    math.cos(phi1) * math.sin(phi2)
+                    - math.sin(phi1) * math.cos(phi2) * math.cos(dlam),
+                )
+            )
+            + 360.0
+        ) % 360.0
+        # Length via haversine.
+        dphi = math.radians(pin_lat - boat_lat)
+        a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+        length_m = 2 * 6_371_008.8 * math.asin(math.sqrt(a))
+        line_payload = {
+            "boat": [boat_lat, boat_lon],
+            "pin": [pin_lat, pin_lon],
+            "length_m": length_m,
+            "bearing_deg": bearing,
+            "boat_end_carried_over_from_race_id": (
+                line_row.get("boat_end_race_id")
+                if line_row.get("boat_end_race_id") not in (None, session_id)
+                else None
+            ),
+            "pin_end_carried_over_from_race_id": (
+                line_row.get("pin_end_race_id")
+                if line_row.get("pin_end_race_id") not in (None, session_id)
+                else None
+            ),
+        }
+
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "pings": [
+                {
+                    "id": p["id"],
+                    "end_kind": p["end_kind"],
+                    "lat": p["latitude_deg"],
+                    "lon": p["longitude_deg"],
+                    "ts": p["captured_at"],
+                }
+                for p in pings
+            ],
+            "line": line_payload,
+        }
+    )
+
+
 @router.get("/api/sessions/{session_id}/course-overlay")
 @limiter.limit("30/minute")
 async def api_session_course_overlay(
