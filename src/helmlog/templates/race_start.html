@@ -45,6 +45,17 @@
   <div class="rs-phase">Phase: <strong id="rs-phase">—</strong>
     <span id="rs-sync-status"></span></div>
 
+  <div id="rs-scheduled" style="display:none;text-align:center;padding:.5rem;
+       background:var(--bg-elev,#1a1d23);border:1px solid var(--border);
+       border-radius:.5rem;font-size:.9rem;color:var(--text-secondary)">
+    <div>Scheduled start: <strong id="rs-sched-utc">—</strong>
+      <span id="rs-sched-event" style="color:var(--text-muted)"></span></div>
+    <div style="margin-top:.25rem;font-variant-numeric:tabular-nums">
+      in <strong id="rs-sched-countdown">—</strong></div>
+    <button id="rs-arm-sched" class="primary" style="margin-top:.5rem"
+      {% if not is_writer %}disabled{% endif %}>Arm 5-4-1-0 for scheduled start</button>
+  </div>
+
   <div class="rs-clock" id="rs-clock">--:--</div>
 
   <div class="rs-flags">

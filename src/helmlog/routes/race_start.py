@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from helmlog.storage import Storage
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -264,6 +267,31 @@ async def _build_snapshot(request: Request, state: SequenceState) -> dict[str, A
         },
         "line_metrics": metrics_payload,
         "race_id": race_id,
+        "scheduled_start": await _scheduled_start_payload(storage),
+    }
+
+
+async def _scheduled_start_payload(storage: Storage) -> dict[str, Any] | None:
+    """Surface the active scheduled-start row (if any) so /race-start can
+    display the upcoming gun and offer an "Arm for scheduled start" button.
+
+    Use case: pursuit starts where each boat's gun depends on rating —
+    the helm sets the schedule the night before, and the page shows the
+    countdown without anyone needing to remember to arm at the right
+    moment.
+    """
+    row = await storage.get_scheduled_start()
+    if row is None:
+        return None
+    fire_at = datetime.fromisoformat(row["scheduled_start_utc"])
+    if fire_at.tzinfo is None:
+        fire_at = fire_at.replace(tzinfo=UTC)
+    seconds_until = max(0, int((fire_at - datetime.now(UTC)).total_seconds()))
+    return {
+        "scheduled_start_utc": fire_at.isoformat(),
+        "event": row["event"],
+        "session_type": row["session_type"],
+        "seconds_until_start": seconds_until,
     }
 
 

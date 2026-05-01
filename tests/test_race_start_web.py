@@ -77,6 +77,30 @@ async def test_state_returns_idle_initially(storage: Storage) -> None:
     assert body["phase"] == "idle"
     assert body["t0_utc"] is None
     assert body["start_line"]["is_complete"] is False
+    # No schedule by default.
+    assert body["scheduled_start"] is None
+
+
+@pytest.mark.asyncio
+async def test_state_surfaces_scheduled_start(storage: Storage) -> None:
+    """When a scheduled start row exists, /api/race-start/state exposes it
+    so the page can render the upcoming-gun banner + arm button. Pursuit
+    starts (helm sets the gun the night before) drove this addition."""
+    fire_at = datetime.now(UTC) + timedelta(hours=22)
+    await storage.schedule_start(fire_at, event="R2TS", session_type="race")
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get("/api/race-start/state")
+    body = r.json()
+    sched = body["scheduled_start"]
+    assert sched is not None
+    assert sched["event"] == "R2TS"
+    assert sched["session_type"] == "race"
+    # seconds_until_start ≈ 22 h within a couple seconds for test latency.
+    assert sched["seconds_until_start"] > 22 * 3600 - 5
 
 
 @pytest.mark.asyncio
