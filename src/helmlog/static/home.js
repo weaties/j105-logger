@@ -1142,21 +1142,29 @@ async function cancelSchedule() {
   await loadState();
 }
 
+function _fmtScheduleCountdown(seconds) {
+  if (seconds <= 0) return 'Starting...';
+  const days = Math.floor(seconds / 86400);
+  const hrs = Math.floor((seconds % 86400) / 3600);
+  const min = Math.floor((seconds % 3600) / 60);
+  const sec = seconds % 60;
+  if (days > 0) return `${days}d ${hrs}h ${min}m ${String(sec).padStart(2, '0')}s`;
+  if (hrs > 0) return `${hrs}h ${min}m ${String(sec).padStart(2, '0')}s`;
+  if (min > 0) return `${min}m ${String(sec).padStart(2, '0')}s`;
+  return `${sec}s`;
+}
+
 function _startScheduleCountdown(fireAt) {
   _stopScheduleCountdown();
   const el = document.getElementById('schedule-countdown-time');
   function update() {
     const diff = Math.max(0, Math.floor((fireAt - Date.now()) / 1000));
+    el.textContent = _fmtScheduleCountdown(diff);
     if (diff <= 0) {
-      el.textContent = 'Starting...';
       _stopScheduleCountdown();
-      // Poll state to pick up the new race
+      // Poll state to pick up the new race.
       setTimeout(() => loadState(), 2000);
-      return;
     }
-    const m = Math.floor(diff / 60);
-    const s = diff % 60;
-    el.textContent = `${m}:${String(s).padStart(2, '0')}`;
   }
   update();
   scheduleCountdownInterval = setInterval(update, 1000);

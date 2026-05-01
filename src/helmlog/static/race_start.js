@@ -101,25 +101,31 @@
   }
 
   function renderScheduledStart() {
-    const wrap = document.getElementById("rs-scheduled");
-    if (!wrap || !snapshot) return;
+    const schedView = document.getElementById("rs-scheduled-view");
+    const liveView = document.getElementById("rs-live-view");
+    if (!schedView || !liveView || !snapshot) return;
     const sched = snapshot.scheduled_start;
-    // Show only when there's a schedule AND the FSM hasn't been armed
-    // against it yet — once the helm arms, the live countdown is the
-    // primary surface and we hide the scheduled banner.
-    if (!sched || (snapshot.phase !== "idle" && snapshot.phase !== "abandoned")) {
-      wrap.style.display = "none";
-      return;
+    // Scheduled-pre-arm: only when a schedule is set AND the FSM is still
+    // idle. Hide the live FSM controls entirely — auto-fire at T-15min
+    // takes over without any helm action, and cancellation lives on
+    // /control to avoid accidental taps near a real start.
+    const showScheduled =
+      !!sched && (snapshot.phase === "idle" || snapshot.phase === "abandoned");
+    if (showScheduled) {
+      schedView.style.display = "";
+      liveView.style.display = "none";
+      const fireMs = new Date(sched.scheduled_start_utc).getTime();
+      document.getElementById("rs-sched-utc").textContent =
+        new Date(fireMs).toLocaleString();
+      const ev = document.getElementById("rs-sched-event");
+      ev.textContent = sched.event ? "· " + sched.event : "";
+      const remaining = (fireMs - virtualNowMs()) / 1000;
+      document.getElementById("rs-sched-countdown").textContent =
+        fmtCountdown(remaining);
+    } else {
+      schedView.style.display = "none";
+      liveView.style.display = "";
     }
-    wrap.style.display = "";
-    const fireMs = new Date(sched.scheduled_start_utc).getTime();
-    const localTime = new Date(fireMs).toLocaleString();
-    document.getElementById("rs-sched-utc").textContent = localTime;
-    const ev = document.getElementById("rs-sched-event");
-    ev.textContent = sched.event ? "· " + sched.event : "";
-    const remaining = (fireMs - virtualNowMs()) / 1000;
-    document.getElementById("rs-sched-countdown").textContent =
-      fmtCountdown(remaining);
   }
 
   function renderLineCarryover() {
@@ -246,12 +252,6 @@
 
   bind("rs-arm", () => action("/api/race-start/arm",
         { kind: "5-4-1-0", t0_utc: defaultT0Utc() }));
-  bind("rs-arm-sched", () => {
-    const sched = snapshot && snapshot.scheduled_start;
-    if (!sched) return showError("no scheduled start");
-    action("/api/race-start/arm",
-      { kind: "5-4-1-0", t0_utc: sched.scheduled_start_utc, classes: [] });
-  });
   bind("rs-sync", () => {
     if (!snapshot || !snapshot.t0_utc) return showError("arm a sequence first");
     // Sync rounds the countdown to the nearest minute. Use case: user
