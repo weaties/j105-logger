@@ -8586,9 +8586,12 @@ async function _loadReplayData() {
     const r = await fetch('/api/sessions/' + SESSION_ID + '/replay');
     if (!r.ok) return;
     const data = await r.json();
-    _replayStart = new Date(data.start_utc);
+    // Scrubber 0 is the prestart-window cutoff (start_utc − 20 min) so the
+    // helm can scrub through pre-gun maneuvers and have video / gauges /
+    // track follow. Falls back to start_utc for older payloads (cache).
+    _replayStart = new Date(data.prestart_start_utc || data.start_utc);
     _replayEnd = new Date(data.end_utc);
-    _raceGun = data.race_gun_utc ? new Date(data.race_gun_utc) : _replayStart;
+    _raceGun = data.race_gun_utc ? new Date(data.race_gun_utc) : new Date(data.start_utc);
     _replaySamples = (data.samples || []).map(s => ({
       ts: new Date(s.ts),
       stw: s.stw,

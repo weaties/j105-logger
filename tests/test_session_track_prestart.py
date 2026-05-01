@@ -119,6 +119,62 @@ async def test_track_excludes_prior_race_positions(
 
 
 @pytest.mark.asyncio
+async def test_replay_payload_exposes_prestart_start_utc(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replay endpoint advertises the scrubber lower bound so the JS can
+    range over the prestart window."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race_id = await _seed_race_with_prestart(storage)
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(f"/api/sessions/{race_id}/replay")
+    assert r.status_code == 200
+    body = r.json()
+    assert "prestart_start_utc" in body
+    prestart = datetime.fromisoformat(body["prestart_start_utc"].replace("Z", "+00:00"))
+    start = datetime.fromisoformat(body["start_utc"].replace("Z", "+00:00"))
+    delta = (start - prestart).total_seconds()
+    assert delta == pytest.approx(1200.0, abs=1.0)
+
+
+@pytest.mark.asyncio
+async def test_replay_samples_extend_into_prestart(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Instrument samples include rows whose ts < race start_utc so the
+    HUD has data when the scrubber drops below the gun."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race = await storage.start_race(
+        event="CYC", start_utc=_GUN, date_str="2026-04-30", race_num=1, name="R"
+    )
+    db = storage._conn()
+    # 4 prestart speed samples, 2 in-race samples.
+    for offset_s in (-300, -200, -100, -10, 5, 60):
+        ts = (_GUN + timedelta(seconds=offset_s)).isoformat()
+        await db.execute(
+            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            (ts, 0, 4.5),
+        )
+    await db.commit()
+    await storage.end_race(race.id, _END)
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(f"/api/sessions/{race.id}/replay")
+    body = r.json()
+    sample_ts = [s["ts"] for s in body["samples"]]
+    pre_gun = [t for t in sample_ts if t < body["start_utc"]]
+    post_gun = [t for t in sample_ts if t >= body["start_utc"]]
+    assert len(pre_gun) >= 4
+    assert len(post_gun) >= 2
+
+
+@pytest.mark.asyncio
 async def test_track_window_falls_back_when_no_race_id_tagged(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

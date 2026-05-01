@@ -1134,12 +1134,12 @@ async def api_session_replay(
     async def _compute() -> dict[str, Any]:
         return await _compute_session_replay(storage, session_id)
 
-    # v2: payload schema changed (heel, trim added in #645). The cache hash
-    # tracks source-data changes but not payload-shape changes, so bump the
-    # family suffix whenever fields are added/removed to force a recompute
-    # rather than serving a stale blob that lacks the new keys.
+    # v3: payload schema changed (prestart_start_utc + samples extended
+    # backwards into the prestart window so the scrubber can range over
+    # pre-gun data). Bump the family suffix to force recompute on the
+    # cached blobs that lack the new field.
     return await cached_json_response(
-        request, race_id=session_id, key_family="session_replay_v2", compute=_compute
+        request, race_id=session_id, key_family="session_replay_v3", compute=_compute
     )
 
 
@@ -1151,6 +1151,18 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         raise HTTPException(status_code=404, detail="Race not found")
     start_utc = row["start_utc"]
     end_utc = row["end_utc"] or row["start_utc"]
+
+    # Replay scrubber spans the prestart prefix too — same window the track
+    # is extended by (#707 / prestart-scrub). Instrument series queries use
+    # this lower bound so the HUD has data when the scrubber drops below
+    # the gun. The race_gun marker still points at start_utc.
+    try:
+        _start_dt_for_prestart = datetime.fromisoformat(start_utc)
+        prestart_start_utc = (
+            _start_dt_for_prestart - timedelta(seconds=_PRESTART_WINDOW_S)
+        ).isoformat()
+    except ValueError:
+        prestart_start_utc = start_utc
 
     # Effective race gun: for Vakaros-matched races, prefer the latest
     # race_start event inside the race window. Races that were recalled
@@ -1256,10 +1268,12 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         )
 
     # Thin instrument series for HUD. 1 Hz dedup by truncated timestamp key.
+    # Lower bound is prestart_start_utc so the scrubber has gauges in the
+    # pre-gun window.
     async def _series(table: str, fields: list[str]) -> dict[str, dict[str, Any]]:
         cols = ", ".join(["ts", *fields])
         q = f"SELECT {cols} FROM {table} WHERE ts >= ? AND ts <= ? ORDER BY ts"
-        qcur = await db.execute(q, (start_utc, end_utc))
+        qcur = await db.execute(q, (prestart_start_utc, end_utc))
         rows = await qcur.fetchall()
         out: dict[str, dict[str, Any]] = {}
         for r in rows:
@@ -1276,7 +1290,7 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
             "SELECT ts, wind_speed_kts, wind_angle_deg, reference FROM winds "
             f"WHERE ts >= ? AND ts <= ? AND {where} ORDER BY ts"
         )
-        qcur = await db.execute(q, (start_utc, end_utc))
+        qcur = await db.execute(q, (prestart_start_utc, end_utc))
         rows = await qcur.fetchall()
         out: dict[str, dict[str, Any]] = {}
         for r in rows:
@@ -1376,6 +1390,14 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         # time label, and YT sync.
         "start_utc": (start_utc if ("Z" in start_utc or "+" in start_utc) else start_utc + "Z"),
         "end_utc": end_utc if ("Z" in end_utc or "+" in end_utc) else end_utc + "Z",
+        # Lower bound for the scrubber: start_utc minus the prestart window.
+        # The scrubber uses this as its "0"; race_gun_utc still flags the
+        # actual race start moment.
+        "prestart_start_utc": (
+            prestart_start_utc
+            if ("Z" in prestart_start_utc or "+" in prestart_start_utc)
+            else prestart_start_utc + "Z"
+        ),
         # Effective race gun (prefers the latest Vakaros race_start
         # event inside the race window). Frontend uses this to filter
         # pre-gun "roundings" out of the replay laylines.
