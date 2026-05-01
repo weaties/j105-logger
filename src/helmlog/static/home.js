@@ -1105,10 +1105,12 @@ function toggleSchedulePanel() {
   const panel = document.getElementById('schedule-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) {
-    // Pre-fill with a time 5 minutes from now
+    // Pre-fill with a time 5 minutes from now, second-precise (the input
+    // has step="1" so seconds are editable for pursuit-start times).
     const d = new Date(Date.now() + 5 * 60000);
     const pad = n => String(n).padStart(2, '0');
-    const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const local = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`
+      + `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     document.getElementById('schedule-time').value = local;
   }
 }
