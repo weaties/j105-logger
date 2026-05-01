@@ -159,6 +159,10 @@
   function drawOnMap() {
     const map = window._helmlogLeafletMap;
     if (!map || !window.L) return;
+    // On /session/* pages, session.js owns a richer time-synced overlay
+    // (loadHelmlogStartLineOverlay). Skip the widget's static draw here so
+    // we don't paint duplicate lines/markers on top of it.
+    if (window.location.pathname.startsWith('/session/')) return;
     clearMapLayers();
     if (!snapshot.start_line || !snapshot.start_line.is_complete) return;
 

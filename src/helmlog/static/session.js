@@ -671,6 +671,14 @@ async function loadTrack() {
   } catch (err) {
     console.warn('Vakaros overlay failed to load:', err);
   }
+
+  // HelmLog start-line overlay (#644 + bias-overlay): boat/pin markers and
+  // a time-synced bias indicator that updates as the scrubber moves.
+  try {
+    await loadHelmlogStartLineOverlay();
+  } catch (err) {
+    console.warn('HelmLog start-line overlay failed to load:', err);
+  }
 }
 
 async function loadVakarosOverlay() {
@@ -883,6 +891,175 @@ async function loadVakarosOverlay() {
       start_favored_end: ctx.favored_end || null,
     };
     _injectVakarosStartIntoManeuvers();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HelmLog start-line overlay (#644 + bias overlay)
+// ---------------------------------------------------------------------------
+//
+// Renders boat/pin markers, a dashed orange line, and dynamic upwind ticks
+// at each end that follow the replay scrubber. The favoured end is
+// highlighted with a halo. All of it is computed from /race-start-overlay
+// (the line) + _replaySamples (TWD-at-cursor); no extra fetch on scrub.
+
+let _hlStartLineData = null;  // {boat: [lat,lon], pin: [...], length_m, bearing_deg}
+let _hlBoatHalo = null;
+let _hlPinHalo = null;
+let _hlPinTick = null;
+let _hlBoatTick = null;
+let _hlBiasLabel = null;
+
+function _angleDiffDeg(a, b) {
+  const d = ((a - b + 540) % 360) - 180;
+  return d;
+}
+
+function _findReplaySampleAt(utcMs) {
+  if (!_replaySamples || !_replaySamples.length) return null;
+  // Binary search for the latest sample with ts <= utcMs.
+  let lo = 0;
+  let hi = _replaySamples.length - 1;
+  if (_replaySamples[0].ts.getTime() > utcMs) return null;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (_replaySamples[mid].ts.getTime() <= utcMs) lo = mid;
+    else hi = mid - 1;
+  }
+  return _replaySamples[lo];
+}
+
+async function loadHelmlogStartLineOverlay() {
+  if (!_map) return;
+  const r = await fetch('/api/sessions/' + SESSION_ID + '/race-start-overlay');
+  if (!r.ok) return;
+  const data = await r.json();
+  if (!data || !data.line) return;
+
+  _hlStartLineData = data.line;
+  const HELMLOG_COLOR = '#f59e0b';
+
+  // Static endpoint markers + line (always on, regardless of scrubber).
+  const boat = data.line.boat;
+  const pin = data.line.pin;
+  const boatTip = data.line.boat_end_carried_over_from_race_id
+    ? 'HelmLog boat-end (from race ' + data.line.boat_end_carried_over_from_race_id + ')'
+    : 'HelmLog boat-end ping';
+  const pinTip = data.line.pin_end_carried_over_from_race_id
+    ? 'HelmLog pin-end (from race ' + data.line.pin_end_carried_over_from_race_id + ')'
+    : 'HelmLog pin-end ping';
+  L.polyline([pin, boat], {
+    color: HELMLOG_COLOR, weight: 3, opacity: 0.9, dashArray: '8, 8',
+  }).addTo(_map).bindTooltip('HelmLog start line', { sticky: true });
+  L.circleMarker(boat, {
+    radius: 7, color: HELMLOG_COLOR, fillColor: HELMLOG_COLOR,
+    fillOpacity: 0.9, weight: 2,
+  }).addTo(_map).bindTooltip(boatTip);
+  L.circleMarker(pin, {
+    radius: 7, color: HELMLOG_COLOR, fillColor: '#fbbf24',
+    fillOpacity: 0.9, weight: 2,
+  }).addTo(_map).bindTooltip(pinTip);
+
+  // Halos behind each marker — sized/colored by which end is favoured
+  // at the current scrub time. Drawn beneath the static markers (added
+  // first so they paint underneath).
+  _hlBoatHalo = L.circleMarker(boat, {
+    radius: 0, color: HELMLOG_COLOR, fillColor: HELMLOG_COLOR,
+    fillOpacity: 0.25, weight: 0, interactive: false,
+  }).addTo(_map);
+  _hlPinHalo = L.circleMarker(pin, {
+    radius: 0, color: HELMLOG_COLOR, fillColor: '#fbbf24',
+    fillOpacity: 0.25, weight: 0, interactive: false,
+  }).addTo(_map);
+
+  // Wind ticks pointing upwind from each end — redrawn every clock tick.
+  _hlBoatTick = L.polyline([boat, boat], {
+    color: HELMLOG_COLOR, weight: 2, opacity: 0.85, interactive: false,
+  }).addTo(_map);
+  _hlPinTick = L.polyline([pin, pin], {
+    color: HELMLOG_COLOR, weight: 2, opacity: 0.85, interactive: false,
+  }).addTo(_map);
+
+  // Bias label panel below the map (re-uses the existing track-hint area
+  // styling; we add our own tiny block right under it).
+  _ensureHlBiasLabel();
+
+  // Register as a play-clock surface so it updates on every tick/seek.
+  registerSurface('hl-start-bias', function(utc) { _renderHlStartBias(utc); });
+  // Initial render at the current cursor (may be _replayStart on first load).
+  if (_playClock && _playClock.positionUtc) {
+    _renderHlStartBias(_playClock.positionUtc);
+  }
+}
+
+function _ensureHlBiasLabel() {
+  if (_hlBiasLabel) return;
+  const container = document.getElementById('track-container');
+  if (!container) return;
+  _hlBiasLabel = document.createElement('div');
+  _hlBiasLabel.id = 'hl-bias-label';
+  _hlBiasLabel.style.cssText =
+    'font-size:.78rem;color:var(--text-secondary);padding:6px 8px;'
+    + 'background:var(--bg-input);border:1px solid var(--border);'
+    + 'border-radius:4px;margin-top:6px;font-variant-numeric:tabular-nums';
+  _hlBiasLabel.innerHTML = 'Line bias: <span id="hl-bias-text">—</span>';
+  container.appendChild(_hlBiasLabel);
+}
+
+function _renderHlStartBias(utc) {
+  if (!_hlStartLineData || !_hlBoatHalo || !_hlPinHalo) return;
+  const utcMs = utc instanceof Date ? utc.getTime() : new Date(utc).getTime();
+  const sample = _findReplaySampleAt(utcMs);
+  const twd = sample && sample.twd != null ? sample.twd : null;
+  const tws = sample && sample.tws != null ? sample.tws : null;
+  const lineBearing = _hlStartLineData.bearing_deg;
+  const boat = _hlStartLineData.boat;
+  const pin = _hlStartLineData.pin;
+  const lineLen = _hlStartLineData.length_m || 100;
+
+  const labelEl = document.getElementById('hl-bias-text');
+
+  if (twd == null) {
+    if (labelEl) labelEl.textContent = '— (no wind data at this moment)';
+    if (_hlBoatTick) _hlBoatTick.setLatLngs([boat, boat]);
+    if (_hlPinTick) _hlPinTick.setLatLngs([pin, pin]);
+    if (_hlBoatHalo) _hlBoatHalo.setRadius(0);
+    if (_hlPinHalo) _hlPinHalo.setRadius(0);
+    return;
+  }
+
+  // Bias = 90 − |angle_diff(line_bearing, twd)|. Positive = pin favoured.
+  const delta = _angleDiffDeg(lineBearing, twd);
+  const bias = 90 - Math.abs(delta);
+  const favoured = Math.abs(bias) < 1 ? 'neutral' : (bias > 0 ? 'pin' : 'boat');
+
+  // Wind ticks upwind from each end (toward TWD).
+  const tickLen = Math.max(40, lineLen * 0.4);
+  const boatUp = _offsetPoint(boat[0], boat[1], twd, tickLen);
+  const pinUp = _offsetPoint(pin[0], pin[1], twd, tickLen);
+  if (_hlBoatTick) _hlBoatTick.setLatLngs([boat, boatUp]);
+  if (_hlPinTick) _hlPinTick.setLatLngs([pin, pinUp]);
+
+  // Halo on the favoured end. Size scales with bias magnitude (1°→10px, 90°→25px).
+  const haloRadius = Math.min(25, 10 + Math.abs(bias) / 6);
+  if (favoured === 'boat') {
+    _hlBoatHalo.setRadius(haloRadius);
+    _hlPinHalo.setRadius(0);
+  } else if (favoured === 'pin') {
+    _hlPinHalo.setRadius(haloRadius);
+    _hlBoatHalo.setRadius(0);
+  } else {
+    _hlBoatHalo.setRadius(0);
+    _hlPinHalo.setRadius(0);
+  }
+
+  if (labelEl) {
+    const sign = bias >= 0 ? '+' : '';
+    const twsTxt = tws != null ? ' · ' + tws.toFixed(1) + ' kt' : '';
+    labelEl.innerHTML =
+      '<strong>' + sign + bias.toFixed(0) + '°</strong> '
+      + '<span style="text-transform:uppercase;letter-spacing:.05em">'
+      + favoured + '</span> favoured · TWD ' + Math.round(twd) + '°' + twsTxt;
   }
 }
 
