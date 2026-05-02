@@ -175,6 +175,75 @@ async def test_replay_samples_extend_into_prestart(
 
 
 @pytest.mark.asyncio
+async def test_track_includes_post_gun_for_active_race(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """While the race is in progress (end_utc IS NULL), the track must
+    include positions written *after* start_utc — not just the prestart
+    prefix. Regression: the bounded query collapsed to [start, start]
+    when end_utc was NULL, so live tracks froze at the gun."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race = await storage.start_race(
+        event="CYC", start_utc=_GUN, date_str="2026-04-30", race_num=1, name="R"
+    )
+    db = storage._conn()
+    # 3 prestart fixes + 4 post-gun fixes, all unscoped (race_id IS NULL),
+    # which is what the SK reader produces during an active race.
+    for offset_s in (-180, -120, -60, 30, 60, 120, 180):
+        ts = (_GUN + timedelta(seconds=offset_s)).isoformat()
+        await db.execute(
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+            " VALUES (?, ?, ?, ?)",
+            (ts, 0, 47.65, -122.40),
+        )
+    await db.commit()
+    # Note: NO end_race call — race is still active.
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(f"/api/sessions/{race.id}/track")
+    assert r.status_code == 200
+    body = r.json()
+    timestamps = body["features"][0]["properties"]["timestamps"]
+    start_iso = _GUN.isoformat().replace("+00:00", "Z")
+    pre = [t for t in timestamps if t < start_iso]
+    post = [t for t in timestamps if t >= start_iso]
+    assert len(pre) == 3, f"prestart fixes missing: {timestamps}"
+    assert len(post) == 4, f"post-gun fixes missing: {timestamps}"
+
+
+@pytest.mark.asyncio
+async def test_data_hash_changes_during_active_race(storage: Storage) -> None:
+    """resolve_race_data_hash must move as new positions stream into an
+    active race — otherwise the cache key never changes and stale track
+    blobs are served indefinitely. Regression for the same #707 bug."""
+    from helmlog.cache import resolve_race_data_hash
+
+    race = await storage.start_race(
+        event="CYC", start_utc=_GUN, date_str="2026-04-30", race_num=1, name="R"
+    )
+    db = storage._conn()
+
+    async def insert_position(ts_iso: str) -> None:
+        await db.execute(
+            "INSERT INTO positions (ts, source_addr, latitude_deg, longitude_deg)"
+            " VALUES (?, ?, ?, ?)",
+            (ts_iso, 0, 47.65, -122.40),
+        )
+        await db.commit()
+
+    # First fix during the race.
+    await insert_position((_GUN + timedelta(seconds=10)).isoformat())
+    h1 = await resolve_race_data_hash(storage, race.id)
+    # Second fix arriving 30s later — hash MUST change.
+    await insert_position((_GUN + timedelta(seconds=40)).isoformat())
+    h2 = await resolve_race_data_hash(storage, race.id)
+    assert h1 != h2, "data_hash unchanged as positions stream in — cache will never invalidate"
+
+
+@pytest.mark.asyncio
 async def test_track_window_falls_back_when_no_race_id_tagged(
     storage: Storage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

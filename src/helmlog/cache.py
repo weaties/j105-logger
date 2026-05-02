@@ -82,7 +82,10 @@ async def resolve_race_data_hash(storage: Storage, race_id: int) -> str | None:
     start_iso = str(race["start_utc"])
     end_iso = str(race["end_utc"]) if race["end_utc"] is not None else None
 
-    # Row count: prefer race_id tagging, fall back to time window.
+    # Row count: prefer race_id tagging, fall back to time window. For an
+    # active race (end_iso is None), use "now" as the upper bound so the
+    # count grows as positions stream in — otherwise the hash would be
+    # frozen and the cache would serve stale track blobs forever.
     rid_cur = await db.execute(
         "SELECT COUNT(*) AS cnt FROM positions WHERE race_id = ?", (race_id,)
     )
@@ -91,7 +94,7 @@ async def resolve_race_data_hash(storage: Storage, race_id: int) -> str | None:
     if n_tagged > 0:
         row_count = n_tagged
     else:
-        window_end = end_iso or start_iso
+        window_end = end_iso or datetime.now(UTC).isoformat()
         win_cur = await db.execute(
             "SELECT COUNT(*) AS cnt FROM positions WHERE ts >= ? AND ts <= ?",
             (start_iso, window_end),
