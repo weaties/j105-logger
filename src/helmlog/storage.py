@@ -2080,6 +2080,11 @@ class Storage:
         from helmlog.smoothing import DEFAULT_TAUS, SmoothingConfig
 
         self._smoothing: SmoothingConfig = SmoothingConfig.from_taus(DEFAULT_TAUS)
+        # Leeway coefficient for the live current compute (#730). Loaded from
+        # boat_settings.leeway_coefficient on connect; refresh_leeway_k() picks
+        # up admin changes. Default 10 is a reasonable starting point for a
+        # 30–40 ft sailboat — admin can tune via /admin/boats.
+        self._leeway_k: float = 10.0
         self._last_rudder_write: float = 0.0
         self._last_attitude_write: float = 0.0
         # Web response cache (#594). Optional; web.py binds a WebCache
@@ -2149,9 +2154,10 @@ class Storage:
 
     def _recompute_set_drift(self) -> None:
         """Derive set / drift from the (already-smoothed) sog, cog, stw, hdg
-        in ``self._live``. The result is then run through the set/drift
-        smoothers so a few-degree heading wobble doesn't bounce drift by
-        a knot every tick. Mirrors ``helmlog.current.compute_set_drift``.
+        + heel in ``self._live``. The heading is leeway-corrected (#730)
+        so the result doesn't flip direction on every tack. The output
+        runs through its own EMA so a few-degree heading wobble doesn't
+        bounce drift by a knot every tick.
         """
         from helmlog.current import compute_set_drift
 
@@ -2159,7 +2165,8 @@ class Storage:
         cog = self._live["cog_deg"]
         stw = self._live["bsp_kts"]
         hdg = self._live["heading_deg"]
-        result = compute_set_drift(sog, cog, stw, hdg)
+        heel = self._live.get("heel_deg")
+        result = compute_set_drift(sog, cog, stw, hdg, heel_deg=heel, leeway_k=self._leeway_k)
         if result is None:
             return
         set_raw, drift_raw = result
@@ -2204,6 +2211,9 @@ class Storage:
             case AttitudeRecord():
                 self._live["heel_deg"] = round(record.heel_deg, 1)
                 self._live["trim_deg"] = round(record.trim_deg, 1)
+                # Heel is an input to the leeway correction, so recompute
+                # set/drift whenever it changes.
+                self._recompute_set_drift()
             case PositionRecord():
                 # Don't fire the instruments callback for position records —
                 # they go on the separate position channel below. Throttle
@@ -2233,6 +2243,23 @@ class Storage:
     def set_position_callback(self, cb: Callable[[dict[str, Any]], None]) -> None:
         """Register a callback invoked on each new GPS fix (1 Hz throttled)."""
         self._on_position_update = cb
+
+    async def refresh_leeway_k(self) -> float:
+        """Reload ``boat_settings.leeway_coefficient`` into the cached
+        ``self._leeway_k``. Returns the effective value. Called during
+        ``connect()`` and whenever an admin updates boat settings."""
+        try:
+            rows = await self.current_boat_settings(race_id=None)
+        except Exception:
+            return self._leeway_k
+        import contextlib
+
+        for row in rows:
+            if row["parameter"] == "leeway_coefficient":
+                with contextlib.suppress(TypeError, ValueError):
+                    self._leeway_k = float(row["value"])
+                break
+        return self._leeway_k
 
     async def refresh_smoothing(self) -> dict[str, float]:
         """Reload per-channel time constants from ``app_settings`` and apply
@@ -2293,6 +2320,7 @@ class Storage:
         self._session_active = current is not None
         self._active_race_id = current.id if current is not None else None
         await self.refresh_smoothing()
+        await self.refresh_leeway_k()
 
     async def close(self) -> None:
         """Flush any buffered writes and close the database connections."""
