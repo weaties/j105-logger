@@ -154,6 +154,24 @@ async def test_heading_smoothing_is_angle_aware(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_boat_settings_hot_refreshes_leeway_k(storage: Storage) -> None:
+    """Writing leeway_coefficient via create_boat_settings should
+    immediately update the cached storage._leeway_k — admin tunes the
+    coefficient and the next live broadcast picks it up, no restart."""
+    from datetime import UTC, datetime
+
+    # Default after connect is 10.0 (no boat_settings rows yet).
+    assert storage._leeway_k == 10.0
+    ts = datetime.now(UTC).isoformat()
+    await storage.create_boat_settings(
+        race_id=None,
+        entries=[{"ts": ts, "parameter": "leeway_coefficient", "value": "13.5"}],
+        source="manual",
+    )
+    assert storage._leeway_k == 13.5
+
+
+@pytest.mark.asyncio
 async def test_set_drift_derived_from_smoothed_inputs(storage: Storage) -> None:
     """Set / drift are computed server-side from the (already-smoothed)
     sog / cog / stw / hdg in self._live, then put through their own EMA
