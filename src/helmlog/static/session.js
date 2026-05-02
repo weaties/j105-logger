@@ -520,43 +520,13 @@ function _populateRoundings() {
 // the scrubber HUD has data when pinned at the live tip.
 let _lastLiveInstruments = null;
 
-// Derive (set, drift) on the client from sog/cog/stw/hdg. Mirrors the
-// formula in src/helmlog/current.py — boat-over-ground vector minus
-// boat-through-water vector. The Python code is the source of truth;
-// we recompute here because the WS instrument snapshot only carries the
-// raw measurements and the boat-current arrow + the GAUGES "Current"
-// row need set/drift in real time.
-function _computeLiveSetDrift(d) {
-  if (!d) return null;
-  const sog = d.sog_kts, cog = d.cog_deg, stw = d.bsp_kts, hdg = d.heading_deg;
-  if (sog == null || cog == null || stw == null || hdg == null) return null;
-  if ([sog, cog, stw, hdg].some(Number.isNaN)) return null;
-  const polar = (speed, deg) => {
-    const r = deg * Math.PI / 180;
-    return [speed * Math.cos(r), speed * Math.sin(r)];
-  };
-  const [nG, eG] = polar(sog, cog);
-  const [nW, eW] = polar(stw, hdg);
-  const nC = nG - nW, eC = eG - eW;
-  const drift = Math.hypot(nC, eC);
-  if (drift < 1e-9) return {set: 0, drift: 0};
-  const set = ((Math.atan2(eC, nC) * 180 / Math.PI) % 360 + 360) % 360;
-  return {set: set, drift: drift};
-}
-
 // Push live instrument values straight into the GAUGES card so it stays
 // real-time without polling /api/instruments. Mirrors the binding inside
 // _renderHud() — but driven by the WS message instead of the scrubber.
+// Set / drift now arrive pre-computed from the server (#729) so we just
+// bind them here alongside the raw measurements.
 function _renderLiveGauges(d) {
   if (!d) return;
-  // Augment the snapshot with computed set/drift so downstream consumers
-  // (synthetic _replaySamples row, GAUGES Current row, boat-current arrow)
-  // all see the same values without recomputing.
-  const sd = _computeLiveSetDrift(d);
-  if (sd) {
-    d.set_deg = sd.set;
-    d.drift_kts = sd.drift;
-  }
   _lastLiveInstruments = d;
   const setNum = (id, val, decimals) => {
     const el = document.getElementById(id);
