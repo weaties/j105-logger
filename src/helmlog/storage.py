@@ -2069,6 +2069,12 @@ class Storage:
         # that granularity for the live polyline.
         self._on_position_update: Callable[[dict[str, Any]], None] | None = None
         self._last_position_broadcast: float = 0.0
+        # Per-channel smoothing applied to live broadcast values (#727).
+        # Loaded from app_settings during connect(); refresh_smoothing()
+        # picks up admin tau changes without restarting the service.
+        from helmlog.smoothing import DEFAULT_TAUS, SmoothingConfig
+
+        self._smoothing: SmoothingConfig = SmoothingConfig.from_taus(DEFAULT_TAUS)
         self._last_rudder_write: float = 0.0
         self._last_attitude_write: float = 0.0
         # Web response cache (#594). Optional; web.py binds a WebCache
@@ -2137,23 +2143,33 @@ class Storage:
             self._live["twa_deg"] = round((ang - hdg + 360) % 360, 1) if hdg is not None else None
 
     def update_live(self, record: PGNRecord) -> None:
-        """Update the in-memory live cache from a decoded record (no DB write)."""
+        """Update the in-memory live cache from a decoded record (no DB write).
+
+        Wind / speed / heading values pass through ``self._smoothing`` so
+        the gauges don't jitter on every CAN tick. The smoothed value is
+        what gets stored in ``self._live`` and broadcast over the WS;
+        SQLite still records the raw record (see ``write``).
+        """
+        sm = self._smoothing
         match record:
             case HeadingRecord():
-                self._live["heading_deg"] = round(record.heading_deg, 1)
+                self._live["heading_deg"] = round(sm.update("heading_deg", record.heading_deg), 1)
                 self._recompute_true_wind()
             case SpeedRecord():
-                self._live["bsp_kts"] = round(record.speed_kts, 2)
+                self._live["bsp_kts"] = round(sm.update("bsp_kts", record.speed_kts), 2)
             case COGSOGRecord():
-                self._live["cog_deg"] = round(record.cog_deg, 1)
-                self._live["sog_kts"] = round(record.sog_kts, 2)
+                self._live["cog_deg"] = round(sm.update("cog_deg", record.cog_deg), 1)
+                self._live["sog_kts"] = round(sm.update("sog_kts", record.sog_kts), 2)
             case WindRecord() if record.reference == 2:  # apparent
-                self._live["aws_kts"] = round(record.wind_speed_kts, 1)
-                self._live["awa_deg"] = round(record.wind_angle_deg, 1)
+                self._live["aws_kts"] = round(sm.update("aws_kts", record.wind_speed_kts), 1)
+                self._live["awa_deg"] = round(sm.update("awa_deg", record.wind_angle_deg), 1)
             case WindRecord() if record.reference in (0, 4):  # true
-                self._live["tws_kts"] = round(record.wind_speed_kts, 1)
+                self._live["tws_kts"] = round(sm.update("tws_kts", record.wind_speed_kts), 1)
                 self._live_tw_ref = record.reference
-                self._live_tw_angle_raw = record.wind_angle_deg
+                # Smoothed angle feeds the recompute below so TWD/TWA come
+                # out smoothed too. Vector EMA handles 0/360 wrap.
+                channel = "twd_deg" if record.reference == 4 else "twa_deg"
+                self._live_tw_angle_raw = sm.update(channel, record.wind_angle_deg)
                 self._recompute_true_wind()
             case RudderRecord():
                 self._live["rudder_deg"] = round(record.rudder_angle_deg, 1)
@@ -2189,6 +2205,25 @@ class Storage:
     def set_position_callback(self, cb: Callable[[dict[str, Any]], None]) -> None:
         """Register a callback invoked on each new GPS fix (1 Hz throttled)."""
         self._on_position_update = cb
+
+    async def refresh_smoothing(self) -> dict[str, float]:
+        """Reload per-channel time constants from ``app_settings`` and apply
+        them to the live smoothers without losing accumulated state.
+
+        Returns the effective tau map so the caller (admin API) can echo
+        back what's now in force. Settings keys are
+        ``smoothing.<channel>.tau_s``; missing or malformed values fall
+        back to ``DEFAULT_TAUS``.
+        """
+        from helmlog.smoothing import DEFAULT_TAUS, parse_tau
+
+        out: dict[str, float] = {}
+        for channel, default in DEFAULT_TAUS.items():
+            raw = await self.get_setting(f"smoothing.{channel}.tau_s")
+            tau = parse_tau(raw, default)
+            self._smoothing.set_tau(channel, tau)
+            out[channel] = tau
+        return out
 
     def live_instruments(self) -> dict[str, float | None]:
         """Return a snapshot of the current in-memory instrument cache."""
@@ -2229,6 +2264,7 @@ class Storage:
         current = await self.get_current_race()
         self._session_active = current is not None
         self._active_race_id = current.id if current is not None else None
+        await self.refresh_smoothing()
 
     async def close(self) -> None:
         """Flush any buffered writes and close the database connections."""
