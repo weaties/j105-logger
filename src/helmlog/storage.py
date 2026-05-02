@@ -2056,10 +2056,19 @@ class Storage:
         self._pending: int = 0
         self._last_flush: float = 0.0
         self._session_active: bool = False
+        # Active race id, if any. Maintained by start_race / end_race. Used
+        # to tag WS position broadcasts so clients can filter by race.
+        self._active_race_id: int | None = None
         self._live: dict[str, float | None] = dict.fromkeys(_LIVE_KEYS)
         self._live_tw_ref: int | None = None
         self._live_tw_angle_raw: float | None = None
         self._on_live_update: Callable[[dict[str, float | None]], None] | None = None
+        # Position broadcasts go on a separate callback because they're a
+        # different message shape (per-fix lat/lon/ts) and we throttle them
+        # to 1 Hz on the wire — GPS can arrive at 5–10 Hz and we don't need
+        # that granularity for the live polyline.
+        self._on_position_update: Callable[[dict[str, Any]], None] | None = None
+        self._last_position_broadcast: float = 0.0
         self._last_rudder_write: float = 0.0
         self._last_attitude_write: float = 0.0
         # Web response cache (#594). Optional; web.py binds a WebCache
@@ -2151,12 +2160,35 @@ class Storage:
             case AttitudeRecord():
                 self._live["heel_deg"] = round(record.heel_deg, 1)
                 self._live["trim_deg"] = round(record.trim_deg, 1)
+            case PositionRecord():
+                # Don't fire the instruments callback for position records —
+                # they go on the separate position channel below. Throttle
+                # to 1 Hz on the wire because GPS may arrive at 5–10 Hz.
+                now = time.monotonic()
+                if (
+                    self._on_position_update is not None
+                    and (now - self._last_position_broadcast) >= 1.0
+                ):
+                    self._last_position_broadcast = now
+                    self._on_position_update(
+                        {
+                            "ts": record.timestamp.isoformat(),
+                            "lat": record.latitude_deg,
+                            "lon": record.longitude_deg,
+                            "race_id": self._active_race_id,
+                        }
+                    )
+                return
         if self._on_live_update is not None:
             self._on_live_update(dict(self._live))
 
     def set_live_callback(self, cb: Callable[[dict[str, float | None]], None]) -> None:
         """Register a callback invoked on every live instrument update."""
         self._on_live_update = cb
+
+    def set_position_callback(self, cb: Callable[[dict[str, Any]], None]) -> None:
+        """Register a callback invoked on each new GPS fix (1 Hz throttled)."""
+        self._on_position_update = cb
 
     def live_instruments(self) -> dict[str, float | None]:
         """Return a snapshot of the current in-memory instrument cache."""
@@ -2196,6 +2228,7 @@ class Storage:
                 self._read_db = None
         current = await self.get_current_race()
         self._session_active = current is not None
+        self._active_race_id = current.id if current is not None else None
 
     async def close(self) -> None:
         """Flush any buffered writes and close the database connections."""
@@ -3609,6 +3642,7 @@ class Storage:
         await self._invalidate_race_cache(cur.lastrowid)
         logger.info("Race started: {} (id={}) type={}", name, cur.lastrowid, session_type)
         self._session_active = True
+        self._active_race_id = cur.lastrowid
         return _Race(
             id=cur.lastrowid,
             name=name,
@@ -3631,6 +3665,8 @@ class Storage:
         await db.commit()
         await self._invalidate_race_cache(race_id)
         self._session_active = False
+        if self._active_race_id == race_id:
+            self._active_race_id = None
         logger.info("Race {} ended at {}", race_id, end_utc.isoformat())
 
     async def set_race_start_utc(self, race_id: int, start_utc: datetime) -> None:

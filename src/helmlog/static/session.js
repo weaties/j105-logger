@@ -309,7 +309,6 @@ async function init() {
   // than flashing them on screen and yanking them away.
   if (cfg.dataset.live === '1') {
     document.body.classList.add('live-race');
-    document.getElementById('live-instruments-card').style.display = '';
   }
 
   // If a deep-link query string targets a specific moment, start opening
@@ -384,20 +383,25 @@ function _maybeOpenDeepLinkMoment() {
 // ---------------------------------------------------------------------------
 
 const _LIVE_REFRESH_MS = 15000;
-const _LIVE_INSTRUMENT_MS = 2000;
 let _liveInterval = null;
-let _liveInstrumentInterval = null;
-let _liveInstTickInterval = null;
 let _liveWs = null;
 let _liveLastRefresh = 0;
 let _livePhotoUrl = null;
+let _liveWsBackoffMs = 1000;
+let _liveWsRetryTimer = null;
+let _liveGotPositionViaWs = false;
 
 async function _liveRefreshOnce() {
+  // Polling fallback. Only invoked if the WS is dead — once a position
+  // arrives over the socket, _liveGotPositionViaWs flips and this stops
+  // re-fetching the track endpoint (the expensive part on cellular).
   const now = Date.now();
   if (now - _liveLastRefresh < _LIVE_REFRESH_MS - 500) return;
   _liveLastRefresh = now;
   try {
-    await Promise.all([loadTrack(), loadVideos(), _refreshLivePhoto()]);
+    const tasks = [loadVideos(), _refreshLivePhoto()];
+    if (!_liveGotPositionViaWs) tasks.push(loadTrack());
+    await Promise.all(tasks);
   } catch (e) { /* non-fatal */ }
 }
 
@@ -427,44 +431,178 @@ async function _refreshLivePhoto() {
   } catch (e) { /* non-fatal */ }
 }
 
-async function _refreshLiveInstruments() {
+// Haversine distance in nautical miles between two [lat, lng] points.
+// Used by the live distance gauges and the boat→start straight-line
+// computation. 3440.065 nm is the Earth's mean radius in nm.
+function _haversineNm(a, b) {
+  const toRad = (d) => d * Math.PI / 180;
+  const dLat = toRad(b[0] - a[0]);
+  const dLon = toRad(b[1] - a[1]);
+  const lat1 = toRad(a[0]);
+  const lat2 = toRad(b[0]);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * 3440.065 * Math.asin(Math.sqrt(h));
+}
+
+// Cumulative track length (nm) from start_utc to the latest fix. Iterates
+// _trackData.latLngs and sums Haversine legs from the first point at or
+// after race start_utc.
+let _gunLatLngIdx = -1;
+function _recomputeDistanceSailed() {
+  if (!_trackData || !_trackData.latLngs.length || !_session || !_session.start_utc) return;
+  const startMs = new Date(_session.start_utc).getTime();
+  if (_gunLatLngIdx < 0) {
+    for (let i = 0; i < _trackData.timestamps.length; i++) {
+      if (_trackData.timestamps[i].getTime() >= startMs) { _gunLatLngIdx = i; break; }
+    }
+    if (_gunLatLngIdx < 0) return; // no post-gun fixes yet
+  }
+  let total = 0;
+  for (let i = _gunLatLngIdx + 1; i < _trackData.latLngs.length; i++) {
+    total += _haversineNm(_trackData.latLngs[i - 1], _trackData.latLngs[i]);
+  }
+  const el = document.getElementById('hud-dist-sailed');
+  if (el) el.textContent = total.toFixed(2);
+}
+
+// Course distance: start → rounding₁ → … → rounding_n → boat. With no
+// roundings yet (the live-race case — detector only runs at race-end),
+// degrades to start → boat. _roundings is populated lazily from the
+// maneuvers endpoint once it's been run.
+let _roundings = []; // [{ts, lat, lon}]
+function _recomputeCourseDistance() {
+  if (!_trackData || !_trackData.latLngs.length || !_session || !_session.start_utc) return;
+  if (_gunLatLngIdx < 0) return;
+  const startLatLng = _trackData.latLngs[_gunLatLngIdx];
+  const boat = _trackData.latLngs[_trackData.latLngs.length - 1];
+  let total = 0;
+  let prev = startLatLng;
+  for (const r of _roundings) {
+    const here = [r.lat, r.lon];
+    total += _haversineNm(prev, here);
+    prev = here;
+  }
+  total += _haversineNm(prev, boat);
+  const el = document.getElementById('hud-dist-line');
+  if (el) el.textContent = total.toFixed(2);
+}
+
+// Resolve roundings from the maneuvers list to (lat, lon) by snapping
+// each rounding's ts to the nearest position in _trackData. Stored in
+// _roundings so the course-distance compute can iterate them. Refreshes
+// any time _maneuvers or _trackData changes.
+function _populateRoundings() {
+  if (typeof _maneuvers === 'undefined' || !_maneuvers || !_trackData) {
+    _roundings = [];
+    return;
+  }
+  const tsList = _trackData.timestamps;
+  if (!tsList.length) { _roundings = []; return; }
+  const out = [];
+  for (const m of _maneuvers) {
+    if (m.type !== 'rounding') continue;
+    const tsMs = new Date(m.ts.endsWith('Z') || m.ts.includes('+') ? m.ts : m.ts + 'Z').getTime();
+    let bestIdx = -1, bestDt = Infinity;
+    for (let i = 0; i < tsList.length; i++) {
+      const dt = Math.abs(tsList[i].getTime() - tsMs);
+      if (dt < bestDt) { bestDt = dt; bestIdx = i; }
+    }
+    if (bestIdx >= 0) {
+      const ll = _trackData.latLngs[bestIdx];
+      out.push({ts: m.ts, lat: ll[0], lon: ll[1]});
+    }
+  }
+  _roundings = out;
+}
+
+// Push live instrument values straight into the GAUGES card so it stays
+// real-time without polling /api/instruments. Mirrors the binding inside
+// _renderHud() — but driven by the WS message instead of the scrubber.
+function _renderLiveGauges(d) {
+  if (!d) return;
+  const setNum = (id, val, decimals) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = (val != null && !Number.isNaN(val)) ? Number(val).toFixed(decimals) : '—';
+  };
+  const setDeg = (id, val) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (val == null || Number.isNaN(val)) { el.textContent = '—'; return; }
+    const wrapped = ((Math.round(val) % 360) + 360) % 360;
+    el.textContent = wrapped + '°';
+  };
+  const setSigned = (id, val, decimals) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (val == null || Number.isNaN(val)) { el.textContent = '—'; return; }
+    const sign = Number(val) >= 0 ? '+' : '';
+    el.textContent = sign + Number(val).toFixed(decimals) + '°';
+  };
+  setNum('hud-stw', d.bsp_kts, 2);
+  setNum('hud-sog', d.sog_kts, 2);
+  setNum('hud-tws', d.tws_kts, 1);
+  setNum('hud-aws', d.aws_kts, 1);
+  setDeg('hud-twd', d.twd_deg);
+  setDeg('hud-twa', d.twa_deg);
+  setDeg('hud-awa', d.awa_deg);
+  setNum('hud-hdg', d.heading_deg, 0);
+  setNum('hud-cog', d.cog_deg, 0);
+  setSigned('hud-heel', d.heel_deg, 1);
+  setSigned('hud-trim', d.trim_deg, 1);
+}
+
+// Append a position fix to the polyline + casing and refresh distances.
+// No-op if the fix is older than the last one we have (out-of-order
+// arrival, e.g. on reconnect after a brief disconnect).
+function _appendLivePosition(payload) {
+  if (!_trackData || !payload || payload.lat == null || payload.lon == null) return;
+  const ts = new Date(payload.ts.endsWith('Z') || payload.ts.includes('+') ? payload.ts : payload.ts + 'Z');
+  const last = _trackData.timestamps[_trackData.timestamps.length - 1];
+  if (last && ts <= last) return;
+  _trackData.latLngs.push([payload.lat, payload.lon]);
+  _trackData.timestamps.push(ts);
+  if (_trackData.line) _trackData.line.setLatLngs(_trackData.latLngs);
+  if (_trackData.casing) _trackData.casing.setLatLngs(_trackData.latLngs);
+  _liveGotPositionViaWs = true;
+  _recomputeDistanceSailed();
+  _recomputeCourseDistance();
+}
+
+function _handleLiveWsMessage(ev) {
+  let msg;
+  try { msg = JSON.parse(ev.data); } catch (e) { return; }
+  if (msg.type === 'position') {
+    _appendLivePosition(msg.data);
+  } else if (msg.type === 'instruments') {
+    _renderLiveGauges(msg.data);
+  }
+}
+
+function _connectLiveWs() {
   try {
-    const r = await fetch('/api/instruments');
-    if (!r.ok) return;
-    const d = await r.json();
-    const set = (id, val, decimals) => {
-      const el = document.getElementById(id);
-      if (el) el.textContent = val != null ? Number(val).toFixed(decimals) : '—';
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    _liveWs = new WebSocket(`${proto}//${location.host}/ws/live`);
+    _liveWs.onmessage = _handleLiveWsMessage;
+    _liveWs.onopen = () => { _liveWsBackoffMs = 1000; };
+    _liveWs.onclose = () => {
+      _liveWs = null;
+      // Reconnect with exponential backoff capped at 30 s. The polling
+      // fallback in _liveRefreshOnce() takes over (re-fetching the full
+      // track) until the socket comes back.
+      _liveGotPositionViaWs = false;
+      if (_liveWsRetryTimer) clearTimeout(_liveWsRetryTimer);
+      _liveWsRetryTimer = setTimeout(_connectLiveWs, _liveWsBackoffMs);
+      _liveWsBackoffMs = Math.min(_liveWsBackoffMs * 2, 30000);
     };
-    set('liv-sog', d.sog_kts, 1);
-    set('liv-cog', d.cog_deg, 0);
-    set('liv-hdg', d.heading_deg, 0);
-    set('liv-bsp', d.bsp_kts, 1);
-    set('liv-aws', d.aws_kts, 1);
-    set('liv-awa', d.awa_deg, 0);
-    set('liv-tws', d.tws_kts, 1);
-    set('liv-twa', d.twa_deg, 0);
-    set('liv-twd', d.twd_deg, 0);
-    set('liv-rdr', d.rudder_deg, 1);
-  } catch (e) { /* non-fatal */ }
+    _liveWs.onerror = () => { try { _liveWs.close(); } catch (e) {} };
+  } catch (e) { /* fallback to polling */ }
 }
 
 function _startLiveRefresh() {
   if (_liveInterval) return;
   _liveInterval = setInterval(_liveRefreshOnce, _LIVE_REFRESH_MS);
-  _liveInstrumentInterval = setInterval(_refreshLiveInstruments, _LIVE_INSTRUMENT_MS);
-  _liveInstTickInterval = setInterval(() => {
-    const el = document.getElementById('live-inst-time');
-    if (el) el.textContent = new Date().toISOString().substring(11, 19) + ' UTC';
-  }, 1000);
-  _refreshLiveInstruments();
   _refreshLivePhoto();
-  try {
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    _liveWs = new WebSocket(`${proto}//${location.host}/ws/live`);
-    _liveWs.onmessage = () => { _liveRefreshOnce(); };
-    _liveWs.onclose = () => { _liveWs = null; };
-  } catch (e) { /* polling covers the fallback */ }
+  _connectLiveWs();
 }
 
 // ---------------------------------------------------------------------------
@@ -635,6 +773,11 @@ async function loadTrack() {
   const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
   _trackData = {latLngs, timestamps, line, casing, cursor};
+  // Reset the gun-index cache so the next compute walks from scratch.
+  _gunLatLngIdx = -1;
+  _recomputeDistanceSailed();
+  _populateRoundings();
+  _recomputeCourseDistance();
 
   // Map is a consumer: render the cursor at the requested UTC. We use a
   // continuous interpolated position (not the nearest sample index) so the
@@ -5280,6 +5423,9 @@ async function loadManeuvers() {
   // Roundings are now loaded — refresh laylines so they anchor on the
   // mark positions from this fetch (handles re-detection too).
   if (typeof _drawAllLaylines === 'function') _drawAllLaylines();
+  // Refresh the course-distance gauge using the new rounding set.
+  _populateRoundings();
+  _recomputeCourseDistance();
 }
 
 function _manKey(m, idx) {

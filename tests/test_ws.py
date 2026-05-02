@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 from starlette.testclient import TestClient
 
-from helmlog.nmea2000 import HeadingRecord
+from helmlog.nmea2000 import HeadingRecord, PositionRecord
 from helmlog.web import create_app
 
 if TYPE_CHECKING:
@@ -64,6 +64,82 @@ async def test_live_callback_fires_on_update(storage: Storage) -> None:
 
     assert len(received) == 1
     assert received[0]["heading_deg"] == 245.3
+
+
+@pytest.mark.asyncio
+async def test_position_callback_fires_for_position_record(storage: Storage) -> None:
+    """update_live(PositionRecord) routes to the position callback, not the
+    instrument callback. Wire format is {ts, lat, lon, race_id}."""
+    received: list[dict] = []  # type: ignore[type-arg]
+
+    def cb(payload: dict) -> None:  # type: ignore[type-arg]
+        received.append(payload)
+
+    storage.set_position_callback(cb)
+    record = PositionRecord(
+        pgn=129025,
+        source_addr=0,
+        timestamp=datetime(2026, 5, 2, 16, 30, 0, tzinfo=UTC),
+        latitude_deg=47.65,
+        longitude_deg=-122.40,
+    )
+    storage.update_live(record)
+
+    assert len(received) == 1
+    assert received[0]["lat"] == 47.65
+    assert received[0]["lon"] == -122.40
+    assert received[0]["ts"].startswith("2026-05-02T16:30:00")
+
+
+@pytest.mark.asyncio
+async def test_position_broadcasts_throttled_to_1hz(storage: Storage) -> None:
+    """Multiple position records inside the same second collapse to one
+    broadcast — GPS at 5–10 Hz must not flood the wire."""
+    received: list[dict] = []  # type: ignore[type-arg]
+
+    def cb(payload: dict) -> None:  # type: ignore[type-arg]
+        received.append(payload)
+
+    storage.set_position_callback(cb)
+    base = datetime(2026, 5, 2, 16, 30, 0, tzinfo=UTC)
+    for i in range(5):
+        storage.update_live(
+            PositionRecord(
+                pgn=129025,
+                source_addr=0,
+                timestamp=base.replace(microsecond=i * 100_000),
+                latitude_deg=47.65 + i * 0.0001,
+                longitude_deg=-122.40,
+            )
+        )
+    # Five fixes within the same monotonic second → only the first reaches
+    # the wire. The throttle is monotonic-clock-based so this assertion is
+    # tight and not flaky.
+    assert len(received) == 1
+
+
+@pytest.mark.asyncio
+async def test_position_record_does_not_fire_instrument_callback(storage: Storage) -> None:
+    """A PositionRecord must not also trigger the instruments broadcast — it
+    has no instrument fields and would just spam an unchanged snapshot."""
+    inst_calls: list[dict] = []  # type: ignore[type-arg]
+    pos_calls: list[dict] = []  # type: ignore[type-arg]
+
+    storage.set_live_callback(lambda d: inst_calls.append(d))
+    storage.set_position_callback(lambda p: pos_calls.append(p))
+
+    storage.update_live(
+        PositionRecord(
+            pgn=129025,
+            source_addr=0,
+            timestamp=datetime(2026, 5, 2, 16, 31, 0, tzinfo=UTC),
+            latitude_deg=47.65,
+            longitude_deg=-122.40,
+        )
+    )
+
+    assert len(pos_calls) == 1
+    assert len(inst_calls) == 0
 
 
 @pytest.mark.asyncio
