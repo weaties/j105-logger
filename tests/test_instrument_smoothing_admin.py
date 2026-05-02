@@ -154,6 +154,40 @@ async def test_heading_smoothing_is_angle_aware(storage: Storage) -> None:
 
 
 @pytest.mark.asyncio
+async def test_set_drift_derived_from_smoothed_inputs(storage: Storage) -> None:
+    """Set / drift are computed server-side from the (already-smoothed)
+    sog / cog / stw / hdg in self._live, then put through their own EMA
+    so the gauge doesn't twitch on every input. Checks that update_live
+    populates set_deg + drift_kts in the broadcast snapshot."""
+    from helmlog.nmea2000 import COGSOGRecord
+
+    await storage.refresh_smoothing()
+    # Make every smoother near-pass-through so this test can reason
+    # about steady-state values without waiting many seconds.
+    for ch in ("sog_kts", "cog_deg", "bsp_kts", "heading_deg", "set_deg", "drift_kts"):
+        storage._smoothing.set_tau(ch, 0.05)
+    base_ts = datetime(2026, 5, 2, 16, 0, 0, tzinfo=UTC)
+    # HDG = 0°, COG = 0°, STW = 5, SOG = 5 → no current.
+    storage.update_live(
+        HeadingRecord(
+            pgn=127250,
+            source_addr=0,
+            timestamp=base_ts,
+            heading_deg=0.0,
+            deviation_deg=None,
+            variation_deg=None,
+        )
+    )
+    storage.update_live(SpeedRecord(pgn=128259, source_addr=0, timestamp=base_ts, speed_kts=5.0))
+    storage.update_live(
+        COGSOGRecord(pgn=129026, source_addr=0, timestamp=base_ts, cog_deg=0.0, sog_kts=5.0)
+    )
+    drift_no_current = storage._live["drift_kts"]
+    assert drift_no_current is not None
+    assert drift_no_current < 0.5  # essentially zero
+
+
+@pytest.mark.asyncio
 async def test_speed_record_is_smoothed(storage: Storage) -> None:
     """Confirms SpeedRecord (boat speed through water) is routed through
     the bsp_kts smoother — first sample seeds, second blends."""

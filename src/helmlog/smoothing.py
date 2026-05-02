@@ -55,12 +55,18 @@ DEFAULT_TAUS: dict[str, float] = {
     "bsp_kts": 3.0,
     "heading_deg": 2.0,
     "cog_deg": 2.0,
+    # Set / drift derive from sog/cog/stw/hdg, which are themselves
+    # smoothed; applying a longer EMA on top damps residual jitter from
+    # the four-input vector subtraction (a few degrees of HDG drift can
+    # swing drift by more than a knot — see #729).
+    "set_deg": 8.0,
+    "drift_kts": 8.0,
 }
 
 # Channels whose values are bearings (0–360°) and need vector smoothing
 # rather than scalar.
 ANGLE_CHANNELS: frozenset[str] = frozenset(
-    {"twa_deg", "twd_deg", "awa_deg", "heading_deg", "cog_deg"}
+    {"twa_deg", "twd_deg", "awa_deg", "heading_deg", "cog_deg", "set_deg"}
 )
 
 # Floor on tau so a stuck-zero setting can't cause divide-by-zero or

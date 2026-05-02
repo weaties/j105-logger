@@ -192,6 +192,11 @@ _LIVE_KEYS = (
     "aws_kts",
     "awa_deg",
     "rudder_deg",
+    # Derived current vector — computed in _recompute_set_drift from the
+    # already-smoothed sog/cog/stw/hdg, then routed through its own EMA
+    # so the gauge doesn't twitch on every input fix.
+    "set_deg",
+    "drift_kts",
 )
 
 # ---------------------------------------------------------------------------
@@ -2142,6 +2147,26 @@ class Storage:
             self._live["twd_deg"] = round(ang % 360, 1)
             self._live["twa_deg"] = round((ang - hdg + 360) % 360, 1) if hdg is not None else None
 
+    def _recompute_set_drift(self) -> None:
+        """Derive set / drift from the (already-smoothed) sog, cog, stw, hdg
+        in ``self._live``. The result is then run through the set/drift
+        smoothers so a few-degree heading wobble doesn't bounce drift by
+        a knot every tick. Mirrors ``helmlog.current.compute_set_drift``.
+        """
+        from helmlog.current import compute_set_drift
+
+        sog = self._live["sog_kts"]
+        cog = self._live["cog_deg"]
+        stw = self._live["bsp_kts"]
+        hdg = self._live["heading_deg"]
+        result = compute_set_drift(sog, cog, stw, hdg)
+        if result is None:
+            return
+        set_raw, drift_raw = result
+        sm = self._smoothing
+        self._live["set_deg"] = round(sm.update("set_deg", set_raw), 1)
+        self._live["drift_kts"] = round(sm.update("drift_kts", drift_raw), 2)
+
     def update_live(self, record: PGNRecord) -> None:
         """Update the in-memory live cache from a decoded record (no DB write).
 
@@ -2155,11 +2180,14 @@ class Storage:
             case HeadingRecord():
                 self._live["heading_deg"] = round(sm.update("heading_deg", record.heading_deg), 1)
                 self._recompute_true_wind()
+                self._recompute_set_drift()
             case SpeedRecord():
                 self._live["bsp_kts"] = round(sm.update("bsp_kts", record.speed_kts), 2)
+                self._recompute_set_drift()
             case COGSOGRecord():
                 self._live["cog_deg"] = round(sm.update("cog_deg", record.cog_deg), 1)
                 self._live["sog_kts"] = round(sm.update("sog_kts", record.sog_kts), 2)
+                self._recompute_set_drift()
             case WindRecord() if record.reference == 2:  # apparent
                 self._live["aws_kts"] = round(sm.update("aws_kts", record.wind_speed_kts), 1)
                 self._live["awa_deg"] = round(sm.update("awa_deg", record.wind_angle_deg), 1)
