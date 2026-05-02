@@ -1455,7 +1455,14 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
         hdg_v = float(hd["heading_deg"]) if hd else None
         heel_v = float(at["heel_deg"]) if at and at["heel_deg"] is not None else None
         trim_v = float(at["trim_deg"]) if at and at["trim_deg"] is not None else None
-        sd = compute_set_drift(sog=sog_v, cog=cog_v, stw=stw_v, hdg=hdg_v)
+        sd = compute_set_drift(
+            sog=sog_v,
+            cog=cog_v,
+            stw=stw_v,
+            hdg=hdg_v,
+            heel_deg=heel_v,
+            leeway_k=storage._leeway_k,
+        )
         set_v: float | None = sd[0] if sd is not None else None
         drift_v: float | None = sd[1] if sd is not None else None
         samples.append(
