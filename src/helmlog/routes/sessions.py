@@ -332,7 +332,7 @@ async def _compute_session_track(storage: Storage, session_id: int) -> dict[str,
     the race doesn't exist — the HTTP path surfaces that; the warmer
     catches and logs it.
     """
-    from datetime import datetime, timedelta
+    from datetime import UTC, datetime, timedelta
 
     db = storage._conn()
     cur = await db.execute("SELECT start_utc, end_utc FROM races WHERE id = ?", (session_id,))
@@ -340,7 +340,11 @@ async def _compute_session_track(storage: Storage, session_id: int) -> dict[str,
     if row is None:
         raise HTTPException(status_code=404, detail="Race not found")
     start_utc = row["start_utc"]
-    end_utc = row["end_utc"] or start_utc
+    # Active race (end_utc IS NULL): bound the upper window at "now" so live
+    # positions written after the gun appear on the map. Falling back to
+    # start_utc here would collapse the window and freeze the track at the
+    # gun (the bug behind this regression).
+    end_utc = row["end_utc"] or datetime.now(UTC).isoformat()
 
     # Prestart cutoff: start_utc shifted back by the configured window.
     try:
