@@ -594,15 +594,21 @@ async function loadTrack() {
   // cursor continues to interpolate against the raw latLngs so the
   // boat position itself isn't lagged by the smoothing.
   const trackColor = cssVar('--warning') || '#fbbf24';
-  // The /track endpoint now returns 1 Hz mean-averaged positions (one
-  // row per second across all GPS sources), so we don't need any
-  // frontend smoothing or decimation — the polyline already matches
-  // Vakaros's vertex density. Just style it with the same dash pattern
-  // so the two tracks read the same way.
+  // Dark casing under the bright dashed line so the track reads against
+  // light water tiles — the dashed yellow alone disappeared on OSM blue.
+  // The casing is solid + slightly wider, the bright line is dashed on
+  // top, preserving the Vakaros-style visual identity.
+  const casing = L.polyline(latLngs, {
+    color: '#1a1a1a',
+    weight: 5,
+    opacity: 0.55,
+    lineCap: 'round',
+    lineJoin: 'round',
+  }).addTo(_map);
   const line = L.polyline(latLngs, {
     color: trackColor,
     weight: 3,
-    opacity: 0.9,
+    opacity: 1,
     lineCap: 'butt',
     lineJoin: 'miter',
     dashArray: '2, 4',
@@ -628,7 +634,7 @@ async function loadTrack() {
   });
   const cursor = L.marker([0, 0], {icon: cursorIcon, interactive: false});
 
-  _trackData = {latLngs, timestamps, line, cursor};
+  _trackData = {latLngs, timestamps, line, casing, cursor};
 
   // Map is a consumer: render the cursor at the requested UTC. We use a
   // continuous interpolated position (not the nearest sample index) so the
@@ -843,8 +849,13 @@ async function loadVakarosOverlay() {
     }
     if (skBox && _trackData && _trackData.line) {
       skBox.addEventListener('change', function() {
-        if (skBox.checked) { _trackData.line.addTo(_map); }
-        else { _map.removeLayer(_trackData.line); }
+        if (skBox.checked) {
+          if (_trackData.casing) _trackData.casing.addTo(_map);
+          _trackData.line.addTo(_map);
+        } else {
+          _map.removeLayer(_trackData.line);
+          if (_trackData.casing) _map.removeLayer(_trackData.casing);
+        }
       });
     }
   }
@@ -8494,8 +8505,9 @@ function _drawGradeSegments() {
       runStart = i;
     }
   }
-  // Hide the underlying single-color track while grade overlay is active
+  // Hide the underlying single-color track + its casing while grade overlay is active
   if (_trackData.line) _trackData.line.setStyle({opacity: 0});
+  if (_trackData.casing) _trackData.casing.setStyle({opacity: 0});
 }
 
 function _setGradeViewActive(active) {
@@ -8507,6 +8519,7 @@ function _setGradeViewActive(active) {
   } else {
     _clearGradeSegments();
     if (_trackData && _trackData.line) _trackData.line.setStyle({opacity: 1});
+    if (_trackData && _trackData.casing) _trackData.casing.setStyle({opacity: 0.55});
   }
 }
 
