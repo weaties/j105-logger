@@ -112,10 +112,12 @@
 #video-course-overlay{top:6px;right:6px}
 #video-maneuver-overlay{bottom:6px;left:6px}
 /* Live-race strip-down (#664) — while a race is in progress and this page
-   is served at /, collapse to: photo, track, instruments, boat setup, notes.
-   Everything else is forcibly hidden even if its loader calls display=''. */
+   is served at /, collapse to: photo, track + replay (scrubber + overlays
+   + gauges), wind field, instruments, boat setup, notes. Heavy debrief
+   cards (video, polar, results, audio, etc.) stay hidden. The replay
+   surfaces are kept so a shore observer can scrub and toggle wind /
+   current overlays during the race. */
 body.live-race #video-container,
-body.live-race #wind-field-card,
 body.live-race #polar-card,
 body.live-race #videos-card,
 body.live-race #analysis-card,
@@ -131,8 +133,6 @@ body.live-race #match-card,
 body.live-race #exports-card,
 body.live-race #danger-zone,
 body.live-race #track-layers-wrap,
-body.live-race #replay-toggle-row,
-body.live-race #replay-gauges-wrap,
 body.live-race #session-tags-row{display:none!important}
 body.live-race .live-inst-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;font-family:monospace}
 body.live-race .live-inst-item{background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:6px 8px}

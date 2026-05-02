@@ -456,7 +456,9 @@ async def _compute_session_summary(storage: Storage, session_id: int) -> dict[st
     if race is None:
         raise HTTPException(status_code=404, detail="Race not found")
     start_utc = race["start_utc"]
-    end_utc = race["end_utc"] or start_utc
+    # Active race: use "now" so the post-gun positions and wind samples are
+    # included in the summary. Falling back to start_utc would clip them.
+    end_utc = race["end_utc"] or datetime.now(UTC).isoformat()
 
     rid_cur = await db.execute(
         "SELECT COUNT(*) as cnt FROM positions WHERE race_id = ?", (session_id,)
@@ -1241,7 +1243,11 @@ async def _compute_session_replay(storage: Storage, session_id: int) -> dict[str
     if row is None:
         raise HTTPException(status_code=404, detail="Race not found")
     start_utc = row["start_utc"]
-    end_utc = row["end_utc"] or row["start_utc"]
+    # Active race (end_utc IS NULL): use "now" as the upper bound so the
+    # scrubber range and the instrument-sample queries cover everything up
+    # to the current moment. Falling back to start_utc would collapse the
+    # window to the prestart prefix only.
+    end_utc = row["end_utc"] or datetime.now(UTC).isoformat()
 
     # Replay scrubber spans the prestart prefix too — same window the track
     # is extended by (#707 / prestart-scrub). Instrument series queries use

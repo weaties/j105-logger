@@ -215,6 +215,42 @@ async def test_track_includes_post_gun_for_active_race(
 
 
 @pytest.mark.asyncio
+async def test_replay_samples_extend_past_gun_for_active_race(
+    storage: Storage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """During a live race the replay scrubber must cover post-gun samples
+    too — otherwise the scrubber range collapses to the prestart prefix
+    and the gauges have no in-race data to show."""
+    monkeypatch.setenv("AUTH_DISABLED", "true")
+    race = await storage.start_race(
+        event="CYC", start_utc=_GUN, date_str="2026-04-30", race_num=1, name="R"
+    )
+    db = storage._conn()
+    # Mix of pre-gun and post-gun speed samples; race is still active.
+    for offset_s in (-300, -120, -10, 5, 60, 200):
+        ts = (_GUN + timedelta(seconds=offset_s)).isoformat()
+        await db.execute(
+            "INSERT INTO speeds (ts, source_addr, speed_kts) VALUES (?, ?, ?)",
+            (ts, 0, 4.5),
+        )
+    await db.commit()
+    # Note: NO end_race call — race is still active.
+
+    app = create_app(storage)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        r = await client.get(f"/api/sessions/{race.id}/replay")
+    assert r.status_code == 200
+    body = r.json()
+    sample_ts = [s["ts"] for s in body["samples"]]
+    pre_gun = [t for t in sample_ts if t < body["start_utc"]]
+    post_gun = [t for t in sample_ts if t >= body["start_utc"]]
+    assert len(pre_gun) >= 3, f"prestart samples missing: {sample_ts}"
+    assert len(post_gun) >= 3, f"post-gun samples missing: {sample_ts}"
+
+
+@pytest.mark.asyncio
 async def test_data_hash_changes_during_active_race(storage: Storage) -> None:
     """resolve_race_data_hash must move as new positions stream into an
     active race — otherwise the cache key never changes and stale track
