@@ -9174,6 +9174,11 @@ class Storage:
             )
             ids.append(cur.lastrowid or 0)
         await db.commit()
+        # Hot-reload the cached leeway coefficient if it was just written —
+        # admin tuning takes effect on the live broadcast immediately
+        # without a service restart (#730 follow-up).
+        if any(e["parameter"] == "leeway_coefficient" for e in entries):
+            await self.refresh_leeway_k()
         return ids
 
     async def list_boat_settings(self, race_id: int | None) -> list[dict[str, Any]]:
