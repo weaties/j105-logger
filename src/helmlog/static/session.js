@@ -515,11 +515,17 @@ function _populateRoundings() {
   _roundings = out;
 }
 
+// Latest live instrument snapshot from the WS — used to enrich the
+// synthetic _replaySamples row we push when a new position arrives, so
+// the scrubber HUD has data when pinned at the live tip.
+let _lastLiveInstruments = null;
+
 // Push live instrument values straight into the GAUGES card so it stays
 // real-time without polling /api/instruments. Mirrors the binding inside
 // _renderHud() — but driven by the WS message instead of the scrubber.
 function _renderLiveGauges(d) {
   if (!d) return;
+  _lastLiveInstruments = d;
   const setNum = (id, val, decimals) => {
     const el = document.getElementById(id);
     if (el) el.textContent = (val != null && !Number.isNaN(val)) ? Number(val).toFixed(decimals) : '—';
@@ -551,7 +557,16 @@ function _renderLiveGauges(d) {
   setSigned('hud-trim', d.trim_deg, 1);
 }
 
+// Throttle for live overlay rebuilds — wind/current arrow layers iterate
+// the entire track on each rebuild, so 1 Hz would be wasteful. The
+// existing arrow cadence is multi-second (zoom-dependent) so a 10 s
+// rebuild is plenty to extend coverage along the new track segment.
+let _lastOverlayRebuildMs = 0;
+const _OVERLAY_REBUILD_INTERVAL_MS = 10000;
+
 // Append a position fix to the polyline + casing and refresh distances.
+// If the user is pinned at the end of the scrubber, also advance the
+// replay clock so the boat icon, HUD, and overlays follow the live tip.
 // No-op if the fix is older than the last one we have (out-of-order
 // arrival, e.g. on reconnect after a brief disconnect).
 function _appendLivePosition(payload) {
@@ -566,6 +581,54 @@ function _appendLivePosition(payload) {
   _liveGotPositionViaWs = true;
   _recomputeDistanceSailed();
   _recomputeCourseDistance();
+
+  // Live-tail follow: extend the scrubber range and, if the user was
+  // pinned at the end (within 1 s of _replayEnd), advance the play
+  // clock so the boat cursor, HUD, sparklines, and overlay arrows all
+  // follow the new fix.
+  if (_replayEnd && _replaySamples) {
+    const wasAtEnd = _playClock.positionUtc &&
+                     _playClock.positionUtc.getTime() >= _replayEnd.getTime() - 1000;
+    if (_lastLiveInstruments) {
+      const inst = _lastLiveInstruments;
+      _replaySamples.push({
+        ts: ts,
+        stw: inst.bsp_kts,
+        sog: inst.sog_kts,
+        tws: inst.tws_kts,
+        twa: inst.twa_deg,
+        twd: inst.twd_deg,
+        aws: inst.aws_kts,
+        awa: inst.awa_deg,
+        hdg: inst.heading_deg,
+        cog: inst.cog_deg,
+        heel: inst.heel_deg,
+        trim: inst.trim_deg,
+        set: inst.set_deg,
+        drift: inst.drift_kts,
+      });
+    }
+    _replayEnd = ts;
+    if (wasAtEnd) {
+      // setPosition fans out to all _playClock consumers — the map
+      // cursor, HUD, sparklines, etc. — so the live tip stays selected
+      // and _updateReplayControls() keeps the scrubber in sync.
+      setPosition(ts, {source: 'live-tail'});
+    } else if (typeof _updateReplayControls === 'function') {
+      // User has scrubbed back; don't move the playhead, but keep the
+      // scrubber's max + duration label in sync with the new end.
+      _updateReplayControls();
+    }
+
+    // Throttled rebuild so wind/current arrows extend along the new
+    // segment of track. Skipped if neither overlay is enabled.
+    const nowMs = Date.now();
+    if (nowMs - _lastOverlayRebuildMs >= _OVERLAY_REBUILD_INTERVAL_MS) {
+      _lastOverlayRebuildMs = nowMs;
+      if (_currentEnabled && typeof _rebuildCurrentOverlay === 'function') _rebuildCurrentOverlay();
+      if (_windEnabled && typeof _rebuildWindOverlay === 'function') _rebuildWindOverlay();
+    }
+  }
 }
 
 function _handleLiveWsMessage(ev) {
