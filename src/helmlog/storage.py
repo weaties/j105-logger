@@ -2073,7 +2073,18 @@ class Storage:
         # to 1 Hz on the wire — GPS can arrive at 5–10 Hz and we don't need
         # that granularity for the live polyline.
         self._on_position_update: Callable[[dict[str, Any]], None] | None = None
-        self._last_position_broadcast: float = 0.0
+        # Per-second position bucket (#732). The SK reader records every fix
+        # with source_addr=0 even when Signal K is multiplexing two physical
+        # GPS antennas (~3 m apart on Corvo), so consecutive raw fixes
+        # zig-zag between antennas. We accumulate every fix in the current
+        # whole-second bucket; when the second ticks over, the bucket's
+        # mean lat/lon is broadcast as one position. Mirrors the per-second
+        # mean averaging in routes.sessions._compute_session_track so the
+        # live polyline reads the same as the historical track.
+        self._position_bucket_key: str | None = None
+        self._position_bucket_lats: list[float] = []
+        self._position_bucket_lons: list[float] = []
+        self._position_bucket_first_ts: str | None = None
         # Per-channel smoothing applied to live broadcast values (#727).
         # Loaded from app_settings during connect(); refresh_smoothing()
         # picks up admin tau changes without restarting the service.
@@ -2215,23 +2226,36 @@ class Storage:
                 # set/drift whenever it changes.
                 self._recompute_set_drift()
             case PositionRecord():
-                # Don't fire the instruments callback for position records —
-                # they go on the separate position channel below. Throttle
-                # to 1 Hz on the wire because GPS may arrive at 5–10 Hz.
-                now = time.monotonic()
-                if (
-                    self._on_position_update is not None
-                    and (now - self._last_position_broadcast) >= 1.0
-                ):
-                    self._last_position_broadcast = now
-                    self._on_position_update(
-                        {
-                            "ts": record.timestamp.isoformat(),
-                            "lat": record.latitude_deg,
-                            "lon": record.longitude_deg,
-                            "race_id": self._active_race_id,
-                        }
-                    )
+                # Position records bypass the instruments callback and go
+                # on the separate position channel. We bucket all fixes
+                # within each whole-second key and broadcast the mean
+                # lat/lon when the bucket rolls over (see __init__ for
+                # rationale — collapses dual-antenna zig-zag).
+                ts_iso = record.timestamp.isoformat()
+                key = ts_iso[:19]  # truncate to whole-second precision
+                if self._position_bucket_key is None:
+                    self._position_bucket_key = key
+                    self._position_bucket_first_ts = ts_iso
+                if key != self._position_bucket_key:
+                    # Bucket rolled over — emit the previous second's mean.
+                    if self._position_bucket_lats and self._on_position_update is not None:
+                        n = len(self._position_bucket_lats)
+                        avg_lat = sum(self._position_bucket_lats) / n
+                        avg_lon = sum(self._position_bucket_lons) / n
+                        self._on_position_update(
+                            {
+                                "ts": self._position_bucket_first_ts,
+                                "lat": avg_lat,
+                                "lon": avg_lon,
+                                "race_id": self._active_race_id,
+                            }
+                        )
+                    self._position_bucket_key = key
+                    self._position_bucket_first_ts = ts_iso
+                    self._position_bucket_lats = []
+                    self._position_bucket_lons = []
+                self._position_bucket_lats.append(record.latitude_deg)
+                self._position_bucket_lons.append(record.longitude_deg)
                 return
         if self._on_live_update is not None:
             self._on_live_update(dict(self._live))
