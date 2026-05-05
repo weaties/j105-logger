@@ -28,6 +28,44 @@ if TYPE_CHECKING:
     from helmlog.storage import Storage
 
 
+def _own_sail_number() -> str | None:
+    """Return the Pi's own sail number from boat identity, or None.
+
+    Wraps every conceivable failure (no identity, malformed json, missing
+    attr) and returns None — callers fall back to importing every race
+    when the sail is unknown.
+    """
+    try:
+        from helmlog.federation import load_identity
+
+        _, card = load_identity()
+        sail = card.sail_number
+    except Exception:  # noqa: BLE001
+        return None
+    sail = (sail or "").strip()
+    return sail or None
+
+
+def _filter_races_for_own_sail(
+    races: tuple[RaceData, ...],
+    own_sail: str | None,
+) -> tuple[RaceData, ...]:
+    """Drop races whose finishes don't contain *own_sail*.
+
+    STYC publishes a separate race row per division for each race
+    number, and helmlog's value comes from the one division the boat
+    actually competed in — every other division is noise. Filter to
+    races that actually contain the own sail.
+
+    If *own_sail* is unknown OR every race lacks it (spectator regatta),
+    return *races* unchanged so we don't accidentally drop everything.
+    """
+    if not own_sail:
+        return races
+    kept = tuple(r for r in races if any(f.sail_number == own_sail for f in r.finishes))
+    return kept if kept else races
+
+
 def _assign_places(finishes: tuple[BoatFinish, ...]) -> list[tuple[int, BoatFinish]]:
     """Assign unique 1-based place numbers.
 
@@ -53,8 +91,18 @@ async def import_results(
     results: RegattaResults,
     *,
     user_id: int | None = None,
+    own_sail: str | None = None,
 ) -> dict[str, int]:
     """Upsert a ``RegattaResults`` into the database.
+
+    When the boat's own sail number is known (loaded from
+    ``boat_identity`` if not explicitly provided), races that don't
+    contain that sail are filtered out before persisting — STYC and
+    similar sources publish every division for every race-night, and
+    most are irrelevant to the boat running this Pi (#735). The filter
+    only applies when at least one race contains the own sail; if the
+    sail is absent from the entire regatta (e.g. an admin imported a
+    spectator regatta), every race is persisted as before.
 
     Returns a summary dict with counts: ``races_upserted``,
     ``results_upserted``, ``boats_upserted``, ``standings_upserted``.
@@ -69,11 +117,22 @@ async def import_results(
         "standings_upserted": 0,
     }
 
+    if own_sail is None:
+        own_sail = _own_sail_number()
+    races_to_import = _filter_races_for_own_sail(results.races, own_sail)
+    if own_sail and len(races_to_import) < len(results.races):
+        logger.info(
+            "Filtered {} → {} races for own sail {!r} (skipped foreign divisions)",
+            len(results.races),
+            len(races_to_import),
+            own_sail,
+        )
+
     regatta_id = await _upsert_regatta(db, reg, now)
 
     boat_cache: dict[str, int] = {}
 
-    for race_data in results.races:
+    for race_data in races_to_import:
         if not race_data.date:
             logger.warning(
                 "Skipping race {} — no date (provider returned null)",

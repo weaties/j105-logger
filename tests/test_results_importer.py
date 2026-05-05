@@ -612,6 +612,109 @@ async def test_force_rematch_invalidates_old_and_new_live_sessions(
 
 
 @pytest.mark.asyncio
+async def test_filter_drops_races_without_own_sail(storage: Storage) -> None:
+    """Regression for #735: STYC publishes 10 division-races per race-num.
+    With own_sail known, only races containing that sail are persisted.
+    """
+    from helmlog.results.base import BoatFinish, RaceData, Regatta, RegattaResults
+
+    own = RaceData(
+        source_id="own_div",
+        race_number=1,
+        name="Race 1",
+        date="2026-05-04",
+        class_name="Flying Sails Div 6",
+        finishes=(
+            BoatFinish(sail_number="475", place=1),
+            BoatFinish(sail_number="403", place=2),
+        ),
+    )
+    foreign = RaceData(
+        source_id="foreign_div",
+        race_number=1,
+        name="Race 1",
+        date="2026-05-04",
+        class_name="Flying Sails Div 2",
+        finishes=(BoatFinish(sail_number="34", place=1),),
+    )
+    results = RegattaResults(
+        regatta=Regatta(source="test", source_id="filter_t1", name="Test"),
+        races=(own, foreign),
+    )
+
+    counts = await import_results(storage, results, own_sail="475")
+    assert counts["races_upserted"] == 1, "foreign division must be filtered out"
+
+    db = storage._conn()
+    cur = await db.execute(
+        "SELECT source_id FROM races WHERE source = 'test' ORDER BY source_id",
+    )
+    rows = await cur.fetchall()
+    assert [r["source_id"] for r in rows] == ["own_div"]
+
+
+@pytest.mark.asyncio
+async def test_filter_keeps_all_when_sail_absent_from_regatta(storage: Storage) -> None:
+    """If the own sail isn't in *any* race (spectator regatta), don't
+    silently drop everything — fall back to importing every race."""
+    from helmlog.results.base import BoatFinish, RaceData, Regatta, RegattaResults
+
+    foreign1 = RaceData(
+        source_id="foreign_a",
+        race_number=1,
+        name="Race 1",
+        date="2026-05-04",
+        class_name="Class A",
+        finishes=(BoatFinish(sail_number="34", place=1),),
+    )
+    foreign2 = RaceData(
+        source_id="foreign_b",
+        race_number=2,
+        name="Race 2",
+        date="2026-05-04",
+        class_name="Class B",
+        finishes=(BoatFinish(sail_number="153", place=1),),
+    )
+    results = RegattaResults(
+        regatta=Regatta(source="test", source_id="filter_t2", name="Test"),
+        races=(foreign1, foreign2),
+    )
+
+    counts = await import_results(storage, results, own_sail="475")
+    assert counts["races_upserted"] == 2, "fall back to all races when own sail absent"
+
+
+@pytest.mark.asyncio
+async def test_filter_skipped_when_no_own_sail(storage: Storage) -> None:
+    """No identity → no filter, every race imported (back-compat)."""
+    from helmlog.results.base import BoatFinish, RaceData, Regatta, RegattaResults
+
+    a = RaceData(
+        source_id="a_div",
+        race_number=1,
+        name="Race 1",
+        date="2026-05-04",
+        class_name="Class A",
+        finishes=(BoatFinish(sail_number="475", place=1),),
+    )
+    b = RaceData(
+        source_id="b_div",
+        race_number=1,
+        name="Race 1",
+        date="2026-05-04",
+        class_name="Class B",
+        finishes=(BoatFinish(sail_number="34", place=1),),
+    )
+    results = RegattaResults(
+        regatta=Regatta(source="test", source_id="filter_t3", name="Test"),
+        races=(a, b),
+    )
+
+    counts = await import_results(storage, results, own_sail=None)
+    assert counts["races_upserted"] == 2
+
+
+@pytest.mark.asyncio
 async def test_link_matches_when_local_session_crosses_utc_midnight(
     storage: Storage,
 ) -> None:
